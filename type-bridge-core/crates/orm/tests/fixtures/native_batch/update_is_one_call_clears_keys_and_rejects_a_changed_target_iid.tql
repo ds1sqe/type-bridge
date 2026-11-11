@@ -1,0 +1,8 @@
+given $ordinal_input: integer, $target_iid: string, $field_0_0: string?; match $root0 isa! person; iid($root0) == $target_iid; let $ordinal1 = $ordinal_input; match try { $root0 has identifier $PlanHas1x0; 
+ $PlanHas1x0 isa! identifier; 
+}; try { $root0 has lag $PlanHas1x1; 
+ $PlanHas1x1 isa! lag; 
+}; try { $root0 has tag $PlanHas1x2; 
+ $PlanHas1x2 isa! tag; 
+}; delete try { has $PlanHas1x0 of $root0; }; try { has $PlanHas1x1 of $root0; }; try { has $PlanHas1x2 of $root0; }; insert try { $root0 has identifier == $field_0_0; 
+}; select $root0, $ordinal1; distinct; match $root0 isa! $PlanFetchType; fetch { "_iid": iid($root0), "_type": label($PlanFetchType), "attributes": {  $root0.*}, "ordinal": $ordinal1};

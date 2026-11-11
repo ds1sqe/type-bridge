@@ -11,7 +11,6 @@
   },
   "include": [
     "typescript/public.ts",
-    "typescript/query-v2.ts",
     "typescript/runtime-projection.ts",
     "tests/integration/common/index.ts",
     "tests/projection-integration/generated-package-live.test.ts"

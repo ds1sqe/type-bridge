@@ -1,13 +1,14 @@
 //! Binding-neutral generated-query execution and materialization limits.
 
 use std::time::{Duration, Instant};
+pub use type_bridge_contract::limits::QueryTimeout;
 
 use std::collections::BTreeMap;
 
 use type_bridge_contract::limits::{
     ANSWER_LIMIT_FIELDS, LIMIT_SOURCE_CONFIGURED, LIMIT_SOURCE_DEFAULT, answer_limit_field,
 };
-use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
+use type_bridge_contract::query_model_limits::RemoteModelLimits;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
     SdkQueryDiagnosticCategory, SdkQueryDiagnosticPathKind,
@@ -51,48 +52,8 @@ pub const DEFAULT_PROXY_QUERY_ROLE_PLAYERS: u64 = ANSWER_LIMIT_FIELDS[6].proxy_d
 /// Proxy-connection default provider statements per terminal.
 pub const DEFAULT_PROXY_QUERY_STATEMENTS: u32 = ANSWER_LIMIT_FIELDS[7].proxy_default as u32;
 
-/// Longest execution duration a policy may ask for, in milliseconds.
-pub const MAX_QUERY_TIMEOUT_MILLISECONDS: u64 = ANSWER_LIMIT_FIELDS[0].maximum;
-/// Most provider statements a terminal can need. No terminal issues more,
-/// so a larger value would be accepted and ignored.
+/// Largest explicit provider-statement budget admitted by the common policy.
 pub const MAX_QUERY_STATEMENTS: u32 = ANSWER_LIMIT_FIELDS[7].maximum as u32;
-
-/// The 2.2 name of [`DEFAULT_PROXY_QUERY_ITEMS`], with the same value.
-#[deprecated(
-    since = "2.3.0",
-    note = "use DEFAULT_PROXY_QUERY_ITEMS; removed in 3.0"
-)]
-pub const MAX_QUERY_ITEMS: u64 = DEFAULT_PROXY_QUERY_ITEMS;
-/// The 2.2 name of [`DEFAULT_PROXY_QUERY_BYTES`], with the same value.
-#[deprecated(
-    since = "2.3.0",
-    note = "use DEFAULT_PROXY_QUERY_BYTES; removed in 3.0"
-)]
-pub const MAX_QUERY_BYTES: u64 = DEFAULT_PROXY_QUERY_BYTES;
-/// The 2.2 name of [`DEFAULT_PROXY_QUERY_GRAPH_NODES`], with the same value.
-#[deprecated(
-    since = "2.3.0",
-    note = "use DEFAULT_PROXY_QUERY_GRAPH_NODES; removed in 3.0"
-)]
-pub const MAX_QUERY_GRAPH_NODES: u64 = DEFAULT_PROXY_QUERY_GRAPH_NODES;
-/// The 2.2 name of [`DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES`], with the same value.
-#[deprecated(
-    since = "2.3.0",
-    note = "use DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES; removed in 3.0"
-)]
-pub const MAX_QUERY_ATTRIBUTE_VALUES: u64 = DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES;
-/// The 2.2 name of [`DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS`], with the same value.
-#[deprecated(
-    since = "2.3.0",
-    note = "use DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS; removed in 3.0"
-)]
-pub const MAX_QUERY_COLLECTION_MEMBERS: u64 = DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS;
-/// The 2.2 name of [`DEFAULT_PROXY_QUERY_ROLE_PLAYERS`], with the same value.
-#[deprecated(
-    since = "2.3.0",
-    note = "use DEFAULT_PROXY_QUERY_ROLE_PLAYERS; removed in 3.0"
-)]
-pub const MAX_QUERY_ROLE_PLAYERS: u64 = DEFAULT_PROXY_QUERY_ROLE_PLAYERS;
 
 /// One absolute monotonic deadline shared by every stage of one query terminal.
 ///
@@ -102,54 +63,104 @@ pub const MAX_QUERY_ROLE_PLAYERS: u64 = DEFAULT_PROXY_QUERY_ROLE_PLAYERS;
 /// restarting the caller's timeout.
 #[derive(Clone, Copy, Debug)]
 pub struct QueryExecutionDeadline {
-    deadline: Instant,
+    started: Instant,
+    deadline: Option<Instant>,
 }
 
 impl QueryExecutionDeadline {
-    /// Capture one absolute deadline from a timeout, clamped to the longest
-    /// supported execution duration.
+    /// An already elapsed deadline for an operation that must not start.
+    #[must_use]
+    pub fn expired() -> Self {
+        let started = tokio::time::Instant::now().into_std();
+        Self {
+            started,
+            deadline: Some(started),
+        }
+    }
+
+    /// Capture an absolute deadline from a millisecond binding input.
+    /// Zero means no deadline; use [`Self::expired`] for an elapsed token.
     #[must_use]
     pub fn from_timeout_milliseconds(timeout_milliseconds: u64) -> Self {
-        let timeout = timeout_milliseconds.min(MAX_QUERY_TIMEOUT_MILLISECONDS);
-        let now = Instant::now();
+        Self::from_timeout(QueryTimeout::from_milliseconds(timeout_milliseconds))
+    }
+
+    /// Capture the configured timeout once at execution entry.
+    #[must_use]
+    pub fn from_timeout(timeout: QueryTimeout) -> Self {
+        let started = crate::execution_phases::started()
+            .unwrap_or_else(|| tokio::time::Instant::now().into_std());
         Self {
-            deadline: now
-                .checked_add(Duration::from_millis(timeout))
-                .unwrap_or(now),
+            started,
+            deadline: timeout
+                .milliseconds()
+                .and_then(|milliseconds| started.checked_add(Duration::from_millis(milliseconds))),
+        }
+    }
+
+    /// Monotonic invocation entry captured with this call's deadline.
+    pub const fn started(self) -> Instant {
+        self.started
+    }
+
+    pub(crate) fn with_ceiling(self, ceiling: Instant) -> Self {
+        Self {
+            started: self.started,
+            deadline: Some(
+                self.deadline
+                    .map_or(ceiling, |deadline| deadline.min(ceiling)),
+            ),
+        }
+    }
+
+    /// Wait until this deadline, or indefinitely when execution is unbounded.
+    #[doc(hidden)]
+    pub async fn elapsed(self) {
+        match self.deadline {
+            Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+            None => std::future::pending().await,
         }
     }
 
     /// Capture the deadline prescribed by one common resource policy.
     #[must_use]
     pub fn for_limits(limits: QueryExecutionResourceLimits) -> Self {
-        Self::from_timeout_milliseconds(limits.effective().timeout_milliseconds)
+        Self::from_timeout(limits.timeout_milliseconds)
     }
 
     /// Reuse an already established monotonic deadline at an internal seam.
-    #[doc(hidden)]
     #[must_use]
-    pub(crate) const fn from_instant(deadline: Instant) -> Self {
-        Self { deadline }
+    pub fn from_instant(deadline: Instant) -> Self {
+        Self {
+            started: crate::execution_phases::started()
+                .unwrap_or_else(|| tokio::time::Instant::now().into_std()),
+            deadline: Some(deadline),
+        }
     }
 
     /// The earlier of this deadline and `other`.
     #[must_use]
     pub fn earliest(self, other: Self) -> Self {
         Self {
-            deadline: self.deadline.min(other.deadline),
+            started: self.started,
+            deadline: match (self.deadline, other.deadline) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (left, right) => left.or(right),
+            },
         }
     }
 
     /// Return whether the absolute deadline has elapsed.
     #[must_use]
     pub fn is_expired(self) -> bool {
-        Instant::now() >= self.deadline
+        self.deadline
+            .is_some_and(|deadline| tokio::time::Instant::now().into_std() >= deadline)
     }
 
     /// Return the exact monotonic deadline for native await combinators.
     #[doc(hidden)]
     #[must_use]
-    pub const fn instant(self) -> Instant {
+    pub const fn instant(self) -> Option<Instant> {
         self.deadline
     }
 
@@ -160,15 +171,18 @@ impl QueryExecutionDeadline {
     /// construction.
     #[doc(hidden)]
     #[must_use]
-    pub fn remaining_milliseconds(self) -> u64 {
-        let now = Instant::now();
-        if now >= self.deadline {
-            return 0;
+    pub fn remaining_milliseconds(self) -> Option<u64> {
+        let deadline = self.deadline?;
+        let now = tokio::time::Instant::now().into_std();
+        if now >= deadline {
+            return Some(0);
         }
-        let remaining = self.deadline.duration_since(now);
-        u64::try_from(remaining.as_millis())
-            .unwrap_or(u64::MAX)
-            .max(1)
+        let remaining = deadline.duration_since(now);
+        Some(
+            u64::try_from(remaining.as_millis())
+                .unwrap_or(u64::MAX)
+                .max(1),
+        )
     }
 
     /// Check the shared cancellation owner and this invocation deadline,
@@ -283,13 +297,15 @@ pub enum AnswerTransport {
 /// [`Self::default_for`] is the policy a session starts from on its
 /// transport, and [`Default`] is the direct one. A caller may tighten
 /// any dimension, and may raise one by configuring it explicitly; only the
-/// timeout and the statement count have a supported maximum. A session never
+/// statement count has a supported maximum. A session never
 /// widens the policy of the connection it runs on
 /// ([`Self::constrained_by`]).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueryExecutionResourceLimits {
+    /// Collect a diagnostic timeline without a tracing subscriber; defaults to false.
+    pub collect_phase_timestamps: bool,
     /// Execution timeout in milliseconds.
-    pub timeout_milliseconds: u64,
+    pub timeout_milliseconds: QueryTimeout,
     /// Provider/result item ceiling.
     pub items: u64,
     /// Provider/reply/projected byte ceiling.
@@ -302,8 +318,10 @@ pub struct QueryExecutionResourceLimits {
     pub collection_members: u64,
     /// Role-player reference ceiling.
     pub role_players: u64,
-    /// Provider statement ceiling.
-    pub statements: u32,
+    /// Explicit provider-statement ceiling; `None` resolves at execution.
+    /// Typed adapters allow their complete static stack, with a minimum of
+    /// three; user-authored plans default to three.
+    pub statements: Option<u32>,
 }
 
 impl QueryExecutionResourceLimits {
@@ -327,24 +345,30 @@ impl QueryExecutionResourceLimits {
     pub const fn default_for(transport: AnswerTransport) -> Self {
         match transport {
             AnswerTransport::Direct => Self {
-                timeout_milliseconds: DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
+                collect_phase_timestamps: false,
+                timeout_milliseconds: QueryTimeout::from_milliseconds(
+                    DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
+                ),
                 items: DEFAULT_DIRECT_QUERY_ITEMS,
                 bytes: DEFAULT_DIRECT_QUERY_BYTES,
                 graph_nodes: DEFAULT_DIRECT_QUERY_GRAPH_NODES,
                 attribute_values: DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES,
                 collection_members: DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
                 role_players: DEFAULT_DIRECT_QUERY_ROLE_PLAYERS,
-                statements: DEFAULT_DIRECT_QUERY_STATEMENTS,
+                statements: None,
             },
             AnswerTransport::Proxy => Self {
-                timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+                collect_phase_timestamps: false,
+                timeout_milliseconds: QueryTimeout::from_milliseconds(
+                    DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+                ),
                 items: DEFAULT_PROXY_QUERY_ITEMS,
                 bytes: DEFAULT_PROXY_QUERY_BYTES,
                 graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES,
                 attribute_values: DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
                 collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
                 role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
-                statements: DEFAULT_PROXY_QUERY_STATEMENTS,
+                statements: None,
             },
         }
     }
@@ -372,14 +396,16 @@ impl QueryExecutionResourceLimits {
                 ));
             }
             match field.name {
-                "timeout_milliseconds" => policy.timeout_milliseconds = value,
+                "timeout_milliseconds" => {
+                    policy.timeout_milliseconds = QueryTimeout::from_milliseconds(value)
+                }
                 "items" => policy.items = value,
                 "bytes" => policy.bytes = value,
                 "graph_nodes" => policy.graph_nodes = value,
                 "attribute_values" => policy.attribute_values = value,
                 "collection_members" => policy.collection_members = value,
                 "role_players" => policy.role_players = value,
-                _ => policy.statements = u32::try_from(value).unwrap_or(u32::MAX),
+                _ => policy.statements = Some(u32::try_from(value).unwrap_or(u32::MAX)),
             }
         }
         Ok(policy)
@@ -394,7 +420,12 @@ impl QueryExecutionResourceLimits {
             .iter()
             .filter_map(|field| {
                 let value = self.get(field.name)?;
-                (value != field.proxy_default).then(|| (field.name.to_owned(), value))
+                (if field.name == "statements" {
+                    self.statements.is_some()
+                } else {
+                    value != field.proxy_default
+                })
+                .then(|| (field.name.to_owned(), value))
             })
             .collect()
     }
@@ -414,10 +445,11 @@ impl QueryExecutionResourceLimits {
         statements: u32,
     ) -> Self {
         Self {
-            timeout_milliseconds: min_u64(
-                timeout_milliseconds,
-                DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
-            ),
+            collect_phase_timestamps: false,
+            timeout_milliseconds: QueryTimeout::from_milliseconds(timeout_milliseconds)
+                .constrained_by(QueryTimeout::from_milliseconds(
+                    DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
+                )),
             items: min_u64(items, DEFAULT_DIRECT_QUERY_ITEMS),
             bytes: min_u64(bytes, DEFAULT_DIRECT_QUERY_BYTES),
             graph_nodes: min_u64(graph_nodes, DEFAULT_DIRECT_QUERY_GRAPH_NODES),
@@ -427,7 +459,7 @@ impl QueryExecutionResourceLimits {
                 DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
             ),
             role_players: min_u64(role_players, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS),
-            statements: min_u32(statements, DEFAULT_DIRECT_QUERY_STATEMENTS),
+            statements: Some(min_u32(statements, DEFAULT_DIRECT_QUERY_STATEMENTS)),
         }
     }
 
@@ -436,17 +468,12 @@ impl QueryExecutionResourceLimits {
     /// A value above its maximum is refused by name, never clamped: a caller
     /// who asked for more must not silently get less.
     pub const fn validate(self) -> Result<Self, QueryExecutionLimitOutOfRange> {
-        if self.timeout_milliseconds > MAX_QUERY_TIMEOUT_MILLISECONDS {
-            return Err(QueryExecutionLimitOutOfRange {
-                limit: "timeout_milliseconds",
-                value: self.timeout_milliseconds,
-                maximum: MAX_QUERY_TIMEOUT_MILLISECONDS,
-            });
-        }
-        if self.statements > MAX_QUERY_STATEMENTS {
+        if let Some(statements) = self.statements
+            && statements > MAX_QUERY_STATEMENTS
+        {
             return Err(QueryExecutionLimitOutOfRange {
                 limit: "statements",
-                value: self.statements as u64,
+                value: statements as u64,
                 maximum: MAX_QUERY_STATEMENTS as u64,
             });
         }
@@ -456,18 +483,21 @@ impl QueryExecutionResourceLimits {
     /// Read the policy a remote request budget states.
     #[doc(hidden)]
     #[must_use]
-    pub fn from_remote(limits: RemoteLimitsV2) -> Self {
+    pub fn from_remote(limits: RemoteModelLimits) -> Self {
         Self {
-            timeout_milliseconds: limits
-                .deadline_ms
-                .unwrap_or(DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS),
+            collect_phase_timestamps: false,
+            timeout_milliseconds: QueryTimeout::from_milliseconds(
+                limits
+                    .deadline_ms
+                    .unwrap_or(DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS),
+            ),
             items: limits.max_items,
             bytes: limits.max_bytes,
             graph_nodes: limits.max_graph_nodes,
             attribute_values: limits.max_attribute_values,
             collection_members: limits.max_collection_members,
             role_players: limits.max_role_players,
-            statements: limits.max_statements,
+            statements: Some(limits.max_statements),
         }
     }
 
@@ -486,7 +516,13 @@ impl QueryExecutionResourceLimits {
             .iter()
             .find_map(|(refusal, name)| (*refusal == code).then_some(*name))?;
         let value = self.get(name)?;
-        let source = if Self::default_for(transport).get(name) == Some(value) {
+        let source = if name == "statements" {
+            if self.statements.is_some() {
+                LIMIT_SOURCE_CONFIGURED
+            } else {
+                LIMIT_SOURCE_DEFAULT
+            }
+        } else if Self::default_for(transport).get(name) == Some(value) {
             LIMIT_SOURCE_DEFAULT
         } else {
             LIMIT_SOURCE_CONFIGURED
@@ -498,31 +534,48 @@ impl QueryExecutionResourceLimits {
     #[must_use]
     pub fn get(self, name: &str) -> Option<u64> {
         Some(match name {
-            "timeout_milliseconds" => self.timeout_milliseconds,
+            "timeout_milliseconds" => self.timeout_milliseconds.milliseconds().unwrap_or(0),
             "items" => self.items,
             "bytes" => self.bytes,
             "graph_nodes" => self.graph_nodes,
             "attribute_values" => self.attribute_values,
             "collection_members" => self.collection_members,
             "role_players" => self.role_players,
-            "statements" => u64::from(self.statements),
+            "statements" => u64::from(self.statement_limit()),
             _ => return None,
         })
     }
 
     /// Bound a struct-literal policy by the supported maxima.
     ///
+    /// Resolve the default for a user-authored plan execution.
+    #[must_use]
+    pub const fn statement_limit(self) -> u32 {
+        match self.statements {
+            Some(value) => value,
+            None => DEFAULT_DIRECT_QUERY_STATEMENTS,
+        }
+    }
+
+    /// Resolve an unset budget for one complete static typed-read stack.
+    pub(crate) fn for_adapter_statements(mut self, need: usize) -> Self {
+        if self.statements.is_none() {
+            self.statements =
+                Some(DEFAULT_DIRECT_QUERY_STATEMENTS.max(u32::try_from(need).unwrap_or(u32::MAX)));
+        }
+        self
+    }
+
     /// Internal stages call this so no arithmetic sees an unsupported
     /// value; a public entry point validates first and refuses instead.
     #[doc(hidden)]
     #[must_use]
     pub const fn effective(self) -> Self {
         Self {
-            timeout_milliseconds: min_u64(
-                self.timeout_milliseconds,
-                MAX_QUERY_TIMEOUT_MILLISECONDS,
-            ),
-            statements: min_u32(self.statements, MAX_QUERY_STATEMENTS),
+            statements: match self.statements {
+                Some(value) => Some(min_u32(value, MAX_QUERY_STATEMENTS)),
+                None => None,
+            },
             ..self
         }
     }
@@ -537,14 +590,24 @@ impl QueryExecutionResourceLimits {
         let this = self.effective();
         let ceiling = ceiling.effective();
         Self {
-            timeout_milliseconds: min_u64(this.timeout_milliseconds, ceiling.timeout_milliseconds),
+            collect_phase_timestamps: this.collect_phase_timestamps
+                || ceiling.collect_phase_timestamps,
+            timeout_milliseconds: this
+                .timeout_milliseconds
+                .constrained_by(ceiling.timeout_milliseconds),
             items: min_u64(this.items, ceiling.items),
             bytes: min_u64(this.bytes, ceiling.bytes),
             graph_nodes: min_u64(this.graph_nodes, ceiling.graph_nodes),
             attribute_values: min_u64(this.attribute_values, ceiling.attribute_values),
             collection_members: min_u64(this.collection_members, ceiling.collection_members),
             role_players: min_u64(this.role_players, ceiling.role_players),
-            statements: min_u32(this.statements, ceiling.statements),
+            statements: match (this.statements, ceiling.statements) {
+                (Some(left), Some(right)) => Some(min_u32(left, right)),
+                (left, right) => match left {
+                    Some(_) => left,
+                    None => right,
+                },
+            },
         }
     }
 
@@ -580,20 +643,20 @@ impl QueryExecutionResourceLimits {
         )
     }
 
-    /// Derive the exact additive V2 remote wire budget.
+    /// Derive the exact additive remote model wire budget.
     #[doc(hidden)]
     #[must_use]
-    pub const fn remote(self) -> RemoteLimitsV2 {
+    pub const fn remote(self) -> RemoteModelLimits {
         let this = self.effective();
-        RemoteLimitsV2 {
-            deadline_ms: Some(this.timeout_milliseconds),
+        RemoteModelLimits {
+            deadline_ms: this.timeout_milliseconds.milliseconds(),
             max_bytes: this.bytes,
             max_items: this.items,
             max_collection_members: this.collection_members,
             max_graph_nodes: this.graph_nodes,
             max_attribute_values: this.attribute_values,
             max_role_players: this.role_players,
-            max_statements: this.statements,
+            max_statements: this.statement_limit(),
         }
     }
 }
@@ -622,6 +685,86 @@ fn usize_limit(value: u64) -> usize {
 mod tests {
     use super::*;
 
+    #[tokio::test(start_paused = true)]
+    async fn unbounded_deadlines_survive_elapsed_time_and_still_observe_cancellation() {
+        let cancellation = AnswerCancellation::default();
+        let unbounded = QueryExecutionDeadline::from_timeout(QueryTimeout::NONE);
+        tokio::time::advance(Duration::from_secs(90_000)).await;
+        assert_eq!(unbounded.instant(), None);
+        assert_eq!(unbounded.remaining_milliseconds(), None);
+        assert!(unbounded.check(&cancellation).is_ok());
+        let bounded = QueryExecutionDeadline::from_timeout_milliseconds(1);
+        assert_eq!(unbounded.earliest(bounded).instant(), bounded.instant());
+        assert_eq!(bounded.earliest(unbounded).instant(), bounded.instant());
+        cancellation.cancel();
+        assert_eq!(
+            unbounded.check(&cancellation).unwrap_err().code().as_str(),
+            "provider_cancelled"
+        );
+    }
+
+    #[test]
+    fn phase_collection_survives_policy_intersection() {
+        let defaults = QueryExecutionResourceLimits::default();
+        assert!(!defaults.collect_phase_timestamps);
+        let enabled = QueryExecutionResourceLimits {
+            collect_phase_timestamps: true,
+            ..defaults
+        };
+        assert!(enabled.constrained_by(defaults).collect_phase_timestamps);
+        assert!(defaults.constrained_by(enabled).collect_phase_timestamps);
+        assert!(enabled.validate().unwrap().collect_phase_timestamps);
+    }
+
+    #[test]
+    fn an_explicitly_expired_deadline_refuses_execution() {
+        let deadline = QueryExecutionDeadline::expired();
+        assert!(deadline.is_expired());
+        assert_eq!(deadline.remaining_milliseconds(), Some(0));
+        assert_eq!(
+            deadline
+                .check(&AnswerCancellation::default())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "transaction_deadline_exceeded"
+        );
+    }
+
+    #[test]
+    fn an_unset_statement_budget_preserves_adapter_need_and_explicit_limits() {
+        let unset = QueryExecutionResourceLimits::default();
+        assert_eq!(unset.statements, None);
+        assert!(!unset.overrides().contains_key("statements"));
+        assert_eq!(
+            QueryExecutionResourceLimits {
+                statements: Some(3),
+                ..unset
+            }
+            .overrides()
+            .get("statements"),
+            Some(&3)
+        );
+        assert_eq!(unset.statement_limit(), 3);
+        assert_eq!(unset.for_adapter_statements(4).statement_limit(), 4);
+        let explicit = QueryExecutionResourceLimits {
+            statements: Some(3),
+            ..unset
+        };
+        assert_eq!(explicit.for_adapter_statements(4).statement_limit(), 3);
+        assert_eq!(unset.constrained_by(explicit).statements, Some(3));
+        assert_eq!(explicit.constrained_by(unset).statements, Some(3));
+        assert_eq!(unset.constrained_by(unset).statements, None);
+        assert_eq!(
+            explicit.refusal_details(AnswerTransport::Direct, "statement_count_limit"),
+            Some(("statements", 3, LIMIT_SOURCE_CONFIGURED))
+        );
+        assert_eq!(
+            unset.refusal_details(AnswerTransport::Direct, "statement_count_limit"),
+            Some(("statements", 3, LIMIT_SOURCE_DEFAULT))
+        );
+    }
+
     #[test]
     fn common_policy_clamps_and_derives_every_direct_and_projected_dimension() {
         let limits = QueryExecutionResourceLimits::tightened(17, 2, 19, 3, 5, 7, 11, 1);
@@ -632,7 +775,7 @@ mod tests {
         assert_eq!(projected.attribute_values(), 5);
         assert_eq!(projected.bytes(), 19);
         assert_eq!(limits.role_players, 11);
-        assert_eq!(limits.statements, 1);
+        assert_eq!(limits.statements, Some(1));
         assert_eq!(
             limits
                 .direct(AnswerCancellation::default())
@@ -641,7 +784,7 @@ mod tests {
         );
         assert_eq!(
             limits.remote(),
-            RemoteLimitsV2 {
+            RemoteModelLimits {
                 deadline_ms: Some(17),
                 max_bytes: 19,
                 max_items: 2,
@@ -666,41 +809,45 @@ mod tests {
             DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
             DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
         );
-        assert_eq!(plus_one, QueryExecutionResourceLimits::default());
+        assert_eq!(
+            plus_one,
+            QueryExecutionResourceLimits {
+                statements: Some(3),
+                ..Default::default()
+            }
+        );
 
         let literal = QueryExecutionResourceLimits {
-            timeout_milliseconds: u64::MAX,
+            collect_phase_timestamps: false,
+            timeout_milliseconds: QueryTimeout::from_milliseconds(u64::MAX),
             items: u64::MAX,
             bytes: u64::MAX,
             graph_nodes: u64::MAX,
             attribute_values: u64::MAX,
             collection_members: u64::MAX,
             role_players: u64::MAX,
-            statements: u32::MAX,
+            statements: Some(u32::MAX),
         };
-        // A configured policy keeps what it asked for. Only the timeout and
-        // the statement count have a supported maximum: internal stages
-        // bound them, and a public entry point refuses them by name.
+        // Configured timeouts have no policy maximum; the statement count still does.
         let bounded = literal.effective();
         assert_eq!(
             bounded,
             QueryExecutionResourceLimits {
-                timeout_milliseconds: MAX_QUERY_TIMEOUT_MILLISECONDS,
-                statements: MAX_QUERY_STATEMENTS,
+                statements: Some(MAX_QUERY_STATEMENTS),
                 ..literal
             }
         );
         assert_eq!(
             literal.validate(),
             Err(QueryExecutionLimitOutOfRange {
-                limit: "timeout_milliseconds",
-                value: u64::MAX,
-                maximum: MAX_QUERY_TIMEOUT_MILLISECONDS,
+                limit: "statements",
+                value: u32::MAX as u64,
+                maximum: MAX_QUERY_STATEMENTS as u64,
             })
         );
         assert_eq!(
             QueryExecutionResourceLimits {
-                statements: MAX_QUERY_STATEMENTS + 1,
+                statements: Some(MAX_QUERY_STATEMENTS + 1),
                 ..QueryExecutionResourceLimits::default()
             }
             .validate()
@@ -759,14 +906,15 @@ mod tests {
         assert_eq!(
             direct,
             QueryExecutionResourceLimits {
-                timeout_milliseconds: 30_000,
+                collect_phase_timestamps: false,
+                timeout_milliseconds: QueryTimeout::from_milliseconds(60_000),
                 items: 100_000,
                 bytes: 64 * 1024 * 1024,
                 graph_nodes: 1_000_000,
                 attribute_values: 4_000_000,
                 collection_members: 1_000_000,
                 role_players: 1_000_000,
-                statements: 3,
+                statements: None,
             },
             "a direct session keeps the 2.2 in-process defaults"
         );
@@ -776,14 +924,15 @@ mod tests {
         assert_eq!(
             proxy,
             QueryExecutionResourceLimits {
-                timeout_milliseconds: 30_000,
+                collect_phase_timestamps: false,
+                timeout_milliseconds: QueryTimeout::from_milliseconds(60_000),
                 items: 65_536,
                 bytes: 32 * 1024 * 1024,
                 graph_nodes: 65_536,
                 attribute_values: 65_536,
                 collection_members: 65_536,
                 role_players: 65_536,
-                statements: 3,
+                statements: None,
             },
             "a proxy connection defaults to the wire ceilings"
         );
@@ -850,7 +999,7 @@ mod tests {
         assert!(matches!(
             QueryExecutionResourceLimits::from_overrides(
                 AnswerTransport::Proxy,
-                [("statements", 4)]
+                [("statements", u64::from(MAX_QUERY_STATEMENTS) + 1)]
             ),
             Err(QueryExecutionLimitsError::OutOfRange(_))
         ));

@@ -18,10 +18,8 @@ use type_bridge_contract::migration_backfill::{
 };
 use type_bridge_contract::schema::{
     AnnotationFact, AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema,
-    DocumentId, OwnsFact, OwnsFactId, SchemaAnnotationValue, SchemaFact, SourceSpan,
-    SourcedSchemaFact, TypeFact, ValueFact, ValueFactId,
+    DocumentId, SchemaAnnotationValue, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
 };
-use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_orm::{ConnectOptions, Database};
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
@@ -44,7 +42,7 @@ use type_bridge_schema_migration_typedb::{
 fn connection() -> (String, String, String, String, ConnectOptions) {
     let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_owned());
     let database = env::var("TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE")
-        .unwrap_or_else(|_| "type_bridge_v2_execution_provider".to_owned());
+        .unwrap_or_else(|_| "type_bridge_execution_provider".to_owned());
     let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
     let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
     let mut options = ConnectOptions::default();
@@ -124,40 +122,8 @@ fn declared_facts(facts: Vec<SchemaFact>) -> DeclaredSchema {
 }
 
 fn sdk_backfill_schema() -> DeclaredSchema {
-    let owner = TypeId::new(TypeKind::Entity, "person").expect("person type");
-    let person_id = AttributeId::new("person-id").expect("person ID attribute");
-    let legacy_name = AttributeId::new("legacy-name").expect("legacy name attribute");
-    let display_name = AttributeId::new("display-name").expect("display name attribute");
-    let mut facts = vec![type_fact("person")];
-    for attribute in [&person_id, &legacy_name, &display_name] {
-        facts.push(SchemaFact::Type(
-            TypeFact::new(
-                TypeId::new(TypeKind::Attribute, attribute.label().as_str())
-                    .expect("attribute type"),
-            )
-            .expect("attribute type fact"),
-        ));
-        facts.push(SchemaFact::Value(ValueFact::new(
-            ValueFactId::new(attribute.clone()),
-            ValueTypeTag::String,
-        )));
-        facts.push(SchemaFact::Owns(OwnsFact::new(
-            OwnsFactId::new(owner.clone(), attribute.clone()).expect("ownership"),
-        )));
-    }
-    facts.push(SchemaFact::Annotation(
-        AnnotationFact::new(
-            AnnotationFactId::new(
-                AnnotationSubjectId::Owns(
-                    OwnsFactId::new(owner, person_id).expect("key ownership"),
-                ),
-                AnnotationKindId::Key,
-            ),
-            SchemaAnnotationValue::Presence,
-        )
-        .expect("key annotation"),
-    ));
-    declared_facts(facts)
+    type_bridge_schema_compat::typeql_to_declared(DocumentId::new("native-backfill-live.typeql").unwrap(),
+        "define attribute person-id, value string; attribute legacy-name @abstract, value string; attribute specialised-name, sub legacy-name; attribute display-name, value string; entity person, owns person-id @key, owns display-name @card(0..); entity employee, sub person, owns specialised-name;").unwrap()
 }
 
 async fn query_document_count(database: &Database, query: &str) -> usize {
@@ -264,12 +230,23 @@ fn additive_manifest(
     target: &DeclaredSchema,
     context: &ManagedDeltaContext,
 ) -> VerifiedSchemaMigrationManifest {
+    schema_manifest(name, parents, source, target, context, true)
+}
+
+fn schema_manifest(
+    name: &str,
+    parents: Vec<MigrationId>,
+    source: &DeclaredSchema,
+    target: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+    reversible: bool,
+) -> VerifiedSchemaMigrationManifest {
     let delta = diff_managed(source, target, context).expect("delta");
-    let reverse = inverse_delta(&delta).expect("inverse");
+    let reverse = reversible.then(|| inverse_delta(&delta).expect("inverse"));
     let step = SchemaDeltaStep::new(
         MigrationStepId::new(format!("step-{name}")).expect("step id"),
         delta,
-        Some(reverse),
+        reverse,
     )
     .expect("schema step");
     let draft = SchemaMigrationDraft::new(migration_id(name), parents, vec![step]).expect("draft");
@@ -353,14 +330,17 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
         .expect("paired store")
         .bind_plan(&plan)
         .expect("bind exact plan");
-    let provider =
-        TypeDbMigrationProvider::new(&binding).expect("version-gated provider from shared binding");
+    let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())
+        .expect("version-gated provider from shared binding");
     let holder = LeaseHolderId::new("live-provider-coordinator").expect("holder");
 
     let outcome = execute_verified_migration_apply_plan(&store, &provider, &holder, &plan)
         .await
         .expect("coordinator execution against live TypeDB");
-    assert!(matches!(outcome, MigrationExecutionOutcome::Applied { .. }));
+    assert!(
+        matches!(outcome, MigrationExecutionOutcome::Applied { .. }),
+        "{outcome:#?}"
+    );
 
     let export = managed
         .schema_text()
@@ -424,12 +404,13 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
     let context = context();
     let genesis = declared_facts(Vec::new());
     let expanded = sdk_backfill_schema();
-    let expand = additive_manifest(
+    let expand = schema_manifest(
         "0001_expand_names",
         Vec::new(),
         &genesis,
         &expanded,
         &context,
+        false,
     );
     let graph = MigrationHistoryGraph::from_verified([expand.clone()]).expect("expand history");
     let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
@@ -454,7 +435,8 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         .expect("paired store")
         .bind_plan(&expand_plan)
         .expect("bind expand plan");
-    let provider = TypeDbMigrationProvider::new(&binding).expect("backfill provider");
+    let provider = TypeDbMigrationProvider::new(&binding, expand_plan.schema_authorities())
+        .expect("backfill provider");
     execute_verified_migration_apply_plan(
         &store,
         &provider,
@@ -469,7 +451,7 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         .await
         .expect("open seed transaction");
     seed.query(
-        "insert\n  $first isa person, has person-id \"p1\", has legacy-name \"Ada\";\n  $second isa person, has person-id \"p2\", has legacy-name \"Bob\", has display-name \"conflict\";",
+        "insert\n  $first isa employee, has person-id \"p1\", has specialised-name \"Ada\";\n  $second isa employee, has person-id \"p2\", has specialised-name \"Bob\", has display-name \"conflict\";",
     )
     .await
     .expect("seed source and conflicting destination rows");
@@ -483,6 +465,7 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         TypeId::new(TypeKind::Entity, "person").expect("owner"),
         AttributeId::new("legacy-name").expect("source"),
         AttributeId::new("display-name").expect("destination"),
+        type_bridge_contract::query_plan::TypeMatchMode::Isa,
         BackfillPartition::new(1, AttributeId::new("person-id").expect("partition key"))
             .expect("single-row deterministic groups"),
         semantics,
@@ -569,6 +552,10 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         .expect("idempotent retry");
     assert_eq!(retried.counts().changed(), 0);
 
+    let mut unrelated = managed.write_transaction().await.unwrap();
+    unrelated.query("match $person isa person, has person-id \"p1\"; insert $person has display-name \"keep\";").await.unwrap();
+    unrelated.commit().await.unwrap();
+
     let reversed = provider
         .execute_backfill(
             &lease,
@@ -585,7 +572,8 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
             "match $person isa person, has display-name $name; fetch { \"name\": $name };",
         )
         .await,
-        0,
+        1,
+        "reverse keeps the unrelated destination value on the matched owner",
     );
     assert_eq!(
         query_document_count(
@@ -610,15 +598,13 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
-async fn commented_function_body_survives_export_without_toml_drift() {
+async fn commented_function_body_survives_export_without_fingerprint_drift() {
     use type_bridge_core_lib::__internal as tql;
-    use type_bridge_schema_compat::{toml_to_declared, typeql_to_declared};
+    use type_bridge_schema_compat::typeql_to_declared;
     let body = "match\n  # retained body comment\n  let $value = $seed;\nreturn first $value;";
     let signature = "fun keep-body($seed: integer) -> integer";
-    let toml = format!(
-        "[functions.keep-body]\nsignature = \"{signature}\"\nbody = \"\"\"\n{body}\n\"\"\"\n"
-    );
-    let expected = toml_to_declared(DocumentId::new("schema.toml.tql").unwrap(), &toml).unwrap();
+    let source = format!("define {signature}:\n{body}\n");
+    let expected = typeql_to_declared(DocumentId::new("schema.tql").unwrap(), &source).unwrap();
     let emitted = tql::render(&tql::schema_define(vec![
         tql::schema_function(signature, body).unwrap(),
     ]))
@@ -671,15 +657,13 @@ async fn commented_function_body_survives_export_without_toml_drift() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn tuple_function_from_native_lowering_defines_returns_and_preserves_body() {
-    use type_bridge_schema_compat::{toml_to_declared, typeql_to_declared};
+    use type_bridge_schema_compat::typeql_to_declared;
     use type_bridge_schema_migration::{SchemaFactCatalog, lower_schema_delta};
     let body =
         "match\n  # retained tuple comment\n  let $value = $seed;\nreturn first $value, $value;";
     let source = declared_facts(vec![]);
-    let input = format!(
-        "[functions.pair]\nsignature = \"fun pair($seed: integer) -> integer, integer\"\nbody = \"\"\"\n{body}\n\"\"\"\n"
-    );
-    let target = toml_to_declared(DocumentId::new("tuple.toml").unwrap(), &input).unwrap();
+    let input = format!("define fun pair($seed: integer) -> integer, integer:\n{body}\n");
+    let target = typeql_to_declared(DocumentId::new("tuple.tql").unwrap(), &input).unwrap();
     let context = context();
     let delta = type_bridge_contract::schema_delta::SchemaDelta::new(
         type_bridge_contract::schema_delta::PatchFormatVersion::V1,

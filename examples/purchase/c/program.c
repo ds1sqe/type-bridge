@@ -1,7 +1,7 @@
 /*
  * The purchase program of the `writes` SDK conformance suite, in C17.
  *
- * It builds every plan with the ABI 1.7 plan builder against the generated
+ * It builds every plan with the ABI 1.8 plan builder against the generated
  * schema package, then, when a live target is configured, runs the same
  * program directly and over the proxy: seed, stage the purchase, a touch and
  * a batch of 50 orders in one transaction, commit, and read the state back;
@@ -19,7 +19,7 @@
 #include <typebridge/type_bridge.h>
 #include <tb_writes/models.h>
 
-#define PLAN_COUNT 19u
+#define PLAN_COUNT 20u
 #define BATCH_ORDERS 50u
 
 #define CHECK(call)                                                            \
@@ -127,58 +127,32 @@ done:
 /* The one-query purchase: take one item and its price, record the order. */
 static type_bridge_status_t purchase(type_bridge_plan_builder_t *plan, const identities_t *id) {
   type_bridge_status_t status;
-  uint32_t item, buyer, order_input, item_input, account_input;
-  uint32_t item_key, buyer_key, stock, price, balance;
-  uint32_t zero, one, stock_expr, balance_expr, next_stock, next_balance, order;
-  uint32_t row[3];
-  CHECK(type_bridge_plan_builder_exact(plan, id->item, &item));
-  CHECK(type_bridge_plan_builder_exact(plan, id->account, &buyer));
-  CHECK(input(plan, "order_id", TYPE_BRIDGE_PROJECTED_VALUE_STRING, &order_input));
-  CHECK(input(plan, "item_id", TYPE_BRIDGE_PROJECTED_VALUE_STRING, &item_input));
-  CHECK(input(plan, "account_id", TYPE_BRIDGE_PROJECTED_VALUE_STRING, &account_input));
-  CHECK(type_bridge_plan_builder_field(plan, item, id->item_id, &item_key));
-  CHECK(type_bridge_plan_builder_field(plan, buyer, id->account_id, &buyer_key));
-  CHECK(type_bridge_plan_builder_field(plan, item, id->stock, &stock));
-  CHECK(type_bridge_plan_builder_field(plan, item, id->price, &price));
-  CHECK(type_bridge_plan_builder_field(plan, buyer, id->balance, &balance));
-  CHECK(type_bridge_plan_builder_value_long(plan, 0, &zero));
-  CHECK(type_bridge_plan_builder_value_long(plan, 1, &one));
-  CHECK(type_bridge_plan_builder_compare(plan, TYPE_BRIDGE_PLAN_OPERAND_BINDING, item_key,
-                                         TYPE_BRIDGE_PLAN_COMPARE_EQUAL,
-                                         TYPE_BRIDGE_PLAN_OPERAND_INPUT, item_input));
-  CHECK(type_bridge_plan_builder_compare(plan, TYPE_BRIDGE_PLAN_OPERAND_BINDING, buyer_key,
-                                         TYPE_BRIDGE_PLAN_COMPARE_EQUAL,
-                                         TYPE_BRIDGE_PLAN_OPERAND_INPUT, account_input));
-  CHECK(type_bridge_plan_builder_compare(plan, TYPE_BRIDGE_PLAN_OPERAND_BINDING, stock,
-                                         TYPE_BRIDGE_PLAN_COMPARE_GREATER,
-                                         TYPE_BRIDGE_PLAN_OPERAND_VALUE, zero));
-  CHECK(type_bridge_plan_builder_compare(plan, TYPE_BRIDGE_PLAN_OPERAND_BINDING, balance,
-                                         TYPE_BRIDGE_PLAN_COMPARE_GREATER_OR_EQUAL,
-                                         TYPE_BRIDGE_PLAN_OPERAND_BINDING, price));
-  CHECK(type_bridge_plan_builder_expr_arith(plan, TYPE_BRIDGE_PLAN_ARITH_SUB,
-                                            TYPE_BRIDGE_PLAN_OPERAND_BINDING, stock,
-                                            TYPE_BRIDGE_PLAN_OPERAND_VALUE, one, &stock_expr));
-  CHECK(type_bridge_plan_builder_let(plan, view("next_stock"), TYPE_BRIDGE_PLAN_OPERAND_EXPR,
-                                     stock_expr, &next_stock));
-  CHECK(type_bridge_plan_builder_update(plan, item, id->stock, TYPE_BRIDGE_PLAN_OPERAND_BINDING,
-                                        next_stock));
-  CHECK(type_bridge_plan_builder_expr_arith(plan, TYPE_BRIDGE_PLAN_ARITH_SUB,
-                                            TYPE_BRIDGE_PLAN_OPERAND_BINDING, balance,
-                                            TYPE_BRIDGE_PLAN_OPERAND_BINDING, price,
-                                            &balance_expr));
-  CHECK(type_bridge_plan_builder_let(plan, view("next_balance"), TYPE_BRIDGE_PLAN_OPERAND_EXPR,
-                                     balance_expr, &next_balance));
-  CHECK(type_bridge_plan_builder_update(plan, buyer, id->balance,
-                                        TYPE_BRIDGE_PLAN_OPERAND_BINDING, next_balance));
-  CHECK(type_bridge_plan_builder_insert(plan, id->purchase, &order));
-  CHECK(type_bridge_plan_builder_thing_field(plan, order, id->order_id,
-                                             TYPE_BRIDGE_PLAN_OPERAND_INPUT, order_input));
-  CHECK(type_bridge_plan_builder_thing_player(plan, order, id->buyer, buyer));
-  CHECK(type_bridge_plan_builder_thing_player(plan, order, id->item_role, item));
-  CHECK(type_bridge_plan_builder_value_string(plan, view("O1"), &row[0]));
-  CHECK(type_bridge_plan_builder_value_string(plan, view("I1"), &row[1]));
-  CHECK(type_bridge_plan_builder_value_string(plan, view("A1"), &row[2]));
-  CHECK(type_bridge_plan_builder_row(plan, row, 3u));
+  tb_writes_item_handle_t item;
+  tb_writes_account_handle_t buyer;
+  tb_writes_item_match_t item_match = {0};
+  tb_writes_account_match_t account_match = {0};
+  tb_writes_item_set_t stock = {0};
+  tb_writes_account_set_t balance = {0};
+  tb_writes_purchase_insert_t order = {0};
+  tb_writes_purchase_plan_t held;
+  (void)id;
+  item_match.itemzhid = tb_string(view("I1"));
+  CHECK(tb_writes_item_match_by(plan, &item_match, &item));
+  CHECK(tb_writes_item_where(plan, item, tb_long_gt(tb_writes_item_plan_stock(plan, item), tb_long(0))));
+  account_match.accountzhid = tb_string(view("A1"));
+  CHECK(tb_writes_account_match_by(plan, &account_match, &buyer));
+  CHECK(tb_writes_account_where(plan, buyer, tb_long_le(tb_writes_item_plan_price(plan, item), tb_writes_account_plan_balance(plan, buyer))));
+  stock.stock = tb_long_sub(tb_writes_item_plan_stock(plan, item), tb_long(1));
+  CHECK(tb_writes_item_set(plan, item, &stock));
+  balance.balance = tb_long_sub(tb_writes_account_plan_balance(plan, buyer), tb_writes_item_plan_price(plan, item));
+  CHECK(tb_writes_account_set(plan, buyer, &balance));
+  order.orderzhid = "O1";
+#ifndef TYPE_BRIDGE_WRITES_CONSTRAINTS
+  order.has_orderzhid = true;
+#endif
+  order.buyer = buyer;
+  order.item = item;
+  CHECK(tb_writes_purchase_insert(plan, &order, &held));
 done:
   return status;
 }
@@ -187,11 +161,13 @@ done:
 /* Rewrite every doctor's on-call value with itself, taking its lock. */
 static type_bridge_status_t touch(type_bridge_plan_builder_t *plan, const identities_t *id) {
   type_bridge_status_t status;
-  uint32_t doctor, on_call;
-  CHECK(type_bridge_plan_builder_exact(plan, id->doctor, &doctor));
-  CHECK(type_bridge_plan_builder_field(plan, doctor, id->on_call, &on_call));
-  CHECK(type_bridge_plan_builder_update(plan, doctor, id->on_call,
-                                        TYPE_BRIDGE_PLAN_OPERAND_BINDING, on_call));
+  tb_writes_doctor_handle_t doctor;
+  tb_writes_doctor_match_t match = {0};
+  tb_writes_doctor_set_t updated = {0};
+  (void)id;
+  CHECK(tb_writes_doctor_match_by(plan, &match, &doctor));
+  updated.onzhcall = tb_writes_doctor_plan_onzhcall(plan, doctor);
+  CHECK(tb_writes_doctor_set(plan, doctor, &updated));
 done:
   return status;
 }
@@ -358,6 +334,24 @@ done:
   return status;
 }
 
+// --8<-- [start:read_back]
+static type_bridge_status_t read_back(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  type_bridge_status_t status;
+  uint32_t purchase, key, order, value;
+  type_bridge_fetch_role_t roles[2] = {{id->buyer, true}, {id->item_role, true}};
+  CHECK(type_bridge_plan_builder_exact(plan, id->purchase, &purchase));
+  CHECK(type_bridge_plan_builder_field(plan, purchase, id->order_id, &key));
+  CHECK(input(plan, "order_id", TYPE_BRIDGE_PROJECTED_VALUE_STRING, &order));
+  CHECK(type_bridge_plan_builder_compare(plan, TYPE_BRIDGE_PLAN_OPERAND_BINDING, key,
+                                        TYPE_BRIDGE_PLAN_COMPARE_EQUAL, TYPE_BRIDGE_PLAN_OPERAND_INPUT, order));
+  CHECK(type_bridge_plan_builder_fetch(plan, purchase, roles, 2u));
+  CHECK(type_bridge_plan_builder_value_string(plan, view("R1"), &value));
+  CHECK(type_bridge_plan_builder_row(plan, &value, 1u));
+done:
+  return status;
+}
+// --8<-- [end:read_back]
+
 static type_bridge_status_t doctors_on_call(type_bridge_plan_builder_t *plan,
                                             const identities_t *id) {
   type_bridge_status_t status;
@@ -422,12 +416,29 @@ static type_bridge_status_t kept(type_bridge_plan_builder_t *plan, const identit
 
 /* The constraints suite: doctor D1, then a second D1 the key rejects. */
 static type_bridge_status_t seed_doctor(type_bridge_plan_builder_t *plan, const identities_t *id) {
-  return insert_doctor(plan, id, "D1", 1u);
+  tb_writes_doctor_insert_t value = {0};
+  tb_writes_doctor_plan_t held;
+  (void)id;
+  value.name = "D1";
+#ifndef TYPE_BRIDGE_WRITES_CONSTRAINTS
+  value.has_name = true;
+#endif
+  value.onzhcall = true;
+  value.has_onzhcall = true;
+  return tb_writes_doctor_insert(plan, &value, &held);
 }
 
-static type_bridge_status_t duplicate_doctor(type_bridge_plan_builder_t *plan,
-                                             const identities_t *id) {
-  return insert_doctor(plan, id, "D1", 0u);
+static type_bridge_status_t duplicate_doctor(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  tb_writes_doctor_insert_t value = {0};
+  tb_writes_doctor_plan_t held;
+  (void)id;
+  value.name = "D1";
+#ifndef TYPE_BRIDGE_WRITES_CONSTRAINTS
+  value.has_name = true;
+#endif
+  value.onzhcall = false;
+  value.has_onzhcall = true;
+  return tb_writes_doctor_insert(plan, &value, &held);
 }
 
 typedef type_bridge_status_t (*plan_fn)(type_bridge_plan_builder_t *, const identities_t *);
@@ -435,11 +446,39 @@ typedef type_bridge_status_t (*plan_fn)(type_bridge_plan_builder_t *, const iden
 static const char *const NAMES[PLAN_COUNT] = {
     "seed",       "purchase", "touch", "batch",  "sold_out",        "charged",  "orders", "on_call",
     "put_doctor", "returns",  "refer", "remove", "doctors_on_call", "referred", "removed",
-    "ghost",      "kept",     "seed_doctor", "duplicate_doctor"};
+    "ghost",      "kept",     "read_back", "seed_doctor", "duplicate_doctor"};
 static const plan_fn BUILDERS[PLAN_COUNT] = {
     seed,       purchase, touch, batch,        sold_out,        charged,  orders, on_call,
     put_doctor, returns,  refer, remove_order, doctors_on_call, referred, removed,
-    ghost,      kept,     seed_doctor, duplicate_doctor};
+    ghost,      kept,     read_back, seed_doctor, duplicate_doctor};
+
+#include "program_explicit.h"
+
+static type_bridge_status_t verify_explicit(const type_bridge_schema_package_t *package,
+                                           const type_bridge_plan_t *plan, size_t index) {
+  type_bridge_plan_builder_t *builder = NULL;
+  type_bridge_plan_t *oracle = NULL;
+  type_bridge_execution_diagnostics_t *diagnostics = NULL;
+  identities_t id;
+  type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
+  if (index != 1u && index != 2u && index != 18u && index != 19u) return status;
+  CHECK(type_bridge_plan_builder_new(&builder));
+  CHECK(identify(builder, &id));
+  if (index == 1u) status = purchase_explicit(builder, &id);
+  else if (index == 2u) status = touch_explicit(builder, &id);
+  else status = doctor_explicit(builder, &id, index == 18u ? 1u : 0u);
+  if (status != TYPE_BRIDGE_STATUS_OK) goto done;
+  CHECK(type_bridge_plan_builder_build(builder, package, &oracle, &diagnostics));
+  if (!same_plan(plan, oracle)) {
+    fprintf(stderr, "%s: explicit bytes differ\n", NAMES[index]);
+    status = TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
+  }
+done:
+  type_bridge_plan_free(&oracle);
+  type_bridge_plan_builder_free(&builder);
+  (void)type_bridge_execution_diagnostics_close(&diagnostics);
+  return status;
+}
 
 /* A suite names a range of the plans above and its steps. Each step names a
  * range of plans, and a range it stages and rolls back first.
@@ -451,7 +490,7 @@ static const plan_fn BUILDERS[PLAN_COUNT] = {
  *
  * constraints: seed doctor D1, then insert D1 again; the key rejects that
  * commit. */
-#define MAX_STEPS 6u
+#define MAX_STEPS 7u
 typedef struct {
   const char *name;
   size_t plan_first, plan_count, step_total;
@@ -464,20 +503,20 @@ typedef struct {
 static const suite_t SUITES[2] = {
     {"purchase",
      0u,
-     17u,
-     6u,
-     {"seed", "program", "read", "journeys", "after", "rollback"},
-     {0u, 1u, 4u, 8u, 12u, 16u},
-     {1u, 3u, 4u, 4u, 3u, 1u},
-     {0, 0, 1, 0, 1, 0},
-     {0u, 0u, 0u, 0u, 0u, 15u},
-     {0u, 0u, 0u, 0u, 0u, 1u}},
+     18u,
+     7u,
+     {"seed", "program", "read", "journeys", "read_back", "after", "rollback"},
+     {0u, 1u, 4u, 8u, 17u, 12u, 16u},
+     {1u, 3u, 4u, 4u, 1u, 3u, 1u},
+     {0, 0, 1, 0, 1, 1, 0},
+     {0u, 0u, 0u, 0u, 0u, 0u, 15u},
+     {0u, 0u, 0u, 0u, 0u, 0u, 1u}},
     {"constraints",
-     17u,
+     18u,
      2u,
      2u,
      {"seed", "reject"},
-     {17u, 18u},
+     {18u, 19u},
      {1u, 1u},
      {0, 0},
      {0u, 0u},
@@ -493,13 +532,14 @@ static type_bridge_status_t build_all(const suite_t *suite,
   for (index = suite->plan_first; index < suite->plan_first + suite->plan_count; ++index) {
     type_bridge_plan_builder_t *plan = NULL;
     identities_t id;
-    CHECK(type_bridge_plan_builder_new(&plan));
+    CHECK(tb_writes_plan_open(NULL, &plan, &diagnostics));
     status = identify(plan, &id);
     if (status == TYPE_BRIDGE_STATUS_OK) status = BUILDERS[index](plan, &id);
     if (status == TYPE_BRIDGE_STATUS_OK)
       status = type_bridge_plan_builder_build(plan, package, &plans[index], &diagnostics);
     type_bridge_plan_builder_free(&plan);
     (void)type_bridge_execution_diagnostics_close(&diagnostics);
+    if (status == TYPE_BRIDGE_STATUS_OK) status = verify_explicit(package, plans[index], index);
     if (status != TYPE_BRIDGE_STATUS_OK) {
       fprintf(stderr, "plan %s does not build: status %d\n", NAMES[index], (int)status);
       goto done;
@@ -512,12 +552,12 @@ done:
 static int print_hex(const type_bridge_plan_t *plan) {
   size_t length = 0u, index;
   uint8_t *bytes;
-  if (type_bridge_plan_v3_canonical_bytes(plan, NULL, 0u, &length) !=
+  if (type_bridge_plan_canonical_bytes(plan, NULL, 0u, &length) !=
       TYPE_BRIDGE_STATUS_RESOURCE_LIMIT)
     return 0;
   bytes = (uint8_t *)malloc(length);
   if (bytes == NULL) return 0;
-  if (type_bridge_plan_v3_canonical_bytes(plan, bytes, length, &length) != TYPE_BRIDGE_STATUS_OK) {
+  if (type_bridge_plan_canonical_bytes(plan, bytes, length, &length) != TYPE_BRIDGE_STATUS_OK) {
     free(bytes);
     return 0;
   }
@@ -532,6 +572,7 @@ static const char *answer_kind(type_bridge_plan_answer_kind_t kind) {
   case TYPE_BRIDGE_PLAN_ANSWER_COUNT: return "count";
   case TYPE_BRIDGE_PLAN_ANSWER_EXISTS: return "exists";
   case TYPE_BRIDGE_PLAN_ANSWER_MATCHED: return "matched";
+  case TYPE_BRIDGE_PLAN_ANSWER_DOCUMENTS: return "documents";
   default: return "unknown";
   }
 }
@@ -613,8 +654,56 @@ static void print_failure(const suite_t *suite, size_t step,
   printf("}");
 }
 
+typedef struct {
+  char type[32], order_id[32], buyer[32], item[32];
+} read_back_t;
+
+static type_bridge_status_t copy_view(type_bridge_byte_view_t value, char out[32]) {
+  if (value.length >= 32u) return TYPE_BRIDGE_STATUS_RESOURCE_LIMIT;
+  memcpy(out, value.data, value.length);
+  out[value.length] = '\0';
+  return TYPE_BRIDGE_STATUS_OK;
+}
+
+static int view_is(type_bridge_byte_view_t value, const char *expected) {
+  return value.length == strlen(expected) && memcmp(value.data, expected, value.length) == 0;
+}
+
+static type_bridge_status_t capture_read_back(const type_bridge_pending_t *pending, read_back_t *out) {
+  type_bridge_status_t status;
+  const type_bridge_document_t *doc = NULL, *buyer = NULL, *item = NULL;
+  type_bridge_byte_view_t value = {NULL, 0u};
+  size_t count = 0u;
+  CHECK(type_bridge_pending_document_count(pending, &count));
+  if (count != 1u) return TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
+  CHECK(type_bridge_pending_document(pending, 0u, &doc));
+  CHECK(type_bridge_document_type(doc, &value));
+  CHECK(copy_view(value, out->type));
+  CHECK(type_bridge_document_attribute_string(doc, view("order-id"), 0u, &value));
+  CHECK(copy_view(value, out->order_id));
+  CHECK(type_bridge_document_role(doc, 0u, &buyer));
+  CHECK(type_bridge_document_role(doc, 1u, &item));
+  CHECK(type_bridge_document_type(buyer, &value));
+  if (!view_is(value, "account")) return TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
+  CHECK(type_bridge_document_type(item, &value));
+  if (!view_is(value, "item")) return TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
+  CHECK(type_bridge_document_attribute_string(buyer, view("account-id"), 0u, &value));
+  CHECK(copy_view(value, out->buyer));
+  CHECK(type_bridge_document_attribute_string(item, view("item-id"), 0u, &value));
+  CHECK(copy_view(value, out->item));
+  if (strcmp(out->type, "purchase") || strcmp(out->order_id, "R1") ||
+      strcmp(out->buyer, "A2") || strcmp(out->item, "I2")) return TYPE_BRIDGE_STATUS_EXECUTION_FAILED;
+done:
+  return status;
+}
+
+static void print_read_back(const read_back_t *value) {
+  printf("{\"type\":\"%s\",\"order_id\":\"%s\",\"buyer\":\"%s\",\"item\":\"%s\"}",
+         value->type, value->order_id, value->buyer, value->item);
+}
+
 static type_bridge_status_t run_program(const suite_t *suite, const target_t *target,
-                                        type_bridge_plan_t *const *plans) {
+                                        type_bridge_plan_t *const *plans, read_back_t *snapshot) {
   type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   size_t step, index;
@@ -651,6 +740,8 @@ static type_bridge_status_t run_program(const suite_t *suite, const target_t *ta
         type_bridge_plan_answer_kind_t answer = TYPE_BRIDGE_PLAN_ANSWER_ROWS;
         uint64_t value = 0u;
         status = type_bridge_pending_answer(pending[index], &answer, &value);
+        if (status == TYPE_BRIDGE_STATUS_OK && strcmp(NAMES[suite->step_first[step] + index], "read_back") == 0)
+          status = capture_read_back(pending[index], snapshot);
         printf("%s\"%s\":[\"%s\",%llu]", index == 0u ? "" : ",",
                NAMES[suite->step_first[step] + index], answer_kind(answer), (unsigned long long)value);
       }
@@ -688,12 +779,13 @@ static const char *env_or(const char *name, const char *fallback) {
 int main(void) {
   type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_database_t *database = NULL;
   type_bridge_proxy_connection_t *proxy = NULL;
   type_bridge_plan_t *plans[PLAN_COUNT] = {NULL};
+  read_back_t direct_snapshot = {0}, proxy_snapshot = {0};
   const char *database_name = env_or("TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE", NULL);
   const char *endpoint = env_or("TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT", NULL);
   const char *separator = "";
@@ -718,12 +810,22 @@ int main(void) {
     }
     printf("\"");
   }
-  printf("},\"results\":{");
+  printf("}");
+  if (strcmp(suite->name, "purchase") == 0) {
+    type_bridge_canonical_bytes_t *explanation = NULL;
+    type_bridge_byte_view_t view = {NULL, 0u};
+    CHECK(type_bridge_plan_explain(plans[1], &explanation, &diagnostics));
+    CHECK(type_bridge_canonical_bytes_view(explanation, &view));
+    printf(",\"explanation\":");
+    fwrite(view.data, 1u, view.length, stdout);
+    CHECK(type_bridge_canonical_bytes_close(&explanation));
+  }
+  printf(",\"results\":{");
   if (database_name != NULL) {
     type_bridge_runtime_config_v1_t runtime_config = {
         sizeof(type_bridge_runtime_config_v1_t), TYPE_BRIDGE_RUNTIME_CONFIG_VERSION, 2u, 0u,
         {0u, 0u, 0u, 0u}};
-    type_bridge_database_config_v1_t config;
+    type_bridge_database_config_t config;
     target_t target = {NULL, NULL};
     CHECK(type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics));
     memset(&config, 0, sizeof(config));
@@ -735,10 +837,10 @@ int main(void) {
     config.password = view(env_or("TYPEDB_PASSWORD", "password"));
     config.http_port = http_port();
     config.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
-    CHECK(type_bridge_database_open_v1(runtime, package, &config, NULL, &database, &diagnostics));
+    CHECK(type_bridge_database_open(runtime, package, &config, NULL, &database, &diagnostics));
     target.database = database;
     printf("\"direct\":");
-    CHECK(run_program(suite, &target, plans));
+    CHECK(run_program(suite, &target, plans, &direct_snapshot));
     separator = ",";
   }
   if (endpoint != NULL) {
@@ -752,9 +854,16 @@ int main(void) {
     CHECK(type_bridge_proxy_connection_open_v1(package, &options, NULL, &proxy, &diagnostics));
     target.proxy = proxy;
     printf("%s\"proxy\":", separator);
-    CHECK(run_program(suite, &target, plans));
+    CHECK(run_program(suite, &target, plans, &proxy_snapshot));
   }
-  printf("}}\n");
+  printf("}");
+  if (strcmp(suite->name, "purchase") == 0) {
+    printf(",\"read_back\":{");
+    if (database_name != NULL) { printf("\"direct\":"); print_read_back(&direct_snapshot); }
+    if (endpoint != NULL) { printf("%s\"proxy\":", database_name != NULL ? "," : ""); print_read_back(&proxy_snapshot); }
+    printf("}");
+  }
+  printf("}\n");
 
 done:
   for (index = 0u; index < PLAN_COUNT; ++index) type_bridge_plan_free(&plans[index]);
@@ -763,7 +872,7 @@ done:
   (void)type_bridge_execution_diagnostics_close(&diagnostics);
   if (runtime != NULL) (void)type_bridge_runtime_close(&runtime, &diagnostics);
   (void)type_bridge_execution_diagnostics_close(&diagnostics);
-  if (package_diagnostics != NULL) (void)type_bridge_diagnostics_close(&package_diagnostics);
+  if (package_diagnostics != NULL) (void)type_bridge_execution_diagnostics_close(&package_diagnostics);
   if (package != NULL) (void)type_bridge_schema_package_close(&package);
   fflush(stdout);
   return status == TYPE_BRIDGE_STATUS_OK ? 0 : 1;

@@ -712,7 +712,7 @@ static sample_t *run_pipeline(const char *name, const config_t *config,
   type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_database_t *database = NULL;
-  type_bridge_database_config_v1_t db_config;
+  type_bridge_database_config_t db_config;
   unsigned total = config->warmup + config->iterations, number;
   sample_t *samples = calloc(config->iterations, sizeof(sample_t));
   char database_name[128];
@@ -729,7 +729,7 @@ static sample_t *run_pipeline(const char *name, const config_t *config,
   db_config.password = view(getenv("TYPEDB_PASSWORD"));
   db_config.http_port = http_port();
   db_config.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
-  CHECK(type_bridge_database_open_v1(runtime, package, &db_config, NULL, &database, &diagnostics));
+  CHECK(type_bridge_database_open(runtime, package, &db_config, NULL, &database, &diagnostics));
   context.package = package;
   context.database = database;
   CHECK(seed(name, &context, total));
@@ -793,7 +793,7 @@ static type_bridge_status_t binding_op(size_t op, const type_bridge_schema_packa
     plan_args_t args = {"batch-", NULL, 0u, BATCH_ROWS};
     CHECK(build(package, insert_items, &args, &plan));
   } else {
-    CHECK(type_bridge_plan_v3_canonical_bytes(rows, buffer, capacity, &length));
+    CHECK(type_bridge_plan_canonical_bytes(rows, buffer, capacity, &length));
   }
 done:
   type_bridge_plan_free(&plan);
@@ -813,7 +813,7 @@ static type_bridge_status_t run_binding(const config_t *config,
   if (samples == NULL) fail("out of memory");
   CHECK(build(package, insert_items, &args, &rows));
   /* A null buffer only reports the canonical length. */
-  status = type_bridge_plan_v3_canonical_bytes(rows, NULL, 0u, &capacity);
+  status = type_bridge_plan_canonical_bytes(rows, NULL, 0u, &capacity);
   if (status != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT && status != TYPE_BRIDGE_STATUS_OK) goto done;
   buffer = malloc(capacity);
   if (buffer == NULL) fail("out of memory");
@@ -852,7 +852,7 @@ int main(int argc, char **argv) {
   config_t config = parse(argc, argv);
   type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_runtime_config_v1_t runtime_config = {
@@ -900,7 +900,7 @@ int main(int argc, char **argv) {
 done:
   (void)type_bridge_runtime_close(&runtime, &diagnostics);
   (void)type_bridge_execution_diagnostics_close(&diagnostics);
-  (void)type_bridge_diagnostics_close(&package_diagnostics);
+  (void)type_bridge_execution_diagnostics_close(&package_diagnostics);
   type_bridge_schema_package_close(&package);
   return status == TYPE_BRIDGE_STATUS_OK ? 0 : 1;
 }

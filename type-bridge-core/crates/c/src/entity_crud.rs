@@ -1,66 +1,29 @@
-//! Generated-only exact entity CRUD exports.
+//! Shared C CRUD test fixtures and canonical operation regressions.
+#![cfg(test)]
 
-use crate::abi::{TypeBridgeByteView, TypeBridgeStatus};
+use crate::abi::TypeBridgeStatus;
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
+use crate::iid::TypeBridgeIid;
+use crate::policy_crud::*;
+use crate::projected_batch::TypeBridgeProjectedBatchResult;
 use crate::projected_model::{TypeBridgeProjectedCreate, TypeBridgeProjectedThing};
 use crate::projected_token::TypeBridgeProjectedTokenV1;
-use crate::runtime::{
-    TypeBridgeCancellation, TypeBridgeDatabase, TypeBridgeReadTransaction,
-    TypeBridgeWriteTransaction,
-};
-use crate::thing_crud::{
-    CrudKind, LegacyPolicyTarget, MemoryRange, ReadTarget, WriteTarget,
-    prepare_count_outputs_for_legacy_policy_target,
-    prepare_diagnostics_output_for_legacy_policy_target,
-    prepare_thing_outputs_for_legacy_policy_target, run_count_call, run_delete_call, run_get_call,
-    run_put_call, run_write_thing_call,
-};
+use crate::runtime::TypeBridgeDatabase;
 
-/// Insert one exact projected entity using one owned write transaction and commit.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_insert(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    create: *const TypeBridgeProjectedCreate,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(create),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_write_thing_call(
-            CrudKind::Entity,
-            WriteTarget::Database(&*database),
-            prepared,
-            model,
-            create,
-            None,
-            cancellation,
-        )
-    }
-}
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::abi::TypeBridgeByteView;
+    mod native_batch_answer_item {
+        pub use type_bridge_orm::session::backend::{AnswerItem, QueryResult};
+    }
+    #[allow(dead_code)]
+    mod native_batch {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../orm/tests/support/native_batch.rs"
+        ));
+    }
+
     use std::collections::VecDeque;
     use std::mem::size_of;
     use std::ptr;
@@ -106,7 +69,6 @@ pub(crate) mod tests {
         TypeBridgeProjectedReference, type_bridge_projected_reference_clone,
         type_bridge_projected_reference_close, type_bridge_projected_thing_close,
     };
-    use crate::relation_crud::*;
     use crate::runtime::{
         type_bridge_cancellation_close, type_bridge_cancellation_is_requested,
         type_bridge_cancellation_open, type_bridge_cancellation_request,
@@ -190,6 +152,10 @@ functions:
             })
         }
 
+        pub(crate) fn query_texts(&self) -> Vec<String> {
+            self.queries.lock().unwrap().clone()
+        }
+
         pub(crate) fn query_count(&self) -> usize {
             self.queries.lock().unwrap().len()
         }
@@ -204,6 +170,10 @@ functions:
     }
 
     impl DriverBackend for FakeBackend {
+        fn match_capabilities(&self) -> type_bridge_orm::CapabilitySet {
+            type_bridge_orm::CapabilitySet::all()
+        }
+
         fn open_transaction(
             &self,
             _database: &str,
@@ -233,7 +203,71 @@ functions:
         state: Arc<FakeState>,
     }
 
+    // The real provider owns materialized-plan TRACE events. This adapter adds
+    // that observation to the fake while retaining TransactionOps' bounded
+    // default implementation (including its dispatch and resource accounting).
+    struct MaterializedFake<'a> {
+        inner: &'a mut FakeTransaction,
+        canonical: bool,
+        display: Option<&'a str>,
+    }
+    impl MaterializedFake<'_> {
+        fn statement(&self, typeql: &str) {
+            if self.canonical {
+                tracing::trace!(target: "type_bridge.io", statement = self.display.unwrap_or(typeql), "type_bridge.io.provider.statement");
+            }
+        }
+    }
+    impl TransactionOps for MaterializedFake<'_> {
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.inner.query(typeql)
+        }
+        fn query_canonical(
+            &mut self,
+            typeql: &str,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.statement(typeql);
+            self.inner.query_canonical(typeql)
+        }
+        fn query_with_rows(
+            &mut self,
+            typeql: &str,
+            rows: GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.statement(typeql);
+            self.inner.query_with_rows(typeql, rows)
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.inner.commit()
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.inner.rollback()
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.inner.close()
+        }
+    }
+
     impl TransactionOps for FakeTransaction {
+        fn query_materialized_bounded<'a>(
+            &'a mut self,
+            typeql: &'a str,
+            rows: Option<GivenRowsSpec>,
+            limits: type_bridge_orm::session::backend::AnswerLimits,
+            canonical: bool,
+            display: Option<&'a str>,
+        ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
+            Box::pin(async move {
+                MaterializedFake {
+                    inner: self,
+                    canonical,
+                    display,
+                }
+                .query_materialized_bounded(typeql, rows, limits, canonical, display)
+                .await
+            })
+        }
+
         fn supports_given_rows(&self) -> bool {
             true
         }
@@ -254,8 +288,11 @@ functions:
                 .unwrap()
                 .pop_front()
                 .expect("the C entity CRUD test issued an unexpected provider query");
+            let source = typeql.to_owned();
             match response {
-                Response::Result(value) => Box::pin(async move { Ok(value) }),
+                Response::Result(value) => {
+                    Box::pin(async move { Ok(native_batch::result(&source, value)) })
+                }
                 Response::Error => Box::pin(async {
                     Err(OrmError::QueryExecution(
                         "provider-secret-query-shape".to_owned(),
@@ -265,7 +302,7 @@ functions:
                 Response::Pending => Box::pin(std::future::pending()),
                 Response::Delayed(value) => Box::pin(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                    Ok(value)
+                    Ok(native_batch::result(&source, value))
                 }),
             }
         }
@@ -283,8 +320,11 @@ functions:
                 .unwrap()
                 .pop_front()
                 .expect("the C entity CRUD test issued an unexpected provider query");
+            let source = typeql.to_owned();
             match response {
-                Response::Result(value) => Box::pin(async move { Ok(value) }),
+                Response::Result(value) => {
+                    Box::pin(async move { Ok(native_batch::result(&source, value)) })
+                }
                 Response::Error => Box::pin(async {
                     Err(OrmError::QueryExecution(
                         "provider-secret-query-shape".to_owned(),
@@ -294,7 +334,7 @@ functions:
                 Response::Pending => Box::pin(std::future::pending()),
                 Response::Delayed(value) => Box::pin(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                    Ok(value)
+                    Ok(native_batch::result(&source, value))
                 }),
             }
         }
@@ -411,7 +451,7 @@ functions:
         package_from_source(prefix, &source)
     }
 
-    fn package_from_source(prefix: &str, source: &str) -> TypeBridgeSchemaPackage {
+    pub(crate) fn package_from_source(prefix: &str, source: &str) -> TypeBridgeSchemaPackage {
         let documents =
             SchemaDocumentSet::parse([(DocumentId::new("entity-crud.yaml").unwrap(), source)])
                 .unwrap();
@@ -510,14 +550,8 @@ functions:
         serde_json::json!({
             "_iid": iid,
             "_type": "person",
-            "attributes": {"identifier": [{"value": "ada"}]}
+            "attributes": {"identifier": "ada"}
         })
-    }
-
-    pub(crate) fn insert_iid(iid: &str) -> Response {
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid": iid}),
-        ]))
     }
 
     pub(crate) fn documents(values: Vec<serde_json::Value>) -> Response {
@@ -600,10 +634,11 @@ functions:
         serde_json::json!({
             "_iid": iid,
             "_type": "membership",
+            "attributes": {},
             "_role_0_iid": "0x10",
             "_role_0_type": "person",
             "_role_0_attributes": {
-                "identifier": [{"value": "ada"}]
+                "identifier": "ada"
             }
         })
     }
@@ -612,6 +647,7 @@ functions:
         serde_json::json!({
             "_iid": iid,
             "_type": "membership",
+            "attributes": {},
             "_role_0_iid": "0x11",
             "_role_0_type": "event",
             "_role_0_attributes": {}
@@ -712,6 +748,17 @@ functions:
         assert!(diagnostics.is_null());
     }
 
+    pub(crate) fn close_result(result: &mut *mut TypeBridgeProjectedBatchResult) {
+        // SAFETY: fixture uniquely owns this result slot.
+        assert_eq!(
+            unsafe {
+                crate::projected_batch::type_bridge_projected_batch_result_close_impl(result)
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(result.is_null());
+    }
+
     pub(crate) fn close_thing(thing: &mut *mut TypeBridgeProjectedThing) {
         assert_eq!(
             // SAFETY: the slot owns either null or one thing handle.
@@ -719,6 +766,218 @@ functions:
             TypeBridgeStatus::Ok
         );
         assert!(thing.is_null());
+    }
+
+    #[test]
+    fn nonempty_ordered_write_is_typed_and_zero_io_at_the_c_boundary() {
+        let package = ordered_package("orderedrefusal");
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let token = model_token(&package, person.clone());
+        let base = person_create(&package);
+        let mut fields = base
+            .value
+            .fields()
+            .iter()
+            .map(|(field, values)| (field.clone(), values.clone()))
+            .collect::<Vec<_>>();
+        fields.retain(|(field, _)| field.attribute().label().as_str() != "department");
+        fields.push((
+            OwnsFactId::new(person.clone(), AttributeId::new("department").unwrap()).unwrap(),
+            vec![
+                ProjectedAttributeValue::try_new(
+                    &package.state.installed_projection,
+                    TypeId::new(TypeKind::Attribute, "department").unwrap(),
+                    CanonicalValue::String(CanonicalString::new("nonempty").unwrap()),
+                )
+                .unwrap(),
+            ],
+        ));
+        let create = TypeBridgeProjectedCreate {
+            package: Arc::clone(&package.state),
+            value: ProjectedCreate::try_new(
+                &package.state.installed_projection,
+                person,
+                fields,
+                vec![],
+            )
+            .unwrap(),
+        };
+        let state = FakeState::new(vec![], COMMIT_SUCCESS);
+        let database = TypeBridgeDatabase::from_test_database(
+            Arc::clone(&package.state),
+            crate::runtime::test_orm_database(
+                Box::new(FakeBackend {
+                    state: Arc::clone(&state),
+                }),
+                "ordered-refusal",
+                None,
+            ),
+        );
+        let mut thing = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: the test retains the package, database, create and writable output slots.
+        let status = unsafe {
+            type_bridge_database_entity_insert(
+                &database,
+                &token,
+                &create,
+                ptr::null(),
+                ptr::null(),
+                &mut thing,
+                &mut diagnostics,
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::Unsupported);
+        assert!(thing.is_null());
+        assert_eq!(
+            diagnostic(diagnostics).1,
+            "query_plan_ordered_collection_unsupported"
+        );
+        assert!(state.opened_transactions().is_empty());
+        assert_eq!(state.query_count(), 0);
+        close_diagnostics(&mut diagnostics);
+    }
+
+    #[test]
+    fn manager_statements_reach_only_the_owning_database_listener() {
+        // A child configures TRACE without mutating this parallel test process's environment.
+        const CHILD: &str = "TYPE_BRIDGE_C_MANAGER_LISTENER_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "entity_crud::tests::manager_statements_reach_only_the_owning_database_listener", "--nocapture"])
+                .env(CHILD, "1").env("RUST_LOG", "type_bridge=trace").output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        unsafe extern "C" fn record(view: TypeBridgeByteView, context: *mut std::ffi::c_void) {
+            // SAFETY: the listener owns live callback bytes; each test context is
+            // retained until both listeners are cleared before fixture teardown.
+            let records = unsafe { &*context.cast::<Mutex<Vec<String>>>() };
+            let bytes = unsafe { std::slice::from_raw_parts(view.data, view.length) };
+            let event: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+            if event["name"] == "type_bridge.io.provider.statement" {
+                records
+                    .lock()
+                    .unwrap()
+                    .push(event["fields"]["statement"].as_str().unwrap().to_owned());
+            }
+        }
+        let make = || {
+            fixture(
+                vec![
+                    documents(vec![person_document("0x10")]),
+                    documents(vec![person_document("0x10")]),
+                    documents(vec![person_document("0x10")]),
+                    Response::Result(QueryResult::Rows(Vec::new())),
+                ],
+                COMMIT_SUCCESS,
+            )
+        };
+        let databases = [make(), make()];
+        let captured = [
+            Mutex::new(Vec::<String>::new()),
+            Mutex::new(Vec::<String>::new()),
+        ];
+        // SAFETY: all fixtures and contexts outlive listener registration and every
+        // FFI call. Result owners are closed after each successful operation.
+        unsafe {
+            for (database, records) in databases.iter().zip(&captured) {
+                assert_eq!(
+                    crate::runtime::type_bridge_debug_listener_set(
+                        &*database.database,
+                        Some(record),
+                        (records as *const Mutex<Vec<String>>).cast_mut().cast()
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+            }
+            for (index, fixture) in databases.iter().enumerate() {
+                let iid = TypeBridgeIid::new("0x10").unwrap();
+                let mut result = ptr::null_mut();
+                let mut diagnostics = ptr::null_mut();
+                assert_eq!(
+                    type_bridge_database_entity_insert(
+                        &*fixture.database,
+                        &fixture.token,
+                        &*fixture.create,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+                close_result(&mut result);
+                let mut thing = ptr::null_mut();
+                assert_eq!(
+                    type_bridge_database_entity_get_by_iid(
+                        &*fixture.database,
+                        &fixture.token,
+                        &iid,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut thing,
+                        &mut diagnostics
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    type_bridge_projected_thing_close(&mut thing),
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    type_bridge_database_entity_update(
+                        &*fixture.database,
+                        &fixture.token,
+                        &iid,
+                        &*fixture.create,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+                close_result(&mut result);
+                assert_eq!(
+                    type_bridge_database_entity_delete_by_iid(
+                        &*fixture.database,
+                        &fixture.token,
+                        &iid,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut diagnostics
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+                assert!(diagnostics.is_null());
+                assert_eq!(
+                    *captured[index].lock().unwrap(),
+                    *fixture.state.queries.lock().unwrap()
+                );
+                assert_eq!(captured[index].lock().unwrap().len(), 4);
+                assert_eq!(
+                    captured[1 - index].lock().unwrap().len(),
+                    if index == 0 { 0 } else { 4 }
+                );
+            }
+            for fixture in &databases {
+                assert_eq!(
+                    crate::runtime::type_bridge_debug_listener_set(
+                        &*fixture.database,
+                        None,
+                        ptr::null_mut()
+                    ),
+                    TypeBridgeStatus::Ok
+                );
+            }
+        }
     }
 
     #[test]
@@ -737,6 +996,7 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -746,23 +1006,23 @@ functions:
         assert!(!thing.is_null());
         assert!(diagnostics.is_null());
         // SAFETY: success returned one live projected thing.
-        assert_eq!(unsafe { &*thing }.value.iid(), "0x10");
+        assert_eq!(unsafe { &*thing }.test_item().iid(), "0x10");
         assert_eq!(*fixture.state.opens.lock().unwrap(), [TxType::Write]);
         assert_eq!(fixture.state.query_count(), 1);
         assert_eq!(fixture.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(fixture.state.rollbacks.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_result(&mut thing);
     }
 
     #[test]
-    fn projected_thing_reservation_failure_is_pre_provider_and_retry_safe() {
+    fn write_result_reservation_failure_is_pre_provider_and_retry_safe() {
         let fixture = fixture(
             vec![documents(vec![person_document("0x10")])],
             COMMIT_SUCCESS,
         );
         let mut thing = ptr::dangling_mut();
         let mut diagnostics = ptr::dangling_mut();
-        let failure = inject_failure(AllocationSite::ProjectedThingHandle, 0);
+        let failure = inject_failure(AllocationSite::CrudWriteResultHandle, 0);
         assert_eq!(
             // SAFETY: the fixture retains all inputs and owns both output slots.
             unsafe {
@@ -770,6 +1030,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*fixture.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -794,6 +1055,7 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -803,11 +1065,11 @@ functions:
         assert_eq!(fixture.state.query_count(), 1);
         assert_eq!(fixture.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(fixture.state.rollbacks.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_result(&mut thing);
     }
 
     #[test]
-    fn borrowed_thing_reservation_failure_leaves_transaction_live_and_unpoisoned() {
+    fn borrowed_result_reservation_failure_leaves_transaction_live_and_unpoisoned() {
         let fixture = fixture(
             vec![documents(vec![person_document("0x10")])],
             COMMIT_SUCCESS,
@@ -820,6 +1082,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -827,7 +1090,7 @@ functions:
             TypeBridgeStatus::Ok
         );
         let mut thing = ptr::dangling_mut();
-        let failure = inject_failure(AllocationSite::ProjectedThingHandle, 0);
+        let failure = inject_failure(AllocationSite::CrudWriteResultHandle, 0);
         assert_eq!(
             // SAFETY: transaction and create remain live for this borrowed call.
             unsafe {
@@ -835,6 +1098,7 @@ functions:
                     transaction,
                     &fixture.token,
                     &*fixture.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -858,13 +1122,14 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::Ok
         );
-        close_thing(&mut thing);
+        close_result(&mut thing);
         assert_eq!(
             // SAFETY: rollback proves the borrowed transaction owner remains live.
             unsafe {
@@ -895,7 +1160,8 @@ functions:
     #[test]
     fn database_owned_write_rolls_back_errors_and_classifies_commit_certainty() {
         for (responses, expected_code) in [
-            (vec![documents(vec![])], "mutation_rehydration_missing"),
+            // Shared precommit proof rejects an empty document answer before materialisation.
+            (vec![documents(vec![])], "query_remote_document_value"),
             (vec![Response::Error], "provider_operation_failed"),
         ] {
             let fixture = fixture(responses, COMMIT_SUCCESS);
@@ -908,6 +1174,7 @@ functions:
                         &*fixture.database,
                         &fixture.token,
                         &*fixture.create,
+                        ptr::null(),
                         ptr::null(),
                         &mut thing,
                         &mut diagnostics,
@@ -952,6 +1219,7 @@ functions:
                         &fixture.token,
                         &*fixture.create,
                         ptr::null(),
+                        ptr::null(),
                         &mut thing,
                         &mut diagnostics,
                     )
@@ -970,6 +1238,190 @@ functions:
     }
 
     #[test]
+    fn by_iid_terminals_match_canonical_filter_provider_bytes() {
+        for relation in [false, true] {
+            let (database, package, token, create, state) = if relation {
+                let fixture = relation_fixture(
+                    vec![
+                        documents(vec![membership_document("0x20")]),
+                        documents(vec![membership_document("0x20")]),
+                        documents(vec![membership_document("0x20")]),
+                        documents(vec![membership_document("0x20")]),
+                        documents(vec![]),
+                        documents(vec![]),
+                    ],
+                    COMMIT_SUCCESS,
+                );
+                (
+                    fixture.database,
+                    fixture.package,
+                    fixture.token,
+                    fixture.create,
+                    fixture.state,
+                )
+            } else {
+                let fixture = fixture(
+                    vec![
+                        documents(vec![person_document("0x10")]),
+                        documents(vec![person_document("0x10")]),
+                        documents(vec![person_document("0x10")]),
+                        documents(vec![person_document("0x10")]),
+                        documents(vec![]),
+                        documents(vec![]),
+                    ],
+                    COMMIT_SUCCESS,
+                );
+                (
+                    fixture.database,
+                    fixture.package,
+                    fixture.token,
+                    fixture.create,
+                    fixture.state,
+                )
+            };
+            let iid =
+                crate::iid::TypeBridgeIid::new(if relation { "0x20" } else { "0x10" }).unwrap();
+            let mut thing = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            let get = if relation {
+                crate::policy_crud::type_bridge_database_relation_get_by_iid
+            } else {
+                type_bridge_database_entity_get_by_iid
+            };
+            assert_eq!(
+                unsafe {
+                    get(
+                        &*database,
+                        &token,
+                        &iid,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut thing,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            close_thing(&mut thing);
+            let mut root = ptr::null_mut();
+            let mut filter = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    crate::manager_filter::filter_open(
+                        &package,
+                        &token,
+                        &mut root,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe {
+                    crate::manager_filter::filter_iid(root, &iid, &mut filter, &mut diagnostics)
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe {
+                    crate::manager_read::type_bridge_database_manager_first(
+                        &*database,
+                        filter,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut thing,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            close_thing(&mut thing);
+            let update = if relation {
+                crate::policy_crud::type_bridge_database_relation_update
+            } else {
+                type_bridge_database_entity_update
+            };
+            let delete = if relation {
+                crate::policy_crud::type_bridge_database_relation_delete_by_iid
+            } else {
+                type_bridge_database_entity_delete_by_iid
+            };
+            let mut result = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    update(
+                        &*database,
+                        &token,
+                        &iid,
+                        &*create,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            close_result(&mut result);
+            assert_eq!(
+                unsafe {
+                    crate::manager_write::type_bridge_database_manager_update(
+                        &*database,
+                        filter,
+                        &*create,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            close_result(&mut result);
+            assert_eq!(
+                unsafe {
+                    delete(
+                        &*database,
+                        &token,
+                        &iid,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe {
+                    crate::manager_write::type_bridge_database_manager_delete(
+                        &*database,
+                        filter,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe { crate::manager_filter::filter_close(&mut filter) },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe { crate::manager_filter::filter_close(&mut root) },
+                TypeBridgeStatus::Ok
+            );
+            let queries = state.queries.lock().unwrap();
+            assert_eq!(queries.len(), 6);
+            for pair in queries.chunks_exact(2) {
+                assert_eq!(pair[0].as_bytes(), pair[1].as_bytes());
+            }
+            assert_eq!(state.commits.load(Ordering::Acquire), 4);
+            assert_eq!(state.closes.load(Ordering::Acquire), 2);
+        }
+    }
+
+    #[test]
     fn database_get_count_and_blind_delete_have_exact_owned_lifecycles() {
         let fixture = fixture(
             vec![
@@ -979,7 +1431,7 @@ functions:
             ],
             COMMIT_SUCCESS,
         );
-        let iid = byte_view(b"0x10");
+        let iid = &TypeBridgeIid::new("0x10").unwrap();
         let mut thing = ptr::dangling_mut();
         let mut diagnostics = ptr::dangling_mut();
         assert_eq!(
@@ -989,6 +1441,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     iid,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1007,6 +1460,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -1023,6 +1477,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     iid,
+                    ptr::null(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -1060,6 +1515,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -1077,6 +1533,7 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -1086,7 +1543,7 @@ functions:
         assert!(!thing.is_null());
         assert_eq!(fixture.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(fixture.state.rollbacks.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
         let mut count = 0;
         assert_eq!(
@@ -1095,6 +1552,7 @@ functions:
                 type_bridge_write_transaction_entity_count(
                     transaction,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1111,6 +1569,7 @@ functions:
             unsafe {
                 type_bridge_write_transaction_commit(
                     &mut transaction,
+                    ptr::null(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -1132,6 +1591,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -1145,6 +1605,7 @@ functions:
                 type_bridge_write_transaction_entity_count(
                     transaction,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1164,6 +1625,7 @@ functions:
                     transaction,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -1182,6 +1644,7 @@ functions:
             unsafe {
                 type_bridge_write_transaction_commit(
                     &mut transaction,
+                    ptr::null(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -1224,6 +1687,7 @@ functions:
                 type_bridge_read_transaction_open(
                     &*read_fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut read,
                     &mut diagnostics,
                 )
@@ -1237,6 +1701,7 @@ functions:
                     read,
                     &read_fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -1249,6 +1714,7 @@ functions:
                 type_bridge_read_transaction_entity_count(
                     read,
                     &read_fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1291,6 +1757,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*fixture.create,
+                    ptr::null(),
                     cancellation,
                     &mut thing,
                     &mut diagnostics,
@@ -1299,7 +1766,7 @@ functions:
             TypeBridgeStatus::Cancelled
         );
         assert!(thing.is_null());
-        assert_eq!(diagnostic(diagnostics).1, "cancelled_before_dispatch");
+        assert_eq!(diagnostic(diagnostics).1, "provider_cancelled");
         close_diagnostics(&mut diagnostics);
 
         let foreign = package("foreigncrud");
@@ -1311,6 +1778,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*foreign_create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1333,6 +1801,7 @@ functions:
                     &fixture.token,
                     &*other_create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -1344,6 +1813,7 @@ functions:
         assert!(fixture.state.opens.lock().unwrap().is_empty());
         assert_eq!(fixture.state.query_count(), 0);
 
+        let mut thing = ptr::dangling_mut();
         let mut forged = fixture.token;
         forged.projection_digest[0] ^= 0xff;
         assert_eq!(
@@ -1352,7 +1822,8 @@ functions:
                 type_bridge_database_entity_get_by_iid(
                     &*fixture.database,
                     &forged,
-                    byte_view(b"0x10"),
+                    &TypeBridgeIid::new("0x10").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1378,6 +1849,7 @@ functions:
                     &*fixture.database,
                     &attribute_token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -1394,7 +1866,8 @@ functions:
                 type_bridge_database_entity_get_by_iid(
                     &*fixture.database,
                     &fixture.token,
-                    byte_view(b"not-an-iid"),
+                    ptr::null(),
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1417,7 +1890,7 @@ functions:
     struct AlignedBytes([u8; 24]);
 
     #[test]
-    fn overlap_preflight_never_corrupts_live_inputs_and_clears_overlapping_outputs() {
+    fn overlap_preflight_preserves_live_inputs_and_overlapping_outputs() {
         let fixture = fixture(
             vec![Response::Result(QueryResult::Rows(vec![
                 serde_json::json!({
@@ -1438,6 +1911,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     database_output,
                     &mut untouched_diagnostics,
                 )
@@ -1457,7 +1931,8 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
-                    create_output,
+                    ptr::null(),
+                    create_output.cast(),
                     &mut untouched_diagnostics,
                 )
             },
@@ -1474,6 +1949,7 @@ functions:
                 type_bridge_database_entity_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     model_output,
                     &mut untouched_diagnostics,
@@ -1495,6 +1971,7 @@ functions:
                 type_bridge_database_entity_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     cancellation,
                     cancellation_output,
                     &mut untouched_diagnostics,
@@ -1510,12 +1987,8 @@ functions:
         );
         assert_eq!(requested, 0);
 
-        let mut iid_storage = AlignedBytes([0; 24]);
-        iid_storage.0[..4].copy_from_slice(b"0x10");
-        let iid = TypeBridgeByteView {
-            data: iid_storage.0.as_ptr(),
-            length: 4,
-        };
+        let mut iid_storage = TypeBridgeIid::new("0x10").unwrap();
+        let iid = ptr::addr_of!(iid_storage);
         assert_eq!(
             // SAFETY: this hostile overlap must leave the IID bytes intact.
             unsafe {
@@ -1524,13 +1997,14 @@ functions:
                     &fixture.token,
                     iid,
                     ptr::null(),
-                    iid_storage.0.as_mut_ptr().cast(),
+                    ptr::null(),
+                    ptr::addr_of_mut!(iid_storage).cast(),
                     &mut untouched_diagnostics,
                 )
             },
             TypeBridgeStatus::InvalidArgument
         );
-        assert_eq!(&iid_storage.0[..4], b"0x10");
+        assert_eq!(iid_storage.as_str(), "0x10");
 
         let mut overlapping = AlignedBytes([0xaa; 24]);
         let first = overlapping
@@ -1546,7 +2020,8 @@ functions:
                 type_bridge_database_entity_get_by_iid(
                     &*fixture.database,
                     &fixture.token,
-                    byte_view(b"0x10"),
+                    &TypeBridgeIid::new("0x10").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     first,
                     second,
@@ -1554,7 +2029,7 @@ functions:
             },
             TypeBridgeStatus::InvalidArgument
         );
-        assert_eq!(&overlapping.0[..9], &[0; 9]);
+        assert_eq!(overlapping.0, [0xaa; 24]);
         assert_eq!(fixture.state.query_count(), 0);
 
         let mut count = u64::MAX;
@@ -1565,6 +2040,7 @@ functions:
                 type_bridge_database_entity_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1600,6 +2076,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -1614,6 +2091,7 @@ functions:
                 type_bridge_write_transaction_entity_count(
                     transaction,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     transaction_output,
                     &mut untouched_diagnostics,
@@ -1631,6 +2109,7 @@ functions:
                 type_bridge_write_transaction_entity_count(
                     transaction,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -1663,6 +2142,7 @@ functions:
                     &put_fixture.token,
                     &*put_fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
@@ -1674,7 +2154,7 @@ functions:
         // The put matches exactly the declared type, as the released lookup did.
         assert!(put_fixture.state.queries.lock().unwrap()[0].contains("put $thing0 isa! person"));
         assert_eq!(put_fixture.state.commits.load(Ordering::Acquire), 1);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
         let update_fixture = fixture(
             vec![documents(vec![person_document("0x20")])],
@@ -1686,8 +2166,9 @@ functions:
                 type_bridge_database_entity_update(
                     &*update_fixture.database,
                     &update_fixture.token,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
                     &*update_fixture.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1697,8 +2178,9 @@ functions:
         );
         assert_eq!(update_fixture.state.query_count(), 1);
         assert_eq!(update_fixture.state.commits.load(Ordering::Acquire), 1);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
+        let mut read_thing = ptr::dangling_mut();
         let read_fixture = fixture(
             vec![documents(vec![person_document("0x20")])],
             COMMIT_SUCCESS,
@@ -1709,6 +2191,7 @@ functions:
             unsafe {
                 type_bridge_read_transaction_open(
                     &*read_fixture.database,
+                    ptr::null(),
                     ptr::null(),
                     &mut read,
                     &mut diagnostics,
@@ -1722,16 +2205,17 @@ functions:
                 type_bridge_read_transaction_entity_get_by_iid(
                     read,
                     &read_fixture.token,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
                     ptr::null(),
-                    &mut thing,
+                    ptr::null(),
+                    &mut read_thing,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::Ok
         );
         assert_eq!(read_fixture.state.closes.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_thing(&mut read_thing);
         assert_eq!(
             // SAFETY: the owner slot contains the still-live read transaction.
             unsafe { type_bridge_read_transaction_close(&mut read, &mut diagnostics) },
@@ -1755,6 +2239,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*write_fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut write,
                     &mut diagnostics,
                 )
@@ -1769,36 +2254,39 @@ functions:
                     &write_fixture.token,
                     &*write_fixture.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::Ok
         );
-        close_thing(&mut thing);
+        close_result(&mut thing);
         assert_eq!(
             // SAFETY: the borrowed write handle remains live after put.
             unsafe {
                 type_bridge_write_transaction_entity_get_by_iid(
                     write,
                     &write_fixture.token,
-                    byte_view(b"0x30"),
+                    &TypeBridgeIid::new("0x30").unwrap(),
                     ptr::null(),
-                    &mut thing,
+                    ptr::null(),
+                    &mut read_thing,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::Ok
         );
-        close_thing(&mut thing);
+        close_thing(&mut read_thing);
         assert_eq!(
             // SAFETY: the borrowed write handle remains live after get.
             unsafe {
                 type_bridge_write_transaction_entity_update(
                     write,
                     &write_fixture.token,
-                    byte_view(b"0x30"),
+                    &TypeBridgeIid::new("0x30").unwrap(),
                     &*write_fixture.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1806,14 +2294,15 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        close_thing(&mut thing);
+        close_result(&mut thing);
         assert_eq!(
             // SAFETY: blind delete borrows but does not terminal the write handle.
             unsafe {
                 type_bridge_write_transaction_entity_delete_by_iid(
                     write,
                     &write_fixture.token,
-                    byte_view(b"0x30"),
+                    &TypeBridgeIid::new("0x30").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -1847,24 +2336,21 @@ functions:
                     &insert.token,
                     &*insert.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(unsafe { &*thing }.value.iid(), "0x20");
+        assert_eq!(unsafe { &*thing }.test_item().iid(), "0x20");
         assert_eq!(insert.state.query_count(), 1);
         assert_eq!(insert.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(insert.state.rollbacks.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
         let put = relation_fixture(
-            vec![
-                documents(vec![serde_json::json!({"iid": "0x10"})]),
-                insert_iid("0x21"),
-                documents(vec![membership_document("0x21")]),
-            ],
+            vec![documents(vec![membership_document("0x21")])],
             COMMIT_SUCCESS,
         );
         assert_eq!(
@@ -1875,16 +2361,17 @@ functions:
                     &put.token,
                     &*put.create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(unsafe { &*thing }.value.iid(), "0x21");
-        assert_eq!(put.state.query_count(), 3);
+        assert_eq!(unsafe { &*thing }.test_item().iid(), "0x21");
+        assert_eq!(put.state.query_count(), 1);
         assert_eq!(put.state.commits.load(Ordering::Acquire), 1);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
         let update = relation_fixture(
             vec![documents(vec![membership_document("0x22")])],
@@ -1896,8 +2383,9 @@ functions:
                 type_bridge_database_relation_update(
                     &*update.database,
                     &update.token,
-                    byte_view(b"0x22"),
+                    &TypeBridgeIid::new("0x22").unwrap(),
                     &*update.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1905,11 +2393,11 @@ functions:
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(unsafe { &*thing }.value.iid(), "0x22");
+        assert_eq!(unsafe { &*thing }.test_item().iid(), "0x22");
         assert_eq!(update.state.query_count(), 1);
         assert_eq!(update.state.commits.load(Ordering::Acquire), 1);
         assert_eq!(update.state.rollbacks.load(Ordering::Acquire), 0);
-        close_thing(&mut thing);
+        close_result(&mut thing);
     }
 
     #[test]
@@ -1929,7 +2417,8 @@ functions:
                 type_bridge_database_relation_get_by_iid(
                     &*owned.database,
                     &owned.token,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -1945,6 +2434,7 @@ functions:
                     &*owned.database,
                     &owned.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -1957,7 +2447,8 @@ functions:
                 type_bridge_database_relation_delete_by_iid(
                     &*owned.database,
                     &owned.token,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -1981,6 +2472,7 @@ functions:
                 type_bridge_read_transaction_open(
                     &*read_fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut read,
                     &mut diagnostics,
                 )
@@ -1992,7 +2484,8 @@ functions:
                 type_bridge_read_transaction_relation_get_by_iid(
                     read,
                     &read_fixture.token,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2006,6 +2499,7 @@ functions:
                 type_bridge_read_transaction_relation_count(
                     read,
                     &read_fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -2023,8 +2517,6 @@ functions:
         let write_fixture = relation_fixture(
             vec![
                 documents(vec![membership_document("0x30")]),
-                documents(vec![serde_json::json!({"iid": "0x10"})]),
-                insert_iid("0x31"),
                 documents(vec![membership_document("0x31")]),
                 documents(vec![membership_document("0x31")]),
                 documents(vec![membership_document("0x31")]),
@@ -2039,12 +2531,14 @@ functions:
                 type_bridge_write_transaction_open(
                     &*write_fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut write,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::Ok
         );
+        let mut result = ptr::dangling_mut();
         for status in [
             unsafe {
                 type_bridge_write_transaction_relation_insert(
@@ -2052,30 +2546,33 @@ functions:
                     &write_fixture.token,
                     &*write_fixture.create,
                     ptr::null(),
-                    &mut thing,
+                    ptr::null(),
+                    &mut result,
                     &mut diagnostics,
                 )
             },
             {
-                close_thing(&mut thing);
+                close_result(&mut result);
                 unsafe {
                     type_bridge_write_transaction_relation_put(
                         write,
                         &write_fixture.token,
                         &*write_fixture.create,
                         ptr::null(),
-                        &mut thing,
+                        ptr::null(),
+                        &mut result,
                         &mut diagnostics,
                     )
                 }
             },
             {
-                close_thing(&mut thing);
+                close_result(&mut result);
                 unsafe {
                     type_bridge_write_transaction_relation_get_by_iid(
                         write,
                         &write_fixture.token,
-                        byte_view(b"0x31"),
+                        &TypeBridgeIid::new("0x31").unwrap(),
+                        ptr::null(),
                         ptr::null(),
                         &mut thing,
                         &mut diagnostics,
@@ -2088,10 +2585,11 @@ functions:
                     type_bridge_write_transaction_relation_update(
                         write,
                         &write_fixture.token,
-                        byte_view(b"0x31"),
+                        &TypeBridgeIid::new("0x31").unwrap(),
                         &*write_fixture.create,
                         ptr::null(),
-                        &mut thing,
+                        ptr::null(),
+                        &mut result,
                         &mut diagnostics,
                     )
                 }
@@ -2099,13 +2597,14 @@ functions:
         ] {
             assert_eq!(status, TypeBridgeStatus::Ok);
         }
-        close_thing(&mut thing);
+        close_result(&mut result);
         assert_eq!(
             unsafe {
                 type_bridge_write_transaction_relation_delete_by_iid(
                     write,
                     &write_fixture.token,
-                    byte_view(b"0x31"),
+                    &TypeBridgeIid::new("0x31").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -2118,6 +2617,7 @@ functions:
                     write,
                     &write_fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -2125,7 +2625,7 @@ functions:
             TypeBridgeStatus::Ok
         );
         assert_eq!(count, 1);
-        assert_eq!(write_fixture.state.query_count(), 8);
+        assert_eq!(write_fixture.state.query_count(), 6);
         assert_eq!(write_fixture.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(write_fixture.state.rollbacks.load(Ordering::Acquire), 0);
         assert_eq!(
@@ -2136,7 +2636,7 @@ functions:
     }
 
     #[test]
-    fn relation_player_resolution_is_exact_and_ambiguous_hydration_rolls_back() {
+    fn relation_player_resolution_preserves_complete_write_roots() {
         let fixture = relation_fixture(
             vec![documents(vec![membership_with_relation_player_document(
                 "0x20",
@@ -2154,15 +2654,16 @@ functions:
                     &fixture.token,
                     &*create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::Ok
         );
-        assert_eq!(unsafe { &*thing }.value.iid(), "0x20");
+        assert_eq!(unsafe { &*thing }.test_item().iid(), "0x20");
         let role = RoleId::new("membership", "member").unwrap();
-        let player = &unsafe { &*thing }.value.roles()[&role][0];
+        let player = &unsafe { &*thing }.test_item().roles()[&role][0];
         assert_eq!(player.reference().type_id().kind(), TypeKind::Relation);
         let queries = fixture.state.queries.lock().unwrap();
         // The relation-as-player reference resolves inside the write.
@@ -2171,38 +2672,92 @@ functions:
         assert!(queries[0].contains("$player1 iid 0x11"));
         assert!(!queries[0].contains("$player1 isa event"));
         drop(queries);
-        close_thing(&mut thing);
+        close_result(&mut thing);
 
-        let ambiguous = relation_fixture(
-            vec![documents(vec![
-                membership_document("0x20"),
-                membership_document("0x21"),
-            ])],
-            COMMIT_SUCCESS,
-        );
-        assert_eq!(
-            // SAFETY: all immutable handles and writable output slots remain live.
-            unsafe {
-                type_bridge_database_relation_insert(
-                    &*ambiguous.database,
-                    &ambiguous.token,
-                    &*ambiguous.create,
-                    ptr::null(),
-                    &mut thing,
-                    &mut diagnostics,
-                )
-            },
-            TypeBridgeStatus::ExecutionFailed
-        );
-        assert!(thing.is_null());
-        // Two relations in the write's own answer mean the write made two.
-        assert_eq!(
-            diagnostic(diagnostics).1,
-            "provider_identity_cardinality_invalid"
-        );
-        assert_eq!(ambiguous.state.commits.load(Ordering::Acquire), 0);
-        assert_eq!(ambiguous.state.rollbacks.load(Ordering::Acquire), 1);
-        close_diagnostics(&mut diagnostics);
+        for expected_count in 0..=2 {
+            let ambiguous = relation_fixture(
+                vec![documents(
+                    ["0x20", "0x21"]
+                        .iter()
+                        .take(expected_count)
+                        .map(|iid| membership_document(iid))
+                        .collect(),
+                )],
+                COMMIT_SUCCESS,
+            );
+            assert_eq!(
+                // SAFETY: all immutable handles and writable output slots remain live.
+                unsafe {
+                    type_bridge_database_relation_insert(
+                        &*ambiguous.database,
+                        &ambiguous.token,
+                        &*ambiguous.create,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut thing,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert!(!thing.is_null());
+            assert!(diagnostics.is_null());
+            // Non-key role resolution can write multiple roots; retain both in order.
+            let mut count = usize::MAX;
+            // SAFETY: result, nominal token and disjoint output slots remain live.
+            assert_eq!(
+                unsafe {
+                    crate::projected_batch::type_bridge_projected_batch_result_count_impl(
+                        thing,
+                        &ambiguous.token,
+                        1,
+                        &mut count,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(count, expected_count);
+            let mut item = ptr::dangling_mut();
+            assert_eq!(
+                unsafe {
+                    crate::projected_batch::type_bridge_projected_batch_result_item_impl(
+                        thing,
+                        &ambiguous.token,
+                        1,
+                        &mut item,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            if expected_count == 1 {
+                assert_eq!(unsafe { &*item }.value.iid(), "0x20");
+                close_thing(&mut item);
+            } else {
+                assert!(item.is_null());
+            }
+            for (index, expected) in ["0x20", "0x21"].iter().take(expected_count).enumerate() {
+                assert_eq!(
+                    unsafe {
+                        crate::projected_batch::type_bridge_projected_batch_result_thing_at_impl(
+                            thing,
+                            &ambiguous.token,
+                            1,
+                            index,
+                            &mut item,
+                            &mut diagnostics,
+                        )
+                    },
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(unsafe { &*item }.value.iid(), *expected);
+                close_thing(&mut item);
+            }
+            assert_eq!(ambiguous.state.commits.load(Ordering::Acquire), 1);
+            assert_eq!(ambiguous.state.rollbacks.load(Ordering::Acquire), 0);
+            close_result(&mut thing);
+        }
     }
 
     #[test]
@@ -2216,7 +2771,7 @@ functions:
         let source_state = FakeState::new(
             vec![documents(vec![serde_json::json!({
                 "_iid": "0x11",
-                "_type": "event"
+                "_type": "event", "attributes": {}
             })])],
             COMMIT_SUCCESS,
         );
@@ -2237,7 +2792,8 @@ functions:
                 type_bridge_database_relation_get_by_iid(
                     &*source_database,
                     &event_token,
-                    byte_view(b"0x11"),
+                    &TypeBridgeIid::new("0x11").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2291,6 +2847,7 @@ functions:
                 "target",
             ),
         ));
+        let mut thing = ptr::dangling_mut();
         macro_rules! assert_origin_rejected {
             ($status:expr) => {{
                 let status = $status;
@@ -2307,6 +2864,7 @@ functions:
                 &membership_token,
                 &*create,
                 ptr::null(),
+                ptr::null(),
                 &mut thing,
                 &mut diagnostics,
             )
@@ -2318,6 +2876,7 @@ functions:
                 &membership_token,
                 &*create,
                 ptr::null(),
+                ptr::null(),
                 &mut thing,
                 &mut diagnostics,
             )
@@ -2327,8 +2886,9 @@ functions:
             type_bridge_database_relation_update(
                 &*target_database,
                 &membership_token,
-                byte_view(b"0x20"),
+                &TypeBridgeIid::new("0x20").unwrap(),
                 &*create,
+                ptr::null(),
                 ptr::null(),
                 &mut thing,
                 &mut diagnostics,
@@ -2358,6 +2918,7 @@ functions:
                     &*provider_failure.database,
                     &provider_failure.token,
                     &*provider_failure.create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2400,6 +2961,7 @@ functions:
                         &fixture.token,
                         &*fixture.create,
                         ptr::null(),
+                        ptr::null(),
                         &mut thing,
                         &mut diagnostics,
                     )
@@ -2428,6 +2990,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -2441,6 +3004,7 @@ functions:
                 type_bridge_write_transaction_relation_count(
                     transaction,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -2458,6 +3022,7 @@ functions:
                     transaction,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -2473,6 +3038,7 @@ functions:
             unsafe {
                 type_bridge_write_transaction_commit(
                     &mut transaction,
+                    ptr::null(),
                     ptr::null(),
                     &mut diagnostics,
                 )
@@ -2497,6 +3063,7 @@ functions:
                 type_bridge_read_transaction_open(
                     &*read_fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut read,
                     &mut diagnostics,
                 )
@@ -2509,6 +3076,7 @@ functions:
                     read,
                     &read_fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -2520,6 +3088,7 @@ functions:
                 type_bridge_read_transaction_relation_count(
                     read,
                     &read_fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -2554,7 +3123,8 @@ functions:
                     type_bridge_database_relation_delete_by_iid(
                         &*fixture.database,
                         &fixture.token,
-                        byte_view(b"0x20"),
+                        &TypeBridgeIid::new("0x20").unwrap(),
+                        ptr::null(),
                         ptr::null(),
                         &mut diagnostics,
                     )
@@ -2605,6 +3175,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*fixture.create,
+                    ptr::null(),
                     cancellation,
                     &mut thing,
                     &mut diagnostics,
@@ -2612,7 +3183,7 @@ functions:
             },
             TypeBridgeStatus::Cancelled
         );
-        assert_eq!(diagnostic(diagnostics).1, "cancelled_before_dispatch");
+        assert_eq!(diagnostic(diagnostics).1, "provider_cancelled");
         close_diagnostics(&mut diagnostics);
 
         let foreign = package("foreignrelation");
@@ -2623,6 +3194,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     &*foreign_create,
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2636,16 +3208,15 @@ functions:
         );
         close_diagnostics(&mut diagnostics);
 
-        let event_create = Box::new(TypeBridgeProjectedCreate {
-            package: Arc::clone(&fixture.package.state),
-            value: ProjectedCreate::try_new(
-                &fixture.package.state.installed_projection,
-                TypeId::new(TypeKind::Relation, "event").unwrap(),
-                vec![],
-                vec![],
-            )
-            .unwrap(),
-        });
+        let refusal = ProjectedCreate::try_new(
+            &fixture.package.state.installed_projection,
+            TypeId::new(TypeKind::Relation, "event").unwrap(),
+            vec![],
+            vec![],
+        )
+        .unwrap_err();
+        assert_eq!(refusal.code().as_str(), "relation_requires_player");
+        let event_create = person_create(&fixture.package);
         assert_eq!(
             unsafe {
                 type_bridge_database_relation_insert(
@@ -2653,16 +3224,14 @@ functions:
                     &fixture.token,
                     &*event_create,
                     ptr::null(),
+                    ptr::null(),
                     &mut thing,
                     &mut diagnostics,
                 )
             },
             TypeBridgeStatus::InvalidArgument
         );
-        assert_eq!(
-            diagnostic(diagnostics).1,
-            "c_relation_create_model_mismatch"
-        );
+        assert_eq!(diagnostic(diagnostics).1, "c_relation_model_kind_invalid");
         close_diagnostics(&mut diagnostics);
 
         let entity_token = model_token(
@@ -2676,6 +3245,7 @@ functions:
                     &*fixture.database,
                     &entity_token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -2686,6 +3256,7 @@ functions:
         assert_eq!(diagnostic(diagnostics).1, "c_relation_model_kind_invalid");
         close_diagnostics(&mut diagnostics);
 
+        let mut thing = ptr::dangling_mut();
         let mut forged = fixture.token;
         forged.projection_digest[0] ^= 0xff;
         assert_eq!(
@@ -2693,7 +3264,8 @@ functions:
                 type_bridge_database_relation_get_by_iid(
                     &*fixture.database,
                     &forged,
-                    byte_view(b"0x20"),
+                    &TypeBridgeIid::new("0x20").unwrap(),
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2711,7 +3283,8 @@ functions:
                 type_bridge_database_relation_get_by_iid(
                     &*fixture.database,
                     &fixture.token,
-                    byte_view(b"not-an-iid"),
+                    ptr::null(),
+                    ptr::null(),
                     ptr::null(),
                     &mut thing,
                     &mut diagnostics,
@@ -2732,6 +3305,7 @@ functions:
                     &*fixture.database,
                     &fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     database_output,
                     &mut untouched,
                 )
@@ -2747,6 +3321,7 @@ functions:
                 type_bridge_database_relation_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     model_output,
                     &mut untouched,
@@ -2764,7 +3339,8 @@ functions:
                     &fixture.token,
                     &*fixture.create,
                     ptr::null(),
-                    create_output,
+                    ptr::null(),
+                    create_output.cast(),
                     &mut untouched,
                 )
             },
@@ -2776,6 +3352,7 @@ functions:
                 type_bridge_database_relation_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     cancellation,
                     cancellation_output,
                     &mut untouched,
@@ -2794,12 +3371,8 @@ functions:
             TypeBridgeStatus::Ok
         );
 
-        let mut iid_storage = AlignedBytes([0; 24]);
-        iid_storage.0[..4].copy_from_slice(b"0x20");
-        let iid = TypeBridgeByteView {
-            data: iid_storage.0.as_ptr(),
-            length: 4,
-        };
+        let mut iid_storage = TypeBridgeIid::new("0x20").unwrap();
+        let iid = ptr::addr_of!(iid_storage);
         assert_eq!(
             unsafe {
                 type_bridge_database_relation_get_by_iid(
@@ -2807,13 +3380,14 @@ functions:
                     &fixture.token,
                     iid,
                     ptr::null(),
-                    iid_storage.0.as_mut_ptr().cast(),
+                    ptr::null(),
+                    ptr::addr_of_mut!(iid_storage).cast(),
                     &mut untouched,
                 )
             },
             TypeBridgeStatus::InvalidArgument
         );
-        assert_eq!(&iid_storage.0[..4], b"0x20");
+        assert_eq!(iid_storage.as_str(), "0x20");
         assert!(fixture.state.opens.lock().unwrap().is_empty());
         assert_eq!(fixture.state.query_count(), 0);
 
@@ -2823,6 +3397,7 @@ functions:
                 type_bridge_database_relation_count(
                     &*fixture.database,
                     &fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     &mut count,
                     &mut diagnostics,
@@ -2848,6 +3423,7 @@ functions:
                 type_bridge_write_transaction_open(
                     &*transaction_fixture.database,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -2861,6 +3437,7 @@ functions:
                 type_bridge_write_transaction_relation_count(
                     transaction,
                     &transaction_fixture.token,
+                    ptr::null(),
                     ptr::null(),
                     transaction_output,
                     &mut untouched,
@@ -2876,6 +3453,7 @@ functions:
                     transaction,
                     &transaction_fixture.token,
                     ptr::null(),
+                    ptr::null(),
                     &mut count,
                     &mut diagnostics,
                 )
@@ -2887,547 +3465,5 @@ functions:
             unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
-    }
-}
-
-/// Put one exact projected entity using one owned write transaction and commit.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_put(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    create: *const TypeBridgeProjectedCreate,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(create),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_put_call(
-            CrudKind::Entity,
-            WriteTarget::Database(&*database),
-            prepared,
-            model,
-            create,
-            cancellation,
-        )
-    }
-}
-
-/// Read one exact projected entity by IID using one owned read transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_get_by_iid(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_get_call(
-            CrudKind::Entity,
-            ReadTarget::Database(&*database),
-            prepared,
-            model,
-            iid,
-            cancellation,
-        )
-    }
-}
-
-/// Replace and rehydrate one exact projected entity, then commit once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_update(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
-    create: *const TypeBridgeProjectedCreate,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
-                MemoryRange::of_object(create),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_write_thing_call(
-            CrudKind::Entity,
-            WriteTarget::Database(&*database),
-            prepared,
-            model,
-            create,
-            Some(iid),
-            cancellation,
-        )
-    }
-}
-
-/// Blind-delete one exact projected entity by IID and commit once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_delete_by_iid(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
-    cancellation: *const TypeBridgeCancellation,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges and the complete target are retained until preparation.
-    let prepared = match unsafe {
-        prepare_diagnostics_output_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_delete_call(
-            CrudKind::Entity,
-            WriteTarget::Database(&*database),
-            prepared,
-            model,
-            iid,
-            cancellation,
-        )
-    }
-}
-
-/// Count exact projected entity instances using one owned read transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_entity_count(
-    database: *const TypeBridgeDatabase,
-    model: *const TypeBridgeProjectedTokenV1,
-    cancellation: *const TypeBridgeCancellation,
-    out_count: *mut u64,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges and the complete target are retained until preparation.
-    let prepared = match unsafe {
-        prepare_count_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::Database(database),
-            &[
-                MemoryRange::of_object(database),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_count,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if database.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller retains the database handle and all delegated inputs for this call.
-    unsafe {
-        run_count_call(
-            CrudKind::Entity,
-            ReadTarget::Database(&*database),
-            prepared,
-            model,
-            cancellation,
-        )
-    }
-}
-
-/// Read one exact entity without consuming the caller's read transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_read_transaction_entity_get_by_iid(
-    transaction: *const TypeBridgeReadTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::ReadTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_get_call(
-            CrudKind::Entity,
-            ReadTarget::ReadTransaction(&*transaction),
-            prepared,
-            model,
-            iid,
-            cancellation,
-        )
-    }
-}
-
-/// Count exact entities without consuming the caller's read transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_read_transaction_entity_count(
-    transaction: *const TypeBridgeReadTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    cancellation: *const TypeBridgeCancellation,
-    out_count: *mut u64,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges and the complete target are retained until preparation.
-    let prepared = match unsafe {
-        prepare_count_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::ReadTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_count,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_count_call(
-            CrudKind::Entity,
-            ReadTarget::ReadTransaction(&*transaction),
-            prepared,
-            model,
-            cancellation,
-        )
-    }
-}
-
-macro_rules! invoke_write_transaction_create {
-    (insert, $target:expr, $prepared:expr, $model:expr, $create:expr, $cancellation:expr, $out_thing:expr, $out_diagnostics:expr $(,)?) => {
-        run_write_thing_call(
-            CrudKind::Entity,
-            $target,
-            $prepared,
-            $model,
-            $create,
-            None,
-            $cancellation,
-        )
-    };
-    (put, $target:expr, $prepared:expr, $model:expr, $create:expr, $cancellation:expr, $out_thing:expr, $out_diagnostics:expr $(,)?) => {
-        run_put_call(
-            CrudKind::Entity,
-            $target,
-            $prepared,
-            $model,
-            $create,
-            $cancellation,
-        )
-    };
-}
-
-macro_rules! write_transaction_create_operation {
-    ($name:ident, $operation:ident) => {
-        #[doc = "Execute one exact entity mutation without terminally consuming the write transaction."]
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(
-            transaction: *const TypeBridgeWriteTransaction,
-            model: *const TypeBridgeProjectedTokenV1,
-            create: *const TypeBridgeProjectedCreate,
-            cancellation: *const TypeBridgeCancellation,
-            out_thing: *mut *mut TypeBridgeProjectedThing,
-            out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-        ) -> TypeBridgeStatus {
-            // SAFETY: all caller input ranges are described before any output write.
-            let prepared = match unsafe {
-                prepare_thing_outputs_for_legacy_policy_target(
-                    LegacyPolicyTarget::WriteTransaction(transaction),
-                    &[
-                        MemoryRange::of_object(transaction),
-                        MemoryRange::of_object(model),
-                        MemoryRange::of_object(create),
-                        MemoryRange::of_object(cancellation),
-                    ],
-                    out_thing,
-                    out_diagnostics,
-                )
-            } {
-                Ok(value) => value,
-                Err(status) => return status,
-            };
-            if transaction.is_null() {
-                return TypeBridgeStatus::InvalidArgument;
-            }
-            // SAFETY: caller provides serialized access to the live transaction handle.
-            unsafe {
-                invoke_write_transaction_create!(
-                    $operation,
-                    WriteTarget::Transaction(&*transaction),
-                    prepared,
-                    model,
-                    create,
-                    cancellation,
-                    out_thing,
-                    out_diagnostics,
-                )
-            }
-        }
-    };
-}
-
-write_transaction_create_operation!(type_bridge_write_transaction_entity_insert, insert);
-write_transaction_create_operation!(type_bridge_write_transaction_entity_put, put);
-
-/// Update one exact entity without consuming the caller's write transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_write_transaction_entity_update(
-    transaction: *const TypeBridgeWriteTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
-    create: *const TypeBridgeProjectedCreate,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::WriteTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
-                MemoryRange::of_object(create),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_write_thing_call(
-            CrudKind::Entity,
-            WriteTarget::Transaction(&*transaction),
-            prepared,
-            model,
-            create,
-            Some(iid),
-            cancellation,
-        )
-    }
-}
-
-/// Read one exact entity without consuming the caller's write transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_write_transaction_entity_get_by_iid(
-    transaction: *const TypeBridgeWriteTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
-    cancellation: *const TypeBridgeCancellation,
-    out_thing: *mut *mut TypeBridgeProjectedThing,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges are described before any output write.
-    let prepared = match unsafe {
-        prepare_thing_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::WriteTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_thing,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_get_call(
-            CrudKind::Entity,
-            ReadTarget::WriteTransaction(&*transaction),
-            prepared,
-            model,
-            iid,
-            cancellation,
-        )
-    }
-}
-
-/// Blind-delete one entity without consuming the caller's write transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_write_transaction_entity_delete_by_iid(
-    transaction: *const TypeBridgeWriteTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    iid: TypeBridgeByteView,
-    cancellation: *const TypeBridgeCancellation,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges and the complete target are retained until preparation.
-    let prepared = match unsafe {
-        prepare_diagnostics_output_for_legacy_policy_target(
-            LegacyPolicyTarget::WriteTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_bytes(iid),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_delete_call(
-            CrudKind::Entity,
-            WriteTarget::Transaction(&*transaction),
-            prepared,
-            model,
-            iid,
-            cancellation,
-        )
-    }
-}
-
-/// Count exact entities without consuming the caller's write transaction.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_write_transaction_entity_count(
-    transaction: *const TypeBridgeWriteTransaction,
-    model: *const TypeBridgeProjectedTokenV1,
-    cancellation: *const TypeBridgeCancellation,
-    out_count: *mut u64,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: all caller input ranges and the complete target are retained until preparation.
-    let prepared = match unsafe {
-        prepare_count_outputs_for_legacy_policy_target(
-            LegacyPolicyTarget::WriteTransaction(transaction),
-            &[
-                MemoryRange::of_object(transaction),
-                MemoryRange::of_object(model),
-                MemoryRange::of_object(cancellation),
-            ],
-            out_count,
-            out_diagnostics,
-        )
-    } {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    if transaction.is_null() {
-        return TypeBridgeStatus::InvalidArgument;
-    }
-    // SAFETY: caller provides serialized access to the live transaction handle.
-    unsafe {
-        run_count_call(
-            CrudKind::Entity,
-            ReadTarget::WriteTransaction(&*transaction),
-            prepared,
-            model,
-            cancellation,
-        )
     }
 }

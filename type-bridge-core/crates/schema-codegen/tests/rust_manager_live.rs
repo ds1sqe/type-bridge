@@ -84,8 +84,8 @@ generated-foreign = {{ package = "type-bridge-generated-schema-foreign", path = 
 serde_json = "1"
 sha2 = "0.10"
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
-type-bridge = {{ path = "{rust_path}", default-features = false, features = ["band8", "band9"] }}
-type-bridge-orm = {{ path = "{orm_path}", default-features = false, features = ["band8", "band9"] }}
+type-bridge = {{ path = "{rust_path}", default-features = false, features = ["band9"] }}
+type-bridge-orm = {{ path = "{orm_path}", default-features = false, features = ["band9"] }}
 
 [patch.crates-io]
 type-bridge = {{ path = "{rust_path}" }}

@@ -10,17 +10,86 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use std::sync::Arc;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId};
 use type_bridge_contract::migration_assertion::BindingId;
-use type_bridge_contract::query_plan::v3::{ArithOp, Builtin, Expr, PlanBuilder, QueryPlanV3};
-use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
+use type_bridge_contract::query_plan::{
+    ArithOp, BuildSelection, BuiltPlans, Builtin, DocumentRole, Expr, PlanBuilder, QueryPlan, Site,
+    ThingDocument,
+};
+use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
+use type_bridge_contract::query_remote::{StagedPlan, StagedResultRef};
 use type_bridge_contract::schema::OwnsFactId;
-use type_bridge_contract::value::CanonicalValue;
-use type_bridge_orm::query_v2_builder::{query_builder_comparator, query_builder_value_type};
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_orm::plan_scalar::plan_value_type;
 
-use crate::query_v2_builder_runtime::python_scalar;
-use crate::query_v2_runtime::{PyQueryV2Authority, value_error};
+use crate::plan_runtime::python_scalar;
+use crate::plan_runtime::{PyPlanAuthority, value_error};
+
+type ModelBulkCell<'py> = Option<(String, Bound<'py, PyAny>)>;
+
+fn plan_scalar(value_type: ValueTypeTag, value: &Bound<'_, PyAny>) -> PyResult<CanonicalValue> {
+    if value_type == ValueTypeTag::String
+        && let Ok(iid) = value.cast::<crate::iid::PyIid>()
+    {
+        return type_bridge_orm::plan_scalar::plan_scalar(
+            value_type,
+            type_bridge_orm::plan_scalar::PlanScalarInput::Text(
+                iid.get().inner.as_str().to_owned(),
+            ),
+        )
+        .map_err(|diagnostic| value_error(&diagnostic));
+    }
+    if value_type == ValueTypeTag::Duration && !value.is_instance_of::<pyo3::types::PyString>() {
+        return crate::runtime_projection::canonical_plan_duration(value.py(), value);
+    }
+    python_scalar(value_type, value)
+}
+
+fn invocation_rows(
+    inputs: &[InputColumn],
+    rows: Vec<Vec<(u32, Option<Bound<'_, PyAny>>)>>,
+) -> PyResult<Vec<InputRow>> {
+    let mut bound = Vec::with_capacity(rows.len());
+    for cells in rows {
+        let mut values = vec![None; inputs.len()];
+        let mut seen = std::collections::BTreeSet::new();
+        for (column, value) in cells {
+            let column = usize::try_from(column).map_err(|_| value_error(&handle_error()))?;
+            let input = inputs
+                .get(column)
+                .ok_or_else(|| value_error(&handle_error()))?;
+            if !seen.insert(column) {
+                return Err(value_error(&invalid(
+                    "plan_input_duplicate",
+                    "an input row gives one column twice",
+                )));
+            }
+            values[column] = value
+                .map(|value| plan_scalar(input.value_type(), &value))
+                .transpose()?;
+        }
+        bound.push(InputRow::new(values));
+    }
+    Ok(bound)
+}
+
+/// One immutable invocation template authored by the shared builder.
+#[pyclass(name = "StagedPlan", module = "type_bridge_core", frozen)]
+pub(crate) struct PyStagedPlan {
+    pub(crate) entry: StagedPlan,
+    pub(crate) authority: Arc<type_bridge_orm::plan_authority::QueryAuthority>,
+}
+
+#[pymethods]
+impl PyStagedPlan {
+    /// Dependency metadata, without future IID values.
+    fn result_refs_json(&self) -> PyResult<String> {
+        serde_json::to_string(self.entry.result_refs())
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    }
+}
 
 fn invalid(code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
@@ -67,6 +136,43 @@ pub(crate) struct PyPlanBuilderCore {
 }
 
 impl PyPlanBuilderCore {
+    fn finish(
+        &self,
+        py: Python<'_>,
+        authority: &PyPlanAuthority,
+        selection: BuildSelection<'_>,
+        models: bool,
+    ) -> PyResult<PyPlan> {
+        let _entry = crate::perf_stages::entry().entered();
+        if let Some(error) = &self.error {
+            return Err(error.clone_ref(py));
+        }
+        let authority = authority.authority();
+        let semantics = authority
+            .context()
+            .managed_state()
+            .managed_semantic_schema()
+            .clone();
+        let result = self.core.build_selected_plans(
+            authority.declared(),
+            semantics,
+            selection,
+            type_bridge_contract::split::SplitLimits::CANONICAL,
+        );
+        result
+            .and_then(|plan| {
+                if models {
+                    plan.validate_model_projection()?;
+                }
+                Ok(plan)
+            })
+            .map(|plan| PyPlan {
+                plans: Some(Arc::new(PyPlanProgram::Raw(Box::new(plan)))),
+                decoder: None,
+            })
+            .map_err(|diagnostic| value_error(&diagnostic))
+    }
+
     fn fail(&mut self, error: PyErr) {
         if self.error.is_none() {
             self.error = Some(error);
@@ -156,9 +262,12 @@ impl PyPlanBuilderCore {
 #[pymethods]
 impl PyPlanBuilderCore {
     #[new]
-    fn new() -> Self {
+    #[pyo3(signature = (query_limits=None))]
+    fn new(query_limits: Option<PyRef<'_, crate::match_runtime::PyQueryLimits>>) -> Self {
         Self {
-            core: PlanBuilder::new(),
+            core: PlanBuilder::with_limits(
+                query_limits.map_or_else(Default::default, |limits| limits.inner()),
+            ),
             error: None,
             literals: Vec::new(),
             exprs: Vec::new(),
@@ -181,11 +290,39 @@ impl PyPlanBuilderCore {
         }
     }
 
+    /// Restrict a matched binding to a validated nominal IID.
+    fn by_iid(&mut self, owner: u32, iid: PyRef<'_, crate::iid::PyIid>) {
+        let owner = self.binding(owner);
+        self.core.by_iid(owner, iid.inner.as_str());
+    }
+
+    /// Restrict a matched binding to an invocation IID column.
+    fn by_iid_input(&mut self, owner: u32, column: u32) {
+        let owner = self.binding(owner);
+        let Some(column) = self.check(
+            u16::try_from(column)
+                .map(InputColumnId::new)
+                .map_err(|_| handle_error()),
+        ) else {
+            return;
+        };
+        self.core.by_iid_input(owner, column);
+    }
+
     /// Bind the value of `owner`'s field named by its owns identity.
     fn field(&mut self, owner: u32, owns_json: &str) -> u32 {
         let owner = self.binding(owner);
         match self.owns_id(owns_json) {
             Some(field) => index(self.core.field(owner, field.attribute().clone())),
+            None => 0,
+        }
+    }
+
+    /// Reuse a generated handle's field binding through the shared core.
+    fn field_value(&mut self, owner: u32, owns_json: &str) -> u32 {
+        let owner = self.binding(owner);
+        match self.owns_id(owns_json) {
+            Some(field) => index(self.core.field_value(owner, field.attribute().clone())),
             None => 0,
         }
     }
@@ -203,24 +340,139 @@ impl PyPlanBuilderCore {
     fn compare(&mut self, left: (String, u32), comparator: &str, right: (String, u32)) {
         let left = self.operand(left);
         let right = self.operand(right);
-        if let Some(comparator) = self.check(query_builder_comparator(comparator)) {
+        if let Some(comparator) = self.check(comparator.parse().map_err(Diagnostic::from)) {
             self.core.compare(left, comparator, right);
         }
     }
 
     /// Declare a typed input column; returns its column index.
     fn input(&mut self, name: &str, value_type: &str, optional: bool) -> u32 {
-        match self.check(query_builder_value_type(value_type)) {
+        match self.check(plan_value_type(value_type)) {
             Some(value_type) => u32::from(self.core.input(name, value_type, optional).get()),
             None => 0,
         }
     }
 
+    /// Copy the recorder so each held write can select its own result terminal.
+    fn copy(&self, py: Python<'_>) -> Self {
+        Self {
+            core: self.core.clone(),
+            error: self.error.as_ref().map(|error| error.clone_ref(py)),
+            literals: self.literals.clone(),
+            exprs: self.exprs.clone(),
+        }
+    }
+
+    /// Bind a host value using the core's implicit input naming rule.
+    fn bind_value(
+        &mut self,
+        owner: u32,
+        field: &str,
+        value_type: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> u32 {
+        let owner = self.binding(owner);
+        let value = plan_value_type(value_type)
+            .map_err(|error| value_error(&error))
+            .and_then(|value_type| plan_scalar(value_type, value));
+        match value {
+            Ok(value) => match self.core.bind_value(Site::new(owner, field), value) {
+                QueryOperand::Input { column } => u32::from(column.get()),
+                _ => unreachable!("bind_value returns an input operand"),
+            },
+            Err(error) => {
+                self.fail(error);
+                0
+            }
+        }
+    }
+
+    /// Bind one bulk table; the core owns naming, shape and input-mode checks.
+    fn bind_rows(
+        &mut self,
+        columns: Vec<(u32, String, String)>,
+        rows: Vec<Vec<Bound<'_, PyAny>>>,
+    ) -> Vec<u32> {
+        let mut typed = Vec::with_capacity(columns.len());
+        for (owner, field, value_type) in columns {
+            let owner = self.binding(owner);
+            let Some(value_type) = self.check(plan_value_type(&value_type)) else {
+                return vec![];
+            };
+            typed.push((Site::new(owner, field), value_type));
+        }
+        let mut values = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut converted = Vec::with_capacity(row.len());
+            for (index, cell) in row.into_iter().enumerate() {
+                let Some((_, value_type)) = typed.get(index) else {
+                    self.check::<()>(Err(invalid(
+                        "plan_builder_row_arity",
+                        "bulk input row has too many values",
+                    )));
+                    return vec![];
+                };
+                match plan_scalar(*value_type, &cell) {
+                    Ok(value) => converted.push(value),
+                    Err(error) => {
+                        self.fail(error);
+                        return vec![];
+                    }
+                }
+            }
+            values.push(converted);
+        }
+        self.core
+            .bind_rows(typed, values)
+            .into_iter()
+            .map(|operand| match operand {
+                QueryOperand::Input { column } => u32::from(column.get()),
+                _ => unreachable!("bind_rows returns input operands"),
+            })
+            .collect()
+    }
+
+    /// Record generated scalar entity rows; core owns grouping and splitting.
+    fn model_rows(&mut self, thing: u32, columns: Vec<String>, rows: Vec<Vec<ModelBulkCell<'_>>>) {
+        let thing = self.binding(thing);
+        let Some(columns) = columns
+            .into_iter()
+            .map(|identity| self.owns_id(&identity))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return;
+        };
+        let mut values = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut cells = Vec::with_capacity(row.len());
+            for cell in row {
+                let value = match cell {
+                    None => None,
+                    Some((value_type, value)) => {
+                        let value = plan_value_type(&value_type)
+                            .map_err(|error| value_error(&error))
+                            .and_then(|kind| plan_scalar(kind, &value));
+                        match value {
+                            Ok(value) => Some(value),
+                            Err(error) => {
+                                self.fail(error);
+                                return;
+                            }
+                        }
+                    }
+                };
+                cells.push(value);
+            }
+            values.push(cells);
+        }
+        self.core.bind_model_columns(thing, columns, values);
+    }
+
     /// Register one canonical literal of `value_type`; returns its index.
     fn literal(&mut self, value_type: &str, value: &Bound<'_, PyAny>) -> u32 {
-        let literal = query_builder_value_type(value_type)
+        let literal = plan_value_type(value_type)
             .map_err(|diagnostic| value_error(&diagnostic))
-            .and_then(|value_type| python_scalar(value_type, value));
+            .and_then(|value_type| plan_scalar(value_type, value));
         let literal = literal.unwrap_or_else(|error| {
             self.fail(error);
             CanonicalValue::Boolean(false)
@@ -264,6 +516,13 @@ impl PyPlanBuilderCore {
         index(self.core.let_(name, expr))
     }
 
+    /// Assign an expression with a name derived by the shared core.
+    fn let_value(&mut self, owner: u32, field: &str, expr: u32) -> u32 {
+        let owner = self.binding(owner);
+        let expr = self.expr(expr);
+        index(self.core.let_value(Site::new(owner, field), expr))
+    }
+
     /// Replace `owner`'s field value with `value`.
     fn update(&mut self, owner: u32, owns_json: &str, value: (String, u32)) {
         let owner = self.binding(owner);
@@ -279,6 +538,15 @@ impl PyPlanBuilderCore {
         let player = self.binding(player);
         if let Some(role) = self.role_id(role_json) {
             self.core.update_player(relation, role, player);
+        }
+    }
+
+    /// Add a player through the core attach stage, preserving existing players.
+    fn link(&mut self, relation: u32, role_json: &str, player: u32) {
+        let relation = self.binding(relation);
+        let player = self.binding(player);
+        if let Some(role) = self.role_id(role_json) {
+            self.core.link(relation, role, player);
         }
     }
 
@@ -342,13 +610,17 @@ impl PyPlanBuilderCore {
     /// Add one input row of `(column, literal or None)` cells. Each column
     /// appears at most once; a column left out is absent.
     fn row(&mut self, cells: Vec<(u32, Option<u32>)>) {
-        let mut row: Vec<Option<CanonicalValue>> = Vec::new();
+        let mut row = vec![None; self.core.input_columns().len()];
         let mut seen = std::collections::BTreeSet::new();
         for (column, literal) in cells {
             let Ok(column) = usize::try_from(column) else {
                 self.check::<()>(Err(handle_error()));
                 return;
             };
+            if column >= row.len() {
+                self.check::<()>(Err(handle_error()));
+                return;
+            }
             if !seen.insert(column) {
                 self.check::<()>(Err(invalid(
                     "plan_input_duplicate",
@@ -369,9 +641,6 @@ impl PyPlanBuilderCore {
                     Some(value)
                 }
             };
-            if row.len() <= column {
-                row.resize(column + 1, None);
-            }
             row[column] = value;
         }
         self.core.row(row);
@@ -386,6 +655,36 @@ impl PyPlanBuilderCore {
         self.core.returning(columns);
     }
 
+    /// Describe one thing and its listed role players.
+    fn fetch(&mut self, thing: u32, roles: Vec<(String, bool)>) {
+        let thing = self.binding(thing);
+        let roles = roles
+            .into_iter()
+            .map(|(role, required)| {
+                self.role_id(&role)
+                    .map(|role| DocumentRole::new(role, required))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(roles) = roles {
+            self.core.fetch(thing, roles);
+        }
+    }
+
+    /// Select a held deletion snapshot after its surrounding block is recorded.
+    fn fetch_held(&mut self, thing: u32, roles: Vec<(String, bool)>) {
+        let thing = self.binding(thing);
+        let roles = roles
+            .into_iter()
+            .map(|(role, required)| {
+                self.role_id(&role)
+                    .map(|role| DocumentRole::new(role, required))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(roles) = roles {
+            self.core.fetch_held(thing, roles);
+        }
+    }
+
     /// Answer the number of rows a read plan matches.
     fn count(&mut self) {
         self.core.count();
@@ -398,34 +697,219 @@ impl PyPlanBuilderCore {
 
     /// Validate the program under `authority`'s declared schema and managed
     /// semantics; the first invalid call, if any, is the error.
-    fn build(&self, py: Python<'_>, authority: PyRef<'_, PyQueryV2Authority>) -> PyResult<PyPlan> {
-        let _entry = crate::perf_stages::entry().entered();
+    #[pyo3(signature = (authority, matched=false, models=false))]
+    fn build(
+        &self,
+        py: Python<'_>,
+        authority: PyRef<'_, PyPlanAuthority>,
+        matched: bool,
+        models: bool,
+    ) -> PyResult<PyPlan> {
+        self.finish(
+            py,
+            &authority,
+            if matched {
+                BuildSelection::Matched
+            } else {
+                BuildSelection::Recorded
+            },
+            models,
+        )
+    }
+    /// Finalize an invocation template with earlier IID result references.
+    fn build_staged(
+        &self,
+        py: Python<'_>,
+        authority: PyRef<'_, PyPlanAuthority>,
+        rows: Vec<Vec<(u32, Option<Bound<'_, PyAny>>)>>,
+        references: &str,
+    ) -> PyResult<PyStagedPlan> {
         if let Some(error) = &self.error {
             return Err(error.clone_ref(py));
         }
         let authority = authority.authority();
-        let semantics = authority
-            .context()
-            .managed_state()
-            .managed_semantic_schema()
-            .clone();
-        self.core
-            .build(authority.declared(), semantics)
-            .map(|plan| PyPlan { plan })
-            .map_err(|diagnostic| value_error(&diagnostic))
+        let rows = invocation_rows(self.core.input_columns(), rows)?;
+        let refs: Vec<StagedResultRef> = serde_json::from_str(references).map_err(|_| {
+            value_error(&invalid(
+                "query_stage_result_ref_input",
+                "result references are malformed",
+            ))
+        })?;
+        let entry = self
+            .core
+            .build_staged(
+                authority.declared(),
+                authority
+                    .context()
+                    .managed_state()
+                    .managed_semantic_schema()
+                    .clone(),
+                rows,
+                refs,
+            )
+            .map_err(|error| value_error(&error))?;
+        Ok(PyStagedPlan { entry, authority })
+    }
+
+    /// Build a selected result directly from this immutable recording.
+    #[pyo3(signature = (authority, kind, thing, roles, columns, projection=None, declared=None, model_slots=None))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3 keeps the existing selected terminal arguments and its installed model authority explicit"
+    )]
+    fn build_selected(
+        &self,
+        py: Python<'_>,
+        authority: PyRef<'_, PyPlanAuthority>,
+        kind: &str,
+        thing: Option<u32>,
+        roles: Vec<(String, bool)>,
+        columns: Vec<u32>,
+        projection: Option<PyRef<'_, crate::runtime_projection::PyRuntimeProjection>>,
+        declared: Option<&str>,
+        model_slots: Option<Vec<(u32, String)>>,
+    ) -> PyResult<PyPlan> {
+        if let Some(error) = &self.error {
+            return Err(error.clone_ref(py));
+        }
+        let binding = |value| {
+            u16::try_from(value)
+                .ok()
+                .and_then(|value| BindingId::new(value).ok())
+                .ok_or_else(|| value_error(&handle_error()))
+        };
+        let columns = columns
+            .into_iter()
+            .map(binding)
+            .collect::<PyResult<Vec<_>>>()?;
+        let document = if kind == "models" {
+            let thing = binding(thing.ok_or_else(|| value_error(&handle_error()))?)?;
+            let roles = roles
+                .into_iter()
+                .map(|(role, required)| {
+                    serde_json::from_str(&role)
+                        .map(|role| DocumentRole::new(role, required))
+                        .map_err(|_| value_error(&identity_error("invalid_role_identity")))
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            Some(ThingDocument::new(thing, roles))
+        } else {
+            None
+        };
+        let selection = match kind {
+            "matched" => BuildSelection::Matched,
+            "count" => BuildSelection::Count,
+            "exists" => BuildSelection::Exists,
+            "rows" => BuildSelection::Rows(&columns),
+            "models" => BuildSelection::Model(
+                document
+                    .as_ref()
+                    .expect("model selection creates a document"),
+            ),
+            _ => {
+                return Err(value_error(&invalid(
+                    "plan_result_selection_unknown",
+                    "the result selection is unknown",
+                )));
+            }
+        };
+        let mut finished = self.finish(py, &authority, selection, kind == "models")?;
+        if (kind == "models" || model_slots.as_ref().is_some_and(|slots| !slots.is_empty()))
+            && let Some(projection) = projection
+        {
+            let source = finished.plans.take().expect("finished plan source");
+            let PyPlanProgram::Raw(plans) = Arc::try_unwrap(source)
+                .unwrap_or_else(|_| unreachable!("fresh plan has one owner"))
+            else {
+                unreachable!("fresh builder returns raw plans")
+            };
+            let model = if kind == "models" {
+                let declared = declared
+                    .ok_or_else(|| value_error(&identity_error("invalid_model_identity")))?;
+                projection.prepare_authored_plan(
+                    *plans,
+                    document.as_ref().expect("model document").thing,
+                    declared,
+                )?
+            } else {
+                projection.prepare_authored_tuple(*plans, model_slots.unwrap_or_default())?
+            };
+            finished.plans = Some(Arc::new(PyPlanProgram::Models(Box::new(model))));
+        }
+        Ok(finished)
+    }
+}
+
+pub(crate) enum PyPlanProgram {
+    Raw(Box<BuiltPlans>),
+    Models(Box<crate::runtime_projection::AuthoredPlanProjection>),
+}
+impl PyPlanProgram {
+    pub(crate) fn plans(&self) -> &[QueryPlan] {
+        match self {
+            Self::Raw(plans) => plans.plans(),
+            Self::Models(model) => model.stack.plans(),
+        }
+    }
+    fn writes(&self) -> bool {
+        match self {
+            Self::Raw(plans) => plans.writes(),
+            Self::Models(model) => model.stack.writes(),
+        }
+    }
+    pub(crate) fn returns_documents(&self) -> bool {
+        match self {
+            Self::Raw(plans) => plans.returns_documents(),
+            Self::Models(_) => true,
+        }
+    }
+    fn is_bulk(&self) -> bool {
+        match self {
+            Self::Raw(plans) => plans.bulk_rows().is_some(),
+            Self::Models(model) => model.bulk,
+        }
+    }
+}
+impl AsRef<[QueryPlan]> for PyPlanProgram {
+    fn as_ref(&self) -> &[QueryPlan] {
+        self.plans()
+    }
+}
+impl AsRef<type_bridge_orm::match_request::PlanFetchStack> for PyPlanProgram {
+    fn as_ref(&self) -> &type_bridge_orm::match_request::PlanFetchStack {
+        let Self::Models(model) = self else {
+            unreachable!("only model programs stage fetch groups")
+        };
+        &model.stack
     }
 }
 
 /// One validated `query-plan/v3` program. `type_bridge.plan.Plan`
 /// subclasses it; a transaction stages either.
-#[pyclass(name = "_Plan", module = "type_bridge_core", subclass, frozen)]
+#[pyclass(name = "_Plan", module = "type_bridge_core", subclass)]
 pub(crate) struct PyPlan {
-    plan: QueryPlanV3,
+    plans: Option<Arc<PyPlanProgram>>,
+    pub(crate) decoder: Option<Py<PyAny>>,
 }
 
 impl PyPlan {
-    pub(crate) const fn inner(&self) -> &QueryPlanV3 {
-        &self.plan
+    pub(crate) fn built(&self) -> PyResult<&Arc<PyPlanProgram>> {
+        self.plans.as_ref().ok_or_else(|| {
+            value_error(&invalid(
+                "plan_not_built",
+                "the plan context must finish before the plan is used",
+            ))
+        })
+    }
+
+    pub(crate) fn inner(&self) -> PyResult<&QueryPlan> {
+        match self.built()?.plans() {
+            [plan] => Ok(plan),
+            _ => Err(value_error(&invalid(
+                "plan_batch_split",
+                "a split or empty bulk has no single wire plan",
+            ))),
+        }
     }
 }
 
@@ -433,37 +917,157 @@ impl PyPlan {
 impl PyPlan {
     /// Copy another plan; lets a Python subclass wrap a built plan.
     #[new]
-    fn new(plan: PyRef<'_, PyPlan>) -> Self {
+    #[pyo3(signature = (plan=None))]
+    fn new(py: Python<'_>, plan: Option<PyRef<'_, PyPlan>>) -> Self {
         Self {
-            plan: plan.plan.clone(),
+            plans: plan.as_ref().and_then(|plan| plan.plans.clone()),
+            decoder: plan
+                .as_ref()
+                .and_then(|plan| plan.decoder.as_ref().map(|decoder| decoder.clone_ref(py))),
         }
+    }
+
+    /// Finalize a context result once, using an already validated core plan.
+    fn _complete(
+        &mut self,
+        py: Python<'_>,
+        plan: PyRef<'_, PyPlan>,
+        decoder: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        if self.plans.is_some() {
+            return Err(value_error(&invalid(
+                "plan_already_built",
+                "a built plan is immutable",
+            )));
+        }
+        if decoder
+            .as_ref()
+            .is_some_and(|decoder| !decoder.bind(py).is_callable())
+        {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "plan result decoder must be callable",
+            ));
+        }
+        self.plans = Some(Arc::clone(plan.built()?));
+        self.decoder = decoder;
+        Ok(())
+    }
+
+    /// Rebind a reusable explicit-input plan through the shared contract.
+    #[pyo3(signature = (authority, rows, decoder_factory=None))]
+    fn bind_rows(
+        &self,
+        py: Python<'_>,
+        authority: PyRef<'_, PyPlanAuthority>,
+        rows: Vec<Vec<(u32, Option<Bound<'_, PyAny>>)>>,
+        decoder_factory: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        if self.built()?.is_bulk() {
+            return Err(value_error(&invalid(
+                "plan_builder_mixed_inputs",
+                "bulk plans are rebuilt from their Values rows",
+            )));
+        }
+        let plan = self.inner()?;
+        let authority = authority.authority();
+        if plan.managed_semantics()
+            != authority
+                .context()
+                .managed_state()
+                .managed_semantic_schema()
+        {
+            return Err(value_error(&invalid(
+                "plan_schema_mismatch",
+                "binding requires the plan's schema authority",
+            )));
+        }
+        let bound = invocation_rows(plan.inputs(), rows)?;
+        let plan = plan
+            .with_given_rows(bound, authority.declared())
+            .map_err(|error| value_error(&error))?;
+        let rebound = BuiltPlans::single(plan);
+        let plans = Arc::new(match self.built()?.as_ref() {
+            PyPlanProgram::Raw(_) => PyPlanProgram::Raw(Box::new(rebound)),
+            PyPlanProgram::Models(model) => {
+                PyPlanProgram::Models(Box::new(model.with_plans(rebound)?))
+            }
+        });
+        let decoder = if let Some(factory) = decoder_factory {
+            let skeleton = Py::new(
+                py,
+                Self {
+                    plans: Some(Arc::clone(&plans)),
+                    decoder: None,
+                },
+            )?;
+            let decoder = factory.call1(py, (skeleton,))?;
+            if decoder.is_none(py) {
+                None
+            } else {
+                Some(decoder)
+            }
+        } else {
+            if self.decoder.is_some() {
+                return Err(value_error(&invalid(
+                    "plan_result_decoder_required",
+                    "a typed template needs its result decoder",
+                )));
+            }
+            None
+        };
+        Ok(Self {
+            plans: Some(plans),
+            decoder,
+        })
+    }
+
+    /// The canonical bytes, identical in every SDK.
+    fn _scalar_rows(
+        &self,
+        py: Python<'_>,
+        rows: PyRef<'_, crate::staged_transaction_runtime::PyRows>,
+    ) -> PyResult<Py<PyAny>> {
+        let rows: Vec<serde_json::Value> = pythonize::depythonize(rows.rows.bind(py))?;
+        let rows = type_bridge_orm::session::staged::PlanAnswer::Rows(rows)
+            .scalar_rows(self.inner()?)
+            .map_err(|error| value_error(&error))?;
+        crate::runtime_projection::canonical_plan_scalar_rows(py, &rows)
     }
 
     /// The canonical bytes, identical in every SDK.
     fn canonical_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        self.plan
+        self.inner()?
             .canonical_bytes()
             .map(|bytes| PyBytes::new(py, &bytes))
             .map_err(|diagnostic| value_error(&diagnostic))
     }
 
+    /// Canonical explanation JSON; transported input values are omitted.
+    fn explain_json(&self) -> PyResult<String> {
+        type_bridge_orm::plan_explain::explain(self.inner()?)
+            .and_then(|explanation| explanation.canonical_bytes())
+            .map(|bytes| String::from_utf8(bytes).expect("canonical JSON is UTF-8"))
+            .map_err(|diagnostic| value_error(&diagnostic))
+    }
+
     /// The plan fingerprint digest in hex.
     fn fingerprint(&self) -> PyResult<String> {
-        self.plan
+        self.inner()?
             .fingerprint()
             .map(|fingerprint| fingerprint.as_fingerprint().digest().to_hex())
             .map_err(|diagnostic| value_error(&diagnostic))
     }
 
     /// Whether the plan writes, which makes an inferred kind `write`.
-    fn writes(&self) -> bool {
-        self.plan.writes()
+    fn writes(&self) -> PyResult<bool> {
+        Ok(self.built()?.writes())
     }
 }
 
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyPlanBuilderCore>()?;
     module.add_class::<PyPlan>()?;
+    module.add_class::<PyStagedPlan>()?;
     Ok(())
 }
 
@@ -473,12 +1077,12 @@ mod tests {
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
-    use type_bridge_orm::query_v2_prepared::QueryAuthority;
+    use type_bridge_orm::plan_authority::QueryAuthority;
     use type_bridge_schema::{
         ManagedDeltaContext, SchemaDocumentSet, build_schema_authority, normalize_documents,
     };
 
-    use crate::purchase_plan::{PROFILE, SCOPE, SOURCE, hand_built_purchase};
+    use crate::purchase_plan::{PROFILE, SCOPE, SOURCE, hand_built_purchase, read_back};
 
     const FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -489,8 +1093,29 @@ mod tests {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
+    #[test]
+    fn staged_iid_values_marshal_directly_to_canonical_strings() {
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| {
+            let iid = pyo3::Py::new(
+                py,
+                crate::iid::PyIid {
+                    inner: type_bridge_contract::id::Iid::new("0xAb12").unwrap(),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                super::plan_scalar(super::ValueTypeTag::String, iid.bind(py).as_any()).unwrap(),
+                super::CanonicalValue::String(
+                    type_bridge_contract::value::CanonicalString::new("0xAb12").unwrap()
+                ),
+            );
+            assert!(super::plan_scalar(super::ValueTypeTag::Long, iid.bind(py).as_any()).is_err());
+        });
+    }
+
     /// The Python golden: the Rust SDK's hand-built purchase under the
-    /// purchase package authority, which a `QueryV2Authority` over the same
+    /// purchase package authority, which a `PlanAuthority` over the same
     /// declared bytes, scope and profile must reproduce. The Python unit
     /// test builds the purchase and compares its bytes with this fixture.
     /// `TB_UPDATE_PLAN_BUILDER_FIXTURE=1` rewrites it.
@@ -522,6 +1147,12 @@ mod tests {
                 .managed_semantic_schema(),
             &semantics
         );
+        let read_back_hex = hex(&read_back(&declared, semantics.clone(), true)
+            .canonical_bytes()
+            .unwrap());
+        let read_back_optional_hex = hex(&read_back(&declared, semantics.clone(), false)
+            .canonical_bytes()
+            .unwrap());
         let purchase = hand_built_purchase(&declared, semantics, "O1", "I1", "A1");
         let fixture = serde_json::json!({
             "scope": SCOPE,
@@ -529,6 +1160,8 @@ mod tests {
             "declared_hex": hex(&declared_bytes),
             "purchase": { "order": "O1", "item_id": "I1", "account_id": "A1" },
             "purchase_hex": hex(&purchase.canonical_bytes().unwrap()),
+            "read_back_hex": read_back_hex,
+            "read_back_optional_hex": read_back_optional_hex,
         });
         let expected = format!("{}\n", serde_json::to_string_pretty(&fixture).unwrap());
         if std::env::var_os("TB_UPDATE_PLAN_BUILDER_FIXTURE").is_some() {

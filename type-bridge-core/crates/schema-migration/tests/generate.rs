@@ -418,6 +418,7 @@ fn closed_backfill_generation_binds_the_exact_head_and_rejects_schema_drift() {
         entity_id("person"),
         AttributeId::new("legacy-name").unwrap(),
         AttributeId::new("display-name").unwrap(),
+        type_bridge_contract::query_plan::TypeMatchMode::Isa,
         BackfillPartition::new(128, AttributeId::new("person-id").unwrap()).unwrap(),
         semantics,
         Some(BackfillReverseProgram::RemoveEqualCopiedDestination),

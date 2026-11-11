@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - 'v2.3.3'
+      - 'v3.0.0'
   workflow_dispatch:
     inputs:
       release_channel:
-        description: Validate the 2.3.3 release identity
+        description: Validate the 3.0.0 release identity
         required: true
         type: choice
         default: candidate
@@ -19,10 +19,10 @@ on:
 # validates one fixed current identity without mutation.
 env:
   # Candidate acceptance verifies the exact stable bytes before the stable tag exists.
-  RELEASE_TAG: 'v2.3.3'
-  RELEASE_VERSION: '2.3.3'
-  PYTHON_RELEASE_VERSION: '2.3.3'
-  SERVER_OCI_MINOR_ALIAS: '2.3'
+  RELEASE_TAG: 'v3.0.0'
+  RELEASE_VERSION: '3.0.0'
+  PYTHON_RELEASE_VERSION: '3.0.0'
+  SERVER_OCI_MINOR_ALIAS: '3.0'
   RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.release_channel || 'stable' }}
   RELEASE_REVISION: ${{ github.sha }}
   RELEASE_ARTIFACT_RUN_ID: ${{ github.run_id }}
@@ -36,7 +36,7 @@ jobs:
   # Run tests before releasing
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -105,7 +105,7 @@ jobs:
   validate-release-identity:
     name: Validate release identity
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       cargo_candidate_artifact_digest: ${{ steps.upload-cargo-candidate.outputs.artifact-digest }}
       cargo_candidate_manifest_sha256: ${{ steps.cargo-candidate.outputs.manifest_sha256 }}
@@ -210,7 +210,7 @@ jobs:
   channel-preflight:
     name: Preflight selected release channel
     needs: [validate-release-identity, accept-python-artifacts, accept-node-package, accept-live-artifact-parity, accept-server-oci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -225,7 +225,7 @@ jobs:
       # may publish every candidate crate. Fail closed on the credential's
       # local shape before npm performs the first irreversible registry write.
       - name: Validate Cargo publication credential shape
-        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.3.3'
+        if: github.event_name == 'push' && github.ref == 'refs/tags/v3.0.0'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
@@ -246,7 +246,7 @@ jobs:
       # granular token can publish. Authenticate here, then make npm's exact
       # package PUT the first registry mutation so it is authoritative.
       - name: Authenticate npm publication credential
-        if: github.event_name == 'push' && github.ref == 'refs/tags/v2.3.3'
+        if: github.event_name == 'push' && github.ref == 'refs/tags/v3.0.0'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -271,10 +271,10 @@ jobs:
       always() &&
       !cancelled() &&
       github.event_name == 'push' &&
-      github.ref == 'refs/tags/v2.3.3' &&
+      github.ref == 'refs/tags/v3.0.0' &&
       needs.channel-preflight.result == 'success'
     needs: [channel-preflight]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
@@ -307,12 +307,12 @@ jobs:
       always() &&
       !cancelled() &&
       github.event_name == 'push' &&
-      github.ref == 'refs/tags/v2.3.3' &&
+      github.ref == 'refs/tags/v3.0.0' &&
       needs.release-tag-preflight.result == 'success' &&
       needs.validate-release-identity.result == 'success' &&
       needs.publish-node-npm.result == 'success'
     needs: [release-tag-preflight, publish-node-npm, validate-release-identity]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       actions: read
@@ -390,7 +390,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             artifact: core-wheels-linux-x86_64
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
@@ -432,18 +432,18 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: python-dist
-          path: tmp/python-v2-platform-root
+          path: tmp/python-platform-root
 
-      - name: Execute target-native V2 authoring artifact
+      - name: Execute target-native authoring artifact
         run: >-
-          python scripts/ci/run_python_v2_platform_artifact.py
-          --root-dist-dir tmp/python-v2-platform-root
+          python scripts/ci/run_python_platform_artifact.py
+          --root-dist-dir tmp/python-platform-root
           --core-dist-dir type-bridge-core/dist
-          --work-dir "${{ runner.temp }}/type-bridge-v2-platform-artifact"
+          --work-dir "${{ runner.temp }}/type-bridge-platform-artifact"
           --expected-version "${{ env.PYTHON_RELEASE_VERSION }}"
           --source-root "${{ github.workspace }}"
           --declared-schema
-          tests/fixtures/query-v2-model-remote-parity-declared.json
+          tests/fixtures/query-model-remote-parity-declared.json
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -456,7 +456,7 @@ jobs:
   build-core-sdist:
     name: Build core sdist
     needs: validate-release-identity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -481,7 +481,7 @@ jobs:
   build-python:
     name: Build type-bridge
     needs: validate-release-identity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -552,7 +552,7 @@ jobs:
   accept-python-artifacts:
     name: Accept Python release artifacts (${{ matrix.python-version }})
     needs: [build-core-wheels, build-core-sdist, build-python]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -805,7 +805,7 @@ jobs:
       matrix:
         include:
           - target: linux-x64-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             artifact: node-native-linux-x64-gnu
             filename: type_bridge_node.linux-x64-gnu.node
           - target: linux-arm64-gnu
@@ -861,7 +861,7 @@ jobs:
   pack-node-package:
     name: Pack Node release candidate
     needs: build-node-native
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: type-bridge-core/crates/node
@@ -986,10 +986,10 @@ jobs:
       matrix:
         include:
           - target: linux-x64-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             node-version: "18"
           - target: linux-x64-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             node-version: "20"
           - target: linux-arm64-gnu
             runner: ubuntu-24.04-arm
@@ -1034,13 +1034,13 @@ jobs:
           npm run smoke:packed-package -- --artifact-directory
           "${{ github.workspace }}/tmp/release-node-package"
 
-  # Build the internal V2 smoke executor once from the exact candidate commit.
+  # Build the internal staged smoke executor once from the exact candidate commit.
   # Live artifact consumers use this immutable binary; it is test support, not
   # a release payload and is never published.
-  build-v2-smoke-server:
-    name: Build V2 smoke server
+  build-staged-smoke-server:
+    name: Build staged smoke server
     needs: validate-release-identity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1050,18 +1050,18 @@ jobs:
         with:
           toolchain: 1.94.1
 
-      - name: Build exact V2 smoke server
+      - name: Build exact staged smoke server
         run: >-
           cargo build --manifest-path type-bridge-core/Cargo.toml
           --release -p type-bridge-server --no-default-features
-          --features band9,v2-query
-          --example v2_smoke_server
+          --features band9,axum-transport
+          --example staged_smoke_server
 
-      - name: Upload immutable V2 smoke server
+      - name: Upload immutable staged smoke server
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: v2-smoke-server
-          path: type-bridge-core/target/release/examples/v2_smoke_server
+          name: staged-smoke-server
+          path: type-bridge-core/target/release/examples/staged_smoke_server
           if-no-files-found: error
 
   # Build one immutable, daemon-importable OCI layout per supported platform.
@@ -1078,7 +1078,7 @@ jobs:
         include:
           - architecture: amd64
             platform: linux/amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - architecture: arm64
             platform: linux/arm64
             runner: ubuntu-24.04-arm
@@ -1150,7 +1150,7 @@ jobs:
   accept-server-oci:
     name: Accept server OCI (${{ matrix.platform }})
     needs: build-server-oci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     strategy:
@@ -1290,7 +1290,7 @@ jobs:
           docker logs ${{ job.services.typedb.id }} >&2 || true
           exit 1
 
-      - name: Run exact-image V1 compatibility and authenticated V2 query
+      - name: Run exact-image staged server smoke
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
@@ -1298,11 +1298,11 @@ jobs:
         run: >-
           timeout --foreground 15m
           bash scripts/ci/run_exact_ignored_rust_test.sh
-          production_binary_serves_v1_health_and_v2_query
+          production_binary_serves_staged_and_removed_routes
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-server --no-default-features
-          --features band9,v2-query
-          --test v2_query_integration_tests
+          --features band9,axum-transport
+          --test raw_integration_tests
 
       - name: Run external generated Rust application through the exact image
         if: matrix.architecture == 'amd64'
@@ -1392,8 +1392,8 @@ jobs:
   # happened in producer jobs; this consumer performs no source build or repack.
   accept-live-artifact-parity:
     name: Accept generated live artifact parity
-    needs: [build-core-wheels, build-python, pack-node-package, build-v2-smoke-server]
-    runs-on: ubuntu-latest
+    needs: [build-core-wheels, build-python, pack-node-package, build-staged-smoke-server]
+    runs-on: ubuntu-24.04
     services:
       typedb:
         # Pin the published linux/amd64 manifest used by GitHub-hosted runners;
@@ -1456,10 +1456,10 @@ jobs:
           name: generated-node-live-fixture
           path: tmp/release-live-artifacts/generated-node
 
-      - name: Download exact V2 smoke server
+      - name: Download exact staged smoke server
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: v2-smoke-server
+          name: staged-smoke-server
           path: tmp/release-live-artifacts/server
 
       - name: Export exact release candidate paths
@@ -1479,7 +1479,7 @@ jobs:
           )
           mapfile -t smoke_servers < <(
             find tmp/release-live-artifacts/server -maxdepth 1 -type f \
-              -name 'v2_smoke_server' -print
+              -name 'staged_smoke_server' -print
           )
           for count in \
             "core wheel:${#core_wheels[@]}" \
@@ -1495,9 +1495,9 @@ jobs:
           python_stage="$GITHUB_WORKSPACE/tmp/release-live-artifacts/generated-python"
           node_stage="$GITHUB_WORKSPACE/tmp/release-live-artifacts/generated-node"
           for required in \
-            "$python_stage/generated_v2/__init__.py" \
+            "$python_stage/generated_package/__init__.py" \
             "$python_stage/schema-authority.json" \
-            "$node_stage/generated_v2/dist/index.js" \
+            "$node_stage/generated_package/dist/index.js" \
             "$node_stage/generated_foreign/dist/index.js" \
             "$node_stage/schema-authority.json" \
             "$node_stage/harness/tests/projection-integration/generated-package-live.test.js" \
@@ -1514,7 +1514,7 @@ jobs:
             "$(realpath "${root_wheels[0]}")" >> "$GITHUB_ENV"
           printf 'TYPE_BRIDGE_NODE_PACKAGE=%s\n' \
             "$(realpath "${node_packages[0]}")" >> "$GITHUB_ENV"
-          printf 'TYPE_BRIDGE_V2_SMOKE_SERVER=%s\n' \
+          printf 'TYPE_BRIDGE_SMOKE_SERVER=%s\n' \
             "$(realpath "${smoke_servers[0]}")" >> "$GITHUB_ENV"
           printf 'TYPE_BRIDGE_GENERATED_PYTHON_STAGE=%s\n' \
             "$(realpath "$python_stage")" >> "$GITHUB_ENV"
@@ -1655,13 +1655,13 @@ jobs:
       always() &&
       !cancelled() &&
       github.event_name == 'push' &&
-      github.ref == 'refs/tags/v2.3.3' &&
+      github.ref == 'refs/tags/v3.0.0' &&
       needs.channel-preflight.result == 'success' &&
       needs.release-tag-preflight.result == 'success' &&
       needs.accept-server-oci.result == 'success' &&
       needs.publish-node-npm.result == 'success'
     needs: [channel-preflight, release-tag-preflight, accept-server-oci, publish-node-npm]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       actions: read
@@ -1851,7 +1851,7 @@ jobs:
               )
           PY
           digest="sha256:$(sha256sum "$stable_raw" | cut -d' ' -f1)"
-          for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do
+          for alias in "$SERVER_OCI_MINOR_ALIAS" 3 latest; do
             alias_raw="$RUNNER_TEMP/alias-${alias}.json"
             alias_error="$RUNNER_TEMP/alias-${alias}.err"
             if python "$TYPE_BRIDGE_SKOPEO_RUNNER" --registry-auth -- \
@@ -1976,7 +1976,7 @@ jobs:
               },
               "revision": os.environ["RELEASE_REVISION"],
               "tag": os.environ["RELEASE_TAG"],
-              "aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],
+              "aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "3", "latest"],
               "attestations": {
                   name: url for name, url in attestation_urls.items() if url
               },
@@ -2009,11 +2009,11 @@ jobs:
       always() &&
       !cancelled() &&
       github.event_name == 'push' &&
-      github.ref == 'refs/tags/v2.3.3' &&
+      github.ref == 'refs/tags/v3.0.0' &&
       needs.channel-preflight.result == 'success' &&
       needs.release-tag-preflight.result == 'success'
     needs: [channel-preflight, release-tag-preflight]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       actions: read
@@ -2122,13 +2122,13 @@ jobs:
       always() &&
       !cancelled() &&
       github.event_name == 'push' &&
-      github.ref == 'refs/tags/v2.3.3' &&
+      github.ref == 'refs/tags/v3.0.0' &&
       needs.release-tag-preflight.result == 'success' &&
       needs.build-core-wheels.result == 'success' &&
       needs.build-core-sdist.result == 'success' &&
       needs.publish-server-oci.result == 'success'
     needs: [build-core-wheels, build-core-sdist, release-tag-preflight, publish-server-oci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       actions: read
@@ -2222,12 +2222,12 @@ jobs:
       always() &&
       !cancelled() &&
       github.event_name == 'push' &&
-      github.ref == 'refs/tags/v2.3.3' &&
+      github.ref == 'refs/tags/v3.0.0' &&
       needs.release-tag-preflight.result == 'success' &&
       needs.build-python.result == 'success' &&
       needs.publish-core-pypi.result == 'success'
     needs: [build-python, release-tag-preflight, publish-core-pypi]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       actions: read
@@ -2307,7 +2307,7 @@ jobs:
       always() &&
       !cancelled() &&
       github.event_name == 'push' &&
-      github.ref == 'refs/tags/v2.3.3' &&
+      github.ref == 'refs/tags/v3.0.0' &&
       needs.release-tag-preflight.result == 'success' &&
       needs.publish-server-oci.result == 'success' &&
       needs.publish-node-npm.result == 'success' &&
@@ -2315,7 +2315,7 @@ jobs:
       needs.publish-python-pypi.result == 'success' &&
       needs.publish-crates.result == 'success'
     needs: [release-tag-preflight, publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: write

@@ -1,3 +1,4 @@
+import { Iid } from "@type-bridge/node";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -11,7 +12,7 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { Plan, QueryV2Error } from "@type-bridge/node";
+import { Plan, PlanError } from "@type-bridge/node";
 import { installRuntimeProjection } from "@type-bridge/node/runtime-projection";
 import { loadNative } from "../../crates/node/dist/native.js";
 
@@ -33,9 +34,6 @@ import {
   QueryLimits,
   QuerySession,
   ExchangeConnection,
-  RemoteGroupedQuery,
-  RemoteQuery,
-  RemoteQuerySession,
   RUNTIME_PROJECTION_JSON,
   Robot,
   RobotId,
@@ -53,11 +51,8 @@ import {
   integerInput,
   qualifyingScore,
   schemaAuthority,
-} from "./generated_v2/dist/index.js";
-import {
-  Identifier as ForeignIdentifier,
-  Person as ForeignPerson,
-} from "./generated_foreign/dist/index.js";
+} from "./generated_package/dist/index.js";
+import * as Foreign from "./generated_foreign/dist/index.js";
 import {
   DirectConnectionPolicy as OrderedDirectConnectionPolicy,
   Identifier as OrderedIdentifier,
@@ -96,6 +91,11 @@ assert.throws(
   /connect requires this generated package's DirectConnectionPolicy/,
 );
 
+assert.throws(
+  () => orderedConnect(new OrderedDirectConnectionPolicy("127.0.0.1:1", "app", { queryLimits: new QueryLimits({ bindings: 8n }) })),
+  /selected_slots/,
+);
+
 function captureNativeDiagnostic(operation) {
   try {
     operation();
@@ -128,6 +128,9 @@ const person = Person.create({
   ...personValues,
   aliases: [Aliases.create("first"), Aliases.create("second")],
 });
+assert.equal(person.deleted, false);
+assert.equal(Person.reference(new Iid("0xa1"), { identifier }).deleted, false);
+assert.throws(() => { person.deleted = true; }, TypeError);
 assert.throws(
   () =>
     Person.create({
@@ -187,14 +190,18 @@ assert.deepEqual(scorePlan().canonicalBytes(), scorePlan().canonicalBytes());
   const robot = plan.exact(Robot);
   plan.update(robot, Robot.robotId, 1n);
   // A key field is immutable; build reports it.
-  assert.throws(() => plan.build(schemaAuthority()), QueryV2Error);
+  assert.throws(() => plan.build(schemaAuthority()), PlanError);
 }
 
 const event = Event.create({ subject: person });
 assert.equal(event.subject, person);
-const reference = Person.reference("person-iid", { identifier });
+const referenceIid = new Iid("0xa1");
+const reference = Person.reference(referenceIid, { identifier });
 assert.equal(reference.__typebridgeForm, "reference");
-assert.equal(reference.iid, "person-iid");
+assert.equal(reference.iid.toString(), "0xa1");
+assert.equal(reference.iid, referenceIid);
+assert.throws(() => Person.reference("0xa1", { identifier }), TypeError);
+assert(reference.iid instanceof Iid);
 assert.throws(() => Identifier.create({}), TypeError);
 assert.throws(() => Score.create(3), TypeError);
 assert.throws(() => Score.create(1n << 63n), TypeError);
@@ -204,23 +211,26 @@ const hydrateComplete = Object.getOwnPropertySymbols(Identifier).find(
 );
 assert(hydrateComplete);
 const hydratedIdentifier = Identifier[hydrateComplete](
-  "identifier-iid",
+  "0xaf",
   "provider-value",
 );
-assert.equal(hydratedIdentifier.iid, "identifier-iid");
+assert.equal(hydratedIdentifier.iid.toString(), "0xaf");
 assert.equal(hydratedIdentifier.value, "provider-value");
 assert(Object.isFrozen(hydratedIdentifier));
-const hydratedPerson = Person[hydrateComplete]("person-iid", {
+const hydratedPerson = Person[hydrateComplete]("0xa1", {
   ...personValues,
   aliases: [],
   nickname: null,
 });
-assert.equal(hydratedPerson.iid, "person-iid");
+assert.equal(hydratedPerson.iid.toString(), "0xa1");
+assert(hydratedPerson.iid instanceof Iid);
+assert.equal(hydratedPerson.iid, hydratedPerson.iid);
+assert.throws(() => Person.reference("0xa1", { identifier }), TypeError);
 assert.equal(hydratedPerson.nickname, null);
 assert.deepEqual(hydratedPerson.aliases, []);
 Employment.create({ employee: person });
 
-const eventReference = Event.reference("event-iid", {});
+const eventReference = Event.reference(new Iid("0xe1"), {});
 Container.create({ item: [eventReference] });
 assert.throws(
   () =>
@@ -304,7 +314,18 @@ assert.equal(
   fractionalInstant,
 );
 
-const foreignPerson = ForeignPerson.create(personValues);
+const foreignPerson = Foreign.Person.create({
+  identifier: Foreign.Identifier.create(personValues.identifier.value),
+  score: Foreign.Score.create(personValues.score.value),
+  valBool: Foreign.ValBool.create(personValues.valBool.value),
+  valConstrained: Foreign.ValConstrained.create(personValues.valConstrained.value),
+  valDate: Foreign.ValDate.create(personValues.valDate.value),
+  valDatetime: Foreign.ValDatetime.create(personValues.valDatetime.value),
+  valDatetimeTz: Foreign.ValDatetimeTz.create(personValues.valDatetimeTz.value),
+  valDecimal: Foreign.ValDecimal.create(personValues.valDecimal.value),
+  valDouble: Foreign.ValDouble.create(personValues.valDouble.value),
+  valDuration: Foreign.ValDuration.create(personValues.valDuration.value),
+});
 const foreignPackage = captureNativeDiagnostic(() =>
   OrderedMembership.create({ member: [foreignPerson] }),
 );
@@ -321,7 +342,7 @@ assert.deepEqual(
 );
 const nestedForeignHydration = captureNativeDiagnostic(() =>
   OrderedPerson[orderedHydrate]("0xb", {
-    identifier: ForeignIdentifier.create("nested-foreign-key"),
+    identifier: Foreign.Identifier.create("nested-foreign-key"),
     score: OrderedScore.create(3n),
     tag: [],
   }),
@@ -424,6 +445,15 @@ const installed = installRuntimeProjection({
 assert(installed.matchSession().exact("person"));
 assert(installed.matchSession().subtypes("party"));
 assert.throws(() => installed.matchSession().exact("unprojected-model"));
+assert.doesNotThrow(
+  () => installRuntimeProjection({
+    projectionJson: RUNTIME_PROJECTION_JSON,
+    semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,
+    projectionFingerprintJson: PROJECTION_FINGERPRINT_JSON,
+    bindings,
+    projectedBatchMaterializer: () => [],
+  }),
+);
 assert.throws(
   () =>
     installRuntimeProjection({
@@ -499,7 +529,14 @@ const remoteCapabilities = [
   "query.stage.require",
   "query.stage.select",
   "query.stage.sort",
-];
+    "query.fetch.thing",
+    "query.let",
+    "query.expr.iid",
+    "query.pipeline.rematch",
+    "query.plan.v3",
+    "query.remote.envelope-v3",
+    "query.remote.answer-dimensions",
+].sort();
 const signingSeed = Buffer.alloc(32, 0x42);
 const signingPrivateKey = crypto.createPrivateKey({
   key: Buffer.concat([
@@ -553,6 +590,14 @@ function remoteAdvertisement() {
 }
 
 function remoteSignedReply(payload, advertisement) {
+  if (payload.format === "typebridge.query-remote-failure/v2") {
+    const kinds = {long:"signed", text_list:"query_identity_list", text:"query_identity"};
+    const details = Object.fromEntries(Object.entries(payload.details).map(([name,value]) => [name,{kind:kinds[value.kind]??value.kind,value:value.value}]));
+    const pathKinds = {field:"contract_field",identifier:"contract_identity"};
+    const diagnostic = {version:1,category:"result_decode",sdk_category:"integrity",query_category:"result_decode",code:payload.code,message:"Typed query evidence does not match the validated request invocation",path:payload.path.map(item=>({kind:pathKinds[item.kind]??item.kind,value:item.value})),details};
+    payload = {answers:[],format:"typebridge.query-remote-response/v3",nonce:payload.nonce,outcome:{kind:"failed",diagnostic},request:payload.request};
+  }
+
   const advertisementFingerprint = remoteFingerprint(
     "typebridge.query.remote-capabilities",
     "typebridge.query-remote-capabilities/v1",
@@ -564,7 +609,7 @@ function remoteSignedReply(payload, advertisement) {
       `"format":"typebridge.query-remote-signed-reply/v1",` +
       `"key":"${key}","key_id":"${signingKeyId}","payload":`,
   );
-  const payloadBytes = Buffer.from(JSON.stringify(payload));
+  const payloadBytes = Buffer.from(JSON.stringify(canonicalProofValue(payload)));
   const digest = crypto
     .createHash("sha256")
     .update(Buffer.from("typebridge.query.remote-reply-signature/v1\0"))
@@ -615,7 +660,7 @@ const generatedRemoteSession = new QuerySession(
           ],
           request: remoteFingerprint(
             "typebridge.query.remote-request",
-            "typebridge.query-remote-request/v2",
+            "typebridge.query-remote-request/v3",
             request,
           ),
         },
@@ -649,7 +694,7 @@ const generatedRemoteNestedCall = qualifyingScore(
   generatedRemotePerson,
   generatedRemoteCall,
 );
-assert.ok(generatedRemoteCall.gteCall(generatedRemoteNestedCall));
+assert.ok(generatedRemoteCall.geCall(generatedRemoteNestedCall));
 assert.throws(
   () => generatedRemoteSession.var(Person, "subtype"),
   (error) =>
@@ -658,9 +703,9 @@ assert.throws(
     error.details.value.value === "subtype",
 );
 const native = loadNative();
-const originalPrepareRemoteRows = native.queryV2PrepareRemoteModelRows;
+const originalPrepareRemoteRows = native.planPrepareRemoteModelRows;
 let capturedFailurePending;
-native.queryV2PrepareRemoteModelRows = (...arguments_) => {
+native.planPrepareRemoteModelRows = (...arguments_) => {
   const pending = originalPrepareRemoteRows(...arguments_);
   capturedFailurePending = pending;
   return pending;
@@ -670,7 +715,7 @@ try {
   await assert.rejects(
     generatedRemoteSession.query(generatedRemotePerson).one(),
     (error) => {
-      assert(error instanceof QueryV2Error);
+      assert(error instanceof PlanError);
       assert.equal(error.category, "result_decode");
       assert.equal(error.sdkCategory, "integrity");
       assert.equal(error.queryCategory, "result_decode");
@@ -715,7 +760,7 @@ try {
     },
   );
 } finally {
-  native.queryV2PrepareRemoteModelRows = originalPrepareRemoteRows;
+  native.planPrepareRemoteModelRows = originalPrepareRemoteRows;
 }
 assert.equal(generatedRemoteExchanges, 1);
 assert(capturedFailurePending);
@@ -726,7 +771,7 @@ await assert.rejects(
     // The protected native pending is captured only to prove the shared
     // one-shot authority was consumed by the public generated execution.
     assert(error instanceof Error);
-    assert.match(error.message, /query_remote_v2_reply_replayed/);
+    assert.match(error.message, /query_remote_reply_replayed/);
     return true;
   },
 );
@@ -765,7 +810,7 @@ const cancelledRemoteExecution = cancelledRemoteSession
 await Promise.resolve();
 transportCancellation.cancel();
 await assert.rejects(cancelledRemoteExecution, (error) => {
-  assert(error instanceof QueryV2Error);
+  assert(error instanceof PlanError);
   assert.equal(error.category, "cancelled");
   assert.equal(error.code, "provider_cancelled");
   return true;
@@ -793,7 +838,7 @@ let beforeExchangeDiagnostic;
 await assert.rejects(
   beforeExchangeSession.query(beforeExchangePerson).one(),
   (error) => {
-    assert(error instanceof QueryV2Error);
+    assert(error instanceof PlanError);
     beforeExchangeDiagnostic = error;
     assert.equal(error.sdkCategory, "cancelled");
     assert.equal(error.code, "provider_cancelled");
@@ -817,7 +862,7 @@ const defaultExchangeSession = new QuerySession(
 );
 await assert.rejects(
   defaultExchangeSession.query(defaultExchangeSession.exact(Person)).rows({ limit: 1n }),
-  (error) => error instanceof QueryV2Error,
+  (error) => error instanceof PlanError,
 );
 defaultExchangeSession.close();
 assert.equal(defaultExchangeLimits.length, 1);
@@ -828,83 +873,6 @@ assert.equal(
   native.DEFAULT_PROXY_QUERY_GRAPH_NODES,
 );
 assert.equal(new QueryExecutionResourceLimits().items, native.DEFAULT_DIRECT_QUERY_ITEMS);
-
-// The 2.2 remote-session names are deprecated aliases: the 2.2.4 TypeScript
-// guide's remote example runs unchanged and sends the same request and gets
-// the same outcome as the 2.3 spelling.
-async function remoteExampleOutcome(legacy) {
-  const sent = [];
-  const exchange = async (request) => {
-    const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
-    // Drop the per-request nonce and clock readings; the rest must match.
-    assert.ok(decoded.limits.deadline_ms > 0 && decoded.limits.deadline_ms <= 30_000);
-    delete decoded.nonce;
-    delete decoded.prepared_at_unix_ms;
-    delete decoded.expires_at_unix_ms;
-    delete decoded.limits.deadline_ms;
-    sent.push(decoded);
-    return new TextEncoder().encode("{}");
-  };
-  const advertisementBytes = generatedAdvertisement;
-  try {
-    if (legacy) {
-      // Verbatim from the 2.2.4 guide (docs/guide/typescript.md).
-      const remote = new RemoteQuerySession(
-        advertisementBytes,
-        exchange,
-        {
-          maxItems: 100n,
-          maxBytes: 8_388_608n,
-          maxCollectionMembers: 1_000n,
-          maxGraphNodes: 1_000n,
-          maxAttributeValues: 1_000n,
-          maxRolePlayers: 1_000n,
-          deadlineMs: 30_000n,
-        },
-      );
-      const person = remote.exact(Person);
-      const rows = await remote.query(person).rows({ limit: 50n });
-      assert.fail(`the offline exchange cannot produce rows: ${rows}`);
-    } else {
-      const remote = new QuerySession(
-        new ExchangeConnection(advertisementBytes, exchange),
-        {
-          resources: new QueryExecutionResourceLimits({
-            timeoutMilliseconds: 30_000n,
-            items: 100n,
-            bytes: 8_388_608n,
-            collectionMembers: 1_000n,
-            graphNodes: 1_000n,
-            attributeValues: 1_000n,
-            rolePlayers: 1_000n,
-          }),
-        },
-      );
-      const person = remote.exact(Person);
-      const rows = await remote.query(person).rows({ limit: 50n });
-      assert.fail(`the offline exchange cannot produce rows: ${rows}`);
-    }
-  } catch (error) {
-    assert.ok(error instanceof QueryV2Error, error);
-    assert.equal(sent.length, 1);
-    return [sent[0], error.category, error.code];
-  }
-}
-const legacyRemoteOutcome = await remoteExampleOutcome(true);
-assert.deepEqual(legacyRemoteOutcome, await remoteExampleOutcome(false));
-assert.equal(BigInt(legacyRemoteOutcome[0].limits.max_items), 100n);
-const legacyRemoteSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  async () => new TextEncoder().encode("{}"),
-  new QueryExecutionResourceLimits({ items: 7n }),
-);
-assert.ok(legacyRemoteSession instanceof QuerySession);
-assert.ok(
-  legacyRemoteSession.query(legacyRemoteSession.exact(Person)) instanceof RemoteQuery,
-);
-assert.equal(RemoteQuery, Query);
-assert.equal(RemoteGroupedQuery, GroupedQuery);
-legacyRemoteSession.close();
 
 const duringDecodeCancellation = new QueryCancellation();
 let duringDecodeExchangeCount = 0;
@@ -934,7 +902,7 @@ const duringDecodeSession = new QuerySession(
           path: [],
           request: remoteFingerprint(
             "typebridge.query.remote-request",
-            "typebridge.query-remote-request/v2",
+            "typebridge.query-remote-request/v3",
             request,
           ),
         },
@@ -955,7 +923,7 @@ let duringDecodeDiagnostic;
 await assert.rejects(
   duringDecodeSession.query(duringDecodePerson).one(),
   (error) => {
-    assert(error instanceof QueryV2Error);
+    assert(error instanceof PlanError);
     duringDecodeDiagnostic = error;
     assert.equal(error.sdkCategory, "cancelled");
     assert.equal(error.code, "provider_cancelled");
@@ -1073,7 +1041,7 @@ function emitSdkQueriesRemoteProofFragment() {
   };
   const producerPaths = [
     "type-bridge-core/crates/node/src/match_runtime.rs",
-    "type-bridge-core/crates/node/src/query_v2_model_remote_runtime.rs",
+    "type-bridge-core/crates/node/src/plan_model_remote_runtime.rs",
     "type-bridge-core/crates/node/typescript/native.ts",
     "type-bridge-core/crates/node/typescript/runtime-projection.ts",
     "type-bridge-core/crates/schema-codegen/src/typescript/runtime.ts",
@@ -1254,8 +1222,8 @@ await assert.rejects(
     limitedRemoteSession
       .query(limitedRemotePerson)
       .where(
-        limitedRemotePerson.field(Person.score).gte(Score.create(1n)),
-        limitedRemotePerson.field(Person.score).gte(Score.create(2n)),
+        limitedRemotePerson.field(Person.score).ge(Score.create(1n)),
+        limitedRemotePerson.field(Person.score).ge(Score.create(2n)),
       )
       .one(),
   (error) => {
@@ -1313,14 +1281,14 @@ for (const sessionSlots of [undefined, 4n]) {
   );
   await assert.rejects(
     async () =>
-      coreQuery.aggregate(
+      coreQuery.reduce(
         corePerson,
         Array.from({ length: slots + 1 }, () => aggregate.count()),
       ),
     (error) => expectCoreRefusal(error, "reducer_cap_exceeded", slots),
   );
   await assert.rejects(
-    async () => coreQuery.aggregate(corePerson, []),
+    async () => coreQuery.reduce(corePerson, []),
     (error) => expectCoreRefusal(error, "empty_reducers"),
   );
   await assert.rejects(
@@ -1380,13 +1348,14 @@ assert.equal(coreRuleExchanges, 0);
 // capability, so preparation now ends one step later, at capability
 // negotiation, which only an adapted plan reaches.
 let wideRemoteRequests = 0;
+async function wideRemoteExchange() {
+  wideRemoteRequests += 1;
+  return new TextEncoder().encode("{}");
+}
 const wideRemoteSession = new QuerySession(
   new ExchangeConnection(
     generatedAdvertisement,
-    async () => {
-      wideRemoteRequests += 1;
-      return new TextEncoder().encode("{}");
-    },
+    wideRemoteExchange,
   ),
   {
     resources: new QueryExecutionResourceLimits({
@@ -1408,7 +1377,7 @@ await assert.rejects(
       .query(wideRemotePerson)
       .where(
         ...Array.from({ length: 38 }, () =>
-          wideRemotePerson.field(Person.score).gte(Score.create(1n)),
+          wideRemotePerson.field(Person.score).ge(Score.create(1n)),
         ),
       )
       .one(),
@@ -1419,31 +1388,45 @@ await assert.rejects(
 );
 assert.equal(wideRemoteRequests, 0);
 
-// Nesting the caller actually wrote is still bounded: alternating conjunction
-// and disjunction thirty-eight deep is refused during adaptation, before
-// capability negotiation, and the refusal names the limit to raise.
-let nestedRemotePredicate = wideRemotePerson.field(Person.score).gte(Score.create(1n));
-for (let depth = 1; depth < 38; depth += 1) {
-  const term = wideRemotePerson.field(Person.score).gte(Score.create(1n));
-  nestedRemotePredicate =
-    depth % 2 === 0 ? nestedRemotePredicate.and(term) : nestedRemotePredicate.or(term);
+// Measured default encoding boundary for this alternating AND/OR terminal.
+const nativePredicateDepth = Number(new QueryLimits().get("predicate_depth"));
+function nestedPredicate(binding,nesting) {
+  let predicate=binding.field(Person.score).ge(Score.create(1n));
+  for(let depth=1;depth<nesting;depth+=1) {
+    const term=binding.field(Person.score).ge(Score.create(1n));
+    predicate=depth%2===0 ? predicate.and(term) : predicate.or(term);
+  }
+  return predicate;
 }
-await assert.rejects(
-  async () =>
-    wideRemoteSession.query(wideRemotePerson).where(nestedRemotePredicate).one(),
-  (error) => {
-    assert.equal(error.category, "resource_limit");
-    assert.equal(error.code, "canonical_json_too_deep");
+for(const nesting of [38,39,40]) {
+  await assert.rejects(async()=>wideRemoteSession.query(wideRemotePerson).where(nestedPredicate(wideRemotePerson,nesting)).one(),error=> {
+    assert.equal(error.category,nesting<=39 ? "unsupported_capability" : "resource_limit");
+    assert.equal(error.code,nesting<=39 ? "unsupported_required_capability" : "canonical_json_too_deep");
     return true;
-  },
-);
-assert.equal(wideRemoteRequests, 0);
+  });
+  assert.equal(wideRemoteRequests,0);
+}
+// Raise only this fixture's codec ceiling to isolate the native structural bound.
+const raisedCanonicalDepth=2*nativePredicateDepth-2;
+const raisedAdvertisement=JSON.parse(generatedAdvertisement);
+raisedAdvertisement.query_limits={canonical_depth:raisedCanonicalDepth};
+const raisedSession=new QuerySession(new ExchangeConnection(Buffer.from(JSON.stringify(canonicalProofValue(raisedAdvertisement))),wideRemoteExchange),{queryLimits:new QueryLimits({canonical_depth:BigInt(raisedCanonicalDepth)})});
+const raisedPerson=raisedSession.exact(Person);
+for(const nesting of [nativePredicateDepth,nativePredicateDepth+1]) {
+  await assert.rejects(async()=>raisedSession.query(raisedPerson).where(nestedPredicate(raisedPerson,nesting)).one(),error=> {
+    assert.equal(error.category,nesting===nativePredicateDepth ? "unsupported_capability" : "resource_limit");
+    assert.equal(error.code,nesting===nativePredicateDepth ? "unsupported_required_capability" : "predicate_limit_exceeded");
+    return true;
+  });
+  assert.equal(wideRemoteRequests,0);
+}
+raisedSession.close();
 wideRemoteSession.close();
 
 const remoteLifecycle = generatedRemoteSession.query(generatedRemotePerson);
 const remoteLifecycleClone = remoteLifecycle.clone();
 const remoteLifecycleDerived = remoteLifecycle.where(
-  generatedRemotePerson.field(Person.score).gte(Score.create(1n)),
+  generatedRemotePerson.field(Person.score).ge(Score.create(1n)),
 );
 const remoteLifecyclePage = generatedRemoteSession.query(generatedRemotePerson);
 const remoteLifecycleCount = generatedRemoteSession.query(generatedRemotePerson);
@@ -1477,14 +1460,14 @@ assert.equal(remoteLifecycle.isClosed, true);
 assert.equal(remoteLifecycleClone.isClosed, false);
 assert.equal(remoteLifecycleDerived.isClosed, false);
 assert.throws(
-  () => remoteLifecycle.where(generatedRemotePerson.iid("0x1")),
+  () => remoteLifecycle.where(generatedRemotePerson.iid(new Iid("0x1"))),
   /query_resource_closed/,
 );
 assert(remoteLifecycleClone.clone());
 async function rejectsClosedRemoteTerminal(invoke) {
   const exchangesBefore = generatedRemoteExchanges;
   await assert.rejects(async () => invoke(), (error) => {
-    assert(error instanceof QueryV2Error);
+    assert(error instanceof PlanError);
     assert.equal(error.code, "query_resource_closed");
     return true;
   });
@@ -1501,16 +1484,16 @@ await rejectsClosedRemoteTerminal(() =>
   remoteLifecycleExists.existsBy(generatedRemotePerson),
 );
 await rejectsClosedRemoteTerminal(() =>
-  remoteLifecycleReduce.aggregate(generatedRemotePerson, [aggregate.count()]),
+  remoteLifecycleReduce.reduce(generatedRemotePerson, [aggregate.count()]),
 );
 await rejectsClosedRemoteTerminal(() =>
-  remoteLifecycleGrouped.aggregate([aggregate.count()]),
+  remoteLifecycleGrouped.reduce([aggregate.count()]),
 );
 await rejectsClosedRemoteTerminal(() =>
-  remoteLifecycleGroupedByField.aggregate([aggregate.count()]),
+  remoteLifecycleGroupedByField.reduce([aggregate.count()]),
 );
 await rejectsClosedRemoteTerminal(() =>
-  remoteLifecycleGroupedByFields.aggregate([aggregate.count()]),
+  remoteLifecycleGroupedByFields.reduce([aggregate.count()]),
 );
 remoteLifecycleDerived.close();
 assert.equal(remoteLifecycleClone.isClosed, false);

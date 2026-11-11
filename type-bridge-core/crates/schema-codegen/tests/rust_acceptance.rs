@@ -28,7 +28,7 @@ const SDK_MODELS_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGME
 const SDK_MODELS_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE";
 
 fn models_source_identity(root: &Path, relative: &str) -> Value {
-    let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+    let bytes = fs::read(root.join(relative)).expect("staged proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
@@ -38,14 +38,14 @@ fn publish_models_package_fragment(results: Vec<Value>) {
     assert_eq!(
         destination.is_some(),
         nonce.is_some(),
-        "V3 proof destination and nonce must be configured together"
+        "staged proof destination and nonce must be configured together"
     );
     let (Some(destination), Some(nonce)) = (destination, nonce) else {
         return;
     };
     let destination = PathBuf::from(destination);
     assert!(destination.is_absolute() && !destination.exists());
-    let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+    let nonce = nonce.to_str().expect("staged proof nonce is UTF-8");
     assert!(
         nonce.len() == 64
             && nonce
@@ -75,17 +75,19 @@ fn publish_models_package_fragment(results: Vec<Value>) {
         "run_nonce": nonce,
         "semantic_profile": support::sdk_profile_matrix::requested("models").semantic_profile,
     });
-    let mut bytes = to_canonical_json(&fragment).expect("V3 package fragment canonicalizes");
+    let mut bytes = to_canonical_json(&fragment).expect("staged package fragment canonicalizes");
     bytes.push(b'\n');
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
-        .expect("V3 package fragment destination is created once");
+        .expect("staged package fragment destination is created once");
     output
         .write_all(&bytes)
-        .expect("V3 package fragment writes");
-    output.sync_all().expect("V3 package fragment is durable");
+        .expect("staged package fragment writes");
+    output
+        .sync_all()
+        .expect("staged package fragment is durable");
 }
 
 #[test]
@@ -341,7 +343,335 @@ fn generated_manager_filter_compile_boundaries_fail_independently() {
     let generated = stage.path().join("generated");
     write_package(&emit(), &generated);
 
-    let cases: [(&str, &str, &[&str]); 4] = [
+    let cases: [(&str, &str, &[&str]); 43] = [
+        (
+            "query-binding-iid-rejects-string",
+            r#"use generated::{AppSchema, Person};
+fn check(mut session: type_bridge::QuerySession<'_, AppSchema>) { let person = session.exact::<Person>().unwrap(); let _ = person.iid("0x10"); }
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "query-binding-iid-list-rejects-string",
+            r#"use generated::{AppSchema, Person};
+fn check(mut session: type_bridge::QuerySession<'_, AppSchema>) { let person = session.exact::<Person>().unwrap(); let _ = person.iid_in(["0x10"]); }
+fn main() {}"#,
+            &["type mismatch", "Iid"],
+        ),
+        (
+            "plan-iid-rejects-string",
+            r#"use generated::{AppSchema, Person};
+fn check(mut plan: type_bridge::plan::PlanBuilder<AppSchema>) { let _ = plan.by_iid::<Person>("0x10"); }
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "plan-iid-input-rejects-string-column",
+            r#"use generated::{AppSchema, Person};
+fn check(mut plan: type_bridge::plan::PlanBuilder<AppSchema>) { let input = plan.input::<String>("iid"); let _ = plan.by_iid_input::<Person>(input); }
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "generated-iid-authoring-rejects-string",
+            r#"use generated::{AppSchema, Person};
+fn check(mut plan: type_bridge::plan::recording::Recording<AppSchema>) { let _ = Person::by_iid(&mut plan, "0x10"); }
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-delete-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().delete_many(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-delete-many-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().delete_many_returning(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-delete-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().delete_returning("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-update-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>, input: generated::PersonCreate) {
+    let _ = db.entities::<Person>().update_many(vec![("0x10".to_owned(), input)]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-delete-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.entities::<Person>().delete_many(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-delete-many-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.entities::<Person>().delete_many_returning(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-delete-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.entities::<Person>().delete_returning("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-update-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>, input: generated::PersonCreate) {
+    let _ = db.entities::<Person>().update_many(vec![("0x10".to_owned(), input)]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-delete-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.relations::<Employment>().delete_many(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-delete-many-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.relations::<Employment>().delete_many_returning(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-delete-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.relations::<Employment>().delete_returning("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-update-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>, input: generated::EmploymentCreate) {
+    let _ = db.relations::<Employment>().update_many(vec![("0x10".to_owned(), input)]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-delete-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.relations::<Employment>().delete_many(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-delete-many-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.relations::<Employment>().delete_many_returning(&["0x10".to_owned()]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-delete-returning-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.relations::<Employment>().delete_returning("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-update-many-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>, input: generated::EmploymentCreate) {
+    let _ = db.relations::<Employment>().update_many(vec![("0x10".to_owned(), input)]);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-delete-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().delete("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-update-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>, input: generated::PersonCreate) {
+    let _ = db.entities::<Person>().update("0x10", input);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-delete-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.entities::<Person>().delete("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-update-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>, input: generated::PersonCreate) {
+    let _ = db.entities::<Person>().update("0x10", input);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-delete-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.relations::<Employment>().delete("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-update-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>, input: generated::EmploymentCreate) {
+    let _ = db.relations::<Employment>().update("0x10", input);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-delete-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.relations::<Employment>().delete("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-update-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>, input: generated::EmploymentCreate) {
+    let _ = db.relations::<Employment>().update("0x10", input);
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-exact-lookup-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().get_by_iid("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-subtypes-lookup-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().subtypes().get_by_iid("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "entities-transaction-lookup-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.entities::<Person>().get_by_iid("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-exact-lookup-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.relations::<Employment>().get_by_iid("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-subtypes-lookup-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.relations::<Employment>().subtypes().get_by_iid("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "relations-transaction-lookup-rejects-string-iid",
+            r#"use generated::{AppSchema, Employment};
+fn check(db: &type_bridge::WriteTransaction<'_, AppSchema>) {
+    let _ = db.relations::<Employment>().get_by_iid("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "subtype-filter-rejects-mutations",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().subtypes().filter().unwrap().delete();
+}
+fn main() {}"#,
+            &["no method named `delete`", "ProjectedSubtypeFilter"],
+        ),
+        (
+            "manager-filter-rejects-string-iid",
+            r#"use generated::{AppSchema, Person};
+fn check(db: &type_bridge::Database<AppSchema>) {
+    let _ = db.entities::<Person>().filter().unwrap().iid("0x10");
+}
+fn main() {}"#,
+            &["mismatched types", "Iid"],
+        ),
+        (
+            "reference-rejects-string-iid",
+            r#"fn main() { let _ = generated::PersonRef::from_iid("0x10"); }"#,
+            &["mismatched types", "Iid"],
+        ),
         (
             "manager-filter-rejects-wrong-owner",
             r#"use generated::{AppSchema, Person, RobotId, RobotType};
@@ -372,7 +702,7 @@ fn main() {}"#,
             &["mismatched types", "Identifier", "Score"],
         ),
         (
-            "manager-filter-exposes-no-mutations",
+            "manager-filter-exposes-no-insert",
             r#"use generated::{AppSchema, Person};
 use type_bridge::Database;
 fn check(db: &Database<AppSchema>) {
@@ -392,6 +722,18 @@ async fn check(read: type_bridge::ReadTransaction<'_, AppSchema>) {
 }
 fn main() {}"#,
             &["cannot move out of `read` because it is borrowed"],
+        ),
+        (
+            "staged-query-requires-result-after-commit",
+            r#"use generated::{AppSchema, Person};
+async fn check(tx: &mut type_bridge::staged::Transaction<AppSchema>) -> type_bridge::Result<()> {
+    let mut session = tx.query()?;
+    let person = session.exact::<Person>()?;
+    let _: Person = session.query(person)?.one().await?;
+    Ok(())
+}
+fn main() {}"#,
+            &["operator has incompatible types", "Person", "Pending"],
         ),
     ];
 
@@ -502,7 +844,7 @@ fn main() {
     let _ = released_connection_compatibility;
 }
 "#,
-        &["band8", "band9"],
+        &["band9"],
     );
 
     let output = cargo_with_env(
@@ -604,7 +946,7 @@ fn main() {}"#,
 
     for (name, source, expected) in cases {
         let consumer = stage.path().join(name);
-        write_consumer_with_features(&consumer, name, source, &["band8", "band9"]);
+        write_consumer_with_features(&consumer, name, source, &["band9"]);
         let output = cargo_with_env(
             &[
                 "check",
@@ -645,7 +987,7 @@ fn check(db: &Database<AppSchema>) {
     let mut session = db.query().unwrap();
     let event = session.exact::<Event>().unwrap();
     let robot = session.exact::<Robot>().unwrap();
-    let _ = event.role(EventType::subject).connects(robot);
+    let _ = event.role(EventType::subject).links(robot);
 }
 fn main() {}"#,
         ),
@@ -657,7 +999,7 @@ fn check(db: &Database<AppSchema>) {
     let mut session = db.query().unwrap();
     let event = session.exact::<Event>().unwrap();
     let robots = session.subtypes::<Robot>().unwrap();
-    let _ = event.role(EventType::subject).connects(robots);
+    let _ = event.role(EventType::subject).links(robots);
 }
 fn main() {}"#,
         ),
@@ -854,36 +1196,47 @@ fn generated_external_manager_contract_compiles_exact_matrix() {
         "manager-consumer",
         r#"
 use generated::{AppSchema, Contract, ContractCreate, ContractType, Empty, Employment, EmploymentFamily, EmploymentType, Helper, Model, Name, Never, Party, PartyFamily, PartyType, Person, PersonCreate, PersonType, Placement, Root, RootChild, RootFamily};
-use type_bridge::{Database, EntityManager, EntitySubtypeManager, Predicate, RelationManager, RelationSubtypeManager, WriteTransaction};
+use type_bridge::{Database, EntityManager, EntitySubtypeManager, Predicate, RelationManager, RelationSubtypeManager, WriteTransaction, WriteResult, BatchWriteResult};
 use type_bridge::value::Text;
+fn target_factories(connection: &type_bridge::Connection<AppSchema>, proxy: &type_bridge::ProxyDatabase<AppSchema>) {
+    let _: EntityManager<'_, AppSchema, Person> = connection.entities::<Person>();
+    let _: RelationManager<'_, AppSchema, Contract> = connection.relations::<Contract>();
+    let _: EntityManager<'_, AppSchema, Person> = proxy.entities::<Person>();
+    let _: RelationManager<'_, AppSchema, Contract> = proxy.relations::<Contract>();
+    let _: EntitySubtypeManager<'_, AppSchema, Party> = connection.entities::<Party>().subtypes();
+    let _: RelationSubtypeManager<'_, AppSchema, Employment> = connection.relations::<Employment>().subtypes();
+}
 async fn positive(db: &Database<AppSchema>, create: PersonCreate) {
     let exact = db.entities::<Person>();
     let _: EntityManager<'_, AppSchema, Person> = exact;
-    let _: Person = exact.insert(create.clone()).await.unwrap();
-    let _: Person = exact.put(create.clone()).await.unwrap();
-    let _: Person = exact.update("0x1", create.clone()).await.unwrap();
-    let _: Vec<Person> = exact.insert_many(vec![create.clone()]).await.unwrap();
-    let _: Vec<Person> = exact.put_many(vec![create.clone()]).await.unwrap();
-    let _: () = exact.delete("0x1").await.unwrap();
-    let _: Option<Person> = exact.get_by_iid("0x1").await.unwrap();
+    let _: WriteResult<Person> = exact.insert(create.clone()).await.unwrap();
+    let _: WriteResult<Person> = exact.put(create.clone()).await.unwrap();
+    let _: WriteResult<Person> = exact.update(&type_bridge::Iid::new("0x1").unwrap(), create.clone()).await.unwrap();
+    let _: BatchWriteResult<Person> = exact.insert_many(vec![create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Person> = exact.put_many(vec![create.clone()]).await.unwrap();
+    let _: () = exact.delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
+    let snapshot: WriteResult<Person> = exact.delete_returning(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
+    if let Some(snapshot) = snapshot.item() { let _: bool = snapshot.deleted(); }
+    let _: BatchWriteResult<Person> = exact.delete_many_returning(&[type_bridge::Iid::new("0x1").unwrap()]).await.unwrap();
+    let _: Option<Person> = exact.get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Person> = exact.all().await.unwrap();
     let _: u64 = exact.count().await.unwrap();
     let _: EntitySubtypeManager<'_, AppSchema, Person> = exact.subtypes();
-    let _: Option<Person> = exact.subtypes().get_by_iid("0x1").await.unwrap();
+    let _: Option<Person> = exact.subtypes().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Person> = exact.subtypes().all().await.unwrap();
     let _: u64 = exact.subtypes().count().await.unwrap();
     let family = db.entities::<Party>().subtypes();
-    let family_value: Option<PartyFamily> = family.get_by_iid("0x1").await.unwrap();
-    if let Some(value) = family_value { let _ = value.name(); narrow(value); }
-    let _: Option<PartyFamily> = family.get_by_iid("0x1").await.unwrap();
+    let family_value: Option<PartyFamily> = family.get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
+    if let Some(value) = family_value { let _ = value.name(); let _: bool = value.deleted(); narrow(value); }
+    let _: Option<PartyFamily> = family.get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<PartyFamily> = family.all().await.unwrap();
     let _: u64 = family.count().await.unwrap();
-    let root_value: Option<RootFamily> = db.entities::<Root>().subtypes().get_by_iid("0x1").await.unwrap();
+    let root_value: Option<RootFamily> = db.entities::<Root>().subtypes().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     if let Some(value) = root_value { match value { RootFamily::Root(root) => { let _ = root.name(); }, RootFamily::RootChild(child) => { let _ = child.name(); } } }
     let root_values: Vec<RootFamily> = db.entities::<Root>().subtypes().all().await.unwrap();
     for value in root_values { match value { RootFamily::Root(root) => { let _ = root.name(); }, RootFamily::RootChild(child) => { let _ = child.name(); } } }
-    let _: Option<RootChild> = db.entities::<RootChild>().subtypes().get_by_iid("0x1").await.unwrap();
-    let _: Option<Never> = db.entities::<Empty>().subtypes().get_by_iid("0x1").await.unwrap();
+    let _: Option<RootChild> = db.entities::<RootChild>().subtypes().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
+    let _: Option<Never> = db.entities::<Empty>().subtypes().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Never> = db.entities::<Empty>().subtypes().all().await.unwrap();
 }
 
@@ -892,43 +1245,48 @@ fn narrow(value: PartyFamily) { match value { PartyFamily::Person(person) => { l
 async fn relation_positive(db: &Database<AppSchema>, create: ContractCreate) {
     let exact = db.relations::<Contract>();
     let _: RelationManager<'_, AppSchema, Contract> = exact;
-    let _: Contract = exact.insert(create.clone()).await.unwrap();
-    let _: Contract = exact.put(create.clone()).await.unwrap();
-    let _: Contract = exact.update("0x1", create.clone()).await.unwrap();
-    let _: Vec<Contract> = exact.insert_many(vec![create.clone()]).await.unwrap();
-    let _: Vec<Contract> = exact.put_many(vec![create.clone()]).await.unwrap();
-    let _: () = exact.delete("0x1").await.unwrap();
-    let _: Option<Contract> = exact.get_by_iid("0x1").await.unwrap();
+    let _: WriteResult<Contract> = exact.insert(create.clone()).await.unwrap();
+    let _: WriteResult<Contract> = exact.put(create.clone()).await.unwrap();
+    let _: WriteResult<Contract> = exact.update(&type_bridge::Iid::new("0x1").unwrap(), create.clone()).await.unwrap();
+    let _: BatchWriteResult<Contract> = exact.insert_many(vec![create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Contract> = exact.put_many(vec![create.clone()]).await.unwrap();
+    let _: () = exact.delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
+    let snapshot: WriteResult<Contract> = exact.delete_returning(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
+    if let Some(snapshot) = snapshot.item() { let _: bool = snapshot.deleted(); }
+    let _: BatchWriteResult<Contract> = exact.delete_many_returning(&[type_bridge::Iid::new("0x1").unwrap()]).await.unwrap();
+    let _: Option<Contract> = exact.get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Contract> = exact.all().await.unwrap();
     let _: u64 = exact.count().await.unwrap();
     let _: RelationSubtypeManager<'_, AppSchema, Contract> = exact.subtypes();
-    let _: Option<Contract> = exact.subtypes().get_by_iid("0x1").await.unwrap();
+    let _: Option<Contract> = exact.subtypes().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Contract> = exact.subtypes().all().await.unwrap();
     let _: u64 = exact.subtypes().count().await.unwrap();
     let family = db.relations::<Employment>().subtypes();
-    let _: Option<EmploymentFamily> = family.get_by_iid("0x1").await.unwrap();
+    let _: Option<EmploymentFamily> = family.get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<EmploymentFamily> = family.all().await.unwrap();
     let _: u64 = family.count().await.unwrap();
 }
 
 async fn transaction_positive(db: &Database<AppSchema>, create: PersonCreate, relation_create: ContractCreate) {
     let tx: WriteTransaction<'_, AppSchema> = db.write().await.unwrap();
-    let _: Person = tx.entities::<Person>().insert(create.clone()).await.unwrap();
-    let _: Person = tx.entities::<Person>().put(create.clone()).await.unwrap();
-    let _: Person = tx.entities::<Person>().update("0x1", create.clone()).await.unwrap();
-    let _: Vec<Person> = tx.entities::<Person>().insert_many(vec![create.clone()]).await.unwrap();
-    let _: Vec<Person> = tx.entities::<Person>().put_many(vec![create.clone()]).await.unwrap();
-    let _: () = tx.entities::<Person>().delete("0x1").await.unwrap();
-    let _: Option<Person> = tx.entities::<Person>().get_by_iid("0x1").await.unwrap();
+    let _: WriteResult<Person> = tx.entities::<Person>().insert(create.clone()).await.unwrap();
+    let _: WriteResult<Person> = tx.entities::<Person>().put(create.clone()).await.unwrap();
+    let _: WriteResult<Person> = tx.entities::<Person>().update(&type_bridge::Iid::new("0x1").unwrap(), create.clone()).await.unwrap();
+    let _: BatchWriteResult<Person> = tx.entities::<Person>().insert_many(vec![create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Person> = tx.entities::<Person>().put_many(vec![create.clone()]).await.unwrap();
+    let _: () = tx.entities::<Person>().delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
+    let _: WriteResult<Person> = tx.entities::<Person>().delete_returning(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
+    let _: Option<Person> = tx.entities::<Person>().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Person> = tx.entities::<Person>().all().await.unwrap();
     let _: u64 = tx.entities::<Person>().count().await.unwrap();
-    let _: Contract = tx.relations::<Contract>().insert(relation_create.clone()).await.unwrap();
-    let _: Contract = tx.relations::<Contract>().put(relation_create.clone()).await.unwrap();
-    let _: Contract = tx.relations::<Contract>().update("0x1", relation_create.clone()).await.unwrap();
-    let _: Vec<Contract> = tx.relations::<Contract>().insert_many(vec![relation_create.clone()]).await.unwrap();
-    let _: Vec<Contract> = tx.relations::<Contract>().put_many(vec![relation_create.clone()]).await.unwrap();
-    let _: () = tx.relations::<Contract>().delete("0x1").await.unwrap();
-    let _: Option<Contract> = tx.relations::<Contract>().get_by_iid("0x1").await.unwrap();
+    let _: WriteResult<Contract> = tx.relations::<Contract>().insert(relation_create.clone()).await.unwrap();
+    let _: WriteResult<Contract> = tx.relations::<Contract>().put(relation_create.clone()).await.unwrap();
+    let _: WriteResult<Contract> = tx.relations::<Contract>().update(&type_bridge::Iid::new("0x1").unwrap(), relation_create.clone()).await.unwrap();
+    let _: BatchWriteResult<Contract> = tx.relations::<Contract>().insert_many(vec![relation_create.clone()]).await.unwrap();
+    let _: BatchWriteResult<Contract> = tx.relations::<Contract>().put_many(vec![relation_create.clone()]).await.unwrap();
+    let _: () = tx.relations::<Contract>().delete(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
+    let _: WriteResult<Contract> = tx.relations::<Contract>().delete_returning(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
+    let _: Option<Contract> = tx.relations::<Contract>().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()).await.unwrap();
     let _: Vec<Contract> = tx.relations::<Contract>().all().await.unwrap();
     let _: u64 = tx.relations::<Contract>().count().await.unwrap();
     tx.commit().await.unwrap();
@@ -953,8 +1311,8 @@ fn query_positive(db: &Database<AppSchema>) {
         & party_name.starts_with(Text::new("Al").unwrap())
         & person_only.eq(Text::new("x").unwrap())
         & person_name.eq_field(party_name)
-        & placement_employee.connects(helper)
-        & contract_contractor.connects(helper);
+        & placement_employee.links(helper)
+        & contract_contractor.links(helper);
     let _ = predicate;
     let _party_query = session.query(party).unwrap();
     let _person_query = session.query(person).unwrap();
@@ -1027,9 +1385,9 @@ async fn insert(db: &Database<AppSchema>) { let _ = db.entities::<Party>().inser
 async fn insert_many(db: &Database<AppSchema>) { let _ = db.entities::<Party>().insert_many(vec![]); }
 async fn put(db: &Database<AppSchema>) { let _ = db.entities::<Party>().put(todo!()); }
 async fn put_many(db: &Database<AppSchema>) { let _ = db.entities::<Party>().put_many(vec![]); }
-async fn update(db: &Database<AppSchema>) { let _ = db.entities::<Party>().update("0x1", todo!()); }
-async fn delete(db: &Database<AppSchema>) { let _ = db.entities::<Party>().delete("0x1"); }
-async fn get_by_iid(db: &Database<AppSchema>) { let _ = db.entities::<Party>().get_by_iid("0x1"); }
+async fn update(db: &Database<AppSchema>) { let _ = db.entities::<Party>().update(&type_bridge::Iid::new("0x1").unwrap(), todo!()); }
+async fn delete(db: &Database<AppSchema>) { let _ = db.entities::<Party>().delete(&type_bridge::Iid::new("0x1").unwrap()); }
+async fn get_by_iid(db: &Database<AppSchema>) { let _ = db.entities::<Party>().get_by_iid(&type_bridge::Iid::new("0x1").unwrap()); }
 async fn all(db: &Database<AppSchema>) { let _ = db.entities::<Party>().all(); }
 async fn count(db: &Database<AppSchema>) { let _ = db.entities::<Party>().count(); }
 fn main() {}"#,
@@ -1170,7 +1528,7 @@ plays:
         ),
         (
             "query-role-rejects-non-player",
-            "use generated::{AppSchema, Contract, ContractType, Person}; use type_bridge::Database; fn f(db: &Database<AppSchema>) { let mut session = db.query().unwrap(); let contract = session.exact::<Contract>().unwrap(); let person = session.exact::<Person>().unwrap(); let _ = contract.role(ContractType::contractor).connects(person); } fn main() {}",
+            "use generated::{AppSchema, Contract, ContractType, Person}; use type_bridge::Database; fn f(db: &Database<AppSchema>) { let mut session = db.query().unwrap(); let contract = session.exact::<Contract>().unwrap(); let person = session.exact::<Person>().unwrap(); let _ = contract.role(ContractType::contractor).links(person); } fn main() {}",
             "RolePlayerBinding",
         ),
         (
@@ -1305,7 +1663,7 @@ fn generated_declaration_boundary_matrix_is_scoped() {
         "Placement",
     ] {
         let expected = format!(
-            "impl CompleteModel for {name} {{ type Create = crate::create::{name}Create; fn iid(&self) -> &str {{ self.iid() }} }}"
+            "impl CompleteModel for {name} {{ type Create = crate::create::{name}Create; fn iid(&self) -> &str {{ self.iid().as_str() }} }}"
         );
         assert_eq!(complete_line(&declarations, name), expected);
     }
@@ -2611,7 +2969,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Attribute wrapper failures from hydration are nested under the owner field.
     let attribute_regex_row = HydratedRow::new(
         AttributeRegexOwner::TYPE_ID_JSON,
-        "attribute-regex-iid".to_owned(),
+        "0xa100".to_owned(),
         vec![(
             AttributeRegexOwnerType::attribute_pattern.owns_id_json(),
             vec![EncodedScalar::String("wrong".to_owned())],
@@ -2623,7 +2981,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let attribute_range_row = HydratedRow::new(
         AttributeRangeOwner::TYPE_ID_JSON,
-        "attribute-range-iid".to_owned(),
+        "0xa101".to_owned(),
         vec![(
             AttributeRangeOwnerType::decimal_window.owns_id_json(),
             vec![Decimal::try_new("11")?.into_encoded_scalar()],
@@ -2635,7 +2993,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let attribute_values_row = HydratedRow::new(
         AttributeValuesOwner::TYPE_ID_JSON,
-        "attribute-values-iid".to_owned(),
+        "0xa102".to_owned(),
         vec![(
             AttributeValuesOwnerType::attribute_choice.owns_id_json(),
             vec![3i64.into_encoded_scalar()],
@@ -2648,7 +3006,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Owns-edge materialization checks use the same descriptors and current field/index paths.
     let edge_regex_row = HydratedRow::new(
         EdgeRegexOwner::TYPE_ID_JSON,
-        "edge-regex-iid".to_owned(),
+        "0xa103".to_owned(),
         vec![(
             EdgeRegexOwnerType::edge_text.owns_id_json(),
             vec![
@@ -2662,7 +3020,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!((err.code(), err.field()), ("regex_violation", "edge_text[1]"));
     let edge_regex_domain_row = HydratedRow::new(
         EdgeRegexOwner::TYPE_ID_JSON,
-        "edge-regex-domain-iid".to_owned(),
+        "0xa104".to_owned(),
         vec![(
             EdgeRegexOwnerType::edge_text.owns_id_json(),
             vec![1i64.into_encoded_scalar()],
@@ -2677,7 +3035,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let alpha_row = HydratedRow::new(
         AlphaOwner::TYPE_ID_JSON,
-        "alpha-iid".to_owned(),
+        "0xa105".to_owned(),
         vec![(
             AlphaOwnerType::shared_score.owns_id_json(),
             vec![75i64.into_encoded_scalar()],
@@ -2689,7 +3047,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let edge_values_row = HydratedRow::new(
         EdgeValuesOwner::TYPE_ID_JSON,
-        "edge-values-iid".to_owned(),
+        "0xa106".to_owned(),
         vec![(
             EdgeValuesOwnerType::edge_choice.owns_id_json(),
             vec![8i64.into_encoded_scalar()],
@@ -2701,7 +3059,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let child_row = HydratedRow::new(
         ChildOwner::TYPE_ID_JSON,
-        "child-iid".to_owned(),
+        "0xa107".to_owned(),
         vec![(
             ChildOwnerType::inherited_score.owns_id_json(),
             vec![25i64.into_encoded_scalar()],
@@ -2712,7 +3070,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(*child.inherited_score().value(), 25);
     let inherited_failure_row = HydratedRow::new(
         ChildOwner::TYPE_ID_JSON,
-        "child-invalid-iid".to_owned(),
+        "0xa108".to_owned(),
         vec![(
             ChildOwnerType::inherited_score.owns_id_json(),
             vec![7i64.into_encoded_scalar()],
@@ -2727,7 +3085,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let timezone_row = HydratedRow::new(
         TimezoneOwner::TYPE_ID_JSON,
-        "timezone-iid".to_owned(),
+        "0xa109".to_owned(),
         vec![(
             TimezoneOwnerType::timezone_value.owns_id_json(),
             vec![timezone.value().into_encoded_scalar()],
@@ -2746,7 +3104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!((err.code(), err.field()), ("string_limit_exceeded", "value"));
     let oversized_row = HydratedRow::new(
         TextOwner::TYPE_ID_JSON,
-        "text-iid".to_owned(),
+        "0xa10a".to_owned(),
         vec![(
             TextOwnerType::plain_text.owns_id_json(),
             vec![EncodedScalar::String(oversized)],
@@ -3046,7 +3404,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seen_keys = SeenKeys::new("seen-key")?;
     let hydrated = HydratedPlayer::from_complete_row(HydratedRow::new(
         Keyed::TYPE_ID_JSON,
-        "keyed-iid".to_owned(),
+        "0xa10b".to_owned(),
         vec![
             (
                 KeyedType::player.owns_id_json(),
@@ -3061,7 +3419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let row = HydratedRow::new(
         Holder::TYPE_ID_JSON,
-        "holder-iid".to_owned(),
+        "0xa10c".to_owned(),
         vec![],
         vec![(HolderType::participant.role_id_json(), vec![hydrated])],
     );
@@ -3307,7 +3665,7 @@ use type_bridge::__codegen::{
 fn player_error(player: HydratedPlayer) -> ValidationError {
     let row = HydratedRow::new(
         ReferenceHolder::TYPE_ID_JSON,
-        "holder-iid".to_owned(),
+        "0xa10c".to_owned(),
         vec![],
         vec![(
             ReferenceHolderType::participant.role_id_json(),
@@ -3318,9 +3676,9 @@ fn player_error(player: HydratedPlayer) -> ValidationError {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let no_key = NoKeyRef::from_iid("no-key-iid")?;
+    let no_key = NoKeyRef::from_iid(type_bridge::Iid::new("0xa10d")?)?;
     let encoded = no_key.into_encoded_reference()?;
-    assert_eq!(encoded.iid(), Some("no-key-iid"));
+    assert_eq!(encoded.iid(), Some("0xa10d"));
     assert!(encoded.keys().is_empty());
 
     let email = Email::new("one@example.test")?;
@@ -3353,7 +3711,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let complete_row = HydratedRow::new(
         MultiKey::TYPE_ID_JSON,
-        "multi-iid".to_owned(),
+        "0xa10e".to_owned(),
         vec![
             (
                 MultiKeyType::email.owns_id_json(),
@@ -3368,7 +3726,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let complete: MultiKey = materialize_model_for_test(&complete_row)?;
     let complete_ref = complete.reference();
-    assert_eq!(complete_ref.iid(), Some("multi-iid"));
+    assert_eq!(complete_ref.iid().map(type_bridge::Iid::as_str), Some("0xa10e"));
     assert!(complete_ref.email().is_some());
     assert!(complete_ref.external_id().is_some());
     let encoded = complete_ref.into_encoded_reference()?;
@@ -3385,7 +3743,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("   ".to_owned()),
         vec![],
     ));
-    assert_eq!((err.code(), err.field()), ("empty_iid", "participant[0].iid"));
+    assert_eq!((err.code(), err.field()), ("invalid_iid", "participant[0].iid"));
 
     let err = player_error(HydratedPlayer::new(
         OneKey::TYPE_ID_JSON,
@@ -3399,14 +3757,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let err = player_error(HydratedPlayer::new(
         NoKey::TYPE_ID_JSON,
-        Some("no-key-iid".to_owned()),
+        Some("0xa10d".to_owned()),
         vec![(email_token, email.value().into_encoded_scalar())],
     ));
     assert_eq!((err.code(), err.field()), ("unexpected_reference_key", "participant[0].keys[0]"));
 
     let err = player_error(HydratedPlayer::new(
         OneKey::TYPE_ID_JSON,
-        Some("one-key-iid".to_owned()),
+        Some("0xa10f".to_owned()),
         vec![(external_token, external_id.value().into_encoded_scalar())],
     ));
     assert_eq!((err.code(), err.field()), ("unexpected_reference_key", "participant[0].keys[0]"));
@@ -3436,7 +3794,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let success = HydratedPlayer::new(
         MultiKey::TYPE_ID_JSON,
-        Some("multi-player-iid".to_owned()),
+        Some("0xa110".to_owned()),
         vec![
             (MultiKeyType::email.owns_id_json(), email.value().into_encoded_scalar()),
             (
@@ -3447,7 +3805,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let row = HydratedRow::new(
         ReferenceHolder::TYPE_ID_JSON,
-        "holder-success".to_owned(),
+        "0xa117".to_owned(),
         vec![],
         vec![(
             ReferenceHolderType::participant.role_id_json(),
@@ -3457,13 +3815,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let holder: ReferenceHolder = materialize_model_for_test(&row)?;
     assert_eq!(holder.participant().len(), 1);
 
-    let _single = SingleLinkCreate::new(OneKeyRef::from_iid("one-iid")?)?;
+    let _single = SingleLinkCreate::new(OneKeyRef::from_iid(type_bridge::Iid::new("0xa111")?)?)?;
     let _mixed = MixedLinkCreate::new(MixedLinkParticipantRef::NoKey(
-        NoKeyRef::from_iid("no-iid")?,
+        NoKeyRef::from_iid(type_bridge::Iid::new("0xa112")?)?,
     ))?;
 
     println!("06B ERROR missing_reference_identity participant[0]");
-    println!("06B ERROR empty_iid participant[0].iid");
+    println!("06B ERROR invalid_iid participant[0].iid");
     println!("06B ERROR duplicate_reference_key participant[0].email");
     println!("06B ERROR unexpected_reference_key participant[0].keys[0]");
     println!("06B ERROR multiple_reference_keys_without_iid participant[0]");
@@ -3667,7 +4025,7 @@ fn sdk_models_generated_package_integrity() {
     let projection = support::rust_projection_on(&source, "rust-acceptance.yaml", &profile);
     assert!(
         !projection.models().is_empty(),
-        "V3 projection has generated models"
+        "staged projection has generated models"
     );
     let package = emit_on(&source, &profile);
     let emitted = package
@@ -3687,14 +4045,15 @@ fn sdk_models_generated_package_integrity() {
     let schema_runtime =
         fs::read_to_string(root.join("type-bridge-core/crates/rust/src/schema.rs"))
             .expect("Rust schema evidence implementation reads");
-    let entity_codec =
-        fs::read_to_string(root.join("type-bridge-core/crates/rust/src/entity_codec.rs"))
-            .expect("Rust entity codec reads");
+    let projected_model =
+        fs::read_to_string(root.join("type-bridge-core/crates/orm/src/projected_model.rs"))
+            .expect("shared projected input authority reads");
     let relation_codec =
         fs::read_to_string(root.join("type-bridge-core/crates/rust/src/relation_codec.rs"))
             .expect("Rust relation codec reads");
     assert!(schema_runtime.contains("projection_evidence_mismatch"));
-    assert!(entity_codec.contains("duplicate_field_evidence"));
+    assert!(projected_model.contains("duplicate_field_token"));
+    assert!(projected_model.contains("duplicate_role_token"));
     assert!(relation_codec.contains("duplicate_role_evidence"));
 
     let rejection_families = [

@@ -23,17 +23,17 @@ use type_bridge_orm::{
     MatchError, MissingOrder, OrderHandle, OrmError, PredicateHandle, ProjectedAttributeValue,
     ProjectedQueryOrigin, ProviderRuntimeOwner, QueryExecutionDeadline,
     QueryExecutionResourceLimits, QueryHandle, QueryTarget, QueryTargetError, Reduction,
-    RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
-    ShapeHandle, SortDirection, UnknownEnumValue, UnvalidatedMatchRequest, ValidatedMatchRequest,
-    Window, lower_match_error, lower_remote_query_diagnostic, query_resource_closed_diagnostic,
+    RemoteModelQueryError, RoleHandle, RowCardinality, SelectionHandle, SessionHandle, ShapeHandle,
+    SortDirection, UnknownEnumValue, UnvalidatedMatchRequest, ValidatedMatchRequest, Window,
+    lower_match_error, lower_remote_query_diagnostic, query_resource_closed_diagnostic,
 };
 
 use crate::orm_runtime::{
-    PyDescriptorRegistry, PyDynamicValue, PyRustDatabase, PyRustTransactionContext,
-    provider_block_on,
+    PyDatabase, PyDescriptorRegistry, PyDynamicValue, PyTransactionContext, provider_block_on,
 };
 use crate::proxy_connection_runtime::PyProxyConnection;
-use crate::validated_result_runtime::PyValidatedMatchResultHandle;
+use crate::staged_transaction_runtime::{PyPending, PyStagedTransaction};
+use crate::validated_result_runtime::{MatchInvocation, PyValidatedMatchResultHandle};
 
 pyo3::create_exception!(
     type_bridge_core,
@@ -138,9 +138,9 @@ struct PyMatchFunctionCallHandle {
 }
 
 pub(crate) struct PyQueryInvocationBudget {
-    resources: QueryExecutionResourceLimits,
+    pub(crate) resources: QueryExecutionResourceLimits,
     deadline: QueryExecutionDeadline,
-    cancellation: AnswerCancellation,
+    pub(crate) cancellation: AnswerCancellation,
 }
 
 impl PyQueryInvocationBudget {
@@ -160,9 +160,59 @@ impl PyQueryInvocationBudget {
 /// Where one generated terminal runs, as Python passes it.
 #[derive(Clone, Copy)]
 enum TerminalTarget<'a> {
-    Database(&'a PyRustDatabase),
-    Transaction(&'a PyRustTransactionContext),
+    Database(&'a PyDatabase),
+    Transaction(&'a PyTransactionContext),
     Proxy(&'a PyProxyConnection),
+}
+
+trait MatchExecutionTarget {
+    type Output;
+    fn execute(
+        self,
+        py: Python<'_>,
+        installed: Option<&Arc<InstalledRuntimeProjection>>,
+        validated: ValidatedMatchRequest,
+        registry: Arc<DescriptorRegistry>,
+        budget: PyQueryInvocationBudget,
+    ) -> PyResult<Self::Output>;
+}
+impl MatchExecutionTarget for TerminalTarget<'_> {
+    type Output = PyValidatedMatchResultHandle;
+    fn execute(
+        self,
+        py: Python<'_>,
+        installed: Option<&Arc<InstalledRuntimeProjection>>,
+        validated: ValidatedMatchRequest,
+        registry: Arc<DescriptorRegistry>,
+        budget: PyQueryInvocationBudget,
+    ) -> PyResult<Self::Output> {
+        execute_on_target(py, self, installed, validated, registry, budget)
+    }
+}
+struct StagedQueryTarget<'a> {
+    transaction: &'a PyStagedTransaction,
+    decoder: Py<PyAny>,
+}
+impl MatchExecutionTarget for StagedQueryTarget<'_> {
+    type Output = PyPending;
+    fn execute(
+        self,
+        py: Python<'_>,
+        installed: Option<&Arc<InstalledRuntimeProjection>>,
+        validated: ValidatedMatchRequest,
+        registry: Arc<DescriptorRegistry>,
+        budget: PyQueryInvocationBudget,
+    ) -> PyResult<Self::Output> {
+        self.transaction.stage_typed_query(
+            py,
+            installed.cloned(),
+            validated,
+            registry,
+            budget.resources,
+            budget.cancellation,
+            self.decoder,
+        )
+    }
 }
 
 /// Canonical cross-binding generated-query execution budgets.
@@ -196,7 +246,8 @@ impl PyQueryExecutionResourceLimits {
         attribute_values=None,
         collection_members=None,
         role_players=None,
-        statements=None
+        statements=None,
+        collect_phase_timestamps=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -208,19 +259,26 @@ impl PyQueryExecutionResourceLimits {
         collection_members: Option<&Bound<'_, PyAny>>,
         role_players: Option<&Bound<'_, PyAny>>,
         statements: Option<&Bound<'_, PyAny>>,
+        collect_phase_timestamps: bool,
     ) -> PyResult<Self> {
         let defaults = QueryExecutionResourceLimits::default();
-        let statements = python_optional_resource_limit(
-            statements,
-            u64::from(defaults.statements),
-            "statements",
-        )?;
+        let statements = statements
+            .map(|value| python_optional_resource_limit(Some(value), 0, "statements"))
+            .transpose()?
+            .map(|value| u32::try_from(value).unwrap_or(u32::MAX));
         let inner = QueryExecutionResourceLimits {
-            timeout_milliseconds: python_optional_resource_limit(
-                timeout_milliseconds,
-                defaults.timeout_milliseconds,
-                "timeout_milliseconds",
-            )?,
+            collect_phase_timestamps,
+            timeout_milliseconds: match timeout_milliseconds {
+                None => defaults.timeout_milliseconds,
+                Some(value) => type_bridge_orm::QueryTimeout::from_signed_milliseconds(
+                    value
+                        .cast_exact::<PyInt>()
+                        .map_err(|_| {
+                            PyTypeError::new_err("timeout_milliseconds must be an exact int")
+                        })?
+                        .extract::<i64>()?,
+                ),
+            },
             items: python_optional_resource_limit(items, defaults.items, "items")?,
             bytes: python_optional_resource_limit(bytes, defaults.bytes, "bytes")?,
             graph_nodes: python_optional_resource_limit(
@@ -243,7 +301,7 @@ impl PyQueryExecutionResourceLimits {
                 defaults.role_players,
                 "role_players",
             )?,
-            statements: u32::try_from(statements).unwrap_or(u32::MAX),
+            statements,
         }
         .validate()
         .map_err(|refusal| PyValueError::new_err(refusal.to_string()))?;
@@ -251,8 +309,13 @@ impl PyQueryExecutionResourceLimits {
     }
 
     #[getter]
-    const fn timeout_milliseconds(&self) -> u64 {
-        self.inner.timeout_milliseconds
+    const fn collect_phase_timestamps(&self) -> bool {
+        self.inner.collect_phase_timestamps
+    }
+
+    #[getter]
+    fn timeout_milliseconds(&self) -> u64 {
+        self.inner.timeout_milliseconds.milliseconds().unwrap_or(0)
     }
 
     #[getter]
@@ -286,7 +349,7 @@ impl PyQueryExecutionResourceLimits {
     }
 
     #[getter]
-    const fn statements(&self) -> u32 {
+    const fn statements(&self) -> Option<u32> {
         self.inner.statements
     }
 }
@@ -337,6 +400,10 @@ pub(crate) struct PyQueryLimits {
 }
 
 impl PyQueryLimits {
+    pub(crate) const fn from_inner(inner: QueryLimits) -> Self {
+        Self { inner }
+    }
+
     pub(crate) const fn inner(&self) -> QueryLimits {
         self.inner
     }
@@ -820,16 +887,16 @@ impl PyMatchFunctionCallHandle {
 
 #[pymethods]
 impl PyMatchBindingHandle {
-    fn iid(&self, iid: &str) -> PyResult<PyMatchPredicateHandle> {
+    fn iid(&self, iid: PyRef<'_, crate::iid::PyIid>) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .iid(iid)
+            .iid(iid.inner.as_str())
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
 
-    fn iid_in(&self, iids: Vec<String>) -> PyResult<PyMatchPredicateHandle> {
+    fn iid_in(&self, iids: Vec<PyRef<'_, crate::iid::PyIid>>) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .iid_in(iids)
+            .iid_in(iids.iter().map(|iid| iid.inner.as_str()))
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
@@ -1102,7 +1169,7 @@ impl PyMatchQueryHandle {
     fn execute_fetch_rows_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         order: Vec<Py<PyMatchOrderHandle>>,
         offset: &Bound<'_, PyAny>,
         limit: &Bound<'_, PyAny>,
@@ -1115,7 +1182,7 @@ impl PyMatchQueryHandle {
     fn execute_fetch_rows_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         order: Vec<Py<PyMatchOrderHandle>>,
         offset: &Bound<'_, PyAny>,
         limit: &Bound<'_, PyAny>,
@@ -1143,7 +1210,7 @@ impl PyMatchQueryHandle {
     fn execute_page_by_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
         offset: &Bound<'_, PyAny>,
@@ -1167,7 +1234,7 @@ impl PyMatchQueryHandle {
     fn execute_page_by_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
         offset: &Bound<'_, PyAny>,
@@ -1213,7 +1280,7 @@ impl PyMatchQueryHandle {
     fn execute_count_by_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Database(database);
@@ -1223,7 +1290,7 @@ impl PyMatchQueryHandle {
     fn execute_count_by_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Transaction(transaction);
@@ -1243,7 +1310,7 @@ impl PyMatchQueryHandle {
     fn execute_exists_by_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Database(database);
@@ -1253,7 +1320,7 @@ impl PyMatchQueryHandle {
     fn execute_exists_by_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Transaction(transaction);
@@ -1295,7 +1362,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
         group: Option<PyRef<'_, PyMatchBindingHandle>>,
         reducers: Vec<String>,
@@ -1312,7 +1379,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
         group: Option<PyRef<'_, PyMatchBindingHandle>>,
         reducers: Vec<String>,
@@ -1364,7 +1431,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_field_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
         group: PyRef<'_, PyMatchFieldHandle>,
         reducers: Vec<String>,
@@ -1380,7 +1447,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_field_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
         group: PyRef<'_, PyMatchFieldHandle>,
         reducers: Vec<String>,
@@ -1432,7 +1499,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_fields_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
         groups: Vec<Py<PyMatchFieldHandle>>,
         reducers: Vec<String>,
@@ -1448,7 +1515,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_fields_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
         groups: Vec<Py<PyMatchFieldHandle>>,
         reducers: Vec<String>,
@@ -1473,6 +1540,136 @@ impl PyMatchQueryHandle {
         let target = TerminalTarget::Proxy(connection);
         self.reduce_by_fields_on(py, target, &root.inner, &groups, &reducers, &inputs)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_fetch_rows(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        order: Vec<Py<PyMatchOrderHandle>>,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
+        cardinality: &str,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.fetch_rows_on(py, target, &order, offset, limit, cardinality)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_page_by(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        order: Vec<Py<PyMatchOrderHandle>>,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
+        include_total: bool,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.page_by_on(
+            py,
+            target,
+            &root.inner,
+            &order,
+            offset,
+            limit,
+            include_total,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_count_by(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.run_terminal(py, target, |query| query.validate_count_by(&root.inner))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_exists_by(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.run_terminal(py, target, |query| query.validate_exists_by(&root.inner))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_reduce_by(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: Option<PyRef<'_, PyMatchBindingHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        let group = group.as_ref().map(|group| &group.inner);
+        self.reduce_by_on(py, target, &root.inner, group, &reducers, &inputs)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_reduce_by_field(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: PyRef<'_, PyMatchFieldHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.reduce_by_field_on(py, target, &root.inner, &group.inner, &reducers, &inputs)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_reduce_by_fields(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        groups: Vec<Py<PyMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.reduce_by_fields_on(py, target, &root.inner, &groups, &reducers, &inputs)
+    }
 }
 
 /// One body per terminal kind; the Python methods above only name the target.
@@ -1480,28 +1677,27 @@ impl PyMatchQueryHandle {
     /// Open one invocation budget, validate the request, and run it on
     /// `target`. The budget is taken first so a closed query or an expired
     /// session refuses before any validation work.
-    fn run_terminal(
+    fn run_terminal<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         validate: impl FnOnce(&QueryHandle) -> Result<ValidatedMatchRequest, OrmError>,
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         self.run_terminal_checked(py, target, |query| {
             validate(query).map_err(py_match_orm_error)
         })
     }
 
-    fn run_terminal_checked(
+    fn run_terminal_checked<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         validate: impl FnOnce(&QueryHandle) -> PyResult<ValidatedMatchRequest>,
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         let budget = self.begin_invocation()?;
         let validated = validate(&self.inner)?;
-        execute_on_target(
+        target.execute(
             py,
-            target,
             self.installed.as_ref(),
             validated,
             self.inner.registry_arc(),
@@ -1509,15 +1705,15 @@ impl PyMatchQueryHandle {
         )
     }
 
-    fn fetch_rows_on(
+    fn fetch_rows_on<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         order: &[Py<PyMatchOrderHandle>],
         offset: &Bound<'_, PyAny>,
         limit: &Bound<'_, PyAny>,
         cardinality: &str,
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         let window = python_window(offset, limit)?;
         self.run_terminal_checked(py, target, |query| {
             let orders = order_handles(py, order);
@@ -1528,16 +1724,16 @@ impl PyMatchQueryHandle {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn page_by_on(
+    fn page_by_on<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         root: &BindingHandle,
         order: &[Py<PyMatchOrderHandle>],
         offset: &Bound<'_, PyAny>,
         limit: &Bound<'_, PyAny>,
         include_total: bool,
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         let window = python_window(offset, limit)?;
         self.run_terminal(py, target, |query| {
             let orders = order_handles(py, order);
@@ -1545,15 +1741,15 @@ impl PyMatchQueryHandle {
         })
     }
 
-    fn reduce_by_on(
+    fn reduce_by_on<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         root: &BindingHandle,
         group: Option<&BindingHandle>,
         reducers: &[String],
         inputs: &[Option<Py<PyMatchFieldHandle>>],
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         self.run_terminal_checked(py, target, |query| {
             let terms = reduce_terms(py, reducers, inputs)?;
             let terms = borrow_reduce_terms(&terms);
@@ -1563,15 +1759,15 @@ impl PyMatchQueryHandle {
         })
     }
 
-    fn reduce_by_field_on(
+    fn reduce_by_field_on<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         root: &BindingHandle,
         group: &FieldHandle,
         reducers: &[String],
         inputs: &[Option<Py<PyMatchFieldHandle>>],
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         self.run_terminal_checked(py, target, |query| {
             let terms = reduce_terms(py, reducers, inputs)?;
             let terms = borrow_reduce_terms(&terms);
@@ -1581,15 +1777,15 @@ impl PyMatchQueryHandle {
         })
     }
 
-    fn reduce_by_fields_on(
+    fn reduce_by_fields_on<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         root: &BindingHandle,
         groups: &[Py<PyMatchFieldHandle>],
         reducers: &[String],
         inputs: &[Option<Py<PyMatchFieldHandle>>],
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         self.run_terminal_checked(py, target, |query| {
             let groups = groups
                 .iter()
@@ -1718,19 +1914,24 @@ fn execute_and_materialize(
 pub(crate) fn py_query_target_error(error: QueryTargetError) -> PyErr {
     match error {
         QueryTargetError::Direct(error) => py_match_orm_error(error),
+        QueryTargetError::Commit(error) => py_sdk_diagnostic(error.diagnostic()),
         QueryTargetError::Prepare(error) | QueryTargetError::Reply(error) => {
             py_remote_model_error(error)
         }
         QueryTargetError::Interrupted(diagnostic) => py_sdk_diagnostic(diagnostic),
+        error @ QueryTargetError::Callback(_) => py_sdk_diagnostic(
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read),
+        ),
     }
 }
 
-pub(crate) fn py_remote_model_error(error: RemoteModelQueryV2Error) -> PyErr {
+pub(crate) fn py_remote_model_error(error: RemoteModelQueryError) -> PyErr {
     match error {
-        RemoteModelQueryV2Error::Diagnostic(diagnostic) => {
+        RemoteModelQueryError::Diagnostic(diagnostic) => {
             py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
         }
-        RemoteModelQueryV2Error::Match(error) => py_match_error(error),
+        RemoteModelQueryError::Match(error) => py_match_error(error),
+        RemoteModelQueryError::Execution(error) => py_sdk_diagnostic(error),
     }
 }
 
@@ -1742,6 +1943,25 @@ pub(crate) fn validated_result_handle(
     registry: Arc<DescriptorRegistry>,
     budget: PyQueryInvocationBudget,
 ) -> PyResult<PyValidatedMatchResultHandle> {
+    validated_invocation_handle(
+        installed,
+        origin,
+        MatchInvocation::Owned {
+            request: validated,
+            result,
+        },
+        registry,
+        budget,
+    )
+}
+
+pub(crate) fn validated_invocation_handle(
+    installed: Option<&Arc<InstalledRuntimeProjection>>,
+    origin: Option<ProjectedQueryOrigin>,
+    invocation: MatchInvocation,
+    registry: Arc<DescriptorRegistry>,
+    budget: PyQueryInvocationBudget,
+) -> PyResult<PyValidatedMatchResultHandle> {
     let projected = installed
         .zip(origin)
         .map(|(installed, origin)| {
@@ -1749,33 +1969,23 @@ pub(crate) fn validated_result_handle(
                 .materialize_borrowed_with_budget(
                     installed,
                     &registry,
-                    &validated,
-                    &result,
+                    invocation.request(),
+                    invocation.result(),
                     budget.resources.projected(),
                     &budget.cancellation,
                     Some(budget.deadline),
                 )
-                .map(|(value, _measure)| value)
+                .map(|(value, _)| value)
                 .map_err(py_sdk_diagnostic)
         })
         .transpose()?;
-    match projected {
-        Some(projected) => Ok(PyValidatedMatchResultHandle::new_with_projected_budget(
-            validated,
-            result,
-            registry,
-            projected,
-            budget.deadline,
-            budget.cancellation,
-        )),
-        None => Ok(PyValidatedMatchResultHandle::new_with_budget(
-            validated,
-            result,
-            registry,
-            budget.deadline,
-            budget.cancellation,
-        )),
-    }
+    Ok(PyValidatedMatchResultHandle::from_invocation(
+        invocation,
+        registry,
+        projected,
+        budget.deadline,
+        budget.cancellation,
+    ))
 }
 
 pub(crate) fn order_handles(py: Python<'_>, values: &[Py<PyMatchOrderHandle>]) -> Vec<OrderHandle> {
@@ -1916,6 +2126,7 @@ fn canonical_enum_spelling(kind: &str, value: &str) -> PyResult<&'static str> {
 
 pub(crate) fn py_match_orm_error(error: OrmError) -> PyErr {
     match error {
+        OrmError::ExecutionDiagnostic(diagnostic) => py_sdk_diagnostic(*diagnostic),
         OrmError::Match(error) => py_match_error(error),
         // Provider failures raised `RuntimeError` before typed failures; keep
         // that class so `except RuntimeError` still matches.
@@ -2322,6 +2533,36 @@ mod tests {
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
+    fn execution_timeline_detail_is_preserved() {
+        let timeline: type_bridge_contract::execution_timeline::ExecutionTimeline =
+            serde_json::from_value(serde_json::json!({
+                "anchor_unix_milliseconds": 1000,
+                "stamps": [
+                    {"phase": "fired", "offset_milliseconds": 0},
+                    {"phase": "failed", "offset_milliseconds": 5, "failing_phase": "fired"}
+                ]
+            }))
+            .unwrap();
+        let diagnostic = type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()
+            .try_with_detail(
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("execution_timeline").unwrap(),
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticDetailValue::ExecutionTimeline(timeline.clone()),
+            ).unwrap();
+        Python::initialize();
+        let expected = serde_json::to_value(diagnostic.host_json()).unwrap();
+        let error =
+            crate::orm_runtime::py_orm_error(OrmError::ExecutionDiagnostic(Box::new(diagnostic)));
+        Python::attach(|py| {
+            let details: serde_json::Value =
+                pythonize::depythonize(&error.value(py).getattr("details").unwrap()).unwrap();
+            assert_eq!(
+                details["execution_timeline"],
+                expected["details"]["execution_timeline"]
+            );
+        });
+    }
+
+    #[test]
     fn opaque_wrappers_are_narrow_and_thread_safe() {
         assert_eq!(
             size_of::<PyMatchBindingHandle>(),
@@ -2401,6 +2642,73 @@ mod tests {
             diagnostic_from_request(query.count_by(&person)).unwrap(),
             include_str!("../../orm/tests/fixtures/match_request/single-count.json").trim()
         );
+    }
+
+    #[test]
+    fn nominal_iid_predicates_preserve_bytes_and_refuse_strings() {
+        Python::initialize();
+        Python::attach(|py| {
+            let session = SessionHandle::new(registry());
+            let person = session.exact("person").unwrap();
+            let query = session
+                .query(session.positional([person.one()]).unwrap())
+                .unwrap();
+            let binding = Py::new(
+                py,
+                PyMatchBindingHandle {
+                    inner: person.clone(),
+                },
+            )
+            .unwrap();
+            let iid = Py::new(
+                py,
+                crate::iid::PyIid {
+                    inner: type_bridge_contract::id::Iid::new("0xAb12").unwrap(),
+                },
+            )
+            .unwrap();
+            for (method, expected) in [
+                ("iid", person.iid("0xAb12").unwrap()),
+                ("iid_in", person.iid_in(["0xAb12"]).unwrap()),
+            ] {
+                let actual = if method == "iid" {
+                    binding.bind(py).call_method1(method, (&iid,)).unwrap()
+                } else {
+                    binding
+                        .bind(py)
+                        .call_method1(method, (vec![&iid],))
+                        .unwrap()
+                };
+                let actual = actual
+                    .extract::<PyRef<'_, PyMatchPredicateHandle>>()
+                    .unwrap();
+                assert_eq!(
+                    diagnostic_from_request(
+                        query
+                            .where_predicate(actual.inner.clone())
+                            .unwrap()
+                            .count_by(&person)
+                    )
+                    .unwrap(),
+                    diagnostic_from_request(
+                        query.where_predicate(expected).unwrap().count_by(&person)
+                    )
+                    .unwrap(),
+                );
+            }
+            for error in [
+                binding
+                    .bind(py)
+                    .call_method1("iid", ("0xAb12",))
+                    .unwrap_err(),
+                binding
+                    .bind(py)
+                    .call_method1("iid_in", (vec!["0xAb12"],))
+                    .unwrap_err(),
+            ] {
+                assert!(error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+            }
+        });
     }
 
     #[test]
@@ -2541,6 +2849,46 @@ mod tests {
                 })
             );
         });
+    }
+
+    #[test]
+    fn orm_execution_diagnostic_keeps_commit_category_details_and_owned_message() {
+        use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
+        Python::initialize();
+        for outcome in [
+            SdkCommitFailureOutcome::DefinitelyAborted,
+            SdkCommitFailureOutcome::Unknown,
+        ] {
+            let diagnostic = type_bridge_orm::lower_classified_commit_error(
+                type_bridge_orm::ClassifiedCommitError::Driver {
+                    certainty: if outcome == SdkCommitFailureOutcome::DefinitelyAborted {
+                        type_bridge_orm::CommitFailureCertainty::DefinitelyAborted
+                    } else {
+                        type_bridge_orm::CommitFailureCertainty::Unknown
+                    },
+                    message: "SECRET_SENTINEL".into(),
+                },
+            );
+            let expected = serde_json::to_value(diagnostic.host_json()).unwrap();
+            let error = crate::orm_runtime::py_orm_error(OrmError::ExecutionDiagnostic(Box::new(
+                diagnostic,
+            )));
+            Python::attach(|py| {
+                let value = error.value(py);
+                assert_eq!(
+                    value
+                        .getattr("category")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "transaction"
+                );
+                let details: serde_json::Value =
+                    pythonize::depythonize(&value.getattr("details").unwrap()).unwrap();
+                assert_eq!(details, expected["details"]);
+                assert!(!error.to_string().contains("SECRET_SENTINEL"));
+            });
+        }
     }
 
     #[test]
@@ -2772,7 +3120,7 @@ mod tests {
             globals.set_item("m", &module).unwrap();
             py.run(
                 pyo3::ffi::c_str!(
-                    "plus = m.QueryExecutionResourceLimits(30001, 65537, 33554433, 65537, 65537, 65537, 65537, 3)\nzero = m.QueryExecutionResourceLimits(0, 0, 0, 0, 0, 0, 0, 0)\nrefused = []\nfor arguments in ({'timeout_milliseconds': 86400001}, {'statements': 4}):\n    try:\n        m.QueryExecutionResourceLimits(**arguments)\n    except ValueError as error:\n        refused.append(str(error))"
+                    "plus = m.QueryExecutionResourceLimits(30001, 65537, 33554433, 65537, 65537, 65537, 65537, 3)\nzero = m.QueryExecutionResourceLimits(0, 0, 0, 0, 0, 0, 0, 0)\nrefused = []\nassert m.QueryExecutionResourceLimits(timeout_milliseconds=86400001).timeout_milliseconds == 86400001\nassert m.QueryExecutionResourceLimits(timeout_milliseconds=-1).timeout_milliseconds == 0\nfor arguments in ({'statements': 4097},):\n    try:\n        m.QueryExecutionResourceLimits(**arguments)\n    except ValueError as error:\n        refused.append(str(error))"
                 ),
                 Some(&globals),
                 None,
@@ -2786,9 +3134,8 @@ mod tests {
                 .unwrap()
                 .extract::<Vec<String>>()
                 .unwrap();
-            assert_eq!(refused.len(), 2, "{refused:?}");
-            assert!(refused[0].contains("timeout_milliseconds"), "{refused:?}");
-            assert!(refused[1].contains("statements"), "{refused:?}");
+            assert_eq!(refused.len(), 1, "{refused:?}");
+            assert!(refused[0].contains("statements"), "{refused:?}");
             for (name, expected) in [
                 ("timeout_milliseconds", 30_001_u64),
                 ("items", 65_537),

@@ -70,25 +70,25 @@ def checkout(authority: Any, account_id: str, order_id: str, cart: list[tuple[st
     plan = Plan.builder()
     buyer = plan.exact(Account)
     balance = plan.field(buyer, Account.balance)
-    plan.where_(plan.field(buyer, Account.account_id).eq(account_id))
+    plan.where(plan.field(buyer, Account.account_id).eq(account_id))
 
     lines = []
     costs = []
     for sku, quantity in cart:
         item = plan.exact(Item)
         stock = plan.field(item, Item.stock)
-        plan.where_(plan.field(item, Item.sku).eq(sku)).where_(stock.ge(quantity))
+        plan.where(plan.field(item, Item.sku).eq(sku)).where(stock.ge(quantity))
         costs.append(plan.field(item, Item.price) * quantity)
         lines.append((item, stock, quantity))
     cart_total = costs[0]
     for cost in costs[1:]:
         cart_total = cart_total + cost
-    total = plan.let_("total", cart_total)
-    plan.where_(balance.ge(total))
+    total = plan.let("total", cart_total)
+    plan.where(balance.ge(total))
 
     for number, (item, stock, quantity) in enumerate(lines, start=1):
-        plan.update(item, Item.stock, plan.let_(f"stock_{number}", stock - quantity))
-    plan.update(buyer, Account.balance, plan.let_("balance_after", balance - total))
+        plan.update(item, Item.stock, plan.let(f"stock_{number}", stock - quantity))
+    plan.update(buyer, Account.balance, plan.let("balance_after", balance - total))
     for item, _, quantity in lines:
         (
             plan.insert(OrderLine)
@@ -109,8 +109,8 @@ def count_where(
     """Count the things of `model` whose `key` and `field` hold the given values."""
     plan = Plan.builder()
     thing = plan.exact(model)
-    plan.where_(plan.field(thing, key).eq(key_value))
-    plan.where_(plan.field(thing, field).eq(value))
+    plan.where(plan.field(thing, key).eq(key_value))
+    plan.where(plan.field(thing, field).eq(value))
     return plan.count().build(authority)
 
 

@@ -13,12 +13,17 @@ use type_bridge_contract::value::ValueTypeTag;
 
 use crate::{
     EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,
-    documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
+    documentation_annotation, invalid, model_documentation,
 };
+
+#[path = "plan.rs"]
+mod plan;
 
 const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "CrudEvent",
     "CrudHook",
+    "DirectConnectionPolicy",
+    "DirectTlsMode",
     "FieldToken",
     "FunctionRef",
     "HookCancelled",
@@ -27,6 +32,9 @@ const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "ProjectedModelManager",
     "ProjectedModelNotFoundError",
     "RoleToken",
+    "BatchWriteResult",
+    "WriteResult",
+    "connect",
 ];
 const PUBLIC_QUERY_NAMES: &[&str] = &[
     "Aggregate",
@@ -48,10 +56,6 @@ const PUBLIC_QUERY_NAMES: &[&str] = &[
     "QueryLimits",
     "QueryOrder",
     "QuerySession",
-    "RemoteGroupedQuery",
-    "RemoteQuery",
-    "RemoteQueryLimits",
-    "RemoteQuerySession",
     "SubtypeBoundVar",
     "aggregate",
     "connect_proxy",
@@ -69,6 +73,7 @@ const PUBLIC_SCHEMA_NAMES: &[&str] = &[
 const MODEL_RESERVED_NAMES: &[&str] = &[
     "value",
     "iid",
+    "deleted",
     "__model_form__",
     "__projection__",
     "__runtime_projection__",
@@ -84,6 +89,22 @@ const MODEL_RESERVED_NAMES: &[&str] = &[
     "query",
     "runtime_attribute_value",
     "runtime_values",
+    "match",
+    "subtypes",
+    "by_iid",
+    "insert",
+    "put",
+    "insert_many",
+    "put_many",
+    "Values",
+    "where",
+    "set",
+    "unset",
+    "link",
+    "unlink",
+    "delete",
+    "delete_returning",
+    "__plan_roles__",
 ];
 
 macro_rules! canonical_text {
@@ -100,7 +121,6 @@ pub(super) fn render(
     py_typed: &[u8],
 ) -> Result<GeneratedPackage, Diagnostic> {
     validate_projection(projection)?;
-    let ordered = projection_uses_ordered_collections(projection);
     GeneratedPackage::try_new([
         (
             "_authority.py".to_owned(),
@@ -108,19 +128,19 @@ pub(super) fn render(
         ),
         (
             "__init__.py".to_owned(),
-            finish(render_init(projection, false, ordered)),
+            finish(render_init(projection, false)),
         ),
         (
             "__init__.pyi".to_owned(),
-            finish(render_init(projection, true, ordered)),
+            finish(render_init(projection, true)),
         ),
         (
             "_models.py".to_owned(),
-            finish(render_models(projection, false, ordered)?),
+            finish(render_models(projection, false)?),
         ),
         (
             "_models.pyi".to_owned(),
-            finish(render_models(projection, true, ordered)?),
+            finish(render_models(projection, true)?),
         ),
         ("_runtime.py".to_owned(), runtime_source.to_vec()),
         ("_runtime.pyi".to_owned(), runtime_stub.to_vec()),
@@ -147,7 +167,7 @@ fn finish(mut source: String) -> Vec<u8> {
     source.into_bytes()
 }
 
-fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> String {
+fn render_init(projection: &RuntimeProjection, stub: bool) -> String {
     let mut output = String::from(
         "from ._runtime import CrudEvent as CrudEvent\n\
          from ._runtime import CrudHook as CrudHook\n\
@@ -159,18 +179,18 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._runtime import ProjectedModelManager as ProjectedModelManager\n\
          from ._runtime import ProjectedModelNotFoundError as ProjectedModelNotFoundError\n\
          from ._runtime import RoleToken as RoleToken\n\
+         from ._runtime import BatchWriteResult as BatchWriteResult\n\
+         from ._runtime import WriteResult as WriteResult\n\
          from ._runtime import decode_archive as decode_archive\n\
          from ._runtime import decode_archive_controlled as decode_archive_controlled\n\
          from ._runtime import encode_archive as encode_archive\n\
          from ._runtime import encode_archive_controlled as encode_archive_controlled\n",
     );
-    if ordered {
-        output.push_str(
-            "from ._runtime import DirectConnectionPolicy as DirectConnectionPolicy\n\
+    output.push_str(
+        "from ._runtime import DirectConnectionPolicy as DirectConnectionPolicy\n\
              from ._runtime import DirectTlsMode as DirectTlsMode\n\
              from ._runtime import connect as connect\n",
-        );
-    }
+    );
     let query_imports = "from ._query import Aggregate as Aggregate\n\
          from ._query import BoundField as BoundField\n\
          from ._query import BoundRole as BoundRole\n\
@@ -190,35 +210,31 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._query import QueryLimits as QueryLimits\n\
          from ._query import QueryOrder as QueryOrder\n\
          from ._query import QuerySession as QuerySession\n\
-         from ._query import RemoteGroupedQuery as RemoteGroupedQuery\n\
-         from ._query import RemoteQuery as RemoteQuery\n\
-         from ._query import RemoteQueryLimits as RemoteQueryLimits\n\
-         from ._query import RemoteQuerySession as RemoteQuerySession\n\
          from ._query import SubtypeBoundVar as SubtypeBoundVar\n\
          from ._query import aggregate as aggregate\n\
          from ._query import connect_proxy as connect_proxy\n";
-    if stub || !ordered {
+    if stub {
         output.push_str(query_imports);
     }
     if stub {
         output.push_str(
-            "from collections.abc import Mapping\nfrom typing import Final\nfrom type_bridge_core import MigrationCatalog as MigrationCatalog\nfrom type_bridge_core import QueryV2Authority as _QueryV2Authority\n\n\
+            "from collections.abc import Mapping\nfrom typing import Final\nfrom type_bridge_core import MigrationCatalog as MigrationCatalog\nfrom type_bridge_core import PlanAuthority as _PlanAuthority\n\n\
              MIGRATION_HISTORY_RESOURCE: Final[str]\n\
              SEMANTIC_SCHEMA_FINGERPRINT_JSON: Final[str]\n\
              PROJECTION_FINGERPRINT_JSON: Final[str]\n\
              RUNTIME_PROJECTION_JSON: Final[str]\n\
              PLAYING_FACTS: Final[Mapping[str, object]]\n\n\
              def open_migration_catalog() -> MigrationCatalog: ...\n\
-             def schema_authority() -> _QueryV2Authority:\n\
+             def schema_authority() -> _PlanAuthority:\n\
              \x20\x20\x20\x20\"\"\"This package's verified schema authority; build plans with `plan.build(schema_authority())`.\"\"\"\n",
         );
     } else {
         output.push_str(
             "from pathlib import Path as _Path\n\
              from type_bridge_core import MigrationCatalog as MigrationCatalog\n\
-             from type_bridge_core import QueryV2Authority as _QueryV2Authority\n\
+             from type_bridge_core import PlanAuthority as _PlanAuthority\n\
              from type_bridge_core import open_migration_catalog as _open_migration_catalog\n\
-             from type_bridge_core import query_v2_authority_from_schema_authority as _query_v2_authority_from_schema_authority\n\
+             from type_bridge_core import plan_authority_from_schema_authority as _plan_authority_from_schema_authority\n\
              from ._authority import SCHEMA_AUTHORITY_BYTES as _SCHEMA_AUTHORITY_BYTES\n\
              from ._schema import PLAYING_FACTS as PLAYING_FACTS\n\
              from ._schema import PROJECTION_FINGERPRINT_JSON as PROJECTION_FINGERPRINT_JSON\n\
@@ -228,12 +244,12 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
              def open_migration_catalog() -> MigrationCatalog:\n\
              \x20\x20\x20\x20history = (_Path(__file__).parent / MIGRATION_HISTORY_RESOURCE).read_bytes()\n\
              \x20\x20\x20\x20return _open_migration_catalog(_SCHEMA_AUTHORITY_BYTES, history)\n\n\
-             _schema_authority: list[_QueryV2Authority] = []\n\n\
-             def schema_authority() -> _QueryV2Authority:\n\
+             _schema_authority: list[_PlanAuthority] = []\n\n\
+             def schema_authority() -> _PlanAuthority:\n\
              \x20\x20\x20\x20\"\"\"This package's verified schema authority; build plans with `plan.build(schema_authority())`.\"\"\"\n\
              \x20\x20\x20\x20if not _schema_authority:\n\
              \x20\x20\x20\x20\x20\x20\x20\x20_schema_authority.append(\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20_query_v2_authority_from_schema_authority(\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20_plan_authority_from_schema_authority(\n\
              \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20_SCHEMA_AUTHORITY_BYTES, SEMANTIC_SCHEMA_FINGERPRINT_JSON.encode(\"utf-8\")\n\
              \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20)\n\
              \x20\x20\x20\x20\x20\x20\x20\x20)\n\
@@ -250,6 +266,11 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
         let model = &projection.models()[id];
         import(&mut output, model.target_name().as_str());
         exports.push(model.target_name().as_str().to_owned());
+        if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+            let name = format!("{}Handle", model.target_name().as_str());
+            import(&mut output, &name);
+            exports.push(name);
+        }
         if let Some(reference) = model.reference_read().target_name() {
             import(&mut output, reference.as_str());
             exports.push(reference.as_str().to_owned());
@@ -309,7 +330,7 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
         import(&mut output, &name);
         exports.push(name);
     }
-    if ordered && !stub {
+    if !stub {
         output.push_str(query_imports);
     }
     exports.sort();
@@ -367,20 +388,10 @@ fn render_schema(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     Ok(output)
 }
 
-fn render_models(
-    projection: &RuntimeProjection,
-    stub: bool,
-    ordered: bool,
-) -> Result<String, Diagnostic> {
+fn render_models(projection: &RuntimeProjection, stub: bool) -> Result<String, Diagnostic> {
     let mut body = String::new();
     for id in projection.emission().model_shells() {
-        render_model(
-            &mut body,
-            projection,
-            &projection.models()[id],
-            stub,
-            ordered,
-        )?;
+        render_model(&mut body, projection, &projection.models()[id], stub)?;
     }
     for id in projection.emission().structs() {
         render_struct(&mut body, &projection.structs()[id], stub)?;
@@ -402,6 +413,7 @@ fn render_models(
                     model.target_name().as_str(),
                     python_string(&metadata)?
                 );
+                plan::roles(&mut body, model);
             }
         }
         body.push_str("_install_runtime_projection(\n    _RUNTIME_PROJECTION_JSON,\n    _SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n    _PROJECTION_FINGERPRINT_JSON,\n    [\n");
@@ -441,7 +453,7 @@ fn render_models(
             &mut emitted_calls,
         )?;
     }
-    let defer_query_imports = ordered && !stub;
+    let defer_query_imports = !stub;
     if defer_query_imports {
         render_model_query_imports(&mut body, &function_body);
         body.push('\n');
@@ -461,6 +473,9 @@ fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> Str
     let mut collections = Vec::new();
     if body.contains("Iterator[") {
         collections.push("Iterator");
+    }
+    if body.contains("Iterable[") {
+        collections.push("Iterable");
     }
     if body.contains("Sequence[") {
         collections.push("Sequence");
@@ -489,6 +504,18 @@ fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> Str
         output.push_str("from decimal import Decimal\n");
     }
     let mut typing = Vec::new();
+    if body.contains("TypedDict") {
+        typing.push("TypedDict");
+    }
+    if body.contains("Required[") {
+        typing.push("Required");
+    }
+    if body.contains("@overload") {
+        typing.push("overload");
+    }
+    if body.contains("cast(") {
+        typing.push("cast");
+    }
     if body.contains("Final[") {
         typing.push("Final");
     }
@@ -498,7 +525,40 @@ fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> Str
     if !typing.is_empty() {
         let _ = writeln!(output, "from typing import {}", typing.join(", "));
     }
+    if body.contains("iid: _Iid") {
+        output.push_str("from type_bridge_core import Iid as _Iid\n");
+    }
     let mut runtime = Vec::new();
+    if body.contains("_PlanHandle[") {
+        let plan = [
+            ("Plan as _Plan", "_Plan["),
+            ("Handle as _PlanHandle", "_PlanHandle["),
+            ("Value as _PlanValue", "_PlanValue["),
+            ("Expr as _PlanExpr", "_PlanExpr["),
+            ("PlanInput as _PlanInput", "_PlanInput["),
+        ]
+        .into_iter()
+        .filter_map(|(import, usage)| body.contains(usage).then_some(import))
+        .collect::<Vec<_>>();
+        let _ = writeln!(output, "from type_bridge.plan import {}", plan.join(", "));
+        if !stub {
+            let calls = [
+                ("_match as _plan_match", "_plan_match("),
+                ("_insert as _plan_insert", "_plan_insert("),
+                ("_bulk_insert as _plan_bulk_insert", "_plan_bulk_insert("),
+                ("_MISSING as _PLAN_MISSING", "_PLAN_MISSING"),
+            ]
+            .into_iter()
+            .filter_map(|(import, usage)| body.contains(usage).then_some(import))
+            .collect::<Vec<_>>();
+            let _ = writeln!(
+                output,
+                "from type_bridge.plan import {}  # pyright: ignore[reportPrivateUsage]",
+                calls.join(", ")
+            );
+            runtime.push("plan_authority as _plan_authority");
+        }
+    }
     if body.contains("FunctionRef") {
         runtime.push("FunctionRef");
     }
@@ -601,7 +661,6 @@ fn render_model(
     projection: &RuntimeProjection,
     model: &ModelProjection,
     stub: bool,
-    ordered: bool,
 ) -> Result<(), Diagnostic> {
     let name = model.target_name().as_str();
     let documentation = model_documentation(model);
@@ -628,8 +687,7 @@ fn render_model(
         let id = canonical_text!(model.id());
         let _ = writeln!(output, "    __type_id__ = {}", python_string(&id)?);
         output.push_str("    __model_form__ = \"complete\"\n");
-        if ordered
-            && model.declaration().parent().is_none()
+        if model.declaration().parent().is_none()
             && matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation)
         {
             output.push_str("    __slots__ = (\"__weakref__\",)\n");
@@ -647,6 +705,7 @@ fn render_model(
     } else if !stub {
         output.push_str("    pass\n");
     }
+    plan::model(output, projection, model, stub)?;
     output.push('\n');
 
     if let Some(reference) = model.reference_read().target_name() {
@@ -664,7 +723,7 @@ fn render_model(
             let id = canonical_text!(model.id());
             let _ = writeln!(output, "    __type_id__ = {}", python_string(&id)?);
             output.push_str("    __model_form__ = \"reference\"\n");
-            if ordered && inherited_reference.is_none() {
+            if inherited_reference.is_none() {
                 output.push_str("    __slots__ = (\"__weakref__\",)\n");
             } else {
                 output.push_str("    __slots__ = ()\n");
@@ -673,6 +732,7 @@ fn render_model(
         render_reference_constructor(output, projection, model, stub)?;
         output.push('\n');
     }
+    plan::handle(output, projection, model, stub)?;
     Ok(())
 }
 
@@ -760,9 +820,15 @@ fn render_descriptors(
         let attribute = TypeId::new(TypeKind::Attribute, id.attribute().label().as_str())?;
         let _ = writeln!(
             output,
-            "    {}: _FieldDescriptor[{owner}, {}, {read}, {assign}]",
+            "    {}: _FieldDescriptor[{owner}, {}, {read}, {assign}, {}]",
             token.target_name().as_str(),
-            projection.models()[&attribute].target_name().as_str()
+            projection.models()[&attribute].target_name().as_str(),
+            scalar_type(
+                projection.models()[&attribute]
+                    .declaration()
+                    .value_type()
+                    .ok_or_else(|| facet_error("plan field has no scalar domain"))?
+            )
         );
     }
     for (id, token) in model
@@ -918,9 +984,9 @@ fn render_reference_constructor(
         }
     }
     let signature = if parameters.is_empty() {
-        "self, iid: str".to_owned()
+        "self, iid: _Iid".to_owned()
     } else {
-        format!("self, iid: str, *, {}", parameters.join(", "))
+        format!("self, iid: _Iid, *, {}", parameters.join(", "))
     };
     let _ = writeln!(output, "    def __init__({signature}) -> None:");
     if stub {
@@ -1099,14 +1165,14 @@ fn render_function(
                 if stub {
                     let _ = writeln!(
                         output,
-                        "type {alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession, value: {}) -> {alias}: ...",
+                        "type {alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession[bool], value: {}) -> {alias}: ...",
                         scalar_type(domain),
                         python_attribute_base(domain)
                     );
                 } else {
                     let _ = writeln!(
                         output,
-                        "{alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession, value: {}) -> {alias}:\n    return session._function_input(value, {})",
+                        "{alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession[bool], value: {}) -> {alias}:\n    return session._function_input(value, {})",
                         scalar_type(domain),
                         python_attribute_base(domain),
                         scalar_type(domain)
@@ -1151,7 +1217,7 @@ fn render_function(
             .map(|parameter| parameter.target_name().as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let signature = std::iter::once("session: _QuerySession".to_owned())
+        let signature = std::iter::once("session: _QuerySession[bool]".to_owned())
             .chain(function_parameters)
             .collect::<Vec<_>>()
             .join(", ");
@@ -1422,6 +1488,13 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
         }
         emitted.insert(id.clone());
         register_name(&mut public, model.target_name().as_str(), "model")?;
+        if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+            register_name(
+                &mut public,
+                &format!("{}Handle", model.target_name().as_str()),
+                "plan handle",
+            )?;
+        }
         if let Some(reference) = model.reference_read().target_name() {
             register_name(&mut public, reference.as_str(), "reference model")?;
         }

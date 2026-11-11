@@ -307,8 +307,6 @@ fn per_profile_registries_share_rules_and_differ_only_in_identity() {
     // Release order drives profile-upgrade bridges: oldest first, closed.
     assert!(old < new);
     assert_eq!(MigrationProfile::ALL, [old, new]);
-    let legacy = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
-    assert_eq!(MigrationProfile::for_semantic_profile(&legacy), Some(old));
     let unsupported = SemanticProfileId::new("typedb-9.9.9/v1").unwrap();
     assert_eq!(MigrationProfile::for_semantic_profile(&unsupported), None);
     assert_eq!(

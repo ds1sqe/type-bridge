@@ -1,11 +1,21 @@
 import type { NativePendingPlanAnswer, NativeStagedTransaction } from "./native.js";
-import { type Plan } from "./plan.js";
+import type { NativeAuthoredPlanResult, RuntimeProjectionMatchResult } from "./runtime-projection.js";
+import { type Plan, type StagedPlan } from "./plan.js";
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
 export type StagedTransactionKind = "read" | "write" | "schema";
+/** Per-commit configuration. Omission keeps the 60000 ms default and collection off. */
+export interface StagedTransactionOptions {
+    /** Zero or negative disables the execution deadline. */
+    readonly timeoutMilliseconds?: bigint;
+    readonly collectPhaseTimestamps?: boolean;
+}
 /** The answer a committed `query-plan/v3` program resolves to. */
 export type PlanAnswer = {
     readonly kind: "rows";
     readonly rows: readonly unknown[];
+} | {
+    readonly kind: "documents";
+    readonly documents: readonly Record<string, unknown>[];
 } | {
     readonly kind: "count";
     readonly value: number;
@@ -16,16 +26,22 @@ export type PlanAnswer = {
     readonly kind: "matched";
     readonly value: number;
 };
-/** One staged plan's answer, visible only after its commit succeeds. */
-export declare class PendingPlanAnswer {
+/** One staged plan or typed query answer, visible only after commit succeeds. */
+export declare class Pending<R = PlanAnswer> {
     #private;
     /** @internal */
-    constructor(native: NativePendingPlanAnswer);
+    constructor(native: NativePendingPlanAnswer, decode?: (answerJson: string, projection?: NativeAuthoredPlanResult, query?: RuntimeProjectionMatchResult) => R, typedQuery?: boolean);
     /**
      * The resolved answer. Throws the lifecycle failure before commit, or the
      * typed failure every answer of a failed commit shares.
      */
-    get(): PlanAnswer;
+    result(): R;
+    /**
+     * Raw documents from this execution after commit, without another query or
+     * hydration. Throws the pending failure or rejects a non-document answer.
+     * Mutating the returned JSON cannot change the retained native answer.
+     */
+    documents(): readonly Readonly<Record<string, unknown>>[];
 }
 type AsyncDisposeSymbol = SymbolConstructor extends {
     readonly asyncDispose: infer Key extends symbol;
@@ -49,14 +65,18 @@ export declare class StagedTransaction {
     #private;
     /** @internal */
     constructor(native: NativeStagedTransaction);
+    /** @internal Exact native transaction used by generated typed terminals. */
+    nativeHandle(): NativeStagedTransaction;
     /**
      * Stage one plan from `PlanBuilder.build`; its answer resolves at commit.
      * A `read` transaction refuses write plans and a `schema` transaction
      * refuses every plan.
      */
-    stage(plan: Plan): PendingPlanAnswer;
+    stage<R>(plan: Plan<R>): Pending<R>;
+    /** Queue a complete invocation stack with block-local IID references. */
+    stageStack(plans: readonly StagedPlan[]): Pending[];
     /** Stage one canonical `query-plan/v3` program validated under `declaredSchema`. */
-    stagePlan(plan: Uint8Array, declaredSchema: Uint8Array): PendingPlanAnswer;
+    stagePlan(plan: Uint8Array, declaredSchema: Uint8Array): Pending;
     /** Fire the staged stack; answers become visible only on success. */
     commit(): Promise<void>;
     /** Discard staged work and keep the transaction for reuse. */

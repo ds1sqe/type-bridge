@@ -52,6 +52,7 @@ fn emits_exact_deterministic_single_dependency_crate() {
             "src/declaration.rs",
             "src/functions.rs",
             "src/lib.rs",
+            "src/plan.rs",
             "src/read.rs",
             "src/reference.rs",
             "src/runtime.rs",
@@ -134,7 +135,7 @@ fn emits_exact_deterministic_single_dependency_crate() {
     assert!(tokens.contains("pub const plays_event_container_item"));
     let manifest = String::from_utf8(first.get("Cargo.toml").unwrap().to_vec()).unwrap();
     assert!(manifest.contains("[dependencies]"));
-    assert!(manifest.contains("type-bridge = { version = \"=2.3.3\", default-features = false }"));
+    assert!(manifest.contains("type-bridge = { version = \"=3.0.0\", default-features = false }"));
     let schema = String::from_utf8(first.get("src/schema.rs").unwrap().to_vec()).unwrap();
     assert!(schema.contains("pub(crate) const SCHEMA_AUTHORITY_JSON"));
     assert!(schema.contains("typebridge.schema-authority/v1"));
@@ -250,4 +251,114 @@ fn rejects_schema_name_colliding_with_injected_schema_export() {
     let error = emitter.emit(&projection, &authority).unwrap_err();
     assert!(error.to_string().contains("rust_emitter_name_collision"));
     assert!(error.to_string().contains("AppSchema"));
+}
+
+#[test]
+fn read_imports_token_unions_only_when_used() {
+    let emitter = RustEmitter::new();
+    for (source, needs_union) in [
+        (include_str!("acceptance/schema.yaml"), true),
+        (include_str!("acceptance/schema-plan-idioms.yaml"), true),
+        (
+            "format: typebridge.schema/v2\nentities:\n  person: {}\nrelations:\n  friendship:\n    relates: { friend: { card: 1 } }\nplays:\n  person:\n    friendship: { friend: {} }\n",
+            false,
+        ),
+    ] {
+        let projection = support::rust_projection(source, "read-import.yaml");
+        let package = emitter
+            .emit(&projection, &support::authority(source))
+            .unwrap();
+        let read = std::str::from_utf8(package.get("src/read.rs").unwrap()).unwrap();
+        assert_eq!(read.contains("use crate::tokens::*;"), needs_union);
+    }
+}
+
+#[test]
+fn plan_helper_names_follow_existing_collision_refusal() {
+    for source in [
+        "format: typebridge.schema/v2\nattributes:\n  matching: { value: string }\nentities:\n  item:\n    owns: { matching: {} }\n",
+        "format: typebridge.schema/v2\nattributes:\n  handle: { value: string }\nentities:\n  item:\n    owns: { handle: {} }\n",
+        "format: typebridge.schema/v2\nentities:\n  item: {}\n  item-handle: {}\n",
+        "format: typebridge.schema/v2\nattributes:\n  where_: { value: string }\nentities:\n  item:\n    owns: { where_: {} }\n",
+    ] {
+        let projection = support::rust_projection(source, "plan-name.yaml");
+        let error = RustEmitter::new()
+            .emit(&projection, &support::authority(source))
+            .unwrap_err();
+        assert!(error.to_string().contains("rust_emitter_name_collision"));
+    }
+}
+
+#[test]
+fn family_labels_and_dispatch_share_the_projection_type_identity() {
+    let source = include_str!("acceptance/schema.yaml");
+    let projection = support::rust_projection(source, "family-labels.yaml");
+    let package = RustEmitter::new()
+        .emit(&projection, &support::authority(source))
+        .unwrap();
+    let read = std::str::from_utf8(package.get("src/read.rs").unwrap()).unwrap();
+    let mut checked = 0;
+    for root in projection.models().values().filter(|model| {
+        matches!(
+            model.id().kind(),
+            type_bridge_contract::id::TypeKind::Entity
+                | type_bridge_contract::id::TypeKind::Relation
+        )
+    }) {
+        let family = format!("{}Family", root.target_name().as_str());
+        let Some((_, variants)) = read.split_once(&format!("pub enum {family} {{")) else {
+            continue;
+        };
+        let variants = variants.split_once("\n}").unwrap().0;
+        let implementation = read
+            .split_once(&format!("impl {family} {{"))
+            .unwrap()
+            .1
+            .split_once(&format!("impl MaterializeModel for {family}"))
+            .unwrap()
+            .0;
+        for variant in variants
+            .lines()
+            .filter_map(|line| line.trim().split_once('(').map(|(variant, _)| variant))
+        {
+            let model = projection
+                .models()
+                .values()
+                .find(|model| model.target_name().as_str() == variant)
+                .unwrap();
+            let physical = model.id().label().as_str();
+            assert!(implementation.contains(&format!("Self::{variant}(..) => {physical:?},")));
+            assert!(read.contains(&format!("{variant}::TYPE_ID_JSON =>")));
+            checked += 1;
+        }
+    }
+    assert!(checked > 0);
+}
+
+#[test]
+fn nominal_iid_runtime_name_cannot_be_shadowed_by_a_model() {
+    use type_bridge_contract::id::{TypeId, TypeKind};
+    let source = "format: typebridge.schema/v2\nentities:\n  person: {}\n";
+    let authority = support::authority(source);
+    let resolved = authority.resolved_schema();
+    let emitter = RustEmitter::new();
+    let config = ProjectionConfig::rust()
+        .with_type_name_override(TypeId::new(TypeKind::Entity, "person").unwrap(), "Iid")
+        .unwrap();
+    let projection = project(
+        resolved,
+        BindingTarget::Rust,
+        &config,
+        &emitter.generator_handlers_for(resolved),
+        &emitter.code_resources_for(resolved).unwrap(),
+    )
+    .unwrap();
+    let error = emitter.emit(&projection, &authority).unwrap_err();
+    assert_eq!(error.code().as_str(), "rust_emitter_name_collision");
+    assert!(
+        error
+            .message()
+            .contains("generated Rust runtime export `Iid`")
+    );
+    assert!(error.message().contains("complete model"));
 }

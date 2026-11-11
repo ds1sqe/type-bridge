@@ -9,7 +9,7 @@
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{AttributeId, TypeId};
 use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
-use type_bridge_contract::query_plan::v3::Pattern;
+use type_bridge_contract::query_plan::Pattern;
 use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
 use type_bridge_contract::value::CanonicalValue;
 

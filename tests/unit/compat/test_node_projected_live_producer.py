@@ -256,17 +256,12 @@ const database = {
   createDatabase() { events.push("create"); exists = true; },
   deleteDatabase() { events.push("delete"); exists = false; },
   close() { events.push("close"); },
-  transaction(kind) {
-    events.push(`transaction:${kind}`);
-    return {
-      query(value) { events.push(`schema:${value}`); },
-      commit() { events.push("commit"); },
-      close() { events.push("transaction-close"); },
-    };
+  async executeQuery(value, kind) {
+    events.push(`raw:${kind}:${value}`);
   },
 };
 let connected;
-const runtime = { RustDatabase: { connect(address, name, options) {
+const runtime = { Database: { connect(address, name, options) {
   connected = { address, name, options };
   events.push("connect");
   return database;
@@ -298,9 +293,7 @@ process.stdout.write(JSON.stringify({ connected, events, result }));
         "exists",
         "create",
         "exists",
-        "transaction:schema",
-        "schema:define entity person;",
-        "commit",
+        "raw:schema:define entity person;",
         "journey",
         "delete",
         "exists",
@@ -319,7 +312,7 @@ const database = {
   deleteDatabase() { events.push("delete"); },
   close() { events.push("close"); },
 };
-const runtime = { RustDatabase: { connect() { events.push("connect"); return database; } } };
+const runtime = { Database: { connect() { events.push("connect"); return database; } } };
 try {
   await producer.runOwnedDatabase({
     package_: {}, runtime, address: "127.0.0.1:32942",
@@ -359,16 +352,12 @@ const database = {
   createDatabase() { events.push("create"); exists = true; },
   deleteDatabase() { events.push("delete"); exists = false; },
   close() { events.push("close"); },
-  transaction() {
-    events.push("transaction");
-    return {
-      query() { events.push("schema"); if (mode === "schema") throw new Error("schema failed"); },
-      commit() { events.push("commit"); },
-      close() { events.push("transaction-close"); },
-    };
+  async executeQuery(value, kind) {
+    events.push(`raw:${kind}:${value}`);
+    if (mode === "schema") throw new Error("schema failed");
   },
 };
-const runtime = { RustDatabase: { connect() { events.push("connect"); return database; } } };
+const runtime = { Database: { connect() { events.push("connect"); return database; } } };
 try {
   await producer.runOwnedDatabase({
     package_: {}, runtime, address: "127.0.0.1:32942",
@@ -388,7 +377,7 @@ try {
 """
     schema = json.loads(_node(reject, "schema", expected=23).stdout)
     assert schema["message"] == "schema failed"
-    assert schema["events"][-4:] == ["transaction-close", "delete", "exists", "close"]
+    assert schema["events"][-4:] == ["raw:schema:schema", "delete", "exists", "close"]
     assert "journey" not in schema["events"]
 
     journey = json.loads(_node(reject, "journey", expected=23).stdout)
@@ -406,7 +395,7 @@ const database = {
   deleteDatabase() { events.push("DELETE_FOREIGN_DATABASE"); },
   close() { events.push("close"); },
 };
-const runtime = { RustDatabase: { connect() { events.push("connect"); return database; } } };
+const runtime = { Database: { connect() { events.push("connect"); return database; } } };
 try {
   await producer.runOwnedDatabase({
     package_: {}, runtime, address: "127.0.0.1:32942",
@@ -437,9 +426,9 @@ const database = {
   createDatabase() { events.push("create"); exists = true; },
   deleteDatabase() { events.push("delete"); throw new Error("delete failed"); },
   close() { events.push("close"); },
-  transaction() { return { query() {}, commit() {}, close() {} }; },
+  async executeQuery() {},
 };
-const runtime = { RustDatabase: { connect() { events.push("connect"); return database; } } };
+const runtime = { Database: { connect() { events.push("connect"); return database; } } };
 try {
   await producer.runOwnedDatabase({
     package_: {}, runtime, address: "127.0.0.1:32942",
@@ -478,11 +467,12 @@ def test_report_envelope_source_independence_and_public_crud_boundary() -> None:
         "load_contract",
     ):
         assert forbidden not in source
-    assert source.count("transaction.query(") == 1
+    assert source.count('await database.executeQuery(providerSchema, "schema")') == 1
+    assert "transaction.query(" not in source
     assert "Aliases.create" not in source
     assert "NetworkLink" not in source
     assert "@type-bridge/node" in source
-    assert "RustDatabase.connect" in source
+    assert "Database.connect" in source
     assert "3c8d072b60c575b4c0381c1ea44088a9c18e01ed52e90730311aadccb72cd0c8" in source
     assert source.index("await runOwnedDatabase({") < source.index(
         "publishReport(output, buildReport(authority, observations, identity))"

@@ -180,6 +180,75 @@ fn assert_exact_and_legacy_evidence(
 }
 
 #[test]
+fn ordered_roles_omit_plan_factories_and_link_helpers_but_keep_scalar_setters() {
+    let (schema, authority) = resolved(include_str!("acceptance/schema-plan-ordered-roles.yaml"));
+    let python = PythonEmitter::new();
+    let python_projection = projection(
+        &schema,
+        BindingTarget::Python,
+        &ProjectionConfig::python(),
+        &python.generator_handlers_for(&schema),
+        &python.code_resources_for(&schema).unwrap(),
+    );
+    let package = python.emit(&python_projection, &authority).unwrap();
+    for path in ["_models.py", "_models.pyi"] {
+        let source = std::str::from_utf8(package.get(path).unwrap()).unwrap();
+        let model = source
+            .split("class Team(")
+            .nth(1)
+            .unwrap()
+            .split("\nclass ")
+            .next()
+            .unwrap();
+        assert!(model.contains("def match("));
+        assert!(model.contains("def by_iid("));
+        assert!(!model.contains("def insert("));
+        assert!(!model.contains("def put("));
+        let handle = source
+            .split("class TeamHandle(")
+            .nth(1)
+            .unwrap()
+            .split("\nclass ")
+            .next()
+            .unwrap();
+        assert!(handle.contains("def set(self, *, count:"));
+        assert!(!handle.contains("def link("));
+        assert!(!handle.contains("def unlink("));
+    }
+    let typescript = TypeScriptEmitter::new();
+    let typescript_projection = projection(
+        &schema,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &typescript.generator_handlers_for(&schema),
+        &typescript.code_resources_for(&schema).unwrap(),
+    );
+    let package = typescript.emit(&typescript_projection, &authority).unwrap();
+    let source = std::str::from_utf8(package.get("src/models.ts").unwrap()).unwrap();
+    let model = source
+        .split("interface TeamPlanMethods {")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
+    assert!(model.contains("match("));
+    assert!(model.contains("byIid("));
+    assert!(!model.contains("insert("));
+    assert!(!model.contains("put("));
+    let handle = source
+        .split("class TeamHandle ")
+        .nth(1)
+        .unwrap()
+        .split("\n}\n")
+        .next()
+        .unwrap();
+    assert!(handle.contains("set(values: { readonly count?:"));
+    assert!(!handle.contains("link("));
+    assert!(!handle.contains("unlink("));
+}
+
+#[test]
 fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings() {
     let (schema, authority) = resolved(ORDERED_SOURCE);
 
@@ -194,10 +263,7 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     );
     assert_eq!(
         changed_resource_ids(&python_legacy_resources, &python_resources),
-        BTreeSet::from([
-            "typebridge.generator.python.runtime-source".to_owned(),
-            "typebridge.generator.python.runtime-stub".to_owned(),
-        ])
+        BTreeSet::new()
     );
     let python_projection = projection(
         &schema,
@@ -214,15 +280,26 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(python_models.contains("\\\"kind\\\":\\\"distinct\\\""));
     assert!(python_stub.contains("Sequence[Tag]"));
     assert!(python_stub.contains("tuple[Tag, ...]"));
-    assert!(python_runtime.contains("_TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3"));
-    assert!(python_runtime.contains("class _WholeCreateProjectedField"));
-    assert!(python_runtime.contains("class _WholeCreateProjectedModelManager"));
+    assert!(python_runtime.contains("class _ProjectedField:"));
+    assert_eq!(
+        python_runtime
+            .matches("class ProjectedModelManager[")
+            .count(),
+        1
+    );
+    assert!(!python_runtime.contains("class _WholeCreateProjectedField"));
+    assert!(!python_runtime.contains("class _WholeCreateProjectedModelManager"));
+    assert!(python_runtime.contains("type(instance).__runtime_projection__.validate_create"));
     assert!(python_models.contains("_install_runtime_projection("));
-    assert!(python_runtime.contains("def _install_runtime_projection_with_authority("));
+    assert_eq!(
+        python_runtime
+            .matches("def install_runtime_projection(")
+            .count(),
+        1
+    );
     assert!(python_runtime.contains("from ._authority import SCHEMA_AUTHORITY_BYTES"));
-    assert!(python_runtime.contains(
-        "globals()[\"install_runtime_projection\"] = _install_runtime_projection_with_authority"
-    ));
+    assert!(python_runtime.contains("schema_authority != SCHEMA_AUTHORITY_BYTES"));
+    assert!(python_runtime.contains("install_runtime_projection_with_authority as install_native"));
 
     let typescript = TypeScriptEmitter::new();
     let typescript_handlers = typescript.generator_handlers_for(&schema);
@@ -235,7 +312,7 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     );
     assert_eq!(
         changed_resource_ids(&typescript_legacy_resources, &typescript_resources),
-        BTreeSet::from(["typebridge.generator.typescript.runtime-source".to_owned()])
+        BTreeSet::new()
     );
     let typescript_projection = projection(
         &schema,
@@ -265,9 +342,7 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(typescript_runtime.contains("native.putManyProjected<Complete>"));
     assert!(typescript_runtime.contains("native.updateManyProjected<Complete>"));
     assert!(typescript_runtime.contains("native.deleteManyProjected("));
-    assert!(
-        typescript_runtime.contains("projectedBatchMaterializer: materializeOrderedProjectedBatch")
-    );
+    assert!(typescript_runtime.contains("projectedBatchMaterializer: materializeProjectedBatch"));
     assert!(typescript_runtime.contains("descriptors[HYDRATE_COMPLETE_BRAND]"));
     assert!(typescript_runtime.contains("requireProjection().validateThingJson("));
     let typescript_index =
@@ -338,17 +413,17 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(c_header.contains("ordered_codegen_person_tag_count"));
     assert!(c_header.contains("ordered_codegen_membership_member_count"));
     assert!(c_header.contains("#include <typebridge/type_bridge.h>"));
-    assert!(c_header.contains("ordered_codegen_schema_package_open_v2("));
+    assert!(c_header.contains("ordered_codegen_schema_package_open("));
     assert!(contains_hex_bytes(c_source, b"ordered_list"));
     assert!(contains_hex_bytes(c_source, b"distinct"));
     assert!(
         c_source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  7u,")
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  2u,\n  0u,")
     );
-    assert!(c_source.contains("type_bridge_schema_package_open_chunked_v2("));
-    assert!(c_cmake.contains("find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)"));
-    assert!(c_package_config.contains("find_dependency(TypeBridge 1.7.0 EXACT CONFIG)"));
-    assert!(c_pkg_config.contains("Requires: type-bridge-abi >= 1.7.0"));
+    assert!(c_source.contains("type_bridge_schema_package_open_chunked("));
+    assert!(c_cmake.contains("find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)"));
+    assert!(c_package_config.contains("find_dependency(TypeBridge 2.0.0 EXACT CONFIG)"));
+    assert!(c_pkg_config.contains("Requires: type-bridge-abi >= 2.0.0"));
 }
 
 #[test]
@@ -366,7 +441,7 @@ fn shared_package_gate_rejects_legacy_and_forged_ordered_evidence_in_all_binding
             python.code_resources_for(&schema).unwrap(),
         ),
         (
-            python.generator_handlers(),
+            vec![ProjectionHandler::python_v1()],
             python.code_resources().unwrap(),
         ),
     );
@@ -382,7 +457,7 @@ fn shared_package_gate_rejects_legacy_and_forged_ordered_evidence_in_all_binding
             typescript.code_resources_for(&schema).unwrap(),
         ),
         (
-            typescript.generator_handlers(),
+            vec![ProjectionHandler::typescript_v1()],
             typescript.code_resources().unwrap(),
         ),
     );
@@ -557,10 +632,11 @@ fn ordered_generated_packages_pass_all_four_language_compilers() {
 }
 
 #[test]
-fn ordered_typescript_runtime_names_are_reserved_only_for_successor_packages() {
+fn native_typescript_runtime_names_are_reserved_for_every_package() {
     let emitter = TypeScriptEmitter::new();
     for (label, target_name) in [
         ("ordered-model-token", "OrderedModelToken"),
+        ("batch-write-result", "BatchWriteResult"),
         (
             "ordered-projected-model-manager",
             "OrderedProjectedModelManager",
@@ -593,11 +669,11 @@ fn ordered_typescript_runtime_names_are_reserved_only_for_successor_packages() {
             &emitter.generator_handlers_for(&unordered_schema),
             &emitter.code_resources_for(&unordered_schema).unwrap(),
         );
-        let package = emitter
+        let error = emitter
             .emit(&unordered_projection, &unordered_authority)
-            .unwrap();
-        let models = std::str::from_utf8(package.get("src/models.ts").unwrap()).unwrap();
-        assert!(models.contains(&format!("export interface {target_name}")));
+            .unwrap_err();
+        assert_eq!(error.code().as_str(), "typescript_emitter_name_collision");
+        assert!(error.to_string().contains(target_name));
     }
 
     const COLLIDING_FUNCTION: &str = r#"
@@ -637,15 +713,15 @@ functions:
         &emitter.generator_handlers_for(&unordered_schema),
         &emitter.code_resources_for(&unordered_schema).unwrap(),
     );
-    let package = emitter
+    let error = emitter
         .emit(&unordered_projection, &unordered_authority)
-        .unwrap();
-    let functions = std::str::from_utf8(package.get("src/functions.ts").unwrap()).unwrap();
-    assert!(functions.contains("export function defineOrderedModel"));
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "typescript_emitter_name_collision");
+    assert!(error.to_string().contains("defineOrderedModel"));
 }
 
 #[test]
-fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
+fn unordered_schema_aware_evidence_uses_the_same_native_fixed_resources() {
     let (schema, authority) = resolved(UNORDERED_SOURCE);
 
     let python = PythonEmitter::new();
@@ -705,26 +781,24 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
     );
     let typescript_models =
         std::str::from_utf8(typescript_package.get("src/models.ts").unwrap()).unwrap();
-    assert!(typescript_models.contains("\n  defineModel,\n"));
-    assert!(!typescript_models.contains("defineOrderedModel"));
-    assert!(typescript_models.contains("\n  type ModelToken,\n"));
-    assert!(!typescript_models.contains("OrderedModelToken"));
+    assert!(typescript_models.contains("\n  defineOrderedModel as defineModel,\n"));
+    assert!(typescript_models.contains("\n  type OrderedModelToken as ModelToken,\n"));
     let typescript_runtime =
         std::str::from_utf8(typescript_package.get("src/runtime.ts").unwrap()).unwrap();
-    assert!(!typescript_runtime.contains("ProjectedBatchUpdate"));
-    assert!(!typescript_runtime.contains("OrderedProjectedModelManager"));
-    assert!(!typescript_runtime.contains("ProjectedManagerComparison"));
-    assert!(!typescript_runtime.contains("ProjectedModelFilter"));
-    assert!(!typescript_runtime.contains("OrderedModelToken"));
-    assert!(!typescript_runtime.contains("insertManyProjected"));
-    assert!(!typescript_runtime.contains("putManyProjected"));
-    assert!(!typescript_runtime.contains("updateManyProjected"));
-    assert!(!typescript_runtime.contains("deleteManyProjected"));
-    assert!(!typescript_runtime.contains("projectedBatchMaterializer"));
+    assert!(typescript_runtime.contains("ProjectedBatchUpdate"));
+    assert!(typescript_runtime.contains("OrderedProjectedModelManager"));
+    assert!(typescript_runtime.contains("ProjectedManagerComparison"));
+    assert!(typescript_runtime.contains("ProjectedModelFilter"));
+    assert!(typescript_runtime.contains("OrderedModelToken"));
+    assert!(typescript_runtime.contains("insertManyProjected"));
+    assert!(typescript_runtime.contains("putManyProjected"));
+    assert!(typescript_runtime.contains("updateManyProjected"));
+    assert!(typescript_runtime.contains("deleteManyProjected"));
+    assert!(typescript_runtime.contains("projectedBatchMaterializer: materializeProjectedBatch"));
+    assert!(typescript_runtime.contains("native.insertProjected<Complete>"));
     let typescript_index =
         std::str::from_utf8(typescript_package.get("src/index.ts").unwrap()).unwrap();
-    assert!(typescript_index.contains("__installRuntimeProjectionPackage("));
-    assert!(!typescript_index.contains("__installOrderedRuntimeProjectionPackage("));
+    assert!(typescript_index.contains("__installOrderedRuntimeProjectionPackage("));
 
     let rust = RustEmitter::new();
     assert_eq!(
@@ -870,19 +944,33 @@ plays:
     let foreign_package = emitter
         .emit(&foreign_projection, &foreign_authority)
         .unwrap();
+    let plain_source = SOURCE
+        .replace("        ordered: true\n", "")
+        .replace("        distinct: true\n", "");
+    let (plain_schema, plain_authority) = resolved(&plain_source);
+    let plain_projection = projection(
+        &plain_schema,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &emitter.generator_handlers_for(&plain_schema),
+        &emitter.code_resources_for(&plain_schema).unwrap(),
+    );
+    let plain_package = emitter.emit(&plain_projection, &plain_authority).unwrap();
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let foreign = stage.path().join("foreign");
+    let plain = stage.path().join("plain");
+    write_package(&plain_package, &plain);
     write_package(&package, &generated);
     write_package(&foreign_package, &foreign);
-    for root in [&generated, &foreign] {
+    for root in [&generated, &foreign, &plain] {
         let runtime_path = root.join("src/runtime.ts");
         let mut runtime_source = fs::read_to_string(&runtime_path).unwrap();
-        let materializer_declaration = "const materializeOrderedProjectedBatch: NonNullable<";
+        let materializer_declaration = "const materializeProjectedBatch: NonNullable<";
         assert_eq!(runtime_source.matches(materializer_declaration).count(), 1);
         runtime_source = runtime_source.replacen(
             materializer_declaration,
-            "const __testOrderedBatchMaterializeBase: NonNullable<",
+            "const __testProjectedBatchMaterializeBase: NonNullable<",
             1,
         );
         let install_anchor =
@@ -897,13 +985,13 @@ let __testOrderedBatchInterceptor:
   | ((ordinal: number, value: object) => void)
   | null = null;
 const __testOrderedBatchCaptured: object[] = [];
-const materializeOrderedProjectedBatch: typeof __testOrderedBatchMaterializeBase = (
+const materializeProjectedBatch: typeof __testProjectedBatchMaterializeBase = (
   typeKey,
   ordinal,
   json,
   authority,
 ): any => {
-  const value = __testOrderedBatchMaterializeBase(
+  const value = __testProjectedBatchMaterializeBase(
     typeKey,
     ordinal,
     json,
@@ -957,7 +1045,7 @@ export function __testOrderedHydrateEnvelope(
   return hydrateOrderedProjectedEnvelope(envelope);
 }
 export function __testOrderedFacadeProof(value: object): unknown {
-  return orderedFacadeProofs.get(value) ?? null;
+  return projectedFacadeProofs.get(value) ?? null;
 }
 export function __testOrderedRoleProofs(
   typeKey: string,
@@ -986,11 +1074,11 @@ export function __testOrderedBatchMaterialize(
   json: string,
   authority: object,
 ): object {
-  return __testOrderedBatchMaterializeBase(
+  return __testProjectedBatchMaterializeBase(
     typeKey,
     ordinal,
     json,
-    authority as Parameters<typeof materializeOrderedProjectedBatch>[3],
+    authority as Parameters<typeof materializeProjectedBatch>[3],
   );
 }
 "#,
@@ -1042,7 +1130,7 @@ export function __testOrderedBatchMaterialize(
     )
     .unwrap();
 
-    for root in [&generated, &foreign] {
+    for root in [&generated, &foreign, &plain] {
         checked_command(
             Command::new(node_package.join("node_modules/.bin/tsc"))
                 .arg("--project")
@@ -1055,12 +1143,19 @@ export function __testOrderedBatchMaterialize(
         stage.path().join("hydrate.mjs"),
         r#"import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import * as Plain from "./plain/dist/index.js";
+import * as PlainRuntime from "./plain/dist/runtime.js";
 import * as Local from "./generated/dist/index.js";
 import * as Foreign from "./foreign/dist/index.js";
 import * as Runtime from "./generated/dist/runtime.js";
 import * as ForeignRuntime from "./foreign/dist/runtime.js";
 
 const require = createRequire(import.meta.url);
+const { Iid, PlanError } = require("@type-bridge/node");
+const iidValue = (value) => {
+  assert.ok(value instanceof Iid);
+  return value.toString();
+};
 const Native = require("./node_modules/@type-bridge/node/type_bridge_node.node");
 const Handles = require("./node_modules/@type-bridge/node/dist/runtime-handles.js");
 
@@ -1080,7 +1175,7 @@ const fixture = (responses, authority = null, commitFailure = null) => {
       );
   const database = recording.takeDatabase();
   const connection = Object.freeze({});
-  Handles.registerRustDatabaseHandle(connection, database);
+  Handles.registerDatabaseHandle(connection, database);
   return { recording, database, connection };
 };
 const counters = ({ recording }) => JSON.parse(recording.countersJson());
@@ -1089,30 +1184,36 @@ const zeroCounters = {
 };
 const documents = (...values) => ({ Documents: values });
 const iidDocument = (iid) => documents({ iid });
+const scalar = (kind, value) => ({ kind: "value", value: { kind, value: String(value) } });
+const thing = (iid, kind, label) => ({ kind: "thing", iid, type_id: { kind, label } });
+const iidRow = (iid) => ({ Rows: [{ iid1: scalar("string", iid) }] });
+const mutationRow = (iid, kind, label) => ({ Rows: [{
+  ordinal0: scalar("long", 0), thing1: thing(iid, kind, label),
+}] });
+const temporalReferenceRow = () => ({ Rows: [{
+  kind0: scalar("long", 1), ordinal1: scalar("long", 0),
+  reference2: scalar("long", 0), thing3: thing("0xde", "entity", "temporal-record"),
+}] });
 const personDocument = (iid, tag = "sourcetag") => ({
   _iid: iid,
   _type: "person",
-  attributes: { tag: [{ value: tag }] },
+  attributes: { tag: [tag] },
 });
 const membershipDocument = (iid, playerIid) => ({
   _iid: iid,
   _type: "membership",
   attributes: {},
-  role_players: [{
-    role_name: "participant",
-    player_iid: playerIid,
-    player_type_name: "person",
-    attributes: { tag: [{ value: "sourcetag" }] },
-  }],
+  _role_0_iid: playerIid,
+  _role_0_type: "person",
+  _role_0_attributes: { tag: ["sourcetag"] },
 });
 const activityLinkDocument = (iid, playerIid) => ({
   _iid: iid,
   _type: "activity-link",
   attributes: {},
-  role_players: [{
-    role_name: "subject",
-    player_iid: playerIid,
-    player_type_name: "membership",
+  _role_0_players: [{
+    _iid: playerIid,
+    _type: "membership",
     attributes: {},
   }],
 });
@@ -1120,16 +1221,11 @@ const recordDocument = (iid, identifier, tags) => ({
   _iid: iid,
   _type: "record",
   attributes: {
-    identifier: [{ value: identifier }],
-    tag: tags.map((value) => ({ value })),
+    identifier,
+    tag: tags,
   },
 });
 const batchRecordResponses = () => [
-  documents(
-    { ordinal: 2, iid: "0xd2" },
-    { ordinal: 0, iid: "0xd0" },
-    { ordinal: 1, iid: "0xd1" },
-  ),
   documents(
     { ordinal: 1, ...recordDocument("0xd1", "provider-1", ["normalizedone"]) },
     { ordinal: 2, ...recordDocument("0xd2", "provider-2", ["normalizedtwo"]) },
@@ -1141,29 +1237,27 @@ const temporalRecordDocument = (ordinal, iid) => ({
   _iid: iid,
   _type: "temporal-record",
   attributes: {
-    "occurred-on": [{ value: "+10000-01-02" }],
-    "observed-at": [{ value: "-9999-01-02T03:04:05" }],
-    "reported-at": [{ value: "-9999-01-02T03:04:05Z" }],
+    "occurred-on": "+10000-01-02",
+    "observed-at": "-9999-01-02T03:04:05",
+    "reported-at": "-9999-01-02T03:04:05Z",
   },
 });
 const temporalLinkDocument = (iid, playerIid) => ({
   _iid: iid,
   _type: "temporal-link",
   attributes: {},
-  role_players: [{
-    role: "temporal-link:subject",
-    iid: playerIid,
-    type_name: "temporal-record",
-    attributes: {
-      "occurred-on": [{ value: "+10000-01-02" }],
-      "observed-at": [{ value: "-9999-01-02T03:04:05" }],
-      "reported-at": [{ value: "-9999-01-02T03:04:05Z" }],
-    },
+  _role_0_players: [{
+    _iid: playerIid,
+    _type: "temporal-record",
+    attributes: temporalRecordDocument(0, playerIid).attributes,
   }],
 });
 
 const diagnostic = (error) => {
   assert.ok(error instanceof Error);
+  if (error instanceof PlanError) {
+    return { code: error.code, sdk_category: error.sdkCategory, path: error.path };
+  }
   return JSON.parse(error.message);
 };
 const rejects = (operation, code, memberKind) => {
@@ -1202,29 +1296,31 @@ rejects(
 
 const group = hydrate(Local.Group, "0xa3", { tag: [Local.Tag.create("group")] });
 const membership = hydrate(Local.Membership, "0xb1", { participant: [person, group] });
-assert.deepEqual(membership.participant.map((value) => value.iid), ["0xa1", "0xa3"]);
-assert.equal(group.iid, "0xa3");
+assert.deepEqual(membership.participant.map((value) => iidValue(value.iid)), ["0xa1", "0xa3"]);
+assert.equal(iidValue(group.iid), "0xa3");
 rejects(
   () => hydrate(Local.Membership, "0xb2", { participant: [person, person] }),
   "ordered_distinct_duplicate",
   "role",
 );
-rejects(
+assert.throws(
   () => hydrate(Local.Person, "person-a5", { tag: [] }),
-  "noncanonical_hydrated_iid",
-  "argument",
+  (error) => {
+    assert.ok(error instanceof PlanError);
+    assert.equal(error.code, "invalid_iid");
+    assert.equal(error.sdkCategory, "invalid_contract");
+    assert.deepEqual(error.path, []);
+    return true;
+  },
 );
 
 const link = hydrate(Local.ActivityLink, "0xc1", {
-  subject: [Local.Membership.reference("0xb1", {})],
+  subject: [Local.Membership.reference(new Iid("0xb1"), {})],
 });
-assert.equal(link.subject[0].iid, "0xb1");
-rejects(
-  () => hydrate(Local.ActivityLink, "0xc2", {
-    subject: [Local.Membership.reference("membership-bad", {})],
-  }),
-  "noncanonical_iid",
-  "role",
+assert.equal(iidValue(link.subject[0].iid), "0xb1");
+assert.throws(
+  () => Local.Membership.reference("membership-bad", {}),
+  { name: "TypeError", message: "Membership.reference iid must be an Iid" },
 );
 
 const foreignPerson = hydrate(Foreign.Person, "0xf1", {
@@ -1236,6 +1332,9 @@ rejects(
   "role",
 );
 
+{
+const Local = Plain;
+const Runtime = PlainRuntime;
 const recordBatchInputs = () => ["alpha", "beta", "gamma"].map((tag, ordinal) => Local.Record.create({
   identifier: Local.Identifier.create(`client-${ordinal}`),
   tag: [Local.Tag.create(tag)],
@@ -1250,6 +1349,133 @@ const rejectsRecordProofWithoutIo = (value, target) => {
   );
   assert.deepEqual(counters(target), zeroCounters);
 };
+for (const operation of ["insert", "put", "update"]) {
+  for (const count of [0, 1, 2]) {
+    if (operation === "update" && count === 2) continue;
+    const proofTarget = fixture([]);
+    const single = fixture([documents(...Array.from({ length: count }, (_, index) =>
+      recordDocument(index === 0 ? "0xd5" : "0xd6", `single-${index}`, []),
+    ))]);
+    const callbacks = [];
+    Runtime.__testConfigureOrderedBatchMaterializer("none", -1, (ordinal, value) => {
+      callbacks.push(ordinal);
+      rejectsRecordProofWithoutIo(value, proofTarget);
+    });
+    const input = Local.Record.create({ identifier: Local.Identifier.create("single-input"), tag: [] });
+    const manager = Local.Record.manager(single.connection);
+    const result = operation === "update" ? manager.update(new Iid("0xd5"), input) : manager[operation](input);
+    assert.equal(result.count, count);
+    assert.equal(result.items.length, count);
+    assert.equal(result.item, count === 1 ? result.items[0] : null);
+    assert.equal("inputIndexes" in result, false);
+    assert.equal(Object.isFrozen(result), true);
+    assert.equal(Object.isFrozen(result.items), true);
+    assert.deepEqual(callbacks, Array.from({ length: count }, (_, index) => index));
+    assert.deepEqual(counters(proofTarget), zeroCounters);
+    assert.equal(counters(single).queries.length, 1);
+    assert.equal(counters(single).commits, 1);
+    assert.equal(counters(single).rollbacks, 0);
+  }
+}
+const failedSingle = fixture([documents(
+  recordDocument("0xd5", "first", []), recordDocument("0xd6", "second", []),
+)]);
+Runtime.__testConfigureOrderedBatchMaterializer("throw", 1);
+assert.throws(
+  () => Local.Record.manager(failedSingle.connection).insert(Local.Record.create({ identifier: Local.Identifier.create("failed-single"), tag: [] })),
+  (error) => {
+    const value = diagnostic(error);
+    assert.equal(value.code, "generated_model_materialization_failed");
+    assert.deepEqual(value.path, [{ kind: "argument", value: "rows" }, { kind: "index", value: 0 }]);
+    return true;
+  },
+);
+assert.equal(Runtime.__testCapturedOrderedBatchValues().length, 2);
+for (const value of Runtime.__testCapturedOrderedBatchValues()) rejectsRecordProofWithoutIo(value, fixture([]));
+assert.equal(counters(failedSingle).queries.length, 1);
+assert.equal(counters(failedSingle).commits, 0);
+assert.equal(counters(failedSingle).rollbacks, 1);
+Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
+const deletedBatch = fixture([
+  documents(recordDocument("0xda", "deleted-first", []), recordDocument("0xdc", "deleted-last", [])),
+  { Rows: [{}, {}] },
+]);
+const deletedResult = Local.Record.manager(deletedBatch.connection).deleteManyReturning(["0xda", "0xdb", "0xdc"].map((value) => new Iid(value)));
+assert.equal(deletedResult.count, 2);
+assert.deepEqual(deletedResult.inputIndexes, [0, 2]);
+assert.deepEqual(deletedResult.items.map((value) => iidValue(value.iid)), ["0xda", "0xdc"]);
+assert.ok(deletedResult.items.every((value) => value.deleted));
+assert.equal(Object.isFrozen(deletedResult), true);
+assert.equal(Object.isFrozen(deletedResult.items), true);
+assert.equal(Object.isFrozen(deletedResult.inputIndexes), true);
+assert.equal(counters(deletedBatch).queries.length, 2);
+assert.equal(counters(deletedBatch).commits, 1);
+assert.equal(counters(deletedBatch).rollbacks, 0);
+for (const value of deletedResult.items) {
+  const target = fixture([]);
+  assert.throws(() => Local.Record.manager(target.connection).insert(value), /thing_deleted/);
+  assert.deepEqual(counters(target), zeroCounters);
+}
+for (const present of [false, true]) {
+  const returning = fixture(present ? [documents(recordDocument("0xdd", "deleted-single", [])), { Rows: [{}] }] : [documents(), { Rows: [] }]);
+  const result = Local.Record.manager(returning.connection).deleteReturning(new Iid("0xdd"));
+  assert.equal(result.count, present ? 1 : 0);
+  assert.equal(result.item, present ? result.items[0] : null);
+  if (present) assert.equal(result.item.deleted, true);
+  assert.equal("inputIndexes" in result, false);
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.items), true);
+  assert.equal(counters(returning).queries.length, 2);
+  assert.equal(counters(returning).commits, 1);
+  assert.equal(counters(returning).rollbacks, 0);
+}
+Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
+
+const mixedBatchResponses = () => [documents(
+  { ordinal: 2, ...recordDocument("0xd3", "provider-2", ["third"]) },
+  { ordinal: 1, ...recordDocument("0xd1", "provider-1a", ["first"]) },
+  { ordinal: 1, ...recordDocument("0xd2", "provider-1b", ["second"]) },
+)];
+Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
+const mixedBatch = fixture(mixedBatchResponses());
+const mixedResult = Local.Record.manager(mixedBatch.connection).insertMany(recordBatchInputs());
+assert.equal(mixedResult.count, 3);
+assert.deepEqual(mixedResult.inputIndexes, [1, 1, 2]);
+assert.deepEqual(mixedResult.items.map((value) => iidValue(value.iid)), ["0xd1", "0xd2", "0xd3"]);
+assert.equal(Object.isFrozen(mixedResult), true);
+assert.equal(Object.isFrozen(mixedResult.items), true);
+assert.equal(Object.isFrozen(mixedResult.inputIndexes), true);
+assert.deepEqual(counters(mixedBatch).opens, ["write"]);
+assert.equal(counters(mixedBatch).queries.length, 1);
+assert.equal(counters(mixedBatch).commits, 1);
+assert.equal(counters(mixedBatch).rollbacks, 0);
+for (const faultOrdinal of [0, 1, 2]) {
+  const failedMixedBatch = fixture(mixedBatchResponses());
+  const proofTarget = fixture([]);
+  Runtime.__testConfigureOrderedBatchMaterializer("throw", faultOrdinal);
+  assert.throws(
+    () => Local.Record.manager(failedMixedBatch.connection).insertMany(recordBatchInputs()),
+    (error) => {
+      const value = diagnostic(error);
+      assert.equal(value.sdk_category, "integrity");
+      assert.equal(value.code, "generated_model_materialization_failed");
+      assert.deepEqual(value.path, [
+        { kind: "argument", value: "rows" },
+        { kind: "index", value: [1, 1, 2][faultOrdinal] },
+      ]);
+      return true;
+    },
+  );
+  const captured = Runtime.__testCapturedOrderedBatchValues();
+  assert.equal(captured.length, faultOrdinal + 1);
+  for (const value of captured) rejectsRecordProofWithoutIo(value, proofTarget);
+  assert.deepEqual(counters(proofTarget), zeroCounters);
+  assert.equal(counters(failedMixedBatch).queries.length, 1);
+  assert.equal(counters(failedMixedBatch).commits, 0);
+  assert.equal(counters(failedMixedBatch).rollbacks, 1);
+}
+Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
+
 const rowAtFailure = fixture([]);
 const rawRecordManager = Runtime.__testOrderedNativeManager(
   Local.Record.typeKey,
@@ -1317,8 +1543,8 @@ for (const fault of ["throw", "null", "primitive"]) {
     }
     const state = counters(batchFailure);
     assert.deepEqual(state.opens, ["write"]);
-    assert.equal(state.queries.length, 2);
-    assert.equal(state.givenRows.length, 2);
+    assert.equal(state.queries.length, 1);
+    assert.equal(state.givenRows.length, 1);
     assert.equal(state.commits, 0);
     assert.equal(state.rollbacks, 1);
     assert.equal(state.closes, 0);
@@ -1348,19 +1574,15 @@ for (const commitFailure of ["definitely_aborted", "unknown"]) {
   }
   const state = counters(failedCommit);
   assert.deepEqual(state.opens, ["write"]);
-  assert.equal(state.queries.length, 2);
-  assert.equal(state.givenRows.length, 2);
+  assert.equal(state.queries.length, 1);
+  assert.equal(state.givenRows.length, 1);
   assert.equal(state.commits, 1);
 }
 Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
 
 const nativeRoundTrip = fixture([
-  iidDocument("0xd1"),
   documents(recordDocument("0xd1", "provider-insert", ["inserted", "normalized"])),
-  documents(),
-  iidDocument("0xd2"),
   documents(recordDocument("0xd2", "provider-put", ["put", "normalized"])),
-  "Ok",
   documents(recordDocument("0xd2", "provider-update", ["updated", "normalized"])),
   documents(recordDocument("0xd2", "provider-get", ["read", "normalized"])),
 ]);
@@ -1368,43 +1590,90 @@ const recordManager = Local.Record.manager(nativeRoundTrip.connection);
 const insertedRecord = recordManager.insert(Local.Record.create({
   identifier: Local.Identifier.create("client-insert"),
   tag: [Local.Tag.create("client")],
-}));
-assert.equal(insertedRecord.iid, "0xd1");
+})).item;
+assert.equal(iidValue(insertedRecord.iid), "0xd1");
 assert.equal(insertedRecord.identifier.value, "provider-insert");
 assert.deepEqual(insertedRecord.tag.map((value) => value.value), ["inserted", "normalized"]);
 const putRecord = recordManager.put(Local.Record.create({
   identifier: Local.Identifier.create("client-put"),
   tag: [Local.Tag.create("client")],
-}));
+})).item;
 assert.equal(putRecord.identifier.value, "provider-put");
-const updatedRecord = recordManager.update("0xd2", Local.Record.create({
+const updatedRecord = recordManager.update(new Iid("0xd2"), Local.Record.create({
   identifier: Local.Identifier.create("client-update"),
   tag: [Local.Tag.create("client")],
-}));
+})).item;
 assert.equal(updatedRecord.identifier.value, "provider-update");
-const readRecord = recordManager.getByIid("0xd2");
+const readRecord = recordManager.getByIid(new Iid("0xd2"));
 assert.equal(readRecord.identifier.value, "provider-get");
-assert.deepEqual(readRecord.tag.map((value) => value.value), ["read", "normalized"]);
+assert.deepEqual(readRecord.tag.map((value) => value.value), ["normalized", "read"]);
 assert.deepEqual(counters(nativeRoundTrip), {
   opens: ["write", "write", "write", "read"],
   queries: counters(nativeRoundTrip).queries,
+  givenRows: counters(nativeRoundTrip).givenRows,
   commits: 3,
   rollbacks: 0,
   closes: 1,
 });
-assert.equal(counters(nativeRoundTrip).queries.length, 8);
+assert.equal(counters(nativeRoundTrip).queries.length, 4);
+
+for (const targetKind of ["owned", "read", "write"]) {
+  const reading = fixture([
+    documents(recordDocument("0xdc", "keyword", ["read"])),
+    documents(recordDocument("0xdc", "keyword", ["read"])),
+    documents(recordDocument("0xdc", "keyword", ["read"])),
+    documents(recordDocument("0xdc", "keyword", ["read"])),
+    { Rows: [{ count2: scalar("long", 1) }] },
+    { Rows: [{ root0: thing("0xdc", "entity", "record") }] },
+    documents(),
+  ]);
+  let connection = reading.connection;
+  if (targetKind !== "owned") {
+    connection = Object.freeze({});
+    Handles.registerTransactionHandle(connection, reading.database.transaction(targetKind));
+  }
+  const unfiltered = Local.Record.manager(connection).all();
+  const compared = Local.Record.manager(connection).filter({ identifier: Local.Identifier.create("keyword") }).all();
+  for (const values of [unfiltered, compared]) {
+    assert.equal(Object.isFrozen(values), true);
+    assert.equal(values.length, 1);
+    assert.notEqual(Runtime.__testOrderedFacadeProof(values[0]), null);
+  }
+  const manager = Local.Record.manager(connection).filter({
+    identifier__in: [Local.Identifier.create("keyword")],
+  });
+  const all = manager.all();
+  assert.equal(Object.isFrozen(all), true);
+  assert.equal(all.length, 1);
+  const first = manager.first();
+  for (const value of [all[0], first]) {
+    assert.equal(iidValue(value.iid), "0xdc");
+    assert.equal(value.identifier.value, "keyword");
+    assert.deepEqual(value.tag.map((tag) => tag.value), ["read"]);
+    assert.notEqual(Runtime.__testOrderedFacadeProof(value), null);
+  }
+  assert.equal(manager.count(), 1n);
+  assert.equal(manager.exists(), true);
+  assert.equal(manager.first(), null);
+  const state = counters(reading);
+  assert.deepEqual(state.opens, targetKind === "owned" ? Array(7).fill("read") : [targetKind]);
+  assert.equal(state.queries.length, 7);
+  assert.equal(state.commits, 0);
+  assert.equal(state.rollbacks, 0);
+  assert.equal(state.closes, targetKind === "owned" ? 7 : 0);
+}
 
 const sharedAuthority = Native.__newProjectionRecordingAuthority();
 const source = fixture([documents(personDocument("0xa7"))], sharedAuthority);
-const exactPerson = Local.Person.manager(source.connection).getByIid("0xa7");
-assert.equal(exactPerson.iid, "0xa7");
+const exactPerson = Local.Person.manager(source.connection).getByIid(new Iid("0xa7"));
+assert.equal(iidValue(exactPerson.iid), "0xa7");
 const exactPersonProof = Runtime.__testOrderedFacadeProof(exactPerson);
 assert.notEqual(exactPersonProof, null);
 
 const detachedPerson = Local.Person.decodeSnapshot(
   Local.Person.encodeSnapshot(exactPerson),
 );
-assert.equal(detachedPerson.iid, "0xa7");
+assert.equal(iidValue(detachedPerson.iid), "0xa7");
 assert.notEqual(Runtime.__testOrderedFacadeProof(detachedPerson), null);
 const detachedTarget = fixture([]);
 assert.throws(() => Local.Membership.manager(detachedTarget.connection).insert(
@@ -1412,14 +1681,23 @@ assert.throws(() => Local.Membership.manager(detachedTarget.connection).insert(
 ), (error) => diagnostic(error).code === "projected_snapshot_detached");
 assert.deepEqual(counters(detachedTarget), zeroCounters);
 
+const nativeRoleDocument = (iid, type, playerIid, playerType) => ({
+  _iid: iid,
+  _type: type,
+  attributes: {},
+  _role_0_iid: playerIid,
+  _role_0_type: playerType,
+  _role_0_attributes: {},
+});
 const sameEntity = fixture([
-  documents(membershipDocument("0xb7", "0xa7")),
+  documents(nativeRoleDocument("0xb7", "membership", "0xa7", "person")),
 ], sharedAuthority);
 const sameMembership = Local.Membership.manager(sameEntity.connection).insert(
   Local.Membership.create({ participant: [exactPerson] }),
-);
-assert.equal(sameMembership.participant[0].iid, "0xa7");
+).item;
+assert.equal(iidValue(sameMembership.participant[0].iid), "0xa7");
 assert.equal(counters(sameEntity).commits, 1);
+assert.equal(counters(sameEntity).queries.length, 1);
 
 const foreignEntity = fixture([]);
 assert.throws(() => Local.Membership.manager(foreignEntity.connection).insert(
@@ -1430,15 +1708,15 @@ assert.deepEqual(counters(foreignEntity), zeroCounters);
 const membershipSource = fixture([
   documents(membershipDocument("0xb8", "0xa7")),
 ], sharedAuthority);
-const exactMembership = Local.Membership.manager(membershipSource.connection).getByIid("0xb8");
-assert.equal(exactMembership.iid, "0xb8");
+const exactMembership = Local.Membership.manager(membershipSource.connection).getByIid(new Iid("0xb8"));
+assert.equal(iidValue(exactMembership.iid), "0xb8");
 const sameRelation = fixture([
-  documents(activityLinkDocument("0xc8", "0xb8")),
+  documents(nativeRoleDocument("0xc8", "activity-link", "0xb8", "membership")),
 ], sharedAuthority);
 const sameLink = Local.ActivityLink.manager(sameRelation.connection).insert(
   Local.ActivityLink.create({ subject: [exactMembership] }),
-);
-assert.equal(sameLink.subject[0].iid, "0xb8");
+).item;
+assert.equal(iidValue(sameLink.subject[0].iid), "0xb8");
 assert.equal(counters(sameRelation).queries.length, 1);
 const foreignRelation = fixture([]);
 assert.throws(() => Local.ActivityLink.manager(foreignRelation.connection).insert(
@@ -1574,14 +1852,16 @@ assert.deepEqual(
 );
 for (const unboundPlayer of [exactPersonProxy, exactPersonCopy]) {
   const unboundTarget = fixture([
-    documents(membershipDocument("0xbe", "0xa7")),
+    documents(nativeRoleDocument("0xbe", "membership", "0xa7", "person")),
   ]);
   const created = Local.Membership.manager(unboundTarget.connection).insert(
     Local.Membership.create({ participant: [unboundPlayer] }),
-  );
-  assert.equal(created.iid, "0xbe");
+  ).item;
+  assert.equal(iidValue(created.iid), "0xbe");
   assert.equal(counters(unboundTarget).queries.length, 1);
   assert.equal(counters(unboundTarget).commits, 1);
+}
+
 }
 
 const rootProof = Object.freeze({ marker: "private-root-proof" });
@@ -1853,7 +2133,6 @@ assert.equal(
 
 const temporalDatabaseAuthority = Native.__newProjectionRecordingAuthority();
 const temporalBatch = fixture([
-  documents({ ordinal: 0, iid: "0xde" }),
   documents(temporalRecordDocument(0, "0xde")),
 ], temporalDatabaseAuthority);
 Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
@@ -1875,9 +2154,12 @@ const temporalBatchValues = temporalNativeManager.insertManyProjected(
 );
 assert.equal(temporalRowAtCalls, 1);
 assert.equal(Object.isFrozen(temporalBatchValues), true);
-assert.equal(temporalBatchValues.length, 1);
-const activeTemporalRecord = temporalBatchValues[0];
-assert.equal(activeTemporalRecord.iid, "0xde");
+assert.equal(temporalBatchValues.count, 1);
+assert.deepEqual(temporalBatchValues.inputIndexes, [0]);
+assert.equal(Object.isFrozen(temporalBatchValues.items), true);
+assert.equal(Object.isFrozen(temporalBatchValues.inputIndexes), true);
+const activeTemporalRecord = temporalBatchValues.items[0];
+assert.equal(iidValue(activeTemporalRecord.iid), "0xde");
 assert.equal(
   activeTemporalRecord.occurredOn.value.toISOString(),
   "+010000-01-02T00:00:00.000Z",
@@ -1886,21 +2168,13 @@ const activeTemporalProof = Runtime.__testOrderedFacadeProof(activeTemporalRecor
 assert.equal(activeTemporalProof.kind, "root");
 assert.equal(activeTemporalProof.row, 0);
 const temporalLinkTarget = fixture([
-  documents({
-    kind: 1,
-    ordinal: 0,
-    reference_ordinal: 0,
-    iid: "0xde",
-    type: "temporal-record",
-  }),
-  documents({ ordinal: 0, iid: "0xdf" }),
   documents({ ordinal: 0, ...temporalLinkDocument("0xdf", "0xde") }),
 ], temporalDatabaseAuthority);
 const [activeTemporalLink] = Local.TemporalLink.manager(
   temporalLinkTarget.connection,
-).insertMany([Local.TemporalLink.create({ subject: activeTemporalRecord })]);
-assert.equal(activeTemporalLink.iid, "0xdf");
-assert.equal(activeTemporalLink.subject.iid, "0xde");
+).insertMany([Local.TemporalLink.create({ subject: activeTemporalRecord })]).items;
+assert.equal(iidValue(activeTemporalLink.iid), "0xdf");
+assert.equal(iidValue(activeTemporalLink.subject.iid), "0xde");
 assert.equal(
   activeTemporalLink.subject.occurredOn.value.toISOString(),
   "+010000-01-02T00:00:00.000Z",
@@ -1910,14 +2184,6 @@ assert.equal(counters(temporalLinkTarget).commits, 1);
 
 Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
 const abortedTemporalLinkBatch = fixture([
-  documents({
-    kind: 1,
-    ordinal: 0,
-    reference_ordinal: 0,
-    iid: "0xde",
-    type: "temporal-record",
-  }),
-  documents({ ordinal: 0, iid: "0xe0" }),
   documents({ ordinal: 0, ...temporalLinkDocument("0xe0", "0xde") }),
 ], temporalDatabaseAuthority, "definitely_aborted");
 assert.throws(() => Local.TemporalLink.manager(
@@ -1941,8 +2207,8 @@ assert.throws(
 );
 assert.deepEqual(counters(abortedTemporalRoleTarget), zeroCounters);
 const abortedTemporalLinkState = counters(abortedTemporalLinkBatch);
-assert.equal(abortedTemporalLinkState.queries.length, 3);
-assert.equal(abortedTemporalLinkState.givenRows.length, 3);
+assert.equal(abortedTemporalLinkState.queries.length, 1);
+assert.equal(abortedTemporalLinkState.givenRows.length, 1);
 assert.equal(abortedTemporalLinkState.commits, 1);
 
 const materializeMalformedBatch = (typeKey, wire) =>
@@ -2105,14 +2371,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(error.code(), "ordered_distinct_duplicate");
     assert_eq!(error.field(), "type.tag[1]");
 
-    let first_player = PersonRef::from_iid("0xa")?;
-    let second_player = PersonRef::from_iid("0xb")?;
+    let first_player = PersonRef::from_iid(type_bridge::Iid::new("0xa")?)?;
+    let second_player = PersonRef::from_iid(type_bridge::Iid::new("0xb")?)?;
     let membership = MembershipCreate::new(vec![first_player.clone(), second_player])?;
     assert_eq!(
         membership
             .participant()
             .iter()
-            .map(|reference| reference.iid())
+            .map(|reference| reference.iid().map(type_bridge::Iid::as_str))
             .collect::<Vec<_>>(),
         [Some("0xa"), Some("0xb")],
     );
@@ -2209,7 +2475,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         accepted_membership
             .participant()
             .iter()
-            .map(Person::iid)
+            .map(|person| person.iid().as_str())
             .collect::<Vec<_>>(),
         ["0xa", "0xb"],
     );
@@ -2229,8 +2495,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )],
     );
     let error = materialize_model_for_test::<Membership>(&invalid_player_iid_row).unwrap_err();
-    assert_eq!(error.code(), "noncanonical_hydrated_iid");
-    assert_eq!(error.field(), "participant[0].type.iid");
+    assert_eq!(error.code(), "invalid_iid");
+    assert_eq!(error.field(), "participant[0].iid");
 
     let accepted_row = HydratedRow::new(
         Person::TYPE_ID_JSON,
@@ -2245,7 +2511,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![],
     );
     let accepted: Person = materialize_model_for_test(&accepted_row)?;
-    assert_eq!(accepted.iid(), "0x3");
+    assert_eq!(accepted.iid().as_str(), "0x3");
     assert_eq!(
         accepted.tag().iter().map(|value| value.value().as_str()).collect::<Vec<_>>(),
         ["first", "second"],
@@ -2261,8 +2527,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![],
     );
     let error = materialize_model_for_test::<Person>(&noncanonical_iid_row).unwrap_err();
-    assert_eq!(error.code(), "noncanonical_hydrated_iid");
-    assert_eq!(error.field(), "type.iid");
+    assert_eq!(error.code(), "invalid_iid");
+    assert_eq!(error.field(), "iid");
     Ok(())
 }
 "#,

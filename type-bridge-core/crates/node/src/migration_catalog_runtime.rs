@@ -1,11 +1,13 @@
 //! Immutable generated migration-catalog inspection for Node.
 
+mod user_steps;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::Instrument as _;
 
-use napi::bindgen_prelude::{Buffer, Error, Result};
+use napi::bindgen_prelude::{Buffer, Env, Error, Function, Object, Promise, Result};
 use napi_derive::napi;
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, decode_schema_authority};
 use type_bridge_schema_migration::{
@@ -14,7 +16,7 @@ use type_bridge_schema_migration::{
     VerifiedMigrationRollbackPlan, migration_runtime_capability_vocabulary,
 };
 
-use crate::NodeRustDatabase;
+use crate::NodeDatabase;
 
 /// Wakeable cancellation owner for migration execution.
 #[napi]
@@ -141,11 +143,25 @@ pub struct NodeMigrationBackfillObservation {
 /// Generated-package-owned, source-free migration catalog.
 #[napi]
 pub struct NodeMigrationCatalog {
+    user_steps: std::sync::Mutex<user_steps::UserSteps>,
     inner: MigrationCatalog,
 }
 
 #[napi]
 impl NodeMigrationCatalog {
+    #[napi]
+    pub fn register(
+        &self,
+        step_id: String,
+        forward: Function<'_, crate::NodeRustTransactionContext, Promise<()>>,
+        reverse: Option<Function<'_, crate::NodeRustTransactionContext, Promise<()>>>,
+    ) -> Result<()> {
+        self.user_steps
+            .lock()
+            .expect("migration callback registry")
+            .register(&step_id, forward, reverse)
+    }
+
     #[napi]
     pub fn fingerprint_json(&self) -> Result<String> {
         serde_json::to_string(self.inner.fingerprint())
@@ -198,6 +214,11 @@ impl NodeMigrationCatalog {
             .map(|plan| NodeMigrationPreview {
                 inner: Arc::new(NodeMigrationPreviewState {
                     catalog: self.inner.clone(),
+                    user_steps: self
+                        .user_steps
+                        .lock()
+                        .expect("migration callback registry")
+                        .clone(),
                     plan: NodeMigrationPreviewInner::Apply(plan),
                 }),
             })
@@ -215,6 +236,11 @@ impl NodeMigrationCatalog {
             .map(|plan| NodeMigrationPreview {
                 inner: Arc::new(NodeMigrationPreviewState {
                     catalog: self.inner.clone(),
+                    user_steps: self
+                        .user_steps
+                        .lock()
+                        .expect("migration callback registry")
+                        .clone(),
                     plan: NodeMigrationPreviewInner::Rollback(plan),
                 }),
             })
@@ -222,7 +248,7 @@ impl NodeMigrationCatalog {
     }
 
     #[napi]
-    pub fn verify(&self, database: &NodeRustDatabase) -> Result<NodeMigrationVerificationReport> {
+    pub fn verify(&self, database: &NodeDatabase) -> Result<NodeMigrationVerificationReport> {
         let (database, runtime) = database.handles();
         runtime
             .block_on(type_bridge_schema_migration_typedb::verify_catalog_state(
@@ -236,7 +262,7 @@ impl NodeMigrationCatalog {
     #[napi]
     pub fn applied_migrations(
         &self,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
     ) -> Result<Vec<NodeMigrationIdentity>> {
         let (database, runtime) = database.handles();
         runtime
@@ -252,12 +278,14 @@ impl NodeMigrationCatalog {
 }
 
 #[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
 enum NodeMigrationPreviewInner {
     Apply(VerifiedMigrationApplyPlan),
     Rollback(VerifiedMigrationRollbackPlan),
 }
 
 struct NodeMigrationPreviewState {
+    user_steps: user_steps::UserSteps,
     catalog: MigrationCatalog,
     plan: NodeMigrationPreviewInner,
 }
@@ -339,8 +367,9 @@ impl NodeMigrationPreview {
         }
         let plan = authorize_plan(&self.inner, &approvals.approvals)?;
         Ok(NodeMigrationPlan {
-            catalog: self.inner.catalog.clone(),
-            plan,
+            user_steps: self.inner.user_steps.clone(),
+            catalog: Arc::new(self.inner.catalog.clone()),
+            plan: Arc::new(plan),
         })
     }
 }
@@ -395,39 +424,41 @@ impl NodeMigrationApprovalSet {
 
 #[napi]
 pub struct NodeMigrationPlan {
-    #[allow(dead_code)]
-    catalog: MigrationCatalog,
-    plan: NodeMigrationPreviewInner,
+    user_steps: user_steps::UserSteps,
+    catalog: Arc<MigrationCatalog>,
+    plan: Arc<NodeMigrationPreviewInner>,
 }
 
 #[napi]
 impl NodeMigrationPlan {
     #[napi(getter)]
     pub fn execution_authorized(&self) -> bool {
-        match &self.plan {
+        match self.plan.as_ref() {
             NodeMigrationPreviewInner::Apply(plan) => plan.execution_authorized(),
             NodeMigrationPreviewInner::Rollback(plan) => plan.execution_authorized(),
         }
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<NodeMigrationExecutionReport>")]
     pub fn execute(
         &self,
-        database: &NodeRustDatabase,
+        env: Env,
+        database: &NodeDatabase,
         holder: String,
-    ) -> Result<NodeMigrationExecutionReport> {
-        self.execute_controlled(database, holder, None, None, None)
+    ) -> Result<Object<'static>> {
+        self.execute_controlled(env, database, holder, None, None, None)
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<NodeMigrationExecutionReport>")]
     pub fn execute_controlled(
         &self,
-        database: &NodeRustDatabase,
+        env: Env,
+        database: &NodeDatabase,
         holder: String,
         timeout_milliseconds: Option<i64>,
         resources: Option<&NodeMigrationExecutionResources>,
         cancellation: Option<&NodeMigrationCancellation>,
-    ) -> Result<NodeMigrationExecutionReport> {
+    ) -> Result<Object<'static>> {
         let entry = crate::perf_stages::entry();
         let _entered = entry.enter();
         let timeout_milliseconds = timeout_milliseconds
@@ -451,36 +482,27 @@ impl NodeMigrationPlan {
         let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
             .map_err(|error| catalog_error(error.code().as_str()))?;
         let (database, runtime) = database.handles();
-        match &self.plan {
-            NodeMigrationPreviewInner::Apply(plan) => runtime
-                .block_on(
-                    type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled(
-                        database,
-                        &self.catalog,
-                        &holder,
-                        plan,
-                        &control,
-                    )
-                    .instrument(entry.clone()),
-                )
-                .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
-                .map(node_execution_report)
-                .map_err(|error| catalog_error(error.code().as_str())),
-            NodeMigrationPreviewInner::Rollback(plan) => runtime
-                .block_on(
-                    type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled(
-                        database,
-                        &self.catalog,
-                        &holder,
-                        plan,
-                        &control,
-                    )
-                    .instrument(entry.clone()),
-                )
-                .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
-                .map(node_execution_report)
-                .map_err(|error| catalog_error(error.code().as_str())),
-        }
+        let user_steps = self.user_steps.bind(&runtime)?;
+        let catalog = Arc::clone(&self.catalog);
+        let plan = Arc::clone(&self.plan);
+        crate::proxy_connection_runtime::settle(&env, &runtime, async move {
+            match plan.as_ref() {
+                NodeMigrationPreviewInner::Apply(plan) => {
+                    type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled_with_user_steps(
+                        database, &catalog, &holder, plan, &control, &user_steps).await
+                        .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
+                }
+                NodeMigrationPreviewInner::Rollback(plan) => {
+                    type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled_with_user_steps(
+                        database, &catalog, &holder, plan, &control, &user_steps).await
+                        .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
+                }
+            }.map(node_execution_report).map_err(|error| {
+                if error.code().as_str() == "migration_user_step_failed" {
+                    Error::from_reason(format!("migration catalog rejected [{}]: {error}", error.code()))
+                } else { catalog_error(error.code().as_str()) }
+            })
+        }.instrument(entry.clone()))
     }
 }
 
@@ -510,7 +532,10 @@ pub fn open_migration_catalog(
         capabilities,
     );
     MigrationCatalog::open(history_bundle.as_ref(), &context)
-        .map(|inner| NodeMigrationCatalog { inner })
+        .map(|inner| NodeMigrationCatalog {
+            inner,
+            user_steps: Default::default(),
+        })
         .map_err(|error| catalog_error(error.code().as_str()))
 }
 
@@ -786,6 +811,7 @@ mod tests {
         let graph = MigrationHistoryGraph::from_verified(std::iter::empty()).unwrap();
         let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
         let catalog = NodeMigrationCatalog {
+            user_steps: Default::default(),
             inner: type_bridge_schema_migration::MigrationCatalog::from_verified_bundle(bundle)
                 .unwrap(),
         };
@@ -808,6 +834,7 @@ mod tests {
             migration_runtime_capability_vocabulary().unwrap(),
         );
         let catalog = NodeMigrationCatalog {
+            user_steps: Default::default(),
             inner: type_bridge_schema_migration::MigrationCatalog::open(&bytes, &context).unwrap(),
         };
         let preview = catalog.preview_apply(Vec::new(), None).unwrap();

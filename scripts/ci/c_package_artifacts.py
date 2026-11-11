@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build, validate, and consume frozen ABI 1.6 C package artifacts."""
+"""Build, validate, and consume ABI 2.0 C package artifacts."""
 
 from __future__ import annotations
 
@@ -32,12 +32,11 @@ NOTICE_PATH = CORE / "crates/c/THIRD_PARTY_NOTICES.md"
 TARGET = "x86_64-unknown-linux-gnu"
 RUNTIME_NAME = "type-bridge-c-runtime"
 RUNTIME_LIBRARY = "libtype_bridge_c.so"
-# Published C asset name. The app label below must stay `sdkv3` so the
-# generator emits the tb_sdkv3 prefix this name and the release record use.
-PACKAGE_NAME = "tb_sdkv3"
+# The generated example uses the unversioned prefix selected for ABI 2.0.
+PACKAGE_NAME = "tb_sdk"
 PACKAGE_VERSION = "1.0.0"
-# Installed package metadata stays at ABI 1.6 while the runtime ABI is 1.7.
-ABI_VERSION = "1.6.0"
+# Installed package metadata matches the native runtime ABI.
+ABI_VERSION = "2.0.0"
 PUBLICATION_DISPOSITION = "artifact-only-unpublished-unsupported"
 RUNTIME_FORMAT = "typebridge.c-runtime-artifact/v1"
 PACKAGE_FORMAT = "typebridge.generated-c-package-artifact/v1"
@@ -285,7 +284,7 @@ def inspect_shared_elf(library: Path) -> dict[str, object]:
         {
             name.decode("ascii")
             for name in re.findall(
-                rb"\b(type_bridge_[a-zA-Z0-9_]+)\s*\(",
+                rb"TYPE_BRIDGE_CALL\s+(type_bridge_[a-zA-Z0-9_]+)\s*\(",
                 read_regular(CORE / "crates/c/include/typebridge/type_bridge.h"),
             )
         }
@@ -342,7 +341,7 @@ def runtime_manifest(
         "abi": ABI_VERSION,
         "artifact-id": f"sha256:{identity}",
         "dependencies": inspect_shared_elf(library_path),
-        "filename": f"type-bridge-c-runtime-abi-1.6-{TARGET}.tar.gz",
+        "filename": f"type-bridge-c-runtime-abi-2.0-{TARGET}.tar.gz",
         "format": RUNTIME_FORMAT,
         "members": payload_members,
         "name": RUNTIME_NAME,
@@ -408,7 +407,7 @@ def build_runtime(output: Path, build_root: Path, *, commit: str, tree: str) -> 
 def generated_config() -> bytes:
     return f'''# Generated TypeBridge C schema source-package config.
 include(CMakeFindDependencyMacro)
-find_dependency(TypeBridge 1.7.0 EXACT CONFIG)
+find_dependency(TypeBridge 2.0.0 EXACT CONFIG)
 get_filename_component(_tb_package_prefix "${{CMAKE_CURRENT_LIST_DIR}}/../../.." ABSOLUTE)
 if(NOT TARGET {PACKAGE_NAME}::schema)
   add_library({PACKAGE_NAME}_schema STATIC "${{_tb_package_prefix}}/src/{PACKAGE_NAME}.c")
@@ -441,7 +440,7 @@ generated_source=${{prefix}}/src/{PACKAGE_NAME}.c
 Name: {PACKAGE_NAME} schema
 Description: Generated TypeBridge C schema source package
 Version: {PACKAGE_VERSION}
-Requires: type-bridge-abi >= 1.7.0
+Requires: type-bridge-abi >= 2.0.0
 Cflags: -I${{includedir}}
 """.encode()
 
@@ -459,7 +458,7 @@ def build_generation_workspace(root: Path) -> Path:
         "schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n"
         "  managed-scope: models-package\n"
         "compatibility:\n  semantic-profile: typedb-3.12.1/v1\n"
-        "migrations:\n  directory: migrations/v2\n  app-label: sdkv3\n"
+        "migrations:\n  directory: migrations/v2\n  app-label: sdk\n"
         "bindings:\n  c:\n    output: generated/c\n",
         encoding="utf-8",
     )
@@ -549,7 +548,7 @@ def build_generated(output: Path, build_root: Path, *, commit: str, tree: str) -
         "payload-sha256": payload_digest,
         "projection-fingerprint": projection,
         "publication-disposition": PUBLICATION_DISPOSITION,
-        "required-runtime-abi": {"exact": "1.6.0"},
+        "required-runtime-abi": {"exact": "2.0.0"},
         "semantic-fingerprint": semantic,
         "source-commit": commit,
         "source-generated": {
@@ -647,9 +646,9 @@ def validate_generated(archive: Path) -> dict[str, Any]:
         raise ArtifactError("generated license template drifted")
     config = files[PACKAGE_MEMBERS[2]].decode("utf-8")
     pc = files[PACKAGE_MEMBERS[4]].decode("utf-8")
-    if "find_dependency(TypeBridge 1.7.0 EXACT CONFIG)" not in config:
+    if "find_dependency(TypeBridge 2.0.0 EXACT CONFIG)" not in config:
         raise ArtifactError("generated CMake runtime ABI fence drifted")
-    if "type-bridge-abi >= 1.7.0" not in pc:
+    if "type-bridge-abi >= 2.0.0" not in pc:
         raise ArtifactError("generated pkg-config runtime ABI fence drifted")
     if manifest.get("publication-disposition") != PUBLICATION_DISPOSITION:
         raise ArtifactError("generated publication disposition widened")
@@ -659,7 +658,7 @@ def validate_generated(archive: Path) -> dict[str, Any]:
 def cmake_consumer_source() -> tuple[bytes, bytes, bytes]:
     cmake = f"""cmake_minimum_required(VERSION 3.20)
 project(type_bridge_artifact_consumer LANGUAGES C CXX)
-find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)
+find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)
 find_package({PACKAGE_NAME} 1.0.0 EXACT CONFIG REQUIRED)
 add_executable(consumer main.c)
 add_library(cpp_header OBJECT header.cpp)
@@ -687,7 +686,7 @@ int main(void) {{
   if (type_bridge_runtime_version(&version) != TYPE_BRIDGE_STATUS_OK ||
       version.length != sizeof(expected_version) - 1u ||
       memcmp(version.data, expected_version, sizeof(expected_version) - 1u) != 0) return 10;
-  if ({PACKAGE_NAME}_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK ||
+  if ({PACKAGE_NAME}_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK ||
       package == NULL || diagnostics != NULL) return 11;
   if ({PACKAGE_NAME}_identifier_open(package, identifier_input, &identifier, &diagnostics) !=
           TYPE_BRIDGE_STATUS_OK || identifier == NULL || diagnostics != NULL) return 12;
@@ -703,7 +702,7 @@ int main(void) {{
     cpp = f"""#include <type_traits>
 #include <{PACKAGE_NAME}/{PACKAGE_NAME}.h>
 static_assert(std::is_standard_layout_v<type_bridge_byte_view_t>);
-void type_bridge_cpp_header_probe() {{ auto open = &{PACKAGE_NAME}_schema_package_open_v2; (void)open; }}
+void type_bridge_cpp_header_probe() {{ auto open = &{PACKAGE_NAME}_schema_package_open; (void)open; }}
 """.encode()
     return cmake, main, cpp
 
@@ -777,7 +776,7 @@ def smoke(runtime_archive: Path, generated_archive: Path) -> dict[str, object]:
             f"find_package({PACKAGE_NAME} 1.0.0 EXACT CONFIG REQUIRED)\n",
             encoding="utf-8",
         )
-        for incompatible in ("1.5.0", "2.0.0"):
+        for incompatible in ("1.7.0", "2.1.0"):
             fake_runtime = root / f"fake runtime {incompatible}"
             fake_runtime.mkdir()
             sentinel = fake_runtime / "provider-io-sentinel"
@@ -842,7 +841,7 @@ def smoke(runtime_archive: Path, generated_archive: Path) -> dict[str, object]:
         "generated-artifact-id": generated_manifest_value["artifact-id"],
         "pkg-config-c17": True,
         "relocation": True,
-        "runtime-range-rejection": ["1.5.0", "2.0.0"],
+        "runtime-range-rejection": ["1.7.0", "2.1.0"],
         "runtime-artifact-id": runtime_manifest_value["artifact-id"],
         "uninstall": "clean",
     }

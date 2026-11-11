@@ -46,8 +46,8 @@ def ensure_supported(driver: str, server: str) -> None:
     decision is entirely core's.
 
     Args:
-        driver: Installed driver version string (e.g. ``"3.11.5"``).
-        server: Detected server version string (e.g. ``"3.11.5"``).
+        driver: Installed driver version string (e.g. ``"3.14.0"``).
+        server: Detected server version string (e.g. ``"3.14.0"``).
 
     Raises:
         UnsupportedVersionError: When the pair is below the admission floor or crosses
@@ -65,8 +65,7 @@ def ensure_runtime_supported(server: str) -> None:
 
     Every TypeBridge transaction executes through the Rust runtime's own
     typedb-driver, and the default build embeds drivers covering the full
-    measured lines (3.11–3.14; confirmed 3.12, 3.13 and 3.14 servers normally
-    negotiate embedded band 9, with band 8 retained for discovery/fallback).
+    measured lines (3.12–3.14) through the retained band-9 provider.
     Newer versions are admitted using the newest measured assumptions and
     are not tested or supported by this TypeBridge release. The runtime emits
     one warning per connection to a newer line. Core makes

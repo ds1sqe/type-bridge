@@ -26,6 +26,7 @@ from pathlib import Path
 from types import ModuleType
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sdk_plan_parity
 import sdk_profile_matrix
 from persist_binding_reports import PublishError, publish
 
@@ -217,11 +218,17 @@ class Layout:
     c_database: str
 
     @classmethod
-    def under(cls, root: Path, nonce: str, profile: Profile = PROJECTED) -> Layout:
+    def under(
+        cls,
+        root: Path,
+        nonce: str,
+        profile: Profile = PROJECTED,
+        database_prefix: str | None = None,
+    ) -> Layout:
         if len(nonce) != 24 or any(character not in "0123456789abcdef" for character in nonce):
             raise RunnerError("database nonce must be exactly 24 lowercase hexadecimal characters")
         reports = root / "reports"
-        prefix = profile.database_prefix
+        prefix = profile.database_prefix if database_prefix is None else database_prefix.rstrip("_")
         return cls(
             profile=profile,
             foreign_schema=root / "scratch/foreign-models.yaml",
@@ -315,13 +322,13 @@ def _required_fixture(environment: Mapping[str, str], profile: Profile = PROJECT
 def _require_tools() -> None:
     if os.name != "posix":
         raise RunnerError("the Projected live fan-in requires POSIX process-group isolation")
-    for executable in ("cargo", "maturin", "npm", "node", "gcc", "clang"):
+    for executable in ("cargo", "uv", "uvx", "npm", "node", "gcc", "clang"):
         if shutil.which(executable) is None:
             raise RunnerError(f"required Projected live tool is unavailable: {executable}")
     tsc = NODE_PACKAGE / "node_modules/.bin/tsc"
     if not tsc.is_file() or not os.access(tsc, os.X_OK):
         raise RunnerError(
-            "required TypeScript compiler is unavailable; run npm ci in type-bridge-core/crates/node"
+            "required tsc in node_modules is unavailable; run npm ci in type-bridge-core/crates/node"
         )
 
 
@@ -415,7 +422,12 @@ def _database_guard(
     )
 
 
-def command_plan(layout: Layout, fixture: Fixture) -> tuple[CommandSpec, ...]:
+def command_plan(
+    layout: Layout,
+    fixture: Fixture,
+    *,
+    target: Path | None = None,
+) -> tuple[CommandSpec, ...]:
     profile = layout.profile
     "Return the exact focused four-binding command ledger."
     python_environment = _live_environment(
@@ -425,15 +437,15 @@ def command_plan(layout: Layout, fixture: Fixture) -> tuple[CommandSpec, ...]:
     node_environment = _live_environment(layout, fixture, layout.node_report, layout.node_database)
     node_environment[profile.NODE_PACKAGE_ENV] = str(layout.node)
     rust_environment = _live_environment(layout, fixture, layout.rust_report, layout.rust_database)
-    rust_environment[ACCEPTANCE_TARGET_ENV] = str(layout.scratch / "rust-target")
+    rust_environment[ACCEPTANCE_TARGET_ENV] = str(target or layout.scratch / "rust-target")
     c_environment = _live_environment(layout, fixture, layout.c_report, layout.c_database)
-    c_environment[ACCEPTANCE_TARGET_ENV] = str(layout.scratch / "c-target")
-    c_environment["CARGO_TARGET_DIR"] = str(layout.scratch / "c-target")
+    c_environment[ACCEPTANCE_TARGET_ENV] = str(target or layout.scratch / "c-target")
+    c_environment["CARGO_TARGET_DIR"] = str(target or layout.scratch / "c-target")
     tsc = NODE_PACKAGE / "node_modules/.bin/tsc"
     return (
         CommandSpec(
             "install the Python native facade",
-            ("maturin", "develop"),
+            ("bash", str(ROOT / "scripts/ci/run_maturin.sh"), "develop"),
             CORE,
             600,
             {"TMPDIR": str(layout.scratch)},
@@ -454,7 +466,10 @@ def command_plan(layout: Layout, fixture: Fixture) -> tuple[CommandSpec, ...]:
             ),
             ROOT,
             600,
-            {"TMPDIR": str(layout.scratch)},
+            {
+                "TMPDIR": str(layout.scratch),
+                "TYPE_BRIDGE_ACCEPTANCE_MANAGED_SCOPE": "schema-codegen-acceptance",
+            },
         ),
         *(
             (
@@ -467,7 +482,10 @@ def command_plan(layout: Layout, fixture: Fixture) -> tuple[CommandSpec, ...]:
                     ),
                     ROOT,
                     600,
-                    {"TMPDIR": str(layout.scratch)},
+                    {
+                        "TMPDIR": str(layout.scratch),
+                        "TYPE_BRIDGE_ACCEPTANCE_MANAGED_SCOPE": "python-generated-acceptance",
+                    },
                 ),
             )
             if profile == MANAGER
@@ -503,7 +521,10 @@ def command_plan(layout: Layout, fixture: Fixture) -> tuple[CommandSpec, ...]:
             ),
             ROOT,
             600,
-            {"TMPDIR": str(layout.scratch)},
+            {
+                "TMPDIR": str(layout.scratch),
+                "TYPE_BRIDGE_ACCEPTANCE_MANAGED_SCOPE": "schema-codegen-acceptance",
+            },
         ),
         *(
             (
@@ -516,7 +537,10 @@ def command_plan(layout: Layout, fixture: Fixture) -> tuple[CommandSpec, ...]:
                     ),
                     ROOT,
                     600,
-                    {"TMPDIR": str(layout.scratch)},
+                    {
+                        "TMPDIR": str(layout.scratch),
+                        "TYPE_BRIDGE_ACCEPTANCE_MANAGED_SCOPE": "node-generated-acceptance",
+                    },
                 ),
             )
             if profile == MANAGER
@@ -608,8 +632,8 @@ def command_plan(layout: Layout, fixture: Fixture) -> tuple[CommandSpec, ...]:
             600,
             {
                 "TMPDIR": str(layout.scratch),
-                ACCEPTANCE_TARGET_ENV: str(layout.scratch / "c-target"),
-                "CARGO_TARGET_DIR": str(layout.scratch / "c-target"),
+                ACCEPTANCE_TARGET_ENV: c_environment[ACCEPTANCE_TARGET_ENV],
+                "CARGO_TARGET_DIR": c_environment["CARGO_TARGET_DIR"],
             },
         ),
         CommandSpec(
@@ -830,7 +854,12 @@ def run(
     _validate_producer_sources(contract, profile)
     _require_tools()
     with tempfile.TemporaryDirectory(prefix=f"typebridge-{profile.name}-live-") as temporary:
-        layout = Layout.under(Path(temporary).resolve(), secrets.token_hex(12), profile)
+        layout = Layout.under(
+            Path(temporary).resolve(),
+            secrets.token_hex(12),
+            profile,
+            environment.get("TB_SDK_DATABASE_PREFIX"),
+        )
         _prepare(layout)
         producer_reports = {
             "produce the Python report": layout.python_report,
@@ -841,11 +870,46 @@ def run(
         comparison = ""
         owns_database_names = False
         try:
-            for command in command_plan(layout, fixture):
+            configured_target = environment.get("CARGO_TARGET_DIR")
+            for command in command_plan(
+                layout,
+                fixture,
+                target=Path(configured_target) if configured_target else None,
+            ):
                 report = producer_reports.get(command.label)
                 if report is not None and (report.exists() or report.is_symlink()):
                     raise RunnerError(f"report path exists before {command.label}: {report}")
+                capture_root = environment.get("TYPE_BRIDGE_SDK_PLAN_WITNESS_DIRECTORY")
+                trace = None
+                binding = ""
+                if profile == MANAGER and report is not None and capture_root is not None:
+                    binding = command.label.split()[2].lower()
+                    trace = Path(capture_root) / f"{binding}-native.jsonl"
+                    label = Path(capture_root) / f"{binding}-label"
+                    if trace.exists() or label.exists():
+                        raise RunnerError("native capture paths must be new")
+                    label.write_text("")
+                    command = replace(
+                        command,
+                        environment=dict(command.environment or {})
+                        | {
+                            "TYPE_BRIDGE_TEST_PLAN_CAPTURE": str(trace),
+                            "TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL": str(label),
+                            "RUST_LOG": "type_bridge.plan=debug",
+                        },
+                    )
                 completed = _run(command)
+                if trace is not None:
+                    assert capture_root is not None
+                    sdk_plan_parity.native_witness(
+                        "models",
+                        sdk_profile_matrix.requested(
+                            "models", environment=environment
+                        ).semantic_profile,
+                        binding,
+                        trace,
+                        Path(capture_root) / f"{binding}.json",
+                    )
                 if command.label == "verify exact fixture and four initially absent databases":
                     owns_database_names = True
                 if report is not None:
@@ -962,14 +1026,19 @@ def run_tls(environment: Mapping[str, str] = os.environ) -> str:
         ("Node producer", MANAGER.NODE_PRODUCER),
     ):
         contract.validate_producer_source(path.read_bytes())
-    for executable in ("cargo", "maturin", "npm", "node"):
+    for executable in ("cargo", "uv", "uvx", "npm", "node"):
         if shutil.which(executable) is None:
             raise RunnerError(f"required ordered TLS tool is unavailable: {executable}")
     tsc = NODE_PACKAGE / "node_modules/.bin/tsc"
     if not tsc.is_file() or not os.access(tsc, os.X_OK):
-        raise RunnerError("the TypeScript compiler is unavailable; run npm ci first")
+        raise RunnerError("the tsc compiler in node_modules is unavailable; run npm ci first")
     with tempfile.TemporaryDirectory(prefix="typebridge-manager-tls-") as temporary:
-        layout = Layout.under(Path(temporary).resolve(), secrets.token_hex(12), MANAGER)
+        layout = Layout.under(
+            Path(temporary).resolve(),
+            secrets.token_hex(12),
+            MANAGER,
+            environment.get("TB_SDK_DATABASE_PREFIX"),
+        )
         _prepare(layout)
         for command in command_plan(layout, fixture):
             if command.label not in SELECTED_COMMANDS:

@@ -129,7 +129,7 @@ const interaction = generated.Interaction.encodeCreate(
     target: personCreateValue,
   }),
 );
-const event = generated.Event.reference("0x700", {});
+const event = generated.Event.reference(new generated.Iid("0x700"), {});
 const container = generated.Container.encodeCreate(
   generated.Container.create({ item: [event] }),
 );

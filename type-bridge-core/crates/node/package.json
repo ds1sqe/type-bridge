@@ -1,6 +1,6 @@
 {
   "name": "@type-bridge/node",
-  "version": "2.3.3",
+  "version": "3.0.0",
   "description": "TypeScript and Node SDK for the TypeBridge shared Rust semantic engine",
   "license": "MIT",
   "main": "dist/public.js",
@@ -10,11 +10,6 @@
       "types": "./dist/public.d.ts",
       "require": "./dist/public.js",
       "default": "./dist/public.js"
-    },
-    "./query-v2": {
-      "types": "./dist/query-v2.d.ts",
-      "require": "./dist/query-v2.js",
-      "default": "./dist/query-v2.js"
     },
     "./runtime-projection": {
       "types": "./dist/runtime-projection.d.ts",

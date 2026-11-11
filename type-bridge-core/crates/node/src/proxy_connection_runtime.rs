@@ -18,13 +18,13 @@ use type_bridge_orm::{
 
 use crate::match_runtime::{
     NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchQueryHandle, NodeQueryCancellation,
-    NodeQueryExecutionResources, napi_sdk_diagnostic, napi_target_error,
+    NodeQueryExecutionResources, NodeQueryLimits, napi_sdk_diagnostic, napi_target_error,
 };
-use crate::query_v2_model_remote_runtime::{
+use crate::plan_model_remote_runtime::{
     count_request, exists_request, owned_advertisement, page_request, reduce_by_field_request,
     reduce_by_fields_request, reduce_request, rows_request,
 };
-use crate::query_v2_runtime::NodeQueryV2Authority;
+use crate::plan_runtime::NodePlanAuthority;
 use crate::runtime_projection::direct_tls_from_node;
 
 /// A verified connection to a TypeBridge server reached over HTTP.
@@ -36,6 +36,12 @@ pub struct NodeProxyConnection {
 
 #[napi]
 impl NodeProxyConnection {
+    /// Request delivery window in milliseconds; execution is independent.
+    #[napi(getter, js_name = "admissionWindowMilliseconds")]
+    pub fn admission_window_milliseconds(&self) -> napi::bindgen_prelude::BigInt {
+        self.connection.admission_window_milliseconds().into()
+    }
+
     /// Open `endpoint`, fetch its advertisement unless one is pinned, and
     /// verify it.
     ///
@@ -46,7 +52,7 @@ impl NodeProxyConnection {
     #[allow(clippy::too_many_arguments, reason = "flat explicit connect contract")]
     pub fn connect(
         env: Env,
-        authority: &NodeQueryV2Authority,
+        authority: &NodePlanAuthority,
         endpoint: String,
         tls_mode: String,
         tls_root_ca: Option<String>,
@@ -57,13 +63,27 @@ impl NodeProxyConnection {
         answer_limits: Option<&NodeQueryExecutionResources>,
         cancellation: Option<&NodeQueryCancellation>,
         staged_advertisement: Option<Unknown>,
+        admission_window_milliseconds: Option<napi::bindgen_prelude::BigInt>,
+        query_limits: Option<&NodeQueryLimits>,
     ) -> napi::Result<Object<'static>> {
+        let query_limits = query_limits
+            .map(|limits| limits.inner().validate_plan())
+            .transpose()
+            .map_err(|error| napi::Error::new(napi::Status::InvalidArg, error.to_string()))?;
         if header_names.len() != header_values.len() {
             return Err(napi::Error::new(
                 napi::Status::InvalidArg,
                 "proxy header names and values must have the same length",
             ));
         }
+        let admission_window_milliseconds = admission_window_milliseconds
+            .map(|value| crate::match_runtime::bigint_u64(&value, "admissionWindowMilliseconds"))
+            .transpose()?
+            .unwrap_or(type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS);
+        let admission_window_milliseconds =
+            std::num::NonZeroU64::new(admission_window_milliseconds).ok_or_else(|| {
+                napi::Error::from_reason("admissionWindowMilliseconds must be positive")
+            })?;
         let endpoint = header_names.into_iter().zip(header_values).fold(
             ProxyEndpoint::new(endpoint).tls(direct_tls_from_node(&tls_mode, tls_root_ca)?),
             |endpoint, (name, value)| endpoint.header(name, value),
@@ -80,6 +100,7 @@ impl NodeProxyConnection {
         let proxy_default = || QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
         let connection_limits =
             connection_limits.map_or_else(proxy_default, NodeQueryExecutionResources::inner);
+        let caller_item_limit = answer_limits.map(|limits| limits.inner().items);
         let answer_limits =
             answer_limits.map_or_else(proxy_default, NodeQueryExecutionResources::inner);
         let cancellation = cancellation
@@ -99,7 +120,15 @@ impl NodeProxyConnection {
                 &cancellation,
             )
             .await
-            .map_err(napi_sdk_diagnostic)?;
+            .map_err(napi_sdk_diagnostic)?
+            .with_admission_window_milliseconds(admission_window_milliseconds)
+            .with_caller_item_limit(caller_item_limit);
+            let connection = match query_limits {
+                Some(limits) => connection.with_query_limits(limits).map_err(|error| {
+                    napi::Error::new(napi::Status::InvalidArg, error.to_string())
+                })?,
+                None => connection,
+            };
             // A pinned staged advertisement must name the connection's
             // executor and reply key.
             let connection = match staged_advertisement {
@@ -126,7 +155,8 @@ impl NodeProxyConnection {
         kind: Option<String>,
         cancellation: Option<&NodeQueryCancellation>,
     ) -> napi::Result<Object<'static>> {
-        let options = crate::staged_transaction_runtime::staged_options(kind.as_deref())?;
+        let options =
+            crate::staged_transaction_runtime::staged_options(kind.as_deref(), None, None)?;
         let cancellation = cancellation
             .map(NodeQueryCancellation::inner)
             .unwrap_or_default();
@@ -145,6 +175,12 @@ impl NodeProxyConnection {
     #[napi(getter)]
     pub fn answer_limits(&self) -> NodeQueryExecutionResources {
         NodeQueryExecutionResources::from_inner(self.connection.answer_limits())
+    }
+
+    /// Query policy tightened by the currently pinned staged server ceiling.
+    #[napi(getter)]
+    pub fn query_limits(&self) -> NodeQueryLimits {
+        NodeQueryLimits::from_inner(self.connection.query_limits())
     }
 
     /// Run a selected-row or exactly-one query.
@@ -263,6 +299,10 @@ impl NodeProxyConnection {
 }
 
 impl NodeProxyConnection {
+    pub(crate) fn handles(&self) -> (Arc<ProxyQueryConnection>, Arc<ProviderRuntimeOwner>) {
+        (Arc::clone(&self.connection), Arc::clone(&self.runtime))
+    }
+
     /// Validate one request on the JavaScript thread, then run it on this
     /// connection under the query session's policy constrained by the
     /// connection's ceiling.

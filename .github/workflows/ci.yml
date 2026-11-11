@@ -27,7 +27,7 @@ jobs:
   # before the account's job slots fill.
   rust-docs:
     name: Rust docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -64,7 +64,7 @@ jobs:
   # The MSRV 1.88 checks, apart from rustdoc so the two run in parallel.
   rust-msrv:
     name: Rust MSRV 1.88
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -118,7 +118,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -438,17 +438,14 @@ jobs:
   # current provider baseline.
   rust-integration:
     name: Rust integration (${{ matrix.typedb-server }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         typedb-server:
-          - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.3"
         include:
-          - typedb-server: "typedb/typedb:3.11.5"
-            semantic-profile: "typedb-3.11.5/v1"
           - typedb-server: "typedb/typedb:3.12.3"
             semantic-profile: "typedb-3.12.1/v1"
 
@@ -529,7 +526,7 @@ jobs:
           --test integration -- --nocapture --test-threads=1
 
       # Integers beyond 2^53 stay exact in rows and fetch documents on every
-      # supported server, including the band-8 3.11.5 leg.
+      # supported server, on each measured line.
       - name: Run exact integer round trip
         env:
           TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS: localhost:1729
@@ -538,51 +535,38 @@ jobs:
           cargo test --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-typedb-runtime --test exact_integer_live
 
-      - name: Run production V1 + V2 server live smoke
-        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
-        env:
-          TYPEDB_ADDRESS: localhost:1729
-          TYPEDB_HTTP_PORT: "8000"
-        run: |
-          set -euo pipefail
-          test_name=production_binary_serves_v1_health_and_v2_query
-          selection="$(
-            cargo test --manifest-path type-bridge-core/Cargo.toml \
-              -p type-bridge-server --no-default-features \
-              --features band9,v2-query \
-              --test v2_query_integration_tests "$test_name" \
-              -- --ignored --exact --list
-          )"
-          printf '%s\n' "$selection"
-          test "$(grep -Fxc "$test_name: test" <<<"$selection")" -eq 1
-          timeout --foreground 10m \
-            cargo test --manifest-path type-bridge-core/Cargo.toml \
-              -p type-bridge-server --no-default-features \
-              --features band9,v2-query \
-              --test v2_query_integration_tests "$test_name" \
-              -- --ignored --exact --nocapture
-
-      - name: Run fetch write commit failure regression
+      - name: Run production staged server live smoke
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
-          fetch_write_commit_failure_reaches_driver_and_v1_query
-          --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-server --features v2-query --test v2_query_integration_tests
+          production_binary_serves_staged_and_removed_routes
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-server --test raw_integration_tests
 
-      - name: Run classified commit isolation conflict regression
+      - name: Run negated given role IID regression
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
-          TYPEDB_ADDRESS: localhost:1729
+          TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS: localhost:1729
+          TYPE_BRIDGE_TRANSACTION_LIVE_VERSION: "3.12.3"
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-orm --test plan_execute_live
+          negated_given_role_iid_preserves_the_provider_connection -- --exact
+
+      - name: Run specialized relation manager role matching regression
+        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
+        env:
+          TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
-          typedb::client::tests::integration_classified_commit_isolation_conflict
-          --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-server --features v2-query --lib
+          plan_builders::manager::tests::specialized_role_manager_callers_preserve_exact_and_inclusive_mutations
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-orm --lib
 
       - name: Prepare Rust queries evidence outputs
         id: prepare-rust-queries
@@ -732,17 +716,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Prove unsupported migration apply creates no databases
-        if: matrix.typedb-server == 'typedb/typedb:3.11.5'
-        env:
-          TYPEDB_ADDRESS: localhost:1729
-          TYPEDB_HTTP_PORT: "8000"
-        run: >-
-          bash scripts/ci/run_exact_ignored_rust_test.sh
-          unsupported_server_apply_creates_neither_database_live
-          --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
-
       - name: Run CLI empty-workspace replay lifecycle
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
@@ -754,6 +727,17 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-cli --test e2e_workspace_live
 
+      - name: Run CLI completed legacy history then evolve lifecycle
+        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          completed_legacy_history_then_evolve_live
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
+
       - name: Prove verify does not create databases
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
@@ -762,29 +746,6 @@ jobs:
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
           verify_never_creates_databases_live
-          --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
-
-      - name: Run legacy adoption and evolution lifecycle
-        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
-        env:
-          TYPEDB_ADDRESS: localhost:1729
-          TYPEDB_HTTP_PORT: "8000"
-        run: >-
-          bash scripts/ci/run_exact_ignored_rust_test.sh
-          adopt_legacy_history_then_evolve_live
-          --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
-
-      - name: Run shipped Python converter to native adoption lifecycle
-        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
-        env:
-          TYPEDB_ADDRESS: localhost:1729
-          TYPEDB_HTTP_PORT: "8000"
-          TYPE_BRIDGE_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: >-
-          bash scripts/ci/run_exact_ignored_rust_test.sh
-          shipped_python_converter_to_native_adoption_live
           --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-cli --test e2e_workspace_live
 
@@ -812,16 +773,128 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-schema-migration-typedb --test live_store
 
+  walkthrough:
+    name: Four-SDK walkthrough (TypeDB ${{ matrix.typedb }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        typedb: ["3.13.6", "3.14.0"]
+    services:
+      typedb:
+        image: typedb/typedb:${{ matrix.typedb }}
+        ports:
+          - 1729:1729
+          - 8000:8000
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/type-bridge-core/target
+      CARGO_BUILD_JOBS: "4"
+      TMPDIR: ${{ github.workspace }}/../walkthrough-tmp
+      TYPEDB_ADDRESS: localhost:1729
+      TYPEDB_HTTP_PORT: "8000"
+      TYPEDB_USERNAME: admin
+      TYPEDB_PASSWORD: password
+      TYPE_BRIDGE_WALKTHROUGH_DATABASE_PREFIX: walkthrough_ci_
+    steps:
+      - name: Prepare temporary directory
+        run: mkdir -p "$TMPDIR"
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      # The walkthrough's Rust program resolves `--offline` from a copy of
+      # the workspace lockfile, so the whole locked graph must be present.
+      - name: Fetch the locked Rust graph
+        run: cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
+
+      - name: Install the source-tree Python product
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
+        run: uv sync --extra dev
+
+      - name: Install Node dependencies
+        working-directory: type-bridge-core/crates/node
+        run: npm ci
+
+      - name: Wait for TypeDB ${{ matrix.typedb }}
+        run: |
+          for i in {1..30}; do
+            body="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
+            version="$(python3 -c '
+          import json, sys
+          try:
+              print(json.loads(sys.argv[1])["version"])
+          except (ValueError, KeyError, TypeError):
+              pass
+          ' "$body")"
+            if nc -z localhost 1729 2>/dev/null && [ -n "$version" ]; then
+              echo "Detected TypeDB $version"
+              test "$version" = "${{ matrix.typedb }}"
+              exit 0
+            fi
+            echo "Waiting for TypeDB... ($i/30)"
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} 2>&1 || true
+          exit 1
+
+      - name: Compare all SDKs, page blocks and captured statements
+        run: bash scripts/walkthrough.sh --output tmp/walkthrough
+
+      - name: Upload walkthrough transcripts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: walkthrough-${{ matrix.typedb }}
+          path: |
+            tmp/walkthrough/*.jsonl
+            tmp/walkthrough/*.log
+          if-no-files-found: warn
+
   # Every server of the default profile typedb-3.13.6/v1 (3.13.6, 3.14.0):
-  # the live steps test.sh's lanes on that profile run and no 3.11/3.12 leg
-  # can (staged query-plan/v3 programs, the ABI 1.7 C plans, the
+  # the live steps test.sh's lanes on that profile run and no 3.12 leg
+  # can (staged query-plan/v3 programs, the ABI 2.0 C plans, the
   # four-language writes suites, the profile's migration probes; the
   # concurrency guide's pinned outcomes on 3.13.6 only). Commands and env
   # mirror run_live_lane. The races run last: their paused-server case
   # `docker pause`s this job's own service container mid-commit.
   live-3-13-6:
     name: Staged plans live (typedb/typedb:${{ matrix.typedb }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -969,7 +1042,7 @@ jobs:
 
       # The C staged plans and the four-language writes emit SDK conformance
       # reports, which the profile matrix pairs with TypeDB 3.13.6 only.
-      - name: Run C ABI 1.7 staged contract plans
+      - name: Run C ABI 2.0 staged contract plans
         if: matrix.typedb == '3.13.6'
         env:
           TYPEDB_ADDRESS: localhost:1729
@@ -980,11 +1053,11 @@ jobs:
           cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-c --lib
           bash scripts/ci/run_exact_ignored_rust_test.sh \
-            live_c17_consumer_stages_and_commits_contract_v3_plans \
+            live_c17_consumer_stages_and_commits_contract_plans \
             --manifest-path type-bridge-core/Cargo.toml --locked \
             -p type-bridge-c --test schema_package_abi
 
-      - name: Run C ABI 1.7 builder purchase race
+      - name: Run C ABI 2.0 builder purchase race
         if: matrix.typedb == '3.13.6'
         env:
           TYPEDB_ADDRESS: localhost:1729
@@ -1018,16 +1091,26 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Run V3 staged server live acceptance
+      - name: Run raw TypeQL HTTP parity and host policy
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          raw_answers_match_typedb_http_and_host_refusal_writes_nothing
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-server --test raw_integration_tests
+
+      - name: Run staged server live acceptance
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
         run: >-
           cargo test --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-server --features v2-query
-          --test v3_staged_integration_tests -- --ignored
+          -p type-bridge-server
+          --test staged_integration_tests -- --ignored
 
-      - name: Run Rust SDK plan builder over the V3 staged proxy
+      - name: Run Rust SDK plan builder over the staged proxy
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
@@ -1087,7 +1170,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         shard: [acceptance, rest]
     steps:
       - name: Checkout code
@@ -1189,10 +1272,10 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             artifact: wheels-linux-x86_64
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             artifact: wheels-linux-aarch64
           - target: x86_64-apple-darwin
             runner: macos-latest
@@ -1293,7 +1376,7 @@ jobs:
 
   projected-live:
     name: Exact-TypeDB-3.12.3 Projected live parity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
       typedb:
@@ -1379,7 +1462,7 @@ jobs:
 
   projected-parity:
     name: Provider-free Projected value parity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1436,26 +1519,18 @@ jobs:
   # Integration tests (require TypeDB server, parallel by test category)
   test-integration:
     name: Python Integration (${{ matrix.test-group }}, ${{ matrix.typedb-server }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         # Every populated ordinary integration directory is represented here.
         # Generated CRUD and generation coverage now lives in the schema suite;
         # parity and proxy retain dedicated jobs because they need extra runtimes.
         test-group:
-          [queries, schema, expressions, session]
-        # Fan across the retained server lines: band 8 (3.11.5) and the
-        # dual-band 3.12 line. The 3.12 leg prefers the
-        # embedded band-9 driver after safe discovery, with band-8 retained as
-        # the compatibility fallback. Keep in sync with compose default and
-        # version SSOT in crates/core.
+          [queries, schema, session]
+        # Exercise the retained provider on the measured baseline.
         typedb-server:
-          - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.3"
         include:
-          - typedb-server: "typedb/typedb:3.11.5"
-            python-driver: "3.11.5"
-            semantic-profile: "typedb-3.11.5/v1"
           # The 3.12 leg pairs the band-9 installed driver a 3.12 user has;
           # server 3.12 accepts it natively.
           - typedb-server: "typedb/typedb:3.12.3"
@@ -1628,19 +1703,15 @@ jobs:
   # before Node executes it, including the generated-package application suite.
   node-integration:
     name: Node integration (${{ matrix.typedb-server }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: type-bridge-core/crates/node
     strategy:
       matrix:
         typedb-server:
-          - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.3"
         include:
-          - typedb-server: "typedb/typedb:3.11.5"
-            typedb-version: "3.11.5"
-            semantic-profile: "typedb-3.11.5/v1"
           - typedb-server: "typedb/typedb:3.12.3"
             typedb-version: "3.12.3"
             semantic-profile: "typedb-3.12.1/v1"
@@ -1766,6 +1837,10 @@ jobs:
           TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-node-queries.outputs.run_nonce }}
         run: node type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs
 
+      # The raw-pair test compares against the official Python driver.
+      - name: Install the raw-pair oracle driver
+        run: python -m pip install "typedb-driver==3.14.0"
+
       - name: Run generated projection live smoke
         env:
           USE_DOCKER: false
@@ -1778,6 +1853,7 @@ jobs:
           SDK_QUERIES_FRAGMENT_OUTPUTS: ${{ steps.prepare-node-queries.outputs.fragments }}
           SDK_QUERIES_RUN_NONCE_OUTPUT: ${{ steps.prepare-node-queries.outputs.run_nonce }}
           SDK_QUERIES_VALIDATOR_PYTHON_OUTPUT: ${{ steps.prepare-node-queries.outputs.validator_python }}
+          TYPE_BRIDGE_RAW_ORACLE_PYTHON: python
         run: |
           set -euo pipefail
           sdk_env=()
@@ -1802,47 +1878,36 @@ jobs:
 
   # Version-gate cells: each cell boots a server and checks either a positive
   # connect path or the expected rejection class.
-  #   POS-grpc-fallback-band8: wrong HTTP port still connects through gRPC band 8.
+  #   NEG-http-discovery: unavailable HTTP discovery refuses before gRPC.
   #   NEG-window: Database.connect() rejects unsupported servers.
-  #   NEG-driver-window: Database.driver rejects retired installed Python drivers.
-  #   NEG-driver-band9: the asymmetric 3.12 pair — a band-9 driver against a
-  #     3.11 server is rejected, while band-8 against 3.12 is served.
+  #   NEG-driver-window: Database.driver rejects retired installed drivers.
   # Retired 3.10 servers are rejected before data work. Cell versions mirror
   # the version SSOT in crates/core and the compatibility table.
   version-gate-cells:
     name: Version gate (${{ matrix.cell }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - cell: POS-grpc-fallback-band8
-            typedb-server: "typedb/typedb:3.11.5"
-            python-driver: "3.11.5"
+          - cell: NEG-http-discovery
+            typedb-server: "typedb/typedb:3.12.3"
+            python-driver: "3.14.0"
             probe: connect
             http-port: 1
-            expect: ok
+            expect: discovery
           - cell: NEG-window
             typedb-server: "typedb/typedb:3.10.4"
-            python-driver: "3.11.5"
+            python-driver: "3.14.0"
             probe: connect
             http-port: 8000
             expect: window
           - cell: NEG-driver-window
-            typedb-server: "typedb/typedb:3.11.5"
+            typedb-server: "typedb/typedb:3.12.3"
             python-driver: "3.10.0"
             probe: driver
             http-port: 8000
             expect: window
-          # Asymmetric band acceptance (measured live): a band-9 (3.12) driver
-          # is refused by a 3.11 server even though the reverse pair —
-          # band-8 driver against a 3.12 server — is served.
-          - cell: NEG-driver-band9
-            typedb-server: "typedb/typedb:3.11.5"
-            python-driver: "3.12.3"
-            probe: driver
-            http-port: 8000
-            expect: installed
 
     services:
       typedb:
@@ -1907,22 +1972,15 @@ jobs:
   # Required, bounded TLS proof over one server per supported protocol band.
   # This intentionally runs only typedb-runtime's focused live target: the
   # broader plaintext, binding, CLI, and remote-envelope suites have separate
-  # gates. Band 8 consumes the namespaced compatibility package; band 9
-  # consumes the official upstream 3.12.3 driver against the current server.
+  # gates. The retained provider consumes the official upstream driver.
   tls-transport-matrix:
     name: TLS transport (${{ matrix.lane }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
-          - lane: band8-packaging
-            typedb-server: "typedb/typedb:3.11.5"
-            server-version: "3.11.5"
-            semantic-profile: "typedb-3.11.5/v1"
-            driver-band: "8"
-            driver-version: "3.11.5"
           - lane: band9-upstream
             typedb-server: "typedb/typedb:3.12.3"
             server-version: "3.12.3"
@@ -2067,23 +2125,19 @@ jobs:
           docker compose -f docker-compose.yml -p type-bridge-tls-ci
           down -v --remove-orphans
 
-  # I6 single-band V2 legs: verify neither supported driver selection pulls the other band.
+  # Verify the retained provider does not pull retired namespaced drivers.
   # These are compile-only checks (no live server, no tests) plus an exact dependency proof.
   band-feature-check:
     name: Band feature check (${{ matrix.band }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - band: band8
-            features: band8,v2-query
-            required_driver: type-bridge-typedb-driver-b8 v3.11.5
-            forbidden_driver: typedb-driver v3.14.0
           - band: band9
-            features: band9,v2-query
+            features: band9,axum-transport
             required_driver: typedb-driver v3.14.0
-            forbidden_driver: type-bridge-typedb-driver-b8 v3.11.5
+            forbidden_driver: type-bridge-typedb-driver-
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -2131,7 +2185,7 @@ jobs:
   # all four emitters agree on the canonical projection.
   cross-language-parity:
     name: Generated cross-language parity inventory
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -2184,7 +2238,7 @@ jobs:
   # I/O and cannot turn uncovered or known-gap proofs into accepted support.
   sdk-queries:
     name: Shared queries conformance
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [test-integration, rust-integration, node-integration]
     steps:
       - name: Checkout code
@@ -2232,7 +2286,7 @@ jobs:
   # the checkout and rejects source leakage or handwritten root exports.
   python-generated-package-compat:
     name: Python ${{ matrix.python-version }} generated wheel compatibility
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build-wheels
     strategy:
       fail-fast: false
@@ -2305,7 +2359,7 @@ jobs:
   # Unit tests (fast, no external dependencies, parallel execution)
   test-unit:
     name: Python Unit Tests (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.12", "3.13.5", "3.14"]
@@ -2372,7 +2426,7 @@ jobs:
   # Type checking with pyright (parallel matrix for faster execution)
   typecheck:
     name: Python Type Check (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         target: [type_bridge, examples, tests]
@@ -2424,12 +2478,15 @@ jobs:
         if: matrix.target == 'examples'
         run: uv run type-bridge --manifest examples/typebridge.yaml schema generate
 
+      - name: Generate walkthrough Python package
+        if: matrix.target == 'examples'
+        run: >-
+          uv run python examples/walkthrough/run.py
+          --output "$RUNNER_TEMP/walkthrough"
+          --python-models examples/generated/python/walkthrough_models
+
       - name: Run pyright on ${{ matrix.target }}
         run: uv run pyright ${{ matrix.target }}/
-
-      - name: Check intentional typed Query API diagnostics
-        if: matrix.target == 'tests'
-        run: uv run python tests/unit/typed_query/check_query_negative.py
 
       - name: Check generated Python projection package
         if: matrix.target == 'tests'
@@ -2438,7 +2495,7 @@ jobs:
   # Code quality: linting and formatting (parallel)
   lint:
     name: Python ${{ matrix.check }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         check: [ruff-lint, ruff-format]
@@ -2490,7 +2547,7 @@ jobs:
   # the #110 single-core / thin-bindings invariant from silently regressing.
   node-check:
     name: Node binding
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: type-bridge-core/crates/node
@@ -2570,7 +2627,7 @@ jobs:
   # Rust code coverage (informational, does not block CI)
   rust-coverage:
     name: Rust Coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
       - name: Checkout code
@@ -2679,10 +2736,23 @@ jobs:
           docker logs ${{ job.services.typedb.id }} 2>&1 || true
           exit 1
 
+      # The committed administration history keeps its format-1 backfill, which
+      # cannot execute as new work. Regenerate the format-2 history the smoke
+      # applies; the smoke checks its pinned fingerprint.
+      - name: Generate the format-2 sdk administration workspace
+        env:
+          TYPE_BRIDGE_FORMAT2_ADMINISTRATION_WORKSPACE: ${{ runner.temp }}/sdk-administration-format2
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          write_format2_administration_workspace
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-cli --test sdk_administration_history
+
       - name: Apply, verify, roll back, and reapply exact sdk history
         run: >-
           python scripts/ci/standalone_cli_artifact.py connected-smoke
           tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          --workspace ${{ runner.temp }}/sdk-administration-format2
           --database sdk_cli_${{ github.run_id }}_${{ github.run_attempt }}
 
       - name: Upload immutable non-publishing artifact evidence
@@ -2764,16 +2834,16 @@ jobs:
       - name: Consume relocated CMake and pkg-config packages
         run: >-
           python scripts/ci/c_package_artifacts.py smoke
-          tmp/c-package-artifacts/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          tmp/c-package-artifacts/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-package-artifacts/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
 
       - name: Upload immutable non-publishing C artifact evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: c-package-artifacts-linux-x86_64-gnu
           path: |
-            tmp/c-package-artifacts/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-            tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+            tmp/c-package-artifacts/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+            tmp/c-package-artifacts/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -2841,8 +2911,8 @@ jobs:
         run: >-
           python scripts/ci/c_distribution_security.py assemble
           --cli tmp/c-distribution-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          --runtime tmp/c-distribution-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          --generated tmp/c-distribution-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          --runtime tmp/c-distribution-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          --generated tmp/c-distribution-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
           --audit-report tmp/c-distribution-input/rustsec-report.json
           --output tmp/c-distribution-evidence
 
@@ -2896,8 +2966,8 @@ jobs:
         run: >-
           python scripts/ci/c_artifact_journey.py provider-free
           tmp/c-artifact-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
           > tmp/c-artifact-clean-consumer.json
 
       - name: Independently revalidate the exact artifact-bound report
@@ -2905,8 +2975,8 @@ jobs:
           python scripts/ci/c_artifact_journey.py validate-report
           tmp/c-artifact-clean-consumer.json
           tmp/c-artifact-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
 
       - name: Upload immutable non-publishing clean-consumer evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -2991,14 +3061,27 @@ jobs:
           done
           exit 1
 
+      # The committed administration history keeps its format-1 backfill, which
+      # cannot execute as new work. Regenerate the format-2 history the smoke
+      # applies; the smoke checks its pinned fingerprint.
+      - name: Generate the format-2 sdk administration workspace
+        env:
+          TYPE_BRIDGE_FORMAT2_ADMINISTRATION_WORKSPACE: ${{ runner.temp }}/sdk-administration-format2
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          write_format2_administration_workspace
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-cli --test sdk_administration_history
+
       - name: Run artifact-only direct, remote, migration, and cleanup journey
         run: >-
           python scripts/ci/c_artifact_journey.py live
           tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
           --database c_artifact_data_${{ github.run_id }}_${{ github.run_attempt }}
           --migration-database c_artifact_migration_${{ github.run_id }}_${{ github.run_attempt }}
+          --migration-workspace ${{ runner.temp }}/sdk-administration-format2
           --infra-target ${{ runner.temp }}/typebridge-c-artifact-infra
           --tls-address localhost:1730
           --tls-http-port 8001
@@ -3010,8 +3093,8 @@ jobs:
           python scripts/ci/c_artifact_journey.py validate-live
           tmp/c-artifact-live-journey.json
           tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
 
       - name: Assemble and independently validate all 14 canonical steps
         run: |
@@ -3019,16 +3102,16 @@ jobs:
             tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
             tmp/c-artifact-live-journey.json \
             tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz \
+            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz \
             > tmp/c-artifact-acceptance-report.json
           python scripts/ci/c_artifact_journey.py validate-acceptance \
             tmp/c-artifact-acceptance-report.json \
             tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
             tmp/c-artifact-live-journey.json \
             tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-2.0-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
 
       - name: Upload immutable non-publishing live artifact evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

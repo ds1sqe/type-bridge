@@ -1,0 +1,484 @@
+//! Opt-in raw TypeQL transport. Host admission applies; TypeQL is unchecked.
+
+use super::staged::StagedExecutor;
+use super::staged_state::{
+    ReplayStoreError, await_before_deadline, response_audit_deadline, staged_request_metadata,
+};
+use crate::interceptor::{CommitOutcome, PolicyOutcome, RequestContext};
+use axum::body::to_bytes;
+use axum::extract::{Request, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use type_bridge_contract::sdk_diagnostic::{SdkCommitFailureOutcome, SdkExecutionDiagnostic};
+use type_bridge_orm::session::staged::TransactionKind;
+use type_bridge_typedb_runtime::CommitFailureCertainty;
+use type_bridge_typedb_runtime::raw::{RawExecutionOptions, RawQueryError};
+
+/// Raw execution at the provider boundary, shared by embedded and HTTP hosts.
+pub trait RawQueryExecutor: Send + Sync {
+    /// Return the exact TypeDB HTTP query-answer JSON bytes for one transaction.
+    /// Honor the deadline and complete-answer byte bound before committing;
+    /// a refusal closes without a commit. Never cancel a commit already sent,
+    /// and retain its durability certainty in any returned error.
+    fn execute<'a>(
+        &'a self,
+        database: &'a str,
+        query: &'a str,
+        kind: TransactionKind,
+        options: RawExecutionOptions,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, RawQueryError>> + Send + 'a>>;
+}
+
+impl RawQueryExecutor for type_bridge_typedb_runtime::TypeDBRuntime {
+    fn execute<'a>(
+        &'a self,
+        database: &'a str,
+        query: &'a str,
+        kind: TransactionKind,
+        options: RawExecutionOptions,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, RawQueryError>> + Send + 'a>> {
+        let kind = match kind {
+            TransactionKind::Read => type_bridge_typedb_runtime::TxType::Read,
+            TransactionKind::Write => type_bridge_typedb_runtime::TxType::Write,
+            TransactionKind::Schema => type_bridge_typedb_runtime::TxType::Schema,
+        };
+        Box::pin(self.execute_raw_with_options(database, query, kind, options))
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRequest {
+    query: String,
+    kind: String,
+    nonce: String,
+    expires_at_unix_ms: u64,
+}
+
+fn refusal(status: StatusCode, code: &str) -> Response {
+    (status, axum::Json(serde_json::json!({"error":code}))).into_response()
+}
+
+pub(super) async fn handle_raw(
+    State(state): State<Arc<StagedExecutor>>,
+    request: Request,
+) -> Response {
+    let now = Instant::now();
+    let deadline = state.query.execution_deadline(now);
+    let admission = state.query.admission_deadline(now, deadline);
+    let mut metadata = staged_request_metadata(request.headers(), "raw");
+    metadata.insert("query_format".into(), serde_json::json!("raw-typeql"));
+    let mut ctx = state.pipeline().request_context(metadata);
+    let Some(executor) = state.query.raw_executor.clone() else {
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::FORBIDDEN,
+            "raw_disabled",
+        )
+        .await;
+    };
+    if !matches!(
+        await_before_deadline(admission, state.pipeline().begin_request(&mut ctx)).await,
+        Some(Ok(()))
+    ) {
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::FORBIDDEN,
+            "query_remote_policy_rejected",
+        )
+        .await;
+    }
+    let body = match await_before_deadline(
+        admission,
+        to_bytes(request.into_body(), state.query.body_limit_bytes()),
+    )
+    .await
+    {
+        Some(Ok(body)) => body,
+        Some(Err(_)) => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::BAD_REQUEST,
+                "raw_request_invalid",
+            )
+            .await;
+        }
+        None => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::GATEWAY_TIMEOUT,
+                "transaction_deadline_exceeded",
+            )
+            .await;
+        }
+    };
+    let request = match serde_json::from_slice::<RawRequest>(&body) {
+        Ok(request) => request,
+        Err(_) => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::BAD_REQUEST,
+                "raw_request_invalid",
+            )
+            .await;
+        }
+    };
+    ctx.metadata.insert(
+        "compiled_typeql".into(),
+        serde_json::Value::String(request.query.clone()),
+    );
+    let kind = match request.kind.as_str() {
+        "read" => TransactionKind::Read,
+        "write" => TransactionKind::Write,
+        "schema" => TransactionKind::Schema,
+        _ => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::BAD_REQUEST,
+                "raw_request_invalid",
+            )
+            .await;
+        }
+    };
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let Some(validity_ms) = u128::from(request.expires_at_unix_ms)
+        .checked_sub(now_ms)
+        .filter(|ms| *ms > 0 && *ms <= state.query.admission_window.as_millis())
+    else {
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::BAD_REQUEST,
+            "raw_request_expired",
+        )
+        .await;
+    };
+    if !(16..=128).contains(&request.nonce.len())
+        || !request
+            .nonce
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::BAD_REQUEST,
+            "raw_request_invalid",
+        )
+        .await;
+    }
+    let Some(retain_until) = Instant::now().checked_add(Duration::from_millis(
+        u64::try_from(validity_ms).expect("validity fits the u64 expiry"),
+    )) else {
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::BAD_REQUEST,
+            "raw_request_invalid",
+        )
+        .await;
+    };
+    ctx.transaction_type = request.kind;
+    if kind != TransactionKind::Read && !state.query.allow_unauthenticated_staged_writes {
+        match await_before_deadline(admission, state.pipeline().authorize_write(&ctx)).await {
+            Some(Ok(true)) => {}
+            Some(Ok(false)) => {
+                return refuse(
+                    &state,
+                    &ctx,
+                    deadline,
+                    StatusCode::FORBIDDEN,
+                    super::staged::STAGED_WRITE_NOT_AUTHORIZED,
+                )
+                .await;
+            }
+            Some(Err(_)) => {
+                return refuse(
+                    &state,
+                    &ctx,
+                    deadline,
+                    StatusCode::FORBIDDEN,
+                    "query_remote_policy_rejected",
+                )
+                .await;
+            }
+            None => {
+                return refuse(
+                    &state,
+                    &ctx,
+                    deadline,
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "transaction_deadline_exceeded",
+                )
+                .await;
+            }
+        }
+    }
+    match await_before_deadline(
+        admission,
+        state
+            .pipeline()
+            .authorize_raw(&request.query, kind, &mut ctx),
+    )
+    .await
+    {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            return refuse(&state, &ctx, deadline, StatusCode::FORBIDDEN, error.code()).await;
+        }
+        None => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::GATEWAY_TIMEOUT,
+                "transaction_deadline_exceeded",
+            )
+            .await;
+        }
+    }
+    if Instant::now() >= retain_until {
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::BAD_REQUEST,
+            "raw_request_expired",
+        )
+        .await;
+    }
+    match await_before_deadline(
+        admission,
+        state.query.replay_store.reserve(
+            state.advertisement().executor().epoch(),
+            &request.nonce,
+            retain_until,
+        ),
+    )
+    .await
+    {
+        Some(Ok(())) => {}
+        Some(Err(ReplayStoreError::Replayed)) => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::CONFLICT,
+                "query_remote_replay",
+            )
+            .await;
+        }
+        Some(Err(ReplayStoreError::Capacity)) => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "query_remote_replay_capacity",
+            )
+            .await;
+        }
+        _ => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "query_remote_replay_unavailable",
+            )
+            .await;
+        }
+    }
+    // Never cancel a commit: once dispatch starts the provider completes its
+    // one transaction, and the host observes the actual durability outcome.
+    let finish_state = Arc::clone(&state);
+    let finish_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        let answer = executor
+            .execute(
+                state.query.database.database_name(),
+                &request.query,
+                kind,
+                RawExecutionOptions {
+                    deadline,
+                    max_answer_bytes: Some(type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES),
+                },
+            )
+            .await;
+        let commit_failure = answer
+            .as_ref()
+            .err()
+            .and_then(|error| error.commit_outcome)
+            .map(|certainty| {
+                SdkExecutionDiagnostic::commit_failure(match certainty {
+                    CommitFailureCertainty::DefinitelyAborted => {
+                        SdkCommitFailureOutcome::DefinitelyAborted
+                    }
+                    CommitFailureCertainty::Unknown => SdkCommitFailureOutcome::Unknown,
+                })
+            });
+        let may_have_committed = kind != TransactionKind::Read
+            && (answer.is_ok()
+                || commit_failure.as_ref().is_some_and(|failure| {
+                    failure.commit_outcome() == Some(SdkCommitFailureOutcome::Unknown)
+                }));
+        if kind != TransactionKind::Read && (answer.is_ok() || commit_failure.is_some()) {
+            let outcome = CommitOutcome::new(kind, commit_failure.as_ref());
+            let _ = await_before_deadline(
+                response_audit_deadline(deadline),
+                state.pipeline().observe_commit(&outcome, &ctx),
+            )
+            .await;
+        }
+        let (response, success, code, size) = match answer {
+            Ok(bytes) if bytes.len() > type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES => {
+                let code = if may_have_committed {
+                    "commit_outcome_unknown"
+                } else {
+                    "raw_answer_byte_limit"
+                };
+                (
+                    refusal(
+                        if may_have_committed {
+                            StatusCode::SERVICE_UNAVAILABLE
+                        } else {
+                            StatusCode::PAYLOAD_TOO_LARGE
+                        },
+                        code,
+                    ),
+                    false,
+                    code,
+                    0,
+                )
+            }
+            Ok(bytes) => {
+                let size = bytes.len();
+                (
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        bytes,
+                    )
+                        .into_response(),
+                    true,
+                    "ok",
+                    size,
+                )
+            }
+            Err(error) if error.commit_outcome == Some(CommitFailureCertainty::Unknown) => (
+                refusal(StatusCode::SERVICE_UNAVAILABLE, "commit_outcome_unknown"),
+                false,
+                "commit_outcome_unknown",
+                0,
+            ),
+            Err(error)
+                if matches!(
+                    error.code.as_str(),
+                    "transaction_deadline_exceeded" | "raw_answer_byte_limit"
+                ) =>
+            {
+                let code = if error.code == "raw_answer_byte_limit" {
+                    "raw_answer_byte_limit"
+                } else {
+                    "transaction_deadline_exceeded"
+                };
+                let status =
+                    StatusCode::from_u16(error.status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+                (refusal(status, code), false, code, 0)
+            }
+            Err(error) => {
+                let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY);
+                ((status,axum::Json(serde_json::json!({"error":"typedb_error","typedb":{"code":error.code,"message":error.message}}))).into_response(),false,"typedb_error",0)
+            }
+        };
+        finish(
+            &state,
+            &ctx,
+            deadline,
+            response,
+            PolicyOutcome::new(success, code, size),
+            may_have_committed,
+        )
+        .await
+    });
+    match task.await {
+        Ok(response) => response,
+        Err(_) => {
+            refuse(
+                &finish_state,
+                &finish_ctx,
+                deadline,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "commit_outcome_unknown",
+            )
+            .await
+        }
+    }
+}
+
+async fn refuse(
+    state: &StagedExecutor,
+    ctx: &RequestContext,
+    deadline: Option<Instant>,
+    status: StatusCode,
+    code: &str,
+) -> Response {
+    finish(
+        state,
+        ctx,
+        deadline,
+        refusal(status, code),
+        PolicyOutcome::new(false, code, 0),
+        false,
+    )
+    .await
+}
+
+async fn finish(
+    state: &StagedExecutor,
+    ctx: &RequestContext,
+    deadline: Option<Instant>,
+    response: Response,
+    outcome: PolicyOutcome<'_>,
+    may_have_committed: bool,
+) -> Response {
+    if !matches!(
+        await_before_deadline(
+            response_audit_deadline(deadline),
+            state.pipeline().finish_request(&outcome, ctx)
+        )
+        .await,
+        Some(Ok(()))
+    ) {
+        return refusal(
+            StatusCode::SERVICE_UNAVAILABLE,
+            if may_have_committed {
+                "commit_outcome_unknown"
+            } else {
+                "query_remote_policy_rejected"
+            },
+        );
+    }
+    response
+}

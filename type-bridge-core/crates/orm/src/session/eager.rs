@@ -1,13 +1,7 @@
 //! Internal eager execution for schema migrations and legacy helpers until 3.0.
 
-use super::backend::{
-    AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,
-    TransactionOps, TxType,
-};
+use super::backend::{GivenRowsSpec, QueryResult, TransactionOps, TxType};
 use crate::error::{ClassifiedCommitError, OrmError, Result};
-use type_bridge_core_lib::ast::{
-    TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
-};
 use type_bridge_core_lib::version::Version;
 
 /// A single TypeDB transaction.
@@ -19,6 +13,7 @@ pub struct EagerTransaction {
     tx_type: TxType,
     server_version: Option<Version>,
     never_commit: bool,
+    plan_rollback_only: bool,
 }
 
 impl EagerTransaction {
@@ -32,6 +27,21 @@ impl EagerTransaction {
             tx_type,
             server_version,
             never_commit: false,
+            plan_rollback_only: false,
+        }
+    }
+
+    pub(crate) fn latch_rollback_only(&mut self) {
+        self.plan_rollback_only = true;
+    }
+
+    pub(crate) fn take_for_borrow(&mut self) -> Self {
+        Self {
+            inner: self.inner.take(),
+            tx_type: self.tx_type,
+            server_version: self.server_version,
+            never_commit: self.never_commit,
+            plan_rollback_only: self.plan_rollback_only,
         }
     }
 
@@ -40,18 +50,25 @@ impl EagerTransaction {
     }
 
     /// Open with the backend's certified schema-exclusion guarantee.
-    #[allow(deprecated)]
     pub(crate) async fn open_fenced(
         backend: &dyn super::backend::DriverBackend,
         database: &str,
         timeout: std::time::Duration,
         server_version: Option<Version>,
     ) -> Result<(Self, String)> {
-        // In 3.0 an options flag replaces the released backend fence hook.
-        let fenced = backend
-            .open_schema_fenced_read_transaction(database, timeout)
+        let options = super::staged::TransactionOptions::default()
+            .with_deadline(timeout)
+            .with_never_commit(true);
+        let mut provider = backend
+            .open_with_options(database, TxType::Write, &options)
             .await?;
-        let (provider, schema) = fenced.into_parts();
+        let schema = match backend.schema_text(database).await {
+            Ok(schema) => schema,
+            Err(error) => {
+                let _ = provider.close().await;
+                return Err(error);
+            }
+        };
         let mut transaction = Self::new(provider, TxType::Write, server_version);
         transaction.set_never_commit(true);
         Ok((transaction, schema))
@@ -72,8 +89,77 @@ impl EagerTransaction {
         Ok(transaction)
     }
 
+    fn check_plan_latch(&self) -> Result<()> {
+        if self.plan_rollback_only {
+            return Err(OrmError::Transaction("Transaction is rollback-only".into()));
+        }
+        Ok(())
+    }
+
+    /// Execute read plans on Read, Write or Schema transactions, and write
+    /// plans on Write or Schema transactions, without changing ownership.
+    pub async fn execute_plans(
+        &mut self,
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
+        policy: &crate::QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<Vec<super::staged::PlanAnswer>> {
+        self.check_plan_latch()?;
+        let writes = plans
+            .iter()
+            .any(type_bridge_contract::query_plan::QueryPlan::writes);
+        if writes && self.tx_type == TxType::Read {
+            return Err(crate::match_request::MatchError::new(
+                crate::match_request::MatchErrorCategory::InvalidPlan,
+                "query_plan_read_only",
+                "one-shot plan execution requires read-only plans",
+            )
+            .into());
+        }
+        let limits = crate::query_plan_exec::plan_answer_limits(*policy, cancellation, deadline)?;
+        let provider = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        let given = provider.supports_given_rows();
+        let mut queries = Vec::with_capacity(plans.len());
+        for plan in plans {
+            crate::query_plan_exec::check_provider(plan, self.server_version)
+                .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+            queries.push(
+                if given {
+                    crate::query_plan_exec::staged_query(plan, true)
+                } else {
+                    crate::query_plan_exec::staged_literal_query(plan)
+                }
+                .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+            );
+        }
+        // This assignment survives a dropped execution future.
+        self.plan_rollback_only = writes;
+        let result = super::staged::bounded(
+            &limits.answer,
+            crate::query_plan_exec::execute_plans_counted::<true>(
+                provider.as_mut(),
+                given,
+                plans,
+                *policy,
+                cancellation,
+                deadline,
+                Some(queries),
+            ),
+        )
+        .await;
+        if result.is_ok() {
+            self.plan_rollback_only = false;
+        }
+        result.map(|(answers, _)| answers)
+    }
+
     /// Execute a TypeQL query within this transaction.
     pub async fn query(&mut self, typeql: &str) -> Result<QueryResult> {
+        self.check_plan_latch()?;
         self.check_schema_annotation_support(typeql)?;
         let tx = self
             .inner
@@ -84,6 +170,7 @@ impl EagerTransaction {
 
     /// Borrow the provider boundary without transferring transaction lifecycle ownership.
     pub(crate) fn provider_mut(&mut self) -> Result<&mut (dyn TransactionOps + 'static)> {
+        self.check_plan_latch()?;
         self.inner
             .as_mut()
             .map(Box::as_mut)
@@ -110,6 +197,7 @@ impl EagerTransaction {
         typeql: &str,
         rows: GivenRowsSpec,
     ) -> Result<QueryResult> {
+        self.check_plan_latch()?;
         self.check_schema_annotation_support(typeql)?;
         let tx = self
             .inner
@@ -118,86 +206,9 @@ impl EagerTransaction {
         tx.query_with_rows(typeql, rows).await
     }
 
-    /// Execute one internal typed selected-row statement with bounded reading.
-    pub(crate) async fn query_typed_bounded(
-        &mut self,
-        query: &TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let tx = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
-        tx.query_typed_bounded(query, limits, consumer).await
-    }
-
-    pub(crate) fn supports_exactly_one_tuple_proof(&self) -> Result<bool> {
-        let tx = self
-            .inner
-            .as_ref()
-            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
-        Ok(tx.supports_exactly_one_tuple_proof())
-    }
-
-    /// Execute one internal distinct selected-tuple identity scan.
-    pub(crate) async fn query_tuple_typed_bounded(
-        &mut self,
-        query: &TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let tx = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
-        tx.query_tuple_typed_bounded(query, limits, consumer).await
-    }
-
-    /// Execute one internal complete batched selected-thing hydration.
-    pub(crate) async fn hydrate_typed_bounded(
-        &mut self,
-        query: &TypedHydrateThings,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let tx = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
-        tx.hydrate_typed_bounded(query, limits, consumer).await
-    }
-
-    /// Execute one internal typed distinct-root stream.
-    pub(crate) async fn query_root_typed_bounded(
-        &mut self,
-        query: &TypedRootScan,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let tx = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
-        tx.query_root_typed_bounded(query, limits, consumer).await
-    }
-
-    /// Execute one internal exact batched page re-match/hydration.
-    pub(crate) async fn rematch_page_typed_bounded(
-        &mut self,
-        query: &TypedPageRematch,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let tx = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
-        tx.rematch_page_typed_bounded(query, limits, consumer).await
-    }
-
     /// Commit this transaction.
     pub async fn commit(&mut self) -> Result<()> {
+        self.check_plan_latch()?;
         if self.never_commit {
             return self.close().await;
         }
@@ -215,6 +226,8 @@ impl EagerTransaction {
     /// should continue to use [`Self::commit`], whose error surface is
     /// unchanged from the released API.
     pub async fn commit_classified(&mut self) -> std::result::Result<(), ClassifiedCommitError> {
+        self.check_plan_latch()
+            .map_err(ClassifiedCommitError::from)?;
         if self.never_commit {
             return self.close().await.map_err(Into::into);
         }
@@ -235,6 +248,7 @@ impl EagerTransaction {
         match tx.rollback().await {
             Ok(()) => {
                 self.inner = Some(tx);
+                self.plan_rollback_only = false;
                 Ok(())
             }
             Err(error) => {
@@ -265,5 +279,104 @@ impl EagerTransaction {
             )?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::backend::{BoxFuture, DriverBackend};
+    use crate::session::staged::TransactionOptions;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    struct FenceBackend {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        fail_export: bool,
+    }
+
+    struct FenceTransaction(Arc<Mutex<Vec<&'static str>>>);
+
+    impl TransactionOps for FenceTransaction {
+        fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult>> {
+            Box::pin(async { Ok(QueryResult::Ok) })
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
+            panic!("fenced transactions must never commit")
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<()>> {
+            self.0.lock().unwrap().push("close");
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    impl DriverBackend for FenceBackend {
+        fn open_transaction(
+            &self,
+            _: &str,
+            _: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>>> {
+            panic!("fenced opens must retain transaction options")
+        }
+        fn open_with_options(
+            &self,
+            database: &str,
+            kind: TxType,
+            options: &TransactionOptions,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>>> {
+            assert_eq!(database, "fenced");
+            assert_eq!(kind, TxType::Write);
+            assert_eq!(options.deadline, Some(Duration::from_secs(7)));
+            assert!(options.never_commit);
+            self.events.lock().unwrap().push("open");
+            let transaction = FenceTransaction(Arc::clone(&self.events));
+            Box::pin(async { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+        fn schema_text(&self, _: &str) -> BoxFuture<'_, Result<String>> {
+            self.events.lock().unwrap().push("export");
+            Box::pin(async {
+                if self.fail_export {
+                    Err(OrmError::Connection("schema export failed".into()))
+                } else {
+                    Ok("define entity marker;".into())
+                }
+            })
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn fenced_open_keeps_options_and_never_commits() {
+        let backend = FenceBackend {
+            events: Arc::default(),
+            fail_export: false,
+        };
+        let (mut transaction, schema) =
+            EagerTransaction::open_fenced(&backend, "fenced", Duration::from_secs(7), None)
+                .await
+                .unwrap();
+        assert_eq!(schema, "define entity marker;");
+        assert_eq!(*backend.events.lock().unwrap(), ["open", "export"]);
+        transaction.commit().await.unwrap();
+        assert_eq!(*backend.events.lock().unwrap(), ["open", "export", "close"]);
+    }
+
+    #[tokio::test]
+    async fn fenced_export_failure_closes_transaction() {
+        let backend = FenceBackend {
+            events: Arc::default(),
+            fail_export: true,
+        };
+        let error = EagerTransaction::open_fenced(&backend, "fenced", Duration::from_secs(7), None)
+            .await
+            .err()
+            .expect("export failed");
+        assert!(error.to_string().contains("schema export failed"));
+        assert_eq!(*backend.events.lock().unwrap(), ["open", "export", "close"]);
     }
 }

@@ -15,8 +15,8 @@ filters are combined with AND. See [CRUD](crud.md#filters) for double-underscore
 field names and the explicit `__eq` escape.
 
 For the binding-neutral exact subset, build a canonical manager filter with an
-issued field token and exact projected value. It is immutable and exposes only
-`all`, identity-strict `first`, `count`, and `exists`; joins, roles, ordering,
+issued field token and exact projected value. It is immutable and exposes
+`all`, identity-strict `first`, `count`, `exists`, `update`, and `delete`; joins, roles, ordering,
 pagination, and rich string predicates remain on the typed-query surface below.
 
 ## Owner-aware fields
@@ -36,12 +36,12 @@ rejected before query execution.
 ## Comparison and string predicates
 
 ```python
-adult = age.gte(Age(18))
+adult = age.ge(Age(18))
 not_retired = age.lt(Age(65))
 named_ada = name.eq(Name("Ada"))
 prefix = name.starts_with(Name("A"))
 substring = name.contains(Name("da"))
-pattern = name.regex(Name("^A.*"))
+pattern = name.like(Name("^A.*"))
 ```
 
 Generated fields provide scalar-appropriate predicates. Equality can also
@@ -70,7 +70,7 @@ when operator syntax is inconvenient.
 
 ```python
 employment = session.exact(Employment)
-employee = employment.role(Employment.employee).connects(person)
+employee = employment.role(Employment.employee).links(person)
 
 rows = await session.query(person, employment).where(employee).rows(limit=100)
 ```
@@ -87,7 +87,7 @@ rows = await (
     .rows(
         limit=25,
         offset=50,
-        order_by=(person.field(Person.person_id).asc(),),
+        sort=(person.field(Person.person_id).asc(),),
     )
 )
 ```
@@ -98,23 +98,52 @@ value policy where needed. `one`, `first`, `rows`, `page_by`, `count_by`, and
 direct or a proxy connection alike (see
 [Typed queries](typed-queries.md#start-a-session)).
 
-## Raw compatibility builder
+## Raw TypeQL execution
 
-The package-root `Query`/`QueryBuilder` facade remains a raw TypeQL builder
-separate from generated immutable queries. Its model helpers accept exact
-installed generated classes:
+Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+to TypeDB as written, and TypeDB's output comes back as it
+answered, in this SDK's native data types. TypeBridge adds no
+validation, rewriting, hydration, hooks, limits or extra
+queries. It runs in read, write and schema transactions and
+accepts any TypeQL, schema-breaking changes included. The caller
+owns its correctness; TypeBridge makes no promise about its
+effects. On a proxy connection it posts to the server's opt-in
+`/v3/raw` endpoint, which is off by default.
+
+Every SDK has the same pair, spelled:
+
+| SDK | Open a raw context | Execute TypeQL |
+| --- | --- | --- |
+| Python | `raw_transaction` | `execute_query` |
+| TypeScript | `rawTransaction` | `executeQuery` |
+| Rust | `raw_transaction` | `execute_query` |
+| C | `type_bridge_database_raw_transaction` or `type_bridge_proxy_connection_raw_transaction` | `type_bridge_raw_transaction_execute_query` |
+
+Direct contexts support several statements in one provider
+transaction. Proxy contexts use the opt-in `/v3/raw` endpoint, which is off
+by default. Use generated typed queries and plan builders when you need
+schema validation and generated results.
+
+The result is the complete HTTP query-answer dictionary; `answers` contains
+its rows or documents. Python integers preserve the provider's full precision.
+Use an explicit raw context to group direct statements:
 
 ```python
-from type_bridge import Query, QueryBuilder
-
-raw = QueryBuilder.match_entity(
-    Person,
-    "$person",
-    person_id=PersonId("ada"),
-).fetch("$person")
-
-manual = Query().match("$person isa person").fetch("$person")
+with db.raw_transaction("write") as tx:
+    tx.execute_query('insert $p isa person, has name "Ada";')
+    tx.execute_query('insert $p isa person, has name "Grace";')
+    tx.rollback()
 ```
 
-It produces query text; it does not recreate schema authority or provide typed
-hydration. Prefer the generated query session for new application queries.
+Clean exit commits unless `commit_on_exit=False` or the caller already completed
+the context. An exception escaping the `with` block closes without committing.
+If you catch an exception inside the block and exit normally, a direct context
+commits its other successful queries. Call `rollback()` or set
+`commit_on_exit=False` to discard pending writes.
+On a proxy connection a raw
+transaction holds one query, because `/v3/raw` runs each request as its own
+transaction. A second query raises `RawQueryError` with code
+`raw_transaction_single_query`; rollback after a proxy write raises
+`raw_transaction_already_committed`. A disabled host raises `raw_disabled`.
+Provider errors retain `code`, `message`, `status`, `provider_code` and
+`commit_outcome`; `commit_outcome_unknown` means durability must be checked.

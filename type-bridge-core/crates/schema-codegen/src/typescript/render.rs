@@ -17,8 +17,11 @@ use super::reserved::{
 };
 use crate::{
     EmbeddedAuthority, GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE,
-    documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
+    documentation_annotation, invalid, model_documentation,
 };
+
+#[path = "plan.rs"]
+mod plan;
 
 macro_rules! canonical_text {
     ($value:expr) => {
@@ -84,11 +87,7 @@ fn header() -> &'static str {
 }
 
 fn render_index(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
-    let install = if projection_uses_ordered_collections(projection) {
-        "__installOrderedRuntimeProjectionPackage"
-    } else {
-        "__installRuntimeProjectionPackage"
-    };
+    let install = "__installOrderedRuntimeProjectionPackage";
     let names = projection
         .emission()
         .model_shells()
@@ -102,7 +101,7 @@ fn render_index(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!(
-        "{}import {{ readFileSync as _readFileSync }} from \"node:fs\";\nimport {{ MigrationCatalog, openMigrationCatalog as _openMigrationCatalog }} from \"@type-bridge/node\";\nimport type {{ QueryV2Authority }} from \"@type-bridge/node\";\nimport {{ installGeneratedSchemaAuthority as _installGeneratedSchemaAuthority }} from \"@type-bridge/node/runtime-projection\";\nimport {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ {install} }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n{install}(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport {{ MigrationCatalog }};\nexport const MIGRATION_HISTORY_RESOURCE = \"typebridge/migration-history.json\" as const;\nexport function openMigrationCatalog(): MigrationCatalog {{\n  const authority = new TextEncoder().encode(SCHEMA_AUTHORITY_JSON);\n  const history = _readFileSync(new URL(`../${{MIGRATION_HISTORY_RESOURCE}}`, import.meta.url));\n  return _openMigrationCatalog(authority, history);\n}}\n\nlet _schemaAuthority: QueryV2Authority | undefined;\n/** This package's verified schema authority. Build plans with `plan.build(schemaAuthority())`. */\nexport function schemaAuthority(): QueryV2Authority {{\n  _schemaAuthority ??= _installGeneratedSchemaAuthority({{\n    schemaAuthorityJson: SCHEMA_AUTHORITY_JSON,\n    semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  }});\n  return _schemaAuthority;\n}}\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
+        "{}import {{ readFileSync as _readFileSync }} from \"node:fs\";\nimport {{ MigrationCatalog, openMigrationCatalog as _openMigrationCatalog }} from \"@type-bridge/node\";\nimport type {{ PlanAuthority }} from \"@type-bridge/node\";\nimport {{ installGeneratedSchemaAuthority as _installGeneratedSchemaAuthority }} from \"@type-bridge/node/runtime-projection\";\nimport {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ {install} }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n{install}(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport {{ MigrationCatalog }};\nexport const MIGRATION_HISTORY_RESOURCE = \"typebridge/migration-history.json\" as const;\nexport function openMigrationCatalog(): MigrationCatalog {{\n  const authority = new TextEncoder().encode(SCHEMA_AUTHORITY_JSON);\n  const history = _readFileSync(new URL(`../${{MIGRATION_HISTORY_RESOURCE}}`, import.meta.url));\n  return _openMigrationCatalog(authority, history);\n}}\n\nlet _schemaAuthority: PlanAuthority | undefined;\n/** This package's verified schema authority. Build plans with `plan.build(schemaAuthority())`. */\nexport function schemaAuthority(): PlanAuthority {{\n  _schemaAuthority ??= _installGeneratedSchemaAuthority({{\n    schemaAuthorityJson: SCHEMA_AUTHORITY_JSON,\n    semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  }});\n  return _schemaAuthority;\n}}\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
         header(),
         names.join(", "),
         names.join(", "),
@@ -119,18 +118,13 @@ fn render_authority(authority: &EmbeddedAuthority) -> Result<String, Diagnostic>
 
 fn render_models(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
-    let ordered = projection_uses_ordered_collections(projection);
-    let (define_model, model_token) = if ordered {
-        (
-            "defineOrderedModel as defineModel",
-            "type OrderedModelToken as ModelToken",
-        )
-    } else {
-        ("defineModel", "type ModelToken")
-    };
+    let (define_model, model_token) = (
+        "defineOrderedModel as defineModel",
+        "type OrderedModelToken as ModelToken",
+    );
     let _ = write!(
         output,
-        "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  {model_token},\n  type ReferenceFacet,\n  type RoleToken,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+        "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  {model_token},\n  type ReferenceFacet,\n  type RoleToken,\n  Iid, Plan, PlanHandle, PlanValue, PlanExpr, PlanInput,\n  planDefinition, planMatch, planModelMatch, planModelInsert, planInsertMany,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
 
     for id in projection.emission().model_shells() {
@@ -139,6 +133,7 @@ fn render_models(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             .get(id)
             .ok_or_else(|| facet_error("emission plan references an absent model"))?;
         render_model_shell(&mut output, projection, model)?;
+        plan::shell(&mut output, projection, model)?;
     }
 
     for component in projection.emission().model_link_components() {
@@ -295,13 +290,14 @@ fn render_model_shell(
     let _ = writeln!(output, "export interface {name}FieldTokens {{");
     for (owns, token) in model.query_tokens().fields() {
         let value = projected_type(projection, field_value(model, owns)?, "", "Structs.")?;
+        let scalar = plan::scalar(projection, owns)?;
         let attribute = identity_literal!(owns.attribute());
         if let Some(documentation) = documentation_annotation(token.annotations()) {
             render_indented_jsdoc(output, "  ", documentation);
         }
         let _ = writeln!(
             output,
-            "  readonly {}: FieldToken<{id}, {attribute}, {value}>;",
+            "  readonly {}: FieldToken<{id}, {attribute}, {value}, {scalar}>;",
             token.target_name().as_str()
         );
     }
@@ -338,14 +334,19 @@ fn render_model_shell(
     };
     let reference_factory = match model.reference_read().target_name() {
         Some(reference) => format!(
-            "(iid: string | null, keys: {name}ReferenceInput) => {}",
+            "(iid: Iid | null, keys: {name}ReferenceInput) => {}",
             reference.as_str()
         ),
         None => "undefined".to_owned(),
     };
+    let plan_methods = if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+        format!(" & {name}PlanMethods")
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         output,
-        "export let {name}: ModelToken<{id}, {name}, {create_factory}, {reference_factory}, {name}FieldTokens, {name}RoleTokens>;\n"
+        "export let {name}: ModelToken<{id}, {name}, {create_factory}, {reference_factory}, {name}FieldTokens, {name}RoleTokens>{plan_methods};\n"
     );
     Ok(())
 }
@@ -368,14 +369,19 @@ fn render_model_link(
     };
     let reference_factory = match model.reference_read().target_name() {
         Some(reference) => format!(
-            "(iid: string | null, keys: {name}ReferenceInput) => {}",
+            "(iid: Iid | null, keys: {name}ReferenceInput) => {}",
             reference.as_str()
         ),
         None => "undefined".to_owned(),
     };
+    let plan_methods = if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+        format!(", {name}PlanMethods")
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         output,
-        "{name} = defineModel<{id}, {name}, {create_factory}, {reference_factory}, {name}FieldTokens, {name}RoleTokens>({{"
+        "{name} = defineModel<{id}, {name}, {create_factory}, {reference_factory}, {name}FieldTokens, {name}RoleTokens{plan_methods}>({{"
     );
     let _ = writeln!(output, "  typeKey: {id},");
     let _ = writeln!(output, "  id: {},", canonical_text!(model.id()));
@@ -388,11 +394,12 @@ fn render_model_link(
     output.push_str("  fields: {\n");
     for (owns, token) in model.query_tokens().fields() {
         let value = projected_type(projection, field_value(model, owns)?, "", "Structs.")?;
+        let scalar = plan::scalar(projection, owns)?;
         let attribute = identity_literal!(owns.attribute());
         let metadata = canonical_text!(token);
         let _ = writeln!(
             output,
-            "    {}: defineFieldToken<{id}, {attribute}, {value}>({{",
+            "    {}: defineFieldToken<{id}, {attribute}, {value}, {scalar}>({{",
             token.target_name().as_str()
         );
         let _ = writeln!(output, "      owner: {id},");
@@ -542,7 +549,8 @@ fn render_model_link(
         .collect::<Result<Vec<_>, _>>()?
         .join(", ");
     let _ = writeln!(output, "  referenceKeys: [{keys}],");
-    let _ = writeln!(output, "  metadata: {},\n}});", canonical_text!(model));
+    let _ = writeln!(output, "  metadata: {},", canonical_text!(model));
+    plan::link_tail(output, projection, model)?;
     Ok(())
 }
 
@@ -616,7 +624,7 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
 fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str(
-        "import { defineFunctionToken, type BoundVar, type FunctionCall, type FunctionInput, type FunctionToken, type QueryMatchMode, QuerySession } from \"./runtime.js\";\nimport type * as Models from \"./models.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+        "import { defineFunctionToken, type BoundVar, type FunctionCall, type FunctionInput, type FunctionToken, type QueryMatchMode, type QueryConnection, QuerySession } from \"./runtime.js\";\nimport type * as Models from \"./models.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
     let mut emitted_inputs = BTreeSet::new();
     let mut emitted_calls = BTreeSet::new();
@@ -711,13 +719,13 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 let scalar = scalar_type(domain);
                 let _ = writeln!(
                     output,
-                    "export type {alias} = FunctionInput<{scalar}>;\nexport function {constructor}<Value extends {{ readonly value: {scalar} }}>(session: QuerySession, value: Value): {alias} {{\n  return session.__functionInput(value);\n}}"
+                    "export type {alias} = FunctionInput<{scalar}>;\nexport function {constructor}<Value extends {{ readonly value: {scalar} }}>(session: QuerySession<QueryConnection>, value: Value): {alias} {{\n  return session.__functionInput(value);\n}}"
                 );
             }
         }
 
         let mut generics = Vec::new();
-        let mut parameters = vec!["session: QuerySession".to_owned()];
+        let mut parameters = vec!["session: QuerySession<QueryConnection>".to_owned()];
         let mut arguments_expr = Vec::new();
         for (index, parameter) in function.parameters().iter().enumerate() {
             let parameter_name = parameter.target_name().as_str();
@@ -1085,10 +1093,8 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
     for name in PUBLIC_RUNTIME_NAMES.iter().chain(PUBLIC_SCHEMA_NAMES) {
         public.insert((*name).to_owned(), "generated runtime".to_owned());
     }
-    if projection_uses_ordered_collections(projection) {
-        for name in ORDERED_PUBLIC_RUNTIME_NAMES {
-            public.insert((*name).to_owned(), "generated ordered runtime".to_owned());
-        }
+    for name in ORDERED_PUBLIC_RUNTIME_NAMES {
+        public.insert((*name).to_owned(), "generated native runtime".to_owned());
     }
     for id in projection.emission().model_shells() {
         let model = projection
@@ -1097,6 +1103,10 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
             .ok_or_else(|| facet_error("emission plan references an absent model"))?;
         let name = model.target_name().as_str();
         register_name(&mut public, name, "model")?;
+        if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+            register_name(&mut public, &format!("{name}Handle"), "plan handle")?;
+            register_name(&mut public, &format!("{name}PlanMethods"), "plan methods")?;
+        }
         register_name(&mut public, &format!("{name}Create"), "create facet")?;
         register_name(
             &mut public,
@@ -1162,6 +1172,29 @@ fn validate_model_names(model: &ModelProjection) -> Result<(), Diagnostic> {
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
+    members.extend([
+        "match",
+        "subtypes",
+        "byIid",
+        "insert",
+        "put",
+        "insertMany",
+        "putMany",
+        "field",
+        "recording",
+        "thing",
+        "definition",
+        "where",
+        "set",
+        "setFields",
+        "unset",
+        "link",
+        "unlink",
+        "linkPlayers",
+        "delete",
+        "deleteReturning",
+        "models",
+    ]);
     for token in model.query_tokens().fields().values() {
         validate_identifier(token.target_name().as_str())?;
         if !members.insert(token.target_name().as_str()) {

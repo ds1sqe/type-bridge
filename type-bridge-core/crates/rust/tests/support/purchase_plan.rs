@@ -45,13 +45,13 @@ pub fn hand_built_purchase(
     order: &str,
     item_id: &str,
     account_id: &str,
-) -> type_bridge_contract::query_plan::v3::QueryPlanV3 {
+) -> type_bridge_contract::query_plan::QueryPlan {
     use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
     use type_bridge_contract::migration_assertion::{
         AssertionBinding, BindingId, QueryVariable, ValueComparator,
     };
-    use type_bridge_contract::query_plan::v3::{
-        ArithOp, Expr, InsertThing, Operation, Pattern, PlanSpec, QueryPlanV3, Set, Stage,
+    use type_bridge_contract::query_plan::{
+        ArithOp, Expr, InsertThing, Operation, Pattern, PlanSpec, QueryPlan, Set, Stage,
         WriteReturns,
     };
     use type_bridge_contract::query_plan::{
@@ -195,8 +195,113 @@ pub fn hand_built_purchase(
         ],
         output: QueryOutput::Rows { columns: vec![] },
         managed_semantics: semantics,
-        compatibility: None,
         functions: vec![],
     };
-    QueryPlanV3::new(spec, declared).unwrap()
+    QueryPlan::new(spec, declared).unwrap()
+}
+
+/// Read-back golden shared by the four SDK builder tests.
+pub fn read_back(
+    declared: &type_bridge_contract::schema::DeclaredSchema,
+    semantics: type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint,
+    item_required: bool,
+) -> type_bridge_contract::query_plan::QueryPlan {
+    use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::QueryOperand;
+    use type_bridge_contract::query_plan::{DocumentRole, PlanBuilder};
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+    let mut plan = PlanBuilder::new();
+    let purchase = plan.exact(TypeId::new(TypeKind::Relation, "purchase").unwrap());
+    let key = plan.field(purchase, AttributeId::new("order-id").unwrap());
+    let order = plan.input("order_id", ValueTypeTag::String, false);
+    plan.compare(
+        QueryOperand::Binding { binding: key },
+        ValueComparator::Equal,
+        QueryOperand::Input { column: order },
+    );
+    plan.fetch(
+        purchase,
+        vec![
+            DocumentRole::new(RoleId::new("purchase", "buyer").unwrap(), true),
+            DocumentRole::new(RoleId::new("purchase", "item").unwrap(), item_required),
+        ],
+    );
+    plan.row(vec![Some(CanonicalValue::String(
+        CanonicalString::new("O1").unwrap(),
+    ))]);
+    plan.build(declared, semantics).unwrap()
+}
+
+/// Explicit Core oracle for the generated authoring program's binding schedule.
+pub fn authored_purchase(
+    declared: &type_bridge_contract::schema::DeclaredSchema,
+    semantics: type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint,
+    order: &str,
+    item_id: &str,
+    account_id: &str,
+) -> type_bridge_contract::query_plan::QueryPlan {
+    use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::QueryOperand;
+    use type_bridge_contract::query_plan::{ArithOp, Expr, PlanBuilder};
+    use type_bridge_contract::schema::OwnsFactId;
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+    let entity = |label| TypeId::new(TypeKind::Entity, label).unwrap();
+    let attribute = |label| AttributeId::new(label).unwrap();
+    let field = |owner, label| OwnsFactId::new(owner, attribute(label)).unwrap();
+    let binding = |binding| QueryOperand::Binding { binding };
+    let input = |column| QueryOperand::Input { column };
+    let sub = |left, right| Expr::Arith {
+        op: ArithOp::Sub,
+        lhs: Box::new(Expr::Operand(left)),
+        rhs: Box::new(Expr::Operand(right)),
+    };
+    let text = |value| Some(CanonicalValue::String(CanonicalString::new(value).unwrap()));
+    let mut p = PlanBuilder::new();
+    let item = p.exact(entity("item"));
+    let key = p.field(item, attribute("item-id"));
+    let item_input = p.input("item_item_id_2", ValueTypeTag::String, false);
+    p.compare(binding(key), ValueComparator::Equal, input(item_input));
+    let stock = p.field(item, attribute("stock"));
+    let minimum = p.input("item_stock_2", ValueTypeTag::Long, false);
+    p.compare(binding(stock), ValueComparator::Greater, input(minimum));
+    let buyer = p.exact(entity("account"));
+    let account = p.field(buyer, attribute("account-id"));
+    let account_input = p.input("account_account_id_2", ValueTypeTag::String, false);
+    p.compare(
+        binding(account),
+        ValueComparator::Equal,
+        input(account_input),
+    );
+    let price = p.field(item, attribute("price"));
+    let balance = p.field(buyer, attribute("balance"));
+    p.compare(
+        binding(price),
+        ValueComparator::LessOrEqual,
+        binding(balance),
+    );
+    let decrement = p.input("item_stock_3", ValueTypeTag::Long, false);
+    let next_stock = p.let_("item_stock_4", sub(binding(stock), input(decrement)));
+    p.update(item, field(entity("item"), "stock"), binding(next_stock));
+    let next_balance = p.let_("account_balance_2", sub(binding(balance), binding(price)));
+    p.update(
+        buyer,
+        field(entity("account"), "balance"),
+        binding(next_balance),
+    );
+    let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+    let created = p.insert(purchase.clone());
+    let order_input = p.input("purchase_order_id", ValueTypeTag::String, false);
+    p.thing_field(created, field(purchase, "order-id"), input(order_input));
+    p.thing_player(created, RoleId::new("purchase", "buyer").unwrap(), buyer);
+    p.thing_player(created, RoleId::new("purchase", "item").unwrap(), item);
+    p.row(vec![
+        text(item_id),
+        Some(CanonicalValue::Long(0)),
+        text(account_id),
+        Some(CanonicalValue::Long(1)),
+        text(order),
+    ]);
+    p.build(declared, semantics).unwrap()
 }

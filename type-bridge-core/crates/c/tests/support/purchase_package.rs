@@ -7,7 +7,7 @@ use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projection::{BindingTarget, CSymbolPrefix, ProjectionConfig};
-use type_bridge_contract::query_plan::v3::QueryPlanV3;
+use type_bridge_contract::query_plan::QueryPlan;
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, SchemaDocumentSet, VerifiedSchemaAuthority,
@@ -24,15 +24,24 @@ pub const PREFIX: &str = "shop";
 
 pub struct PurchasePackage {
     pub package: GeneratedPackage,
+    pub projection: type_bridge_contract::projection::RuntimeProjection,
     pub authority: VerifiedSchemaAuthority,
 }
 
 /// Emit the purchase schema as a C package under `profile`, or the
 /// acceptance profile when set, else the purchase fixture profile.
 pub fn purchase_package() -> PurchasePackage {
+    purchase_package_with_prefix(PREFIX)
+}
+
+pub fn purchase_package_with_prefix(prefix: &str) -> PurchasePackage {
+    package_from_source(SOURCE, prefix)
+}
+
+pub fn package_from_source(source: &str, prefix: &str) -> PurchasePackage {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("purchase.yaml").expect("document ID is valid"),
-        SOURCE,
+        source,
     )])
     .expect("purchase schema parses");
     let declared = normalize_documents(&documents).expect("purchase schema normalizes");
@@ -57,7 +66,7 @@ pub fn purchase_package() -> PurchasePackage {
     let projection = project(
         &resolved,
         BindingTarget::C,
-        &ProjectionConfig::c(CSymbolPrefix::new(PREFIX).expect("prefix is valid")),
+        &ProjectionConfig::c(CSymbolPrefix::new(prefix).expect("prefix is valid")),
         &emitter.generator_handlers(),
         &emitter.code_resources().expect("C emitter resources hash"),
     )
@@ -65,12 +74,16 @@ pub fn purchase_package() -> PurchasePackage {
     let package = emitter
         .emit(&projection, &authority)
         .expect("purchase package emits");
-    PurchasePackage { package, authority }
+    PurchasePackage {
+        package,
+        projection,
+        authority,
+    }
 }
 
 impl PurchasePackage {
     /// The hand-built purchase under this package's authority.
-    pub fn hand_built(&self, order: &str, item: &str, account: &str) -> QueryPlanV3 {
+    pub fn hand_built(&self, order: &str, item: &str, account: &str) -> QueryPlan {
         purchase_plan::hand_built_purchase(
             self.authority.declared_schema(),
             self.authority
@@ -80,6 +93,18 @@ impl PurchasePackage {
             order,
             item,
             account,
+        )
+    }
+
+    /// The core-builder read-back under this package's authority.
+    pub fn read_back(&self, required: bool) -> QueryPlan {
+        purchase_plan::read_back(
+            self.authority.declared_schema(),
+            self.authority
+                .managed_state()
+                .managed_semantic_schema()
+                .clone(),
+            required,
         )
     }
 

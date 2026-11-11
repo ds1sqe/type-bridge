@@ -1,0 +1,5 @@
+format: typebridge.schema-set/v1
+sources:
+  # The runner imports the canonical shop fragment into its temporary workspace.
+  - shop.yaml
+  - documents.yaml

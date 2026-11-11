@@ -3,66 +3,74 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { QueryV2Error, RustDatabase } from "./common/index.js";
-import type { RustTransactionContext } from "../../typescript/index.js";
+import { Database, INTG_DATABASE, RawQueryError } from "./common/index.js";
+import type { RawTransaction } from "../../typescript/raw-query.js";
 
 const fixture = JSON.parse(fs.readFileSync("../../../tests/contracts/typed-failure-scenarios.json", "utf8")) as Record<"schema" | "seed" | "purchase" | "cnt5" | "cnt9" | "paused" | "stock_read", string>;
 
 for (const scenario of ["stc2", "cnt5", "cnt9", "paused"] as const) {
-  test(`typed provider failure through Node SDK: ${scenario}`, {
+  test(`raw provider failure through Node SDK: ${scenario}`, {
     skip: !process.env["TYPE_BRIDGE_FAILURE_CONTAINER"] && "requires the dedicated owned pause-container smoke",
-  }, () => {
+  }, async () => {
     const address = process.env["TYPEDB_ADDRESS"];
     const container = process.env["TYPE_BRIDGE_FAILURE_CONTAINER"];
     assert.ok(address && container, "requires the isolated failure-smoke environment");
     assert.ok(container.startsWith("tb-failure-smoke-"), "only the owned server may be paused");
-    const db = RustDatabase.connect(address, `tb_failure_node_${randomUUID().replaceAll("-", "")}`, {
-      httpPort: Number(process.env["TYPEDB_HTTP_PORT"]),
+    await rawFailure(scenario, address, `tb_failure_node_${randomUUID().replaceAll("-", "")}`, container);
+  });
+}
+
+for (const scenario of ["stc2", "cnt5", "cnt9"] as const) {
+  test(`raw provider failure without pause: ${scenario}`, {
+    skip: !process.env["TYPEDB_ADDRESS"] && "requires live TypeDB",
+  }, async () => {
+    await rawFailure(scenario, process.env["TYPEDB_ADDRESS"]!, `${INTG_DATABASE}_raw_${scenario}`);
+  });
+}
+
+async function rawFailure(scenario: "stc2" | "cnt5" | "cnt9" | "paused", address: string, database: string, container?: string): Promise<void> {
+    const db = Database.connect(address, database, {
+      httpPort: Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
     });
-    const contexts: RustTransactionContext[] = [];
+    const contexts: RawTransaction[] = [];
     db.createDatabase();
     try {
-      const schema = db.transaction("schema"); contexts.push(schema);
-      schema.query(fixture.schema);
-      schema.commit();
-      const seed = db.transaction("write"); contexts.push(seed);
-      seed.query(fixture.seed); seed.commit();
-      const tx = db.transaction("write"); contexts.push(tx);
-      let operation: () => void;
+      const schema = await db.rawTransaction("schema"); contexts.push(schema);
+      await schema.executeQuery(fixture.schema);
+      await schema.commit();
+      const seed = await db.rawTransaction("write"); contexts.push(seed);
+      await seed.executeQuery(fixture.seed); await seed.commit();
+      const tx = await db.rawTransaction("write"); contexts.push(tx);
+      let operation: () => Promise<unknown>;
       if (scenario === "stc2") {
-        const other = db.transaction("write"); contexts.push(other);
-        tx.query(fixture.purchase);
-        other.query(fixture.purchase);
-        tx.commit(); operation = () => other.commit();
-        const read = db.transaction("read"); contexts.push(read);
-        assert.deepEqual(read.query(fixture.stock_read), [{ stock: 0 }]);
+        const other = await db.rawTransaction("write"); contexts.push(other);
+        await tx.executeQuery(fixture.purchase);
+        await other.executeQuery(fixture.purchase);
+        await tx.commit(); operation = () => other.commit();
+        const read = await db.rawTransaction("read"); contexts.push(read);
+        assert.deepEqual((await read.executeQuery(fixture.stock_read) as { answers: unknown }).answers, [{ stock: 0 }]);
       } else if (scenario === "cnt5") {
-        tx.query(fixture.cnt5);
+        await tx.executeQuery(fixture.cnt5);
         operation = () => tx.commit();
       } else if (scenario === "cnt9") {
-        operation = () => { tx.query(fixture.cnt9); };
+        operation = () => tx.executeQuery(fixture.cnt9);
       } else {
-        tx.query(fixture.paused);
+        await tx.executeQuery(fixture.paused);
+        assert.ok(container);
         execFileSync("docker", ["pause", container]);
-        operation = () => { try { tx.commit(); } finally { execFileSync("docker", ["unpause", container]); } };
+        operation = async () => { try { await tx.commit(); } finally { execFileSync("docker", ["unpause", container]); } };
       }
-      assert.throws(operation, (error: unknown) => {
-        assert.ok(error instanceof QueryV2Error);
-        assert.ok(error.failure);
-        assert.equal(error.failure.retry_safe, scenario !== "paused");
-        assert.equal(error.failure.phase, scenario === "cnt9" ? "query" : "commit");
-        assert.equal(error.failure.reason, { stc2: "conflict", cnt5: "cardinality", cnt9: "unique", paused: null }[scenario]);
-        assert.ok(Object.isFrozen(error.failure));
-        // JSON.stringify skips the non-enumerable message and stack.
-        assert.ok(!error.message.includes("SECRET_SENTINEL"));
-        assert.ok(!(error.stack ?? "").includes("SECRET_SENTINEL"));
-        assert.ok(!JSON.stringify(error).includes("SECRET_SENTINEL"));
-        console.log(scenario, error.code, error.failure);
+      await assert.rejects(operation, (error: unknown) => {
+        assert.ok(error instanceof RawQueryError);
+        assert.equal(error.code, { stc2: "STC2", cnt5: "CNT5", cnt9: "CNT9", paused: "commit_outcome_unknown" }[scenario]);
+        assert.equal(error.commitOutcome, scenario === "paused" ? "unknown" : scenario === "cnt9" ? null : "definitely_aborted");
+        if (scenario === "paused") assert.ok(error.providerCode);
+        else assert.equal(error.providerCode, null);
+        console.log(scenario, error.code, error.providerCode, error.commitOutcome);
         return true;
       });
     } finally {
-      for (const context of contexts) { try { context.close(); } catch { /* Already terminal. */ } }
+      for (const context of contexts) { try { await context.close(); } catch { /* Already terminal. */ } }
       db.deleteDatabase(); db.close();
     }
-  });
 }

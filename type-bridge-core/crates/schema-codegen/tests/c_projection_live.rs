@@ -42,7 +42,7 @@ const QUERY_PROVIDER_SCHEMA: &str =
 const QUERY_PACKAGE: &str = include_str!("c_projection_live/query_package.c");
 const QUERY_CONSUMER: &str = include_str!("c_projection_live/query_consumer.c");
 const DATABASE_CREATED_MARKER: &str = "generated C isolated database created";
-const SDK_QUERIES_FACT_PREFIX: &str = "TYPE_BRIDGE_C_V2_FACT\t";
+const SDK_QUERIES_FACT_PREFIX: &str = "TYPE_BRIDGE_C_FACT\t";
 const SDK_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest.json";
 const SDK_QUERIES_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/queries/catalog.json";
 const SDK_SCHEMA_PATH: &str = "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml";
@@ -271,7 +271,7 @@ fn emitted_package_authority_and_fingerprints(
     )
     .expect("shared acceptance schema projects to C");
     let authority =
-        support::authority_for_declared(&declared, "c-projection-live", semantic_profile);
+        support::authority_for_declared(&declared, support::TEST_SCOPE, semantic_profile);
     let authority_bytes = encode_schema_authority(&authority);
     let semantic_fingerprint = serde_json::to_value(projection.semantic_fingerprint())
         .expect("C semantic fingerprint serializes");
@@ -313,7 +313,8 @@ fn emitted_query_package_and_authority(semantic_profile: &str) -> (GeneratedPack
         &resources,
     )
     .expect("exact Models schema projects to ordered C");
-    let authority = support::authority_for_declared(&declared, "models-c-query", semantic_profile);
+    let authority =
+        support::authority_for_declared(&declared, support::TEST_SCOPE, semantic_profile);
     let authority_bytes = encode_schema_authority(&authority);
     let package = emitter
         .emit(&projection, &authority)
@@ -344,9 +345,9 @@ fn sdk_models_fingerprints(semantic_profile: &str) -> (Value, Value) {
     .expect("exact Models schema projects to ordered C");
     (
         serde_json::to_value(projection.semantic_fingerprint())
-            .expect("V3 semantic fingerprint serializes"),
+            .expect("staged semantic fingerprint serializes"),
         serde_json::to_value(projection.projection_fingerprint())
-            .expect("V3 C projection fingerprint serializes"),
+            .expect("staged C projection fingerprint serializes"),
     )
 }
 
@@ -383,12 +384,12 @@ fn publish_sdk_models_c_live_supplement(profile: &SdkProfile) {
     let root = repository_root();
     let journey: Value = serde_json::from_slice(
         &fs::read(root.join("tests/contracts/sdk_conformance/models/journey.json"))
-            .expect("V3 journey reads"),
+            .expect("staged journey reads"),
     )
-    .expect("V3 journey parses");
+    .expect("staged journey parses");
     let expected = journey["expected_observations"]
         .as_object()
-        .expect("V3 expected observations are an object");
+        .expect("staged expected observations are an object");
     let lanes = [
         ("borrowed_transaction_lifecycle", "lifecycle"),
         ("data_resource_lifecycle", "lifecycle"),
@@ -408,7 +409,7 @@ fn publish_sdk_models_c_live_supplement(profile: &SdkProfile) {
         "producer": "type-bridge-c.sdk-models-data-model-runtime-live",
         "projection_fingerprint": projection_fingerprint,
         "results": lanes.into_iter().map(|(observation_ref, proof_kind)| json!({
-            "observation": expected.get(observation_ref).unwrap_or_else(|| panic!("V3 journey omitted {observation_ref}")),
+            "observation": expected.get(observation_ref).unwrap_or_else(|| panic!("staged journey omitted {observation_ref}")),
             "observation_ref": observation_ref,
             "outcome": "passed",
             "proof_kind": proof_kind,
@@ -416,17 +417,19 @@ fn publish_sdk_models_c_live_supplement(profile: &SdkProfile) {
         "semantic_fingerprint": semantic_fingerprint,
         "semantic_profile": profile.semantic_profile,
     });
-    let mut bytes = to_canonical_json(&supplement).expect("C V3 live supplement canonicalizes");
+    let mut bytes = to_canonical_json(&supplement).expect("C staged live supplement canonicalizes");
     bytes.push(b'\n');
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
-        .expect("C V3 live supplement destination creates once");
+        .expect("C staged live supplement destination creates once");
     output
         .write_all(&bytes)
-        .expect("C V3 live supplement writes");
-    output.sync_all().expect("C V3 live supplement is durable");
+        .expect("C staged live supplement writes");
+    output
+        .sync_all()
+        .expect("C staged live supplement is durable");
 }
 
 fn c_compilers() -> Vec<&'static str> {
@@ -441,6 +444,51 @@ fn cpp_compilers() -> Vec<&'static str> {
         .into_iter()
         .filter(|compiler| command_exists(compiler))
         .collect()
+}
+
+/// Regenerate evidence from the same native emitter used by live consumers.
+#[test]
+#[ignore = "invoked by scripts/ci/refresh_c_projection_fingerprints.py"]
+fn produce_c_projection_fingerprints() {
+    let destination = env::var_os("TYPE_BRIDGE_C_PROJECTION_FINGERPRINT_OUTPUT")
+        .expect("the refresh tool supplies an output path");
+    let mut profiles = serde_json::Map::new();
+    for profile in ["typedb-3.12.1/v1", "typedb-3.13.6/v1"] {
+        let (_, _, query_semantic, queries) = emitted_package_authority_and_fingerprints(profile);
+        let (model_semantic, models) = sdk_models_fingerprints(profile);
+        profiles.insert(
+            profile.to_owned(),
+            json!({
+                "queries": {"semantic": query_semantic, "c": queries},
+                "models": {"semantic": model_semantic, "c": models},
+            }),
+        );
+    }
+    fs::write(destination, serde_json::to_vec_pretty(&profiles).unwrap()).unwrap();
+}
+
+#[test]
+fn c_projection_fingerprints_match_each_committed_profile() {
+    let mut actual = serde_json::Map::new();
+    let mut expected = serde_json::Map::new();
+    for profile in ["typedb-3.12.1/v1", "typedb-3.13.6/v1"] {
+        let (_, _, _, queries) = emitted_package_authority_and_fingerprints(profile);
+        let (_, models) = sdk_models_fingerprints(profile);
+        actual.insert(
+            profile.to_owned(),
+            json!({"queries": queries, "models": models}),
+        );
+        expected.insert(profile.to_owned(), json!({
+            "queries": sdk_profile_matrix::select_from(&repository_root(), "queries", profile).expected_fingerprints["projections"]["c"],
+            "models": sdk_profile_matrix::select_from(&repository_root(), "models", profile).expected_fingerprints["projections"]["c"],
+        }));
+    }
+    assert_eq!(
+        actual,
+        expected,
+        "actual C projection fingerprints: {}",
+        Value::Object(actual.clone())
+    );
 }
 
 #[test]
@@ -681,7 +729,7 @@ fn requested_sdk_serialization_evidence() -> Option<PathBuf> {
 fn validated_sdk_queries_proofs(
     root: &Path,
     report: Option<&Path>,
-) -> BTreeMap<support::SdkV2ProofLane, Value> {
+) -> BTreeMap<support::SdkProofLane, Value> {
     let fragments = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS");
     let nonce = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE");
     match (report, fragments, nonce) {
@@ -715,7 +763,7 @@ fn validated_sdk_queries_proofs(
 fn parse_sdk_queries_live_facts(
     root: &Path,
     stdout: &str,
-) -> BTreeMap<support::SdkV2ProofLane, Value> {
+) -> BTreeMap<support::SdkProofLane, Value> {
     let expected = SDK_QUERIES_LIVE_LANES
         .into_iter()
         .map(|(observation_ref, proof_kind)| (observation_ref.to_owned(), proof_kind.to_owned()))
@@ -776,7 +824,7 @@ fn parse_sdk_queries_live_facts(
 
 fn assert_sdk_queries_observations_match_journey(
     root: &Path,
-    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkProofLane, Value>,
 ) {
     let journey_bytes =
         fs::read(root.join(support::SDK_QUERIES_JOURNEY)).expect("queries journey is readable");
@@ -798,7 +846,7 @@ fn assert_sdk_queries_observations_match_journey(
 
 fn sdk_queries_report_results(
     catalog: &Value,
-    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkProofLane, Value>,
 ) -> Vec<Value> {
     let mut capabilities = BTreeMap::new();
     for case in catalog["cases"]
@@ -901,7 +949,7 @@ fn build_sdk_queries_report(
     profile: &SdkProfile,
     semantic_fingerprint: Value,
     projection_fingerprint: Value,
-    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkProofLane, Value>,
 ) -> Value {
     let catalog_bytes =
         fs::read(root.join(SDK_QUERIES_CATALOG_PATH)).expect("queries catalog is readable");
@@ -959,7 +1007,7 @@ fn publish_sdk_queries_report(
     profile: &SdkProfile,
     semantic_fingerprint: Value,
     projection_fingerprint: Value,
-    observations: &BTreeMap<support::SdkV2ProofLane, Value>,
+    observations: &BTreeMap<support::SdkProofLane, Value>,
 ) {
     let report = build_sdk_queries_report(
         root,
@@ -1488,7 +1536,7 @@ fn failed_live_setup_still_runs_idempotent_database_cleanup() {
 /// Membership CRUD, typed direct query, schema-function, and caller-transport
 /// remote query facades against one isolated database on the exact TypeDB
 /// server of the requested SDK profile (`TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`).
-/// Rust is used only for schema setup, the V2 acceptance server, and guaranteed
+/// Rust is used only for schema setup, the staged acceptance server, and guaranteed
 /// process/database cleanup; the C caller performs the sole remote exchange.
 #[test]
 #[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]
@@ -1624,7 +1672,10 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
     };
     isolated.setup();
 
-    let remote_port = free_port();
+    let remote_port = env::var("SMOKE_PORT")
+        .ok()
+        .map(|value| value.parse().expect("SMOKE_PORT is a valid port"))
+        .unwrap_or_else(free_port);
     let server_log_path = stage.path().join("v2-smoke-server.log");
     let server_log = File::create(&server_log_path).expect("C V2 server log is created");
     let server_error_log = server_log
@@ -1634,13 +1685,13 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
         .parent()
         .and_then(Path::parent)
         .expect("schema-codegen has a core workspace parent");
-    let mut server_command = if let Some(server) = env::var_os("TYPE_BRIDGE_V2_SMOKE_SERVER") {
+    let mut server_command = if let Some(server) = env::var_os("TYPE_BRIDGE_SMOKE_SERVER") {
         let server = PathBuf::from(server)
             .canonicalize()
-            .expect("TYPE_BRIDGE_V2_SMOKE_SERVER is resolvable");
+            .expect("TYPE_BRIDGE_SMOKE_SERVER is resolvable");
         assert!(
             server.is_file() && !server.is_symlink(),
-            "TYPE_BRIDGE_V2_SMOKE_SERVER must be a regular non-symlink file"
+            "TYPE_BRIDGE_SMOKE_SERVER must be a regular non-symlink file"
         );
         Command::new(server)
     } else {
@@ -1651,10 +1702,8 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
                 "--quiet",
                 "-p",
                 "type-bridge-server",
-                "--features",
-                "v2-query",
                 "--example",
-                "v2_smoke_server",
+                "staged_smoke_server",
             ])
             .current_dir(core)
             .env("CARGO_TARGET_DIR", &isolated.target);
@@ -1666,6 +1715,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
         .env("SMOKE_TYPEDB_PASSWORD", &password)
         .env("SMOKE_TYPEDB_HTTP_PORT", &http_port)
         .env("SMOKE_DATABASE", &database)
+        .env("SMOKE_ALLOW_STAGED_WRITES", "true")
         .env("SMOKE_AUTHORITY_B64", base64(&authority_bytes))
         .env("SMOKE_PORT", remote_port.to_string())
         .stdout(Stdio::from(server_log))
@@ -1812,7 +1862,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
     }
 }
 
-/// Query activation gate for the ordered C-v3/ABI-1.6 surface. The same
+/// Query activation gate for the ordered C/ABI-2.0 surface. The same
 /// source is compiled and executed as strict C17 and C++17. It deliberately
 /// leaves ordered attributes and ordered role-player lists empty because exact
 /// TypeDB servers of the supported profiles cannot supply list-instance evidence.

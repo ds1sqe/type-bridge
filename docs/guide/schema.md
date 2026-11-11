@@ -20,7 +20,7 @@ type-bridge --manifest typebridge.yaml schema generate
 ```
 
 Generation captures the workspace once, renders every configured Python,
-TypeScript, and Rust target, embeds the same compiled authority in each package,
+TypeScript, Rust, and C target, embeds the same compiled authority in each package,
 and optionally writes `artifacts.schema-authority.output` when deploying a
 generic server. Ordinary generated managers and query sessions need no
 standalone authority JSON. Generation does not mutate a database. See
@@ -50,12 +50,12 @@ not an authored schema input.
 
 ## Existing systems
 
-- Convert historical TOML through the retained read-only `toml_to_typeql`
-  interface, then author the resulting canonical Split-YAML workspace.
-- Adopt frozen V1 migration history through the one-way archive adoption
-  workflow before creating new V2 migrations.
+- Convert historical TOML with TypeBridge 2.3.x before upgrading to 3.0,
+  then author the reviewed schema as a canonical Split-YAML workspace.
+- Adopt frozen V1 migration history with TypeBridge 2.3.x before upgrading
+  to 3.0; then continue with canonical workspace migrations.
 - Use the safe pre-cutover package pin while an application still depends on a
   removed handwritten authoring surface.
 
 See [schema workflows](schema-workflows.md), [Split-YAML](split-yaml-v1.md),
-[migrations](migrations.md), and the [compatibility inventory](v2-deprecations.md).
+[migrations](migrations.md), and [upgrading to 3.0](upgrade-3.0.md).

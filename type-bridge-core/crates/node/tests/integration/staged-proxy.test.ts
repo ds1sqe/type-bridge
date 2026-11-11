@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
-import { QueryV2Authority, RustDatabase } from "./common/index.js";
+import { PlanAuthority, Database } from "./common/index.js";
 import type { PlanAnswer, StagedTransaction } from "../../typescript/index.js";
 import { createRequire } from "node:module";
 
@@ -17,7 +17,7 @@ const { loadNative } = requirePackage(
 ) as typeof import("../../typescript/native.js");
 
 // The live fixture is `sdk_staged_fixture_serves_until_stopped` in
-// crates/server/tests/v3_staged_integration_tests.rs; it writes
+// crates/server/tests/staged_integration_tests.rs; it writes
 // `fixture.json` into TB_STAGED_FIXTURE_DIR.
 interface Fixture {
   readonly direct_database: string;
@@ -50,7 +50,7 @@ async function proxyTransaction(
   headers: [string, string][] = [],
 ): Promise<StagedTransaction> {
   const proxy = live.proxies[role];
-  const authority = new QueryV2Authority(bytes(live.declared_hex), proxy.scope, live.profile);
+  const authority = new PlanAuthority(bytes(live.declared_hex), proxy.scope, live.profile);
   const connection = await ProxyConnection.connect(authority, proxy.endpoint, { headers });
   return connection.transaction();
 }
@@ -59,7 +59,7 @@ function stagePurchaseProgram(live: Fixture, tx: StagedTransaction): (() => Plan
   const declared = bytes(live.declared_hex);
   return (["purchase", "count", "exists"] as const).map((name) => {
     const pending = tx.stagePlan(bytes(live.plans_hex[name]), declared);
-    return () => pending.get();
+    return () => pending.result();
   });
 }
 
@@ -78,7 +78,7 @@ async function failureCode(commit: Promise<void>): Promise<string> {
 
 test("a staged purchase over the proxy answers exactly as direct", { skip }, async () => {
   const live = fixture();
-  const db = RustDatabase.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1730", live.direct_database, {
+  const db = Database.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1730", live.direct_database, {
     httpPort: Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
   });
   const direct = db.stagedTransaction();
@@ -134,7 +134,7 @@ test("the native staged transaction takes Uint8Array bytes and refuses shared st
   shared.set(plan);
   assert.throws(
     () => tx.stagePlan(shared, new Uint8Array(declared)),
-    /query_v2_shared_buffer_unsupported/,
+    /query_shared_buffer_unsupported/,
   );
   tx.close();
   db.close();

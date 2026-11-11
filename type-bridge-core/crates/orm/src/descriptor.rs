@@ -232,6 +232,13 @@ pub enum TypeDescriptorRef {
 }
 
 impl TypeDescriptorRef {
+    pub(crate) fn owned_attributes(&self) -> &[OwnedAttributeDescriptor] {
+        match self {
+            Self::Entity(descriptor) => &descriptor.owned_attributes,
+            Self::Relation(descriptor) => &descriptor.owned_attributes,
+        }
+    }
+
     /// Return the TypeDB type name for this descriptor reference.
     pub fn type_name(&self) -> &str {
         match self {

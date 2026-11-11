@@ -101,13 +101,13 @@ mod tests {
         use type_bridge_orm::{AnswerTransport, QueryExecutionResourceLimits};
 
         let resources =
-            NodeQueryExecutionResources::new(None, None, None, None, None, None, None, None)
+            NodeQueryExecutionResources::new(None, None, None, None, None, None, None, None, None)
                 .expect("the core defaults are valid")
                 .inner();
         assert_eq!(resources, QueryExecutionResourceLimits::default());
         let direct = QueryExecutionResourceLimits::default_for(AnswerTransport::Direct);
         assert_eq!(
-            direct.timeout_milliseconds,
+            direct.timeout_milliseconds.milliseconds().unwrap(),
             DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS
         );
         assert_eq!(direct.items, DEFAULT_DIRECT_QUERY_ITEMS);
@@ -123,12 +123,12 @@ mod tests {
         );
         assert_eq!(direct.role_players, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS);
         assert_eq!(
-            u64::from(direct.statements),
+            u64::from(direct.statement_limit()),
             DEFAULT_DIRECT_QUERY_STATEMENTS
         );
         let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
         assert_eq!(
-            proxy.timeout_milliseconds,
+            proxy.timeout_milliseconds.milliseconds().unwrap(),
             DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS
         );
         assert_eq!(proxy.items, DEFAULT_PROXY_QUERY_ITEMS);
@@ -140,6 +140,9 @@ mod tests {
             DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS
         );
         assert_eq!(proxy.role_players, DEFAULT_PROXY_QUERY_ROLE_PLAYERS);
-        assert_eq!(u64::from(proxy.statements), DEFAULT_PROXY_QUERY_STATEMENTS);
+        assert_eq!(
+            u64::from(proxy.statement_limit()),
+            DEFAULT_PROXY_QUERY_STATEMENTS
+        );
     }
 }

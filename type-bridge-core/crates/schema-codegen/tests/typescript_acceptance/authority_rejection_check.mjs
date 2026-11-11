@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 
 const STAGE = dirname(fileURLToPath(import.meta.url));
-const SOURCE = resolve(STAGE, "generated_v2");
+const SOURCE = resolve(STAGE, "generated_package");
 const ORDERED = resolve(STAGE, "generated_ordered");
 const FOREIGN = resolve(STAGE, "generated_foreign");
 const MAX_SCHEMA_AUTHORITY_BYTES = 16 * 1024 * 1024;
@@ -103,23 +103,13 @@ function mutated(change, resignAfter, packageDirectory = SOURCE) {
   return canonical(value);
 }
 
-function rejectLegacy(name, authority, expected) {
-  const packageName = `generated_rejected_${name}`;
-  const packageDirectory = resolve(STAGE, packageName);
-  rmSync(packageDirectory, { recursive: true, force: true });
-  cpSync(SOURCE, packageDirectory, { recursive: true });
-  writeFileSync(
-    resolve(packageDirectory, "dist/authority.js"),
-    `// Tampered generated-authority acceptance fixture.\n\n${AUTHORITY_PREFIX}${JSON.stringify(authority)};\n`,
-  );
-  const completed = spawnSync(
-    process.execPath,
-    ["--input-type=module", "-e", `import('./${packageName}/dist/index.js')`],
-    { cwd: STAGE, encoding: "utf8" },
-  );
-  const output = `${completed.stdout}${completed.stderr}`;
-  assert.notEqual(completed.status, 0, `${name} authority unexpectedly installed`);
-  assert.match(output, new RegExp(expected), `${name} authority emitted:\n${output}`);
+function rejectAuthority(name, authority) {
+  rejectSuccessor(name, (directory) => {
+    writeFileSync(
+      resolve(directory, "dist/authority.js"),
+      `${AUTHORITY_PREFIX}${JSON.stringify(authority)};\n`,
+    );
+  }, SOURCE);
 }
 
 const PROJECTION_EVIDENCE_MISMATCH = {
@@ -133,11 +123,11 @@ const PROJECTION_EVIDENCE_MISMATCH = {
   details: {},
 };
 
-function rejectSuccessor(name, tamper) {
+function rejectSuccessor(name, tamper, packageSource = ORDERED) {
   const packageName = `generated_projection_rejected_${name}`;
   const packageDirectory = resolve(STAGE, packageName);
   rmSync(packageDirectory, { recursive: true, force: true });
-  cpSync(ORDERED, packageDirectory, { recursive: true });
+  cpSync(packageSource, packageDirectory, { recursive: true });
   tamper(packageDirectory);
   const completed = spawnSync(
     process.execPath,
@@ -157,52 +147,45 @@ function rejectSuccessor(name, tamper) {
   );
 }
 
-rejectLegacy("malformed", "{", "malformed_canonical_json");
-rejectLegacy(
+rejectAuthority("malformed", "{");
+rejectAuthority(
   "foreign",
   envelope(FOREIGN),
-  "generated_schema_authority_semantic_mismatch",
 );
-rejectLegacy(
+rejectAuthority(
   "stale",
   mutated((value) => {
     value.content.declared_identity.digest = "0".repeat(64);
   }, false),
-  "generated_schema_authority_integrity_mismatch",
 );
-rejectLegacy(
+rejectAuthority(
   "missing_fingerprint",
   mutated((value) => {
     delete value.authority_fingerprint;
   }, false),
-  "invalid_canonical_value",
 );
-rejectLegacy(
+rejectAuthority(
   "managed_state",
   mutated((value) => {
     value.content.managed_state.managed_semantic_schema.digest = "0".repeat(64);
   }, true),
-  "generated_schema_authority_integrity_mismatch",
 );
-rejectLegacy(
+rejectAuthority(
   "capability",
   mutated((value) => {
     value.content.required_capabilities.push("query.future-feature");
     value.content.required_capabilities.sort();
   }, true),
-  "unsupported_required_capability",
 );
-rejectLegacy(
+rejectAuthority(
   "version",
   mutated((value) => {
     value.content.authority_version = "typebridge.schema-authority/v2";
   }, true),
-  "generated_schema_authority_unsupported_version",
 );
-rejectLegacy(
+rejectAuthority(
   "oversize",
   " ".repeat(MAX_SCHEMA_AUTHORITY_BYTES + 1),
-  "canonical_json_too_large",
 );
 
 rejectSuccessor("missing_authority", (directory) => {

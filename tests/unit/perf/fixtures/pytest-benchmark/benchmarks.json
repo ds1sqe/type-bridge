@@ -18,41 +18,6 @@
   "benchmarks": [
     {
       "group": null,
-      "name": "test_compile_simple_match",
-      "fullname": "benchmarks/test_compilation_bench.py::test_compile_simple_match",
-      "params": null,
-      "param": null,
-      "extra_info": {},
-      "options": {
-        "disable_gc": false,
-        "timer": "perf_counter",
-        "min_rounds": 5,
-        "max_time": 1.0,
-        "min_time": 5e-06,
-        "warmup": false
-      },
-      "stats": {
-        "min": 3.071967512369156e-06,
-        "max": 1.1050142347812653e-05,
-        "mean": 3.2143594791599805e-06,
-        "stddev": 3.927828497682212e-07,
-        "rounds": 6072,
-        "median": 3.17208468914032e-06,
-        "iqr": 5.634501576423645e-08,
-        "q1": 3.146938979625702e-06,
-        "q3": 3.2032839953899384e-06,
-        "iqr_outliers": 224,
-        "stddev_outliers": 65,
-        "outliers": "65;224",
-        "ld15iqr": 3.071967512369156e-06,
-        "hd15iqr": 3.288034349679947e-06,
-        "ops": 311103.9715636701,
-        "total": 0.019517590757459402,
-        "iterations": 1
-      }
-    },
-    {
-      "group": null,
       "name": "test_validate_single_name",
       "fullname": "benchmarks/test_validation_bench.py::test_validate_single_name",
       "params": null,

@@ -16,14 +16,15 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_codegen::RustEmitter;
 
+#[allow(dead_code)]
+#[path = "support/c_provider.rs"]
+mod c_provider;
 mod support;
 use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{Stage, base64, free_port};
 
 const SCHEMA: &str = include_str!("acceptance/schema.yaml");
-const SCHEMA_3_11: &str = include_str!("acceptance/schema-3.11.5.yaml");
 const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
-const PROVIDER_SCHEMA_3_11: &str = include_str!("acceptance/provider-3.11.5.tql");
 const INTERNAL_FIXTURE: &str = include_str!("rust_projection_live/internal_fixture.rs");
 const CONSUMER: &str = include_str!("rust_projection_live/consumer.rs");
 const CONSUMER_LOCK: &[u8] = include_bytes!("rust_projection_live/consumer-Cargo.lock");
@@ -44,13 +45,14 @@ const SDK_QUERIES_CATALOG_RELATIVE: &str = "tests/contracts/sdk_conformance/quer
 /// The generated live fixture profile when `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
 /// is unset; it pairs with TypeDB 3.13.6, the default server image.
 const DEFAULT_ACCEPTANCE_PROFILE: &str = "typedb-3.13.6/v1";
-const CONSUMER_TESTS: [&str; 13] = [
+const CONSUMER_TESTS: [&str; 14] = [
     "generated_sdk_report_journeys",
     "generated_schema_handshake_and_tokens",
     "generated_entity_crud_batches_and_scalar_domains",
     "generated_inheritance_exact_and_subtype_reads",
     "generated_relation_query_and_remote_lifecycle",
     "generated_one_program_under_direct_and_proxy_connections",
+    "generated_managers_share_direct_and_http_proxy_terminals",
     "generated_integer_keys_and_polymorphic_role_parity",
     "generated_plain_inherited_abstract_role_parity",
     "generated_unkeyed_entity_iid_lifecycle_and_singular_query",
@@ -107,6 +109,25 @@ impl Drop for ServerProcess {
     }
 }
 
+fn accept_fixture_setup(output: &std::process::Output, guard: &mut c_provider::IsolatedDatabase) {
+    guard.active = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line == "generated Rust isolated database created");
+    assert!(
+        output.status.success(),
+        "provider schema setup failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        guard.active,
+        "Rust fixture setup omitted its creation marker"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("generated provider schema setup: passed")
+    );
+}
+
 fn toml_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
@@ -119,6 +140,7 @@ fn manifest_path(path: &Path) -> String {
 /// the set has no entry for it.
 fn sdk_matrix_entry(suite: &str, profile_name: &str) -> SdkProfile {
     sdk_profile_matrix::select_from(&sdk_profile_matrix::repository_root(), suite, profile_name)
+        .selected_server()
 }
 
 /// The matrix entries the consumer's SDK lanes emit, keyed by its suite name.
@@ -263,51 +285,11 @@ fn external_consumer_remains_a_focused_public_api_suite() {
 }
 
 #[test]
-fn typedb_3_11_acceptance_is_the_same_application_without_3_12_docs() {
-    fn strip_yaml_docs(source: &str) -> String {
-        source
-            .split_inclusive('\n')
-            .map(|line| {
-                let Some(start) = line.find(", doc: ") else {
-                    return line.to_owned();
-                };
-                let end = line.rfind(" }").expect("inline YAML doc closes");
-                format!("{}{}", &line[..start], &line[end..])
-            })
-            .collect()
-    }
-
-    fn strip_typeql_docs(source: &str) -> String {
-        source
-            .split_inclusive('\n')
-            .map(|line| {
-                let Some(start) = line.find(" @doc(\"") else {
-                    return line.to_owned();
-                };
-                let relative_end = line[start..]
-                    .find("\")")
-                    .expect("TypeQL doc annotation closes");
-                let end = start + relative_end + 2;
-                format!("{}{}", &line[..start], &line[end..])
-            })
-            .collect()
-    }
-
-    assert_eq!(SCHEMA.matches(", doc: ").count(), 12);
-    assert_eq!(PROVIDER_SCHEMA.matches(" @doc(\"").count(), 12);
-    assert!(!SCHEMA_3_11.contains("doc:"));
-    assert!(!PROVIDER_SCHEMA_3_11.contains("@doc"));
-    assert_eq!(strip_yaml_docs(SCHEMA), SCHEMA_3_11);
-    assert_eq!(strip_typeql_docs(PROVIDER_SCHEMA), PROVIDER_SCHEMA_3_11);
-}
-
-#[test]
 #[ignore = "requires an isolated retained TypeDB server"]
 fn generated_rust_projection_round_trips_exact_live_models() {
     let profile_name = env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
         .unwrap_or_else(|_| DEFAULT_ACCEPTANCE_PROFILE.to_owned());
     let (schema, provider_schema) = match profile_name.as_str() {
-        "typedb-3.11.5/v1" => (SCHEMA_3_11, PROVIDER_SCHEMA_3_11),
         "typedb-3.12.1/v1" | "typedb-3.13.6/v1" => (SCHEMA, PROVIDER_SCHEMA),
         other => panic!("unsupported generated live semantic profile: {other}"),
     };
@@ -389,8 +371,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     let declared = normalize_documents(&documents).expect("acceptance schema normalizes");
     let profile = SemanticProfileId::new(&profile_name).expect("semantic profile is valid");
     let resolved = resolve(&declared, &profile).expect("acceptance schema resolves");
-    let authority =
-        support::authority_for_declared(&declared, "rust-projection-live", &profile_name);
+    let authority = support::authority_for_declared(&declared, support::TEST_SCOPE, &profile_name);
     let authority_bytes = encode_schema_authority(&authority);
     let emitter = RustEmitter::new();
     let handlers = emitter.generator_handlers_for(&resolved);
@@ -613,6 +594,16 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     fs::write(&fixture_manifest_path, fixture_manifest).expect("fixture manifest is written");
     fs::write(fixture.join("Cargo.lock"), FIXTURE_LOCK).expect("fixture lockfile is staged");
 
+    // Arm cleanup from the flushed creation marker even when schema setup fails.
+    // Declared before the server so unwinding stops the server before deletion.
+    let mut database_guard = c_provider::IsolatedDatabase {
+        cargo: cargo.clone(),
+        manifest: fixture_manifest_path.clone(),
+        target: target_dir.clone(),
+        environment: Vec::new(),
+        active: false,
+        env_prefix: "TYPE_BRIDGE_RUST_PROJECTION_INTG",
+    };
     let fixture_output = Command::new(&cargo)
         .arg("run")
         .arg("--locked")
@@ -624,18 +615,11 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         .output()
         .expect("provider schema setup starts");
 
-    assert!(
-        fixture_output.status.success(),
-        "provider schema setup failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&fixture_output.stdout),
-        String::from_utf8_lossy(&fixture_output.stderr),
-    );
-    assert!(
-        String::from_utf8_lossy(&fixture_output.stdout)
-            .contains("generated provider schema setup: passed")
-    );
+    accept_fixture_setup(&fixture_output, &mut database_guard);
 
-    let server_port = free_port();
+    let server_port = env::var("SMOKE_PORT")
+        .map(|port| port.parse::<u16>().expect("SMOKE_PORT is a u16"))
+        .unwrap_or_else(|_| free_port());
     let server_log_path = stage.path().join("v2-smoke-server.log");
     let server_log = File::create(&server_log_path).expect("V2 server log is created");
     let server_error_log = server_log
@@ -668,8 +652,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                  [typedb]\naddress = {}\ndatabase = {}\nusername = {}\npassword = {}\n\
                  http_port = {http_port}\ntls = false\n\
                  [logging]\nlevel = \"info\"\nformat = \"text\"\n\
-                 [v2]\nenabled = true\nschema_authority_file = {}\n\
-                 authority_mode = \"query_only\"\n",
+                 [staged]\nenabled = true\nschema_authority_file = {}\n\
+                 authority_mode = \"query_only\"\nallow_unauthenticated_staged_writes = true\n",
                 toml_string(&address),
                 toml_string(&database),
                 toml_string(&username),
@@ -720,10 +704,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                 "--quiet",
                 "-p",
                 "type-bridge-server",
-                "--features",
-                "v2-query",
                 "--example",
-                "v2_smoke_server",
+                "staged_smoke_server",
             ])
             .current_dir(core_dir)
             .env("CARGO_TARGET_DIR", &target_dir)
@@ -749,7 +731,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                     .expect("live database name is configured"),
             )
             .env("SMOKE_AUTHORITY_B64", base64(&authority_bytes))
-            .env("SMOKE_PORT", server_port.to_string());
+            .env("SMOKE_PORT", server_port.to_string())
+            .env("SMOKE_ALLOW_STAGED_WRITES", "true");
         if env::var("TYPE_BRIDGE_RUST_PROJECTION_TLS").as_deref() == Ok("1") {
             command.env("SMOKE_TYPEDB_TLS", "true").env(
                 "SMOKE_TYPEDB_TLS_ROOT_CA",
@@ -837,9 +820,11 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
 
     assert!(
         consumer_output.status.success(),
-        "dependency-isolated client consumer failed\nstdout:\n{}\nstderr:\n{}",
+        "dependency-isolated client consumer failed\nstdout:\n{}\nstderr:\n{}\nserver status: {:?}\nserver log:\n{}",
         String::from_utf8_lossy(&consumer_output.stdout),
         String::from_utf8_lossy(&consumer_output.stderr),
+        server.child.try_wait().expect("server status is readable"),
+        fs::read_to_string(&server.log).unwrap_or_default(),
     );
     let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout);
     let expected_consumer_tests =
@@ -983,6 +968,9 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
     println!("generated integer keys and polymorphic role parity: passed");
     println!("generated plain-inherited abstract role parity: passed");
     println!("generated unkeyed entity IID lifecycle and singular query: passed");
+    drop(server);
+    database_guard.cleanup();
+    println!("generated Rust live database cleanup: passed");
 }
 
 #[test]
@@ -1006,4 +994,45 @@ fn generated_rust_projection_dependency_graphs_are_frozen() {
     );
     assert!(fixture.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
     assert!(!fixture.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_rust_fixture_setup_cleans_only_a_created_database() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    for created in [false, true] {
+        let stage = Stage::new();
+        let launcher = stage.path().join("fake-cargo");
+        let log = stage.path().join("modes.log");
+        fs::write(&launcher, "#!/bin/sh\nfor argument do mode=$argument; done\nprintf '%s\\n' \"$mode\" >> \"$CLEANUP_LOG\"\nif test \"$mode\" = setup; then\n  if test \"$EMIT_CREATED\" = 1; then printf '%s\\n' 'generated Rust isolated database created'; fi\n  exit 23\nfi\n").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut guard = c_provider::IsolatedDatabase {
+                cargo: launcher.clone().into_os_string(),
+                manifest: stage.path().join("Cargo.toml"),
+                target: stage.path().join("target"),
+                environment: vec![("CLEANUP_LOG".to_owned(), log.to_string_lossy().into_owned())],
+                active: false,
+                env_prefix: "TYPE_BRIDGE_RUST_PROJECTION_INTG",
+            };
+            let output = Command::new(&launcher)
+                .arg("setup")
+                .env("CLEANUP_LOG", &log)
+                .env("EMIT_CREATED", if created { "1" } else { "0" })
+                .output()
+                .unwrap();
+            accept_fixture_setup(&output, &mut guard);
+        }));
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(log).unwrap(),
+            if created {
+                "setup\ncleanup\n"
+            } else {
+                "setup\n"
+            }
+        );
+    }
 }

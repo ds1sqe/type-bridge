@@ -1,6 +1,6 @@
 # TypeBridge internals
 
-TypeBridge 2.1 has one active authoring path and one semantic engine:
+TypeBridge 3.0 has one active authoring path and one semantic engine:
 
 ```text
 Split-YAML workspace
@@ -45,9 +45,9 @@ through Rust constructors, then compares it with a schema-fenced live TypeDB
 view. Generated Python and TypeScript remote sessions instead reconstruct their
 authority from private package evidence and accept no authority-file argument.
 
-Generated integration uses a projection-owned nominal contract. It does not
-route values through the retained V1 `TypeDBType` nominal boundary, and that
-boundary must never be widened to `object`, `Any`, or structural detection.
+Generated integration uses exact, projection-owned nominal classes. Package
+registration, model ownership and role tokens retain that identity through
+validation and hydration.
 
 ## Rust ownership
 
@@ -57,12 +57,12 @@ The principal layers are:
 | --- | --- |
 | `contract` | Stable schema/query/runtime wire identities and limits |
 | `schema` | Split-YAML resolution and projection facts |
-| `schema-codegen` | Deterministic Python, TypeScript, and Rust emitters |
+| `schema-codegen` | Deterministic Python, TypeScript, Rust and C emitters |
 | `query` | Immutable query authority, validation, and lowering |
-| `migration` / `schema-migration` | Canonical V2 planning and state |
+| `schema-migration` / `schema-migration-typedb` | Canonical migration planning, state, and TypeDB execution |
 | `orm` | Generated projection CRUD, query, hydration, and transactions |
 | `typedb-runtime` | Retained TypeDB provider routing and lifecycle |
-| `python` / `node` / `rust` | Language boundaries over the shared engine |
+| `python` / `node` / `rust` / `c` | Language boundaries over the shared engine |
 
 Bindings validate target-language types and snapshot hostile byte inputs before
 crossing FFI. They do not reimplement schema meaning, query semantics, limits,
@@ -101,7 +101,7 @@ result shapes use a package-owned query session:
 session = Person.query(db)
 person = session.exact(Person)
 employment = session.exact(Employment)
-employee = employment.role(Employment.employee).connects(person)
+employee = employment.role(Employment.employee).links(person)
 rows = session.query(person, employment).where(employee).rows(limit=100)
 ```
 
@@ -111,9 +111,9 @@ and applies the same result-shape validation for direct and remote execution.
 Bindings expose language-native typed builders without embedding pre-authored
 plan bytes.
 
-The raw TypeQL builders (`Query`, `QueryBuilder`) are retained compatibility
-contracts. Generated V2 packages do not depend on them except where an
-explicit raw query helper is documented.
+Python raw TypeQL builders (`Query`, `QueryBuilder`) are removed in 3.0.
+Generated packages own typed query construction; explicit raw TypeQL text
+executes through `Database.execute_query`.
 
 ## Transactions and lifecycle
 
@@ -122,32 +122,31 @@ bounded operation transaction, or a caller-owned transaction for atomic
 multi-operation work. Native database, transaction, prepared-request, and
 reply handles are one-shot/lease-aware and reject use after close or consume.
 
-Provider selection first obtains or accepts an exact server version, validates
-the 3.11–3.14 support window, and then chooses band 8 or 9. Unknown and retired
-versions fail before application data work. See [TypeDB integration](typedb.md).
+Provider selection first obtains or accepts an exact server version, admits
+3.12.0 or newer, and then uses band 9. Lines newer than the measured 3.12–3.14
+window reuse the newest measured profile with one warning per connection;
+older versions fail before application data work. See
+[TypeDB integration](typedb.md).
 
 ## Migration and archive separation
 
-Active change authority is the V2 workspace migration flow:
+Active change authority is the workspace migration flow:
 
 ```text
 migration make -> plan -> apply -> verify
 ```
 
-Read-only readers remain for historical TOML, released Python/JSON migration
-records, checksums, ledgers, snapshots, and metadata. They may verify, convert,
-or adopt immutable history into a V2 workspace. They cannot create a new root
-history, write historical snapshots, or become desired-schema authority.
-
-Private archive modules use `_archive_…` names. Do not add a `_legacy` package
-or expose archive implementation as an application API.
+Python/JSON archive recovery, sidecar conversion, and archive adoption are
+removed in 3.0. Adopt frozen histories with 2.3.x first. Existing canonical
+adopted histories retain their permanent ledger and anchor checks. Historical
+TOML conversion requires 2.3.x before upgrading; 3.0 uses Split-YAML.
 
 ## Compatibility and release closure
 
 The release graph is closed:
 
-- TypeBridge product crates share the exact 2.1 version.
-- TypeDB bands 8 and 9 are the only active providers.
+- TypeBridge product crates share the exact product version.
+- TypeDB band 9 is the only active provider.
 - Python, npm, and Cargo archive validators inspect exact member sets and
   reject removed authoring/provider payloads.
 - Native notices are generated from the packaged Cargo graph.
@@ -159,16 +158,14 @@ The executable operation inventory and removal map are the audit authority for
 operation maps to generated evidence or a separately retained query/archive
 contract.
 
-Legacy query nodes remain deprecated until 3.0. The core TypeQL adapter owns
-structured query lowering, official parsing, rendering, and checked projection
-back to those nodes. Internal callers use `QueryCompiler::try_compile` and
-propagate errors; Python exports also emit `DeprecationWarning`. Only deprecated
-caller-owned `Raw` fragments bypass structured lowering and retain their text.
-Released String compiler wrappers retain their historical non-`Has` relation
-attribute discard behavior and otherwise return empty output when lowering is
-impossible. They do not expose the checked contract.
+Legacy caller-owned query nodes and String compiler adapters are removed.
+The core adapter owns official TypeQL parsing and rendering. Typed operations
+lower directly to checked adapter nodes; no compatibility AST is reconstructed.
+The frozen schema reader is internal compatibility machinery for adopted-genesis
+and shadow comparisons, not an SDK authoring API. Scalar formatting and
+historical migration match fragments retain checked official-AST conversion.
 
-V2 read lowering builds opaque adapter nodes for patterns, local functions,
+Typed read lowering builds opaque adapter nodes for patterns, local functions,
 modifiers, document fetches and execution bounds. The adapter renders the
 complete pipeline. Canonical plan bytes and driver given-row values retain
 their existing contract. Pre-change query snapshots compare official ASTs
@@ -188,13 +185,16 @@ When changing a shared operation:
 See [Testing](testing.md), [typed-query contract](typed-query-contract.md), and
 [Rust generated parity](rust-generated-parity.md) for executable evidence.
 
-Active schema emitters and readers use the same adapter. The frozen
-`archive_parser.rs` remains behind `_parser` for released archive recovery
-until 3.0. It is a reader for legacy inputs, not an emitter, so the one-AST
-rule holds. Existing snapshot and migration bytes keep their checksums;
+Active schema emitters and readers use the same official-AST adapter.
+Existing snapshot and migration bytes keep their checksums;
 new artifacts use official-AST rendering. Caller-owned function bodies retain
 their exact bytes after official validation; headers use AST rendering, and
 restored output must reparse to the same AST. This preserves provider-export
-fingerprints for commented TOML functions. Change detection compares typed
+fingerprints for commented function bodies. Change detection compares typed
 schema structures or managed semantic fingerprints, independently of text
 formatting. Snapshot integrity still hashes the actual stored bytes.
+
+Migration execution belongs to `schema-migration` and its TypeDB provider.
+The provider retains a read-only importer for the frozen legacy ledger; the
+independent legacy executor and state writers are removed. ORM schema sync
+and its legacy writer guard are removed; no ORM path defines schema.

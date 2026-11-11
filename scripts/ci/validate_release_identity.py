@@ -4,21 +4,15 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import hashlib
-import io
 import json
 import re
-import stat
 import sys
-import tarfile
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 
 try:
     from cargo_release_inventory import load_inventory as load_cargo_release_inventory
@@ -69,7 +63,7 @@ SEMVER_PATTERN = re.compile(
 
 CARGO_RELEASE_INVENTORY = load_cargo_release_inventory()
 PUBLISHED_CRATES = tuple(package.name for package in CARGO_RELEASE_INVENTORY.public_packages)
-UNPUBLISHED_V2_CRATES: tuple[str, ...] = ()
+UNPUBLISHED_CORE_CRATES: tuple[str, ...] = ()
 KNOWN_PUBLICATION_BLOCKER_EDGES: frozenset[tuple[str, str]] = frozenset()
 IMMUTABLE_BASELINE_CRATES: tuple[str, ...] = ()
 PREEXISTING_CRATES = tuple(package.name for package in CARGO_RELEASE_INVENTORY.immutable_packages)
@@ -81,7 +75,6 @@ RELEASE_CRATES_GRAPH = PurePosixPath("scripts/ci/release_crates_graph.sh")
 CARGO_CANDIDATE_BUILDER = PurePosixPath("scripts/ci/cargo_release_candidate.py")
 CARGO_CANDIDATE_PUBLISHER = PurePosixPath("scripts/ci/publish_cargo_release_candidate.py")
 TYPEDB_RUNTIME_PACKAGE = "type-bridge-typedb-runtime"
-TYPEDB_BAND8_DEPENDENCY = "type-bridge-typedb-driver-b8"
 TYPEDB_BAND9_DEPENDENCY = "typedb-driver"
 TARGET_RELEASE_VERSION = CARGO_RELEASE_INVENTORY.release_version
 ARTIFACT_CONTRACT_CARGO_INCLUSIVE = "cargo-inclusive"
@@ -102,11 +95,7 @@ RELEASE_CHANNEL_IDENTITIES = {
 UNPUBLISHED_BINDING_CRATES = tuple(
     package.name for package in CARGO_RELEASE_INVENTORY.private_packages
 )
-PYTHON_NPM_UNPUBLISHED_CRATES = UNPUBLISHED_V2_CRATES + UNPUBLISHED_BINDING_CRATES
-TYPEDB_RUNTIME_BAND8_PIN_PATTERN = re.compile(
-    r'^pub const PINNED_DRIVER_VERSION: &str = "([^"]+)";$',
-    re.MULTILINE,
-)
+PYTHON_NPM_UNPUBLISHED_CRATES = UNPUBLISHED_CORE_CRATES + UNPUBLISHED_BINDING_CRATES
 TYPEDB_RUNTIME_BAND9_PIN_PATTERN = re.compile(
     r'^pub const PINNED_DRIVER_VERSION_B9: &str = "([^"]+)";$',
     re.MULTILINE,
@@ -146,7 +135,6 @@ CANONICAL_LICENSE_DIGESTS = {
         "6737ef630c5e038c2c1d1f45e25f00e51e9493dab7fbfb6b4a3a178e76c8187b"
     ),
 }
-PREEXISTING_LEGACY_MANIFEST_DIGESTS: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -181,88 +169,9 @@ class LockedTypeDbComponent:
     version: str
 
 
-@dataclass(frozen=True)
-class LegacyTypeDbComponent:
-    """Immutable package, upstream, archive, and license identity for one package."""
-
-    archive_checksum: str
-    band: int
-    downstream_name: str
-    downstream_version: str
-    license: str
-    license_status: str
-    manifest_path: str
-    upstream_commit: str
-    upstream_name: str
-    upstream_version: str
-
-    @property
-    def archive_url(self) -> str:
-        """Return the immutable upstream crates.io archive URL."""
-        return (
-            f"https://static.crates.io/crates/{self.upstream_name}/"
-            f"{self.upstream_name}-{self.upstream_version}.crate"
-        )
-
-    @property
-    def vendor_directory(self) -> str:
-        """Return the workspace-relative vendor directory."""
-        return str(PurePosixPath(self.manifest_path).parent)
-
-
-LEGACY_TYPEDB_COMPONENTS = (
-    LegacyTypeDbComponent(
-        archive_checksum="71c456fc6fb8f9112236fc088569cbe47f620443629ef8c81b1d79aec7b49fc6",
-        band=8,
-        downstream_name="type-bridge-typedb-driver-b8",
-        downstream_version="3.11.5",
-        license=APACHE_2_LICENSE,
-        license_status=(
-            "Apache-2.0 namespaced packaging-only package; source behavior unchanged; "
-            "owner-authorized for TypeBridge Cargo distribution"
-        ),
-        manifest_path="vendor/typedb-driver-b8/Cargo.toml",
-        upstream_commit="7e669e41d9fee22fde8d5e60be7edbf00c6ec64b",
-        upstream_name="typedb-driver",
-        upstream_version="3.11.5",
-    ),
-    LegacyTypeDbComponent(
-        archive_checksum="f051694ab18c9fb31f15e4567421b55a70e7dddbc1af60a6a1c4cf73ffe8d5e8",
-        band=8,
-        downstream_name="type-bridge-typedb-protocol-b8",
-        downstream_version="3.11.0",
-        license=MPL_2_LICENSE,
-        license_status=(
-            "MPL-2.0 namespaced packaging-only package; generated protocol source unchanged; "
-            "owner-authorized for TypeBridge Cargo distribution"
-        ),
-        manifest_path="vendor/typedb-protocol-b8/Cargo.toml",
-        upstream_commit="1db5bdd6579352d31343da28be41844ed07da1b5",
-        upstream_name="typedb-protocol",
-        upstream_version="3.11.0",
-    ),
-)
-
 # Compatibility packages use independent immutable package versions instead of
 # inheriting the repository release version. They are still covered by the gate
 # and must be present at these exact downstream versions in the publication plan.
-VENDORED_PINS = {
-    component.downstream_name: component.downstream_version
-    for component in LEGACY_TYPEDB_COMPONENTS
-}
-VENDORED_LICENSES = {
-    component.downstream_name: component.license for component in LEGACY_TYPEDB_COMPONENTS
-}
-LEGACY_VENDOR_DESCRIPTIONS = {
-    "type-bridge-typedb-driver-b8": (
-        "Renamed package of upstream typedb-driver 3.11.5 (TypeDB protocol band 8); "
-        "source-unmodified compatibility package authorized for TypeBridge Cargo distribution"
-    ),
-    "type-bridge-typedb-protocol-b8": (
-        "Renamed vendor of upstream typedb-protocol 3.11.0 (TypeDB protocol band 8); "
-        "source-unmodified compatibility package authorized for TypeBridge Cargo distribution"
-    ),
-}
 HISTORICAL_BAND9_LICENSES = {
     "vendor/typedb-driver-b9": APACHE_2_LICENSE,
     "vendor/typedb-protocol-b9": MPL_2_LICENSE,
@@ -279,11 +188,6 @@ HISTORICAL_BAND9_DESCRIPTIONS = {
 }
 HISTORICAL_BAND9_README_HEADING = "# Historical quarantined snapshot — do not consume"
 LEGACY_VENDOR_ROOT_ENTRIES = frozenset({"Cargo.toml", "LICENSE", "README.md", "src"})
-MAX_LEGACY_ARCHIVE_BYTES = 32 * 1024 * 1024
-MAX_LEGACY_ARCHIVE_FILES = 10_000
-MAX_LEGACY_ARCHIVE_MEMBER_BYTES = 32 * 1024 * 1024
-MAX_LEGACY_ARCHIVE_EXPANDED_BYTES = 128 * 1024 * 1024
-LEGACY_ARCHIVE_HTTP_TIMEOUT_SECONDS = 30
 
 
 def read_toml(path: Path, *, label: str) -> dict[str, Any]:
@@ -330,556 +234,6 @@ def read_bytes(path: Path, *, label: str) -> bytes:
         raise ValidationError(f"Could not read {label} {path}: {error}") from error
 
 
-def download_legacy_crate_archive(
-    component: LegacyTypeDbComponent,
-    *,
-    opener: Callable[..., Any] = urllib_request.urlopen,
-) -> bytes:
-    """Download one immutable crates.io archive with strict time and byte bounds."""
-    request = urllib_request.Request(
-        component.archive_url,
-        headers={
-            "Accept": "application/octet-stream",
-            "User-Agent": "ds1sqe/type-bridge legacy-provenance-gate",
-        },
-        method="GET",
-    )
-    try:
-        with opener(request, timeout=LEGACY_ARCHIVE_HTTP_TIMEOUT_SECONDS) as response:
-            status = getattr(response, "status", None)
-            if status != 200:
-                raise ValidationError(
-                    f"Could not download {component.archive_url}: HTTP status {status!r}"
-                )
-            final_url = response.geturl()
-            if final_url != component.archive_url:
-                raise ValidationError(
-                    "Legacy TypeDB archive download redirected away from its immutable URL: "
-                    f"actual={final_url!r}, expected={component.archive_url!r}"
-                )
-            declared_length = response.headers.get("Content-Length")
-            if declared_length is not None:
-                try:
-                    parsed_length = int(declared_length, 10)
-                except ValueError as error:
-                    raise ValidationError(
-                        f"Legacy TypeDB archive has an invalid Content-Length: {declared_length!r}"
-                    ) from error
-                if parsed_length < 0 or parsed_length > MAX_LEGACY_ARCHIVE_BYTES:
-                    raise ValidationError(
-                        "Legacy TypeDB archive exceeds the compressed byte budget: "
-                        f"declared={parsed_length}, maximum={MAX_LEGACY_ARCHIVE_BYTES}"
-                    )
-
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                remaining = MAX_LEGACY_ARCHIVE_BYTES - total
-                chunk = response.read(min(64 * 1024, remaining + 1))
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > MAX_LEGACY_ARCHIVE_BYTES:
-                    raise ValidationError(
-                        "Legacy TypeDB archive exceeds the compressed byte budget while reading: "
-                        f"maximum={MAX_LEGACY_ARCHIVE_BYTES}"
-                    )
-                chunks.append(chunk)
-    except ValidationError:
-        raise
-    except (OSError, urllib_error.URLError) as error:
-        raise ValidationError(
-            f"Could not download immutable legacy TypeDB archive {component.archive_url}: {error}"
-        ) from error
-    return b"".join(chunks)
-
-
-def verified_crate_archive_files(
-    component: LegacyTypeDbComponent,
-    archive: bytes,
-) -> dict[str, bytes]:
-    """Verify and read a crates.io tarball without extracting paths onto the filesystem."""
-    if len(archive) > MAX_LEGACY_ARCHIVE_BYTES:
-        raise ValidationError(
-            "Legacy TypeDB archive exceeds the compressed byte budget before parsing: "
-            f"actual={len(archive)}, maximum={MAX_LEGACY_ARCHIVE_BYTES}"
-        )
-    actual_checksum = hashlib.sha256(archive).hexdigest()
-    if actual_checksum != component.archive_checksum:
-        raise ValidationError(
-            f"Legacy TypeDB archive checksum mismatch for {component.upstream_name} "
-            f"{component.upstream_version}: actual={actual_checksum!r}, "
-            f"expected={component.archive_checksum!r}"
-        )
-    expected_root = f"{component.upstream_name}-{component.upstream_version}"
-    files: dict[str, bytes] = {}
-    seen_members: set[str] = set()
-    expanded_bytes = 0
-    try:
-        # Stream members so an oversized declared file is rejected from its
-        # header before tarfile seeks through and decompresses its body.
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r|gz") as crate:
-            member_count = 0
-            for member in crate:
-                member_count += 1
-                if member_count > MAX_LEGACY_ARCHIVE_FILES:
-                    raise ValidationError(
-                        "Legacy TypeDB archive exceeds the member-count budget: "
-                        f"maximum={MAX_LEGACY_ARCHIVE_FILES}"
-                    )
-                name = member.name
-                if "\\" in name or name.startswith("/") or "\x00" in name:
-                    raise ValidationError(f"Legacy TypeDB archive has an unsafe path: {name!r}")
-                normalized = name.rstrip("/")
-                parts = normalized.split("/")
-                if (
-                    not normalized
-                    or any(part in ("", ".", "..") for part in parts)
-                    or parts[0] != expected_root
-                ):
-                    raise ValidationError(f"Legacy TypeDB archive has an unsafe path: {name!r}")
-                if normalized in seen_members:
-                    raise ValidationError(
-                        f"Legacy TypeDB archive contains a duplicate member: {name!r}"
-                    )
-                seen_members.add(normalized)
-                if member.isdir():
-                    continue
-                if not member.isfile():
-                    raise ValidationError(
-                        f"Legacy TypeDB archive contains a symlink or non-regular member: {name!r}"
-                    )
-                if len(parts) == 1:
-                    raise ValidationError(
-                        f"Legacy TypeDB archive root is unexpectedly a regular file: {name!r}"
-                    )
-                if member.size < 0 or member.size > MAX_LEGACY_ARCHIVE_MEMBER_BYTES:
-                    raise ValidationError(
-                        "Legacy TypeDB archive member exceeds the per-file byte budget: "
-                        f"path={name!r}, size={member.size}"
-                    )
-                expanded_bytes += member.size
-                if expanded_bytes > MAX_LEGACY_ARCHIVE_EXPANDED_BYTES:
-                    raise ValidationError(
-                        "Legacy TypeDB archive exceeds the expanded byte budget: "
-                        f"maximum={MAX_LEGACY_ARCHIVE_EXPANDED_BYTES}"
-                    )
-                source = crate.extractfile(member)
-                if source is None:
-                    raise ValidationError(
-                        f"Legacy TypeDB archive regular member is unreadable: {name!r}"
-                    )
-                body = source.read(member.size + 1)
-                if len(body) != member.size:
-                    raise ValidationError(
-                        f"Legacy TypeDB archive member size disagrees with its body: {name!r}"
-                    )
-                relative = PurePosixPath(*parts[1:]).as_posix()
-                if relative in files:
-                    raise ValidationError(
-                        f"Legacy TypeDB archive contains a duplicate file path: {relative!r}"
-                    )
-                files[relative] = body
-    except ValidationError:
-        raise
-    except (EOFError, OSError, tarfile.TarError) as error:
-        raise ValidationError(
-            f"Could not safely read legacy TypeDB archive {component.archive_url}: {error}"
-        ) from error
-    if not files:
-        raise ValidationError(
-            f"Legacy TypeDB archive contains no regular files: {component.archive_url}"
-        )
-    return files
-
-
-def local_legacy_vendor_files(component_root: Path) -> dict[str, bytes]:
-    """Read one local compatibility tree while rejecting links and special files."""
-    if component_root.is_symlink():
-        raise ValidationError(
-            f"Legacy TypeDB vendor directory is linked and therefore rejected: {component_root}"
-        )
-    component_root = component_root.resolve()
-    if not component_root.is_dir():
-        raise ValidationError(
-            f"Legacy TypeDB vendor directory is missing or non-directory: {component_root}"
-        )
-    root_entries = {entry.name for entry in component_root.iterdir()}
-    if root_entries != LEGACY_VENDOR_ROOT_ENTRIES:
-        raise ValidationError(
-            "Legacy TypeDB vendor root inventory drifted: "
-            f"path={component_root}, actual={sorted(root_entries)!r}, "
-            f"expected={sorted(LEGACY_VENDOR_ROOT_ENTRIES)!r}"
-        )
-
-    files: dict[str, bytes] = {}
-    file_count = 0
-    total_bytes = 0
-
-    def visit(directory: Path) -> None:
-        nonlocal file_count, total_bytes
-        for entry in sorted(directory.iterdir(), key=lambda candidate: candidate.name):
-            relative = entry.relative_to(component_root).as_posix()
-            try:
-                file_stat = entry.lstat()
-            except OSError as error:
-                raise ValidationError(
-                    f"Could not inspect legacy vendor path {entry}: {error}"
-                ) from error
-            mode = file_stat.st_mode
-            if stat.S_ISLNK(mode):
-                raise ValidationError(f"Legacy TypeDB vendor tree contains a symlink: {relative!r}")
-            if stat.S_ISDIR(mode):
-                visit(entry)
-                continue
-            if not stat.S_ISREG(mode):
-                raise ValidationError(
-                    f"Legacy TypeDB vendor tree contains a non-regular path: {relative!r}"
-                )
-            file_count += 1
-            if file_count > MAX_LEGACY_ARCHIVE_FILES:
-                raise ValidationError(
-                    "Legacy TypeDB vendor tree exceeds the file-count budget: "
-                    f"maximum={MAX_LEGACY_ARCHIVE_FILES}"
-                )
-            size = file_stat.st_size
-            if size < 0 or size > MAX_LEGACY_ARCHIVE_MEMBER_BYTES:
-                raise ValidationError(
-                    "Legacy TypeDB vendor file exceeds the per-file byte budget: "
-                    f"path={relative!r}, size={size}"
-                )
-            total_bytes += size
-            if total_bytes > MAX_LEGACY_ARCHIVE_EXPANDED_BYTES:
-                raise ValidationError(
-                    "Legacy TypeDB vendor tree exceeds the total byte budget: "
-                    f"maximum={MAX_LEGACY_ARCHIVE_EXPANDED_BYTES}"
-                )
-            files[relative] = read_bytes(entry, label=f"legacy vendor file {relative}")
-
-    visit(component_root)
-    return files
-
-
-def legacy_vendor_readme_disclosure(component: LegacyTypeDbComponent) -> bytes:
-    """Return the exact downstream prefix allowed before an upstream README."""
-    if component.band == 7 and component.upstream_name in {"typedb-driver", "typedb-protocol"}:
-        # These packages already exist on crates.io. Preserve their immutable
-        # READMEs byte-for-byte; ownership and repackaging disclosure live in
-        # their bound manifests plus the release-wide notices.
-        return b""
-    if component.upstream_name == "typedb-driver" and component.band == 8:
-        return (
-            "# type-bridge compatibility packaging notice\n\n"
-            "This package is an unofficial renamed compatibility package maintained by\n"
-            "type-bridge so TypeDB driver protocol band 8 can coexist with other bands in\n"
-            "one Cargo graph. The upstream project, original source, and ownership remain\n"
-            "**TypeDB**, from\n"
-            "[`typedb/typedb-driver`](https://github.com/typedb/typedb-driver). This package\n"
-            f"is based exactly on the crates.io `typedb-driver` {component.upstream_version} archive:\n\n"
-            "The TypeBridge owner authorized first publication for Cargo distribution on\n"
-            "2026-08-03. This exact source-unmodified package is the authorized\n"
-            "compatibility artifact, and its paired protocol package must precede it.\n\n"
-            f"- Archive: <{component.archive_url}>\n"
-            f"- SHA-256: `{component.archive_checksum}`\n"
-            f"- Upstream license retained: {component.license}\n"
-            "- Downstream package/version: "
-            f"`{component.downstream_name}` {component.downstream_version}\n\n"
-            "The Rust source and `LICENSE` are byte-identical to that upstream archive.\n"
-            "Only `Cargo.toml` package metadata and this disclosure differ. The complete\n"
-            "original TypeDB README follows below, unchanged. TypeDB is not responsible for\n"
-            "the downstream packaging changes.\n\n"
-            "---\n\n"
-        ).encode()
-    if component.upstream_name == "typedb-protocol" and component.band == 8:
-        return (
-            "# type-bridge compatibility packaging notice\n\n"
-            "This unofficial downstream package preserves the upstream TypeDB protocol\n"
-            "implementation and changes only package metadata/name so TypeDB protocol band\n"
-            "8 can coexist with other bands and pair with the type-bridge compatibility\n"
-            "driver package. The upstream project and original source remain **TypeDB**, from\n"
-            "[`typedb/typedb-protocol`](https://github.com/typedb/typedb-protocol). It is\n"
-            "based exactly on the crates.io "
-            f"`typedb-protocol` {component.upstream_version} archive:\n\n"
-            "The TypeBridge owner authorized first publication for Cargo distribution on\n"
-            "2026-08-03. This exact source-unmodified package is the authorized\n"
-            "compatibility artifact and must precede the paired driver package.\n\n"
-            f"- Archive: <{component.archive_url}>\n"
-            f"- SHA-256: `{component.archive_checksum}`\n"
-            f"- Upstream license retained: {component.license}\n"
-            "- Downstream package/version: "
-            f"`{component.downstream_name}` {component.downstream_version}\n\n"
-            "The generated Rust protocol source and `LICENSE` remain byte-identical to the\n"
-            "upstream archive. Only `Cargo.toml` package metadata and this disclosure differ.\n"
-            "The complete original TypeDB README follows below, unchanged. TypeDB is not\n"
-            "responsible for the downstream packaging changes.\n\n"
-            "---\n\n"
-        ).encode()
-    raise ValidationError(f"Unknown legacy TypeDB README policy: {component.downstream_name}")
-
-
-def parse_legacy_cargo_manifest(body: bytes, *, label: str) -> dict[str, Any]:
-    """Parse one compatibility manifest without accepting invalid UTF-8 or TOML."""
-    try:
-        manifest = tomllib.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ValidationError(f"Could not parse {label}: {error}") from error
-    if not isinstance(manifest, dict):
-        raise ValidationError(f"{label} is not a TOML table")
-    return manifest
-
-
-def normalize_dependency_specs(
-    manifest: dict[str, Any],
-    *,
-    label: str,
-) -> dict[str, Any]:
-    """Normalize Cargo's equivalent string and table dependency spellings."""
-    normalized = copy.deepcopy(manifest)
-
-    def normalize_table(container: dict[str, Any], section: str, section_label: str) -> None:
-        table = container.get(section)
-        if table is None:
-            return
-        if not isinstance(table, dict):
-            raise ValidationError(f"{label} has a non-table [{section_label}] section")
-        for dependency, specification in tuple(table.items()):
-            if isinstance(specification, str):
-                table[dependency] = {"version": specification}
-            elif not isinstance(specification, dict):
-                raise ValidationError(
-                    f"{label} has an invalid {section_label} dependency {dependency!r}"
-                )
-
-    dependency_sections = ("dependencies", "dev-dependencies", "build-dependencies")
-    for section in dependency_sections:
-        normalize_table(normalized, section, section)
-
-    targets = normalized.get("target")
-    if targets is not None:
-        if not isinstance(targets, dict):
-            raise ValidationError(f"{label} has a non-table [target] section")
-        for target_name, target in targets.items():
-            if not isinstance(target, dict):
-                raise ValidationError(f"{label} has an invalid target table {target_name!r}")
-            for section in dependency_sections:
-                normalize_table(target, section, f"target.{target_name}.{section}")
-    return normalized
-
-
-def legacy_protocol_component(band: int) -> LegacyTypeDbComponent:
-    """Return the one exact protocol package paired with a legacy driver band."""
-    matches = tuple(
-        component
-        for component in LEGACY_TYPEDB_COMPONENTS
-        if component.band == band and component.upstream_name == "typedb-protocol"
-    )
-    if len(matches) != 1:
-        raise ValidationError(f"Legacy TypeDB band {band} must have exactly one protocol component")
-    return matches[0]
-
-
-def expected_legacy_cargo_manifest(
-    component: LegacyTypeDbComponent,
-    upstream_manifest: dict[str, Any],
-) -> dict[str, Any]:
-    """Apply the complete allowlisted rename-only transform to an upstream manifest."""
-    expected = copy.deepcopy(upstream_manifest)
-    package = expected.get("package")
-    if not isinstance(package, dict):
-        raise ValidationError(
-            f"Legacy TypeDB upstream manifest has no [package]: {component.archive_url}"
-        )
-    if package.pop("authors", None) != []:
-        raise ValidationError(
-            f"Legacy TypeDB upstream authors metadata drifted: {component.downstream_name}"
-        )
-    if package.pop("licenseFile", None) != VENDOR_LICENSE_FILE:
-        raise ValidationError(
-            f"Legacy TypeDB upstream licenseFile metadata drifted: {component.downstream_name}"
-        )
-    if "license-file" in package:
-        raise ValidationError(
-            f"Legacy TypeDB upstream unexpectedly has license-file: {component.downstream_name}"
-        )
-    package["name"] = component.downstream_name
-    package["description"] = LEGACY_VENDOR_DESCRIPTIONS[component.downstream_name]
-    package["repository"] = TYPEBRIDGE_REPOSITORY
-    if component.band != 8:
-        raise ValidationError(f"Unknown retained TypeDB compatibility band: {component.band}")
-    package["license-file"] = VENDOR_LICENSE_FILE
-
-    library = expected.get("lib")
-    if not isinstance(library, dict):
-        raise ValidationError(
-            f"Legacy TypeDB upstream manifest has no [lib]: {component.downstream_name}"
-        )
-    library["doctest"] = False
-
-    rust_lints = {"unused": "allow", "dead_code": "allow"}
-    if component.upstream_name == "typedb-driver":
-        rust_lints["private_interfaces"] = "allow"
-    expected["lints"] = {"rust": rust_lints, "clippy": {"all": "allow"}}
-
-    if component.upstream_name == "typedb-driver":
-        dependencies = expected.get("dependencies")
-        if not isinstance(dependencies, dict):
-            raise ValidationError(
-                f"Legacy TypeDB upstream driver has no [dependencies]: {component.downstream_name}"
-            )
-        protocol_dependency = dependencies.get("typedb-protocol")
-        if not isinstance(protocol_dependency, dict):
-            raise ValidationError(
-                f"Legacy TypeDB upstream driver has no typedb-protocol table: "
-                f"{component.downstream_name}"
-            )
-        if protocol_dependency.pop("features", None) != []:
-            raise ValidationError(
-                f"Legacy TypeDB upstream typedb-protocol features drifted: "
-                f"{component.downstream_name}"
-            )
-        protocol = legacy_protocol_component(component.band)
-        expected_protocol_version = f"={protocol.upstream_version}"
-        if protocol_dependency.get("version") != expected_protocol_version:
-            raise ValidationError(
-                f"Legacy TypeDB upstream typedb-protocol version drifted: "
-                f"package={component.downstream_name!r}, "
-                f"actual={protocol_dependency.get('version')!r}, "
-                f"expected={expected_protocol_version!r}"
-            )
-        protocol_dependency["package"] = protocol.downstream_name
-        protocol_dependency["path"] = f"../{PurePosixPath(protocol.vendor_directory).name}"
-        if "dev-dependencies" in expected:
-            raise ValidationError(
-                f"Legacy TypeDB upstream unexpectedly has dev-dependencies: "
-                f"{component.downstream_name}"
-            )
-        expected["dev-dependencies"] = {"rand": "0.8", "serde_json": "1"}
-    elif component.upstream_name != "typedb-protocol":
-        raise ValidationError(f"Unknown legacy TypeDB package: {component.upstream_name}")
-
-    return normalize_dependency_specs(
-        expected,
-        label=f"expected legacy manifest {component.downstream_name}",
-    )
-
-
-def validate_legacy_component_tree(
-    workspace_root: Path,
-    component: LegacyTypeDbComponent,
-    archive: bytes,
-) -> tuple[str, ...]:
-    """Compare one active legacy package with its exact checksummed upstream archive."""
-    upstream = verified_crate_archive_files(component, archive)
-    local = local_legacy_vendor_files(workspace_root / component.vendor_directory)
-    local_manifest = local["Cargo.toml"]
-    pinned_manifest_digest = PREEXISTING_LEGACY_MANIFEST_DIGESTS.get(component.downstream_name)
-    if pinned_manifest_digest is not None:
-        actual_manifest_digest = hashlib.sha256(local_manifest).hexdigest()
-        if actual_manifest_digest != pinned_manifest_digest:
-            raise ValidationError(
-                "Pre-existing legacy TypeDB manifest drifted from its immutable registry "
-                f"payload: package={component.downstream_name!r}, "
-                f"actual_sha256={actual_manifest_digest!r}, "
-                f"expected_sha256={pinned_manifest_digest!r}"
-            )
-    upstream_manifest_body = upstream.get("Cargo.toml")
-    if upstream_manifest_body is None:
-        raise ValidationError(
-            f"Legacy TypeDB upstream archive has no Cargo.toml: {component.archive_url}"
-        )
-    expected_manifest = expected_legacy_cargo_manifest(
-        component,
-        parse_legacy_cargo_manifest(
-            upstream_manifest_body,
-            label=f"upstream legacy manifest {component.downstream_name}",
-        ),
-    )
-    actual_manifest = normalize_dependency_specs(
-        parse_legacy_cargo_manifest(
-            local_manifest,
-            label=f"local legacy manifest {component.downstream_name}",
-        ),
-        label=f"local legacy manifest {component.downstream_name}",
-    )
-    if actual_manifest != expected_manifest:
-        raise ValidationError(
-            "Legacy TypeDB manifest exceeds the packaging-only transform: "
-            f"{component.downstream_name}"
-        )
-    upstream_source = {path: body for path, body in upstream.items() if path.startswith("src/")}
-    local_source = {path: body for path, body in local.items() if path.startswith("src/")}
-    if not upstream_source:
-        raise ValidationError(
-            f"Legacy TypeDB upstream archive has no src tree: {component.archive_url}"
-        )
-    if set(local_source) != set(upstream_source):
-        raise ValidationError(
-            f"Legacy TypeDB source path inventory drifted for {component.downstream_name}: "
-            f"missing={sorted(set(upstream_source) - set(local_source))!r}, "
-            f"unexpected={sorted(set(local_source) - set(upstream_source))!r}"
-        )
-    upstream_license = upstream.get("LICENSE")
-    if upstream_license is None or local["LICENSE"] != upstream_license:
-        raise ValidationError(
-            f"Legacy TypeDB LICENSE must remain byte-identical to upstream: "
-            f"{component.downstream_name}"
-        )
-    upstream_readme = upstream.get(VENDOR_README)
-    if upstream_readme is None:
-        raise ValidationError(
-            f"Legacy TypeDB upstream archive has no README.md: {component.archive_url}"
-        )
-    disclosure = legacy_vendor_readme_disclosure(component)
-    expected_readme = disclosure + upstream_readme
-    actual_readme = local[VENDOR_README]
-    if actual_readme != expected_readme:
-        if disclosure and not actual_readme.startswith(disclosure):
-            raise ValidationError(
-                f"Legacy TypeDB downstream README disclosure drifted: {component.downstream_name}"
-            )
-        if disclosure:
-            raise ValidationError(
-                "Legacy TypeDB downstream README must retain the exact upstream suffix: "
-                f"{component.downstream_name}"
-            )
-        raise ValidationError(
-            "Retained TypeDB compatibility README must remain byte-identical to upstream: "
-            f"{component.downstream_name}"
-        )
-
-    changed = {path for path in upstream_source if local_source[path] != upstream_source[path]}
-    expected_license = {
-        "typedb-driver": APACHE_2_LICENSE,
-        "typedb-protocol": MPL_2_LICENSE,
-    }.get(component.upstream_name)
-    if expected_license is None or component.license != expected_license:
-        raise ValidationError(
-            f"Unknown legacy TypeDB provenance policy: {component.downstream_name}"
-        )
-    if changed:
-        raise ValidationError(
-            f"Legacy TypeDB source must remain byte-identical to upstream: "
-            f"package={component.downstream_name!r}, changed={sorted(changed)!r}"
-        )
-    return ()
-
-
-def validate_legacy_vendor_provenance(
-    workspace_manifest: Path,
-    *,
-    archive_loader: Callable[[LegacyTypeDbComponent], bytes] = download_legacy_crate_archive,
-) -> dict[str, list[str]]:
-    """Fail closed unless all active legacy trees match their immutable upstreams."""
-    workspace_root = workspace_manifest.resolve().parent
-    result: dict[str, list[str]] = {}
-    for component in LEGACY_TYPEDB_COMPONENTS:
-        archive = archive_loader(component)
-        result[component.downstream_name] = list(
-            validate_legacy_component_tree(workspace_root, component, archive)
-        )
-    return result
-
-
 def semantic_version(value: object, *, label: str) -> str:
     """Return one canonical semantic version string."""
     if not isinstance(value, str) or SEMVER_PATTERN.fullmatch(value) is None:
@@ -907,7 +261,7 @@ def release_identity_versions(tag: str, release_channel: str) -> tuple[str, str]
     expected_tag = f"v{semver_version}"
     if tag != expected_tag:
         raise ValidationError(
-            "Rust SSOT V2 release identity is not armed for this channel: "
+            "Release identity is not armed for this channel: "
             f"tag={tag!r}, release_channel={release_channel!r}, expected={expected_tag!r}"
         )
     return semver_version, python_version
@@ -974,10 +328,6 @@ def validate_cargo_license_boundary(
         label="Cargo workspace MIT license-file",
     )
 
-    compatibility_components_by_manifest = {
-        (workspace_root / component.manifest_path).resolve(): component
-        for component in LEGACY_TYPEDB_COMPONENTS
-    }
     resolved: dict[str, str] = {}
     for package in packages:
         payload = read_toml(package.manifest, label=f"Cargo package {package.name}")
@@ -989,35 +339,12 @@ def validate_cargo_license_boundary(
             workspace_license=workspace_license,
             label=f"Cargo package {package.name}",
         )
-        component = compatibility_components_by_manifest.get(package.manifest.resolve())
-        # License follows the source tree, not a mutable Cargo package name.
-        # Renaming a compatibility package cannot relicense TypeDB-derived
-        # Apache/MPL source as first-party MIT code.
-        expected = component.license if component is not None else MIT_LICENSE
-        if actual != expected:
+        if actual != MIT_LICENSE:
             raise ValidationError(
                 f"Cargo package {package.name} effective license drifted: "
-                f"actual={actual!r}, expected={expected!r}"
+                f"actual={actual!r}, expected={MIT_LICENSE!r}"
             )
-        if component is not None:
-            expected_license_file = (
-                None
-                if component.downstream_name in IMMUTABLE_BASELINE_CRATES
-                else VENDOR_LICENSE_FILE
-            )
-            if package_table.get("license-file") != expected_license_file:
-                raise ValidationError(
-                    f"Cargo package {package.name} license-file drifted from its immutable "
-                    "compatibility-package contract: "
-                    f"actual={package_table.get('license-file')!r}, "
-                    f"expected={expected_license_file!r}"
-                )
-            canonical_license_bytes(
-                package.manifest.parent / VENDOR_LICENSE_FILE,
-                license_id=component.license,
-                label=f"Cargo package {package.name} license-file",
-            )
-        elif not package.vendored:
+        if not package.vendored:
             if package_table.get("license") != {"workspace": True}:
                 raise ValidationError(
                     f"Cargo package {package.name} must declare license.workspace = true"
@@ -1053,79 +380,6 @@ def validate_cargo_license_boundary(
         if isinstance(name, str):
             resolved[name] = expected_license
     return resolved
-
-
-def validate_legacy_vendor_component_identities(
-    workspace_manifest: Path,
-    packages: Sequence[CargoPackage],
-) -> tuple[str, ...]:
-    """Bind every active legacy package path and all crates.io-facing metadata."""
-    workspace_root = workspace_manifest.resolve().parent
-    expected_by_manifest = {
-        (workspace_root / component.manifest_path).resolve(): component
-        for component in LEGACY_TYPEDB_COMPONENTS
-    }
-    if len(expected_by_manifest) != len(LEGACY_TYPEDB_COMPONENTS):
-        raise ValidationError("Legacy TypeDB component manifest identities are not unique")
-
-    actual_by_manifest = {
-        package.manifest.resolve(): package for package in packages if package.vendored
-    }
-    missing = sorted(
-        str(path.relative_to(workspace_root))
-        for path in expected_by_manifest.keys() - actual_by_manifest
-    )
-    unexpected = sorted(
-        str(path.relative_to(workspace_root))
-        for path in actual_by_manifest.keys() - expected_by_manifest
-    )
-    if missing or unexpected:
-        raise ValidationError(
-            "Cargo workspace legacy vendor members drifted from their canonical paths: "
-            f"missing={missing!r}, unexpected={unexpected!r}"
-        )
-
-    identities: list[str] = []
-    for manifest, component in expected_by_manifest.items():
-        payload = read_toml(manifest, label=f"legacy vendor manifest {component.manifest_path}")
-        package_table = payload.get("package")
-        if not isinstance(package_table, dict):
-            raise ValidationError(f"Legacy vendor manifest has no [package]: {manifest}")
-        actual_path = str(manifest.relative_to(workspace_root))
-        expected_path = component.manifest_path
-        if actual_path != expected_path:
-            raise ValidationError(
-                f"Legacy TypeDB component {component.downstream_name} path drifted: "
-                f"actual={actual_path!r}, expected={expected_path!r}"
-            )
-        expected_metadata = {
-            "name": component.downstream_name,
-            "version": component.downstream_version,
-            "license": component.license,
-            "license-file": (
-                None
-                if component.downstream_name in IMMUTABLE_BASELINE_CRATES
-                else VENDOR_LICENSE_FILE
-            ),
-            "description": LEGACY_VENDOR_DESCRIPTIONS[component.downstream_name],
-            "homepage": f"https://github.com/typedb/{component.upstream_name}",
-            "repository": TYPEBRIDGE_REPOSITORY,
-            "readme": VENDOR_README,
-        }
-        actual_metadata = {key: package_table.get(key) for key in expected_metadata}
-        if actual_metadata != expected_metadata:
-            raise ValidationError(
-                f"Legacy TypeDB component {component.downstream_name} immutable package metadata "
-                f"drifted: actual={actual_metadata!r}, expected={expected_metadata!r}"
-            )
-        identity_tuple = (
-            component.manifest_path,
-            component.downstream_name,
-            component.downstream_version,
-            component.license,
-        )
-        identities.append("|".join(identity_tuple))
-    return tuple(identities)
 
 
 def normalized_cargo_name(value: object) -> str | None:
@@ -1620,8 +874,6 @@ def validate_python_npm_only_workflow(workflow: Path) -> None:
         "cargo-release-candidate": "exact Cargo candidate artifact",
         "rust-crates": "Rust crate artifact upload",
         "target/package": "Cargo archive directory",
-        "type-bridge-typedb-driver-b8": "owner-gated band-8 registry path",
-        "type-bridge-typedb-protocol-b8": "owner-gated band-8 registry path",
         "validate_fresh_typedb_runtime_package.sh": "published-Cargo consumer probe",
         "validate_rust_release_artifacts.py": "Rust release artifact validator",
     }
@@ -1692,7 +944,7 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
         raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
     source = workflow.read_text(encoding="utf-8")
     preamble = source.split("\njobs:\n", maxsplit=1)[0]
-    alias_selector = "  SERVER_OCI_MINOR_ALIAS: '2.3'"
+    alias_selector = "  SERVER_OCI_MINOR_ALIAS: '3.0'"
     if preamble.count(alias_selector) != 1:
         raise ValidationError("Release workflow has no exact OCI minor-alias selector")
 
@@ -1768,10 +1020,10 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
         server, "Sign exact platform and multi-platform digests"
     )
     scoped_requirements = (
-        (alias_step, 'for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do', "alias loop"),
+        (alias_step, 'for alias in "$SERVER_OCI_MINOR_ALIAS" 3 latest; do', "alias loop"),
         (
             metadata_step,
-            '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],',
+            '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "3", "latest"],',
             "release metadata aliases",
         ),
         (metadata_step, 'alias_markdown = ", ".join(', "release-note aliases"),
@@ -1818,77 +1070,42 @@ def validate_manifest_version(path: Path, version: str, *, label: str) -> None:
         )
 
 
-def validate_typedb_runtime_driver_pins(package: CargoPackage) -> tuple[str, str]:
-    """Bind both retained driver requirements to their runtime constants."""
+def validate_typedb_runtime_driver_pins(package: CargoPackage) -> str:
+    """Bind the retained driver requirement and compatibility alias to its pin."""
     manifest = read_toml(package.manifest, label="TypeDB runtime Cargo manifest")
     dependencies = manifest.get("dependencies")
     if not isinstance(dependencies, dict):
         raise ValidationError("TypeDB runtime Cargo manifest has no [dependencies] table")
-    retired_dependencies = {
-        "type-bridge-typedb-driver-b7",
-        "type-bridge-typedb-protocol-b7",
-    }
-    present_retired_dependencies = sorted(retired_dependencies & dependencies.keys())
+    if any(name.startswith("type-bridge-typedb-") for name in dependencies):
+        raise ValidationError("TypeDB runtime must not depend on namespaced driver forks")
     features = manifest.get("features")
-    if not isinstance(features, dict):
-        raise ValidationError("TypeDB runtime Cargo manifest has no [features] table")
-    if present_retired_dependencies or "band7" in features:
+    if not isinstance(features, dict) or set(features) != {"default", "band9"}:
+        raise ValidationError("TypeDB runtime must declare only the retained band feature")
+    specification = dependencies.get(TYPEDB_BAND9_DEPENDENCY)
+    if not isinstance(specification, dict):
+        raise ValidationError("TypeDB runtime must declare typedb-driver as a dependency table")
+    if specification.get("package", TYPEDB_BAND9_DEPENDENCY) != TYPEDB_BAND9_DEPENDENCY:
         raise ValidationError(
-            "TypeDB runtime reintroduces retired band-7 support: "
-            f"dependencies={present_retired_dependencies!r}, "
-            f"feature_present={'band7' in features}"
+            "TypeDB runtime band-9 upstream dependency has the wrong package identity"
         )
-    specifications: dict[str, tuple[dict[str, Any], re.Pattern[str], str]] = {}
-    for dependency, pattern, label in (
-        (TYPEDB_BAND8_DEPENDENCY, TYPEDB_RUNTIME_BAND8_PIN_PATTERN, "band-8 package"),
-        (TYPEDB_BAND9_DEPENDENCY, TYPEDB_RUNTIME_BAND9_PIN_PATTERN, "band-9 upstream"),
-    ):
-        specification = dependencies.get(dependency)
-        if not isinstance(specification, dict):
-            raise ValidationError(f"TypeDB runtime must declare {dependency} as a dependency table")
-        requirement = specification.get("version")
-        if not isinstance(requirement, str):
-            raise ValidationError(
-                f"TypeDB runtime {dependency} dependency has no version requirement"
-            )
-        dependency_package = specification.get("package", dependency)
-        if dependency_package != dependency:
-            raise ValidationError(
-                f"TypeDB runtime {label} dependency has the wrong package identity: "
-                f"actual={dependency_package!r}, expected={dependency!r}"
-            )
-        specifications[dependency] = (specification, pattern, label)
-
     source = package.manifest.parent / "src/lib.rs"
-    if not source.is_file() or source.is_symlink():
-        raise ValidationError(f"TypeDB runtime source is missing or non-regular: {source}")
-    try:
-        source_text = source.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        raise ValidationError(f"Could not read TypeDB runtime source {source}: {error}") from error
-    if "PINNED_DRIVER_VERSION_B7" in source_text or "driver_b7" in source_text:
-        raise ValidationError("TypeDB runtime source reintroduces retired band-7 dispatch")
-    pinned_versions: list[str] = []
-    for dependency in (
-        TYPEDB_BAND8_DEPENDENCY,
-        TYPEDB_BAND9_DEPENDENCY,
-    ):
-        specification, pattern, label = specifications[dependency]
-        matches = pattern.findall(source_text)
-        if len(matches) != 1:
-            raise ValidationError(f"TypeDB runtime source must define the {label} pin exactly once")
-        pinned_version = stable_version(
-            matches[0], label=f"TypeDB runtime pinned {label} driver version"
+    source_text = read_text(source, label="TypeDB runtime source")
+    matches = TYPEDB_RUNTIME_BAND9_PIN_PATTERN.findall(source_text)
+    if len(matches) != 1:
+        raise ValidationError(
+            "TypeDB runtime source must define the band-9 upstream pin exactly once"
         )
-        expected_requirement = f"={pinned_version}"
-        requirement = specification["version"]
-        if requirement != expected_requirement:
-            raise ValidationError(
-                f"TypeDB runtime {dependency} dependency must exactly match its runtime pin: "
-                f"actual={requirement!r}, expected={expected_requirement!r}"
-            )
-        pinned_versions.append(pinned_version)
-    return pinned_versions[0], pinned_versions[1]
+    pinned_version = stable_version(matches[0], label="TypeDB runtime pinned driver version")
+    expected_requirement = f"={pinned_version}"
+    requirement = specification.get("version")
+    if requirement != expected_requirement:
+        raise ValidationError(
+            "TypeDB runtime typedb-driver dependency must exactly match its runtime pin: "
+            f"actual={requirement!r}, expected={expected_requirement!r}"
+        )
+    if source_text.count("pub const PINNED_DRIVER_VERSION: &str = PINNED_DRIVER_VERSION_B9;") != 1:
+        raise ValidationError("TypeDB runtime compatibility pin must alias its retained driver pin")
+    return pinned_version
 
 
 def resolved_official_band9_components(
@@ -2013,16 +1230,6 @@ def validate_native_license_bodies(
         license_id=MIT_LICENSE,
         label="root MIT LICENSE",
     )
-    driver_b8 = canonical_license_bytes(
-        workspace_root / "vendor/typedb-driver-b8/LICENSE",
-        license_id=APACHE_2_LICENSE,
-        label="band-8 driver Apache-2.0 LICENSE",
-    )
-    protocol_b8 = canonical_license_bytes(
-        workspace_root / "vendor/typedb-protocol-b8/LICENSE",
-        license_id=MPL_2_LICENSE,
-        label="band-8 protocol MPL-2.0 LICENSE",
-    )
 
     headings = (
         "## TypeBridge-authored portions — MIT License",
@@ -2031,7 +1238,7 @@ def validate_native_license_bodies(
         "## ed25519-dalek 2.2.0 — BSD 3-Clause License",
         "## curve25519-dalek 4.1.3 — BSD 3-Clause License",
     )
-    expected_bodies = (mit, driver_b8, protocol_b8, None, None)
+    expected_bodies = (mit, None, None, None, None)
     embedded_license_ids = (
         MIT_LICENSE,
         APACHE_2_LICENSE,
@@ -2095,86 +1302,6 @@ def validate_native_crypto_notice_provenance(workspace_root: Path, notice: str) 
             )
 
 
-def validate_legacy_notice_provenance(notice: str) -> None:
-    """Require every retained band-8 package and archive row to be exact."""
-    compact_notice = " ".join(notice.split())
-    required_disclosures = (
-        "The band-8 compatibility copies are source-unmodified and owner-authorized "
-        "for TypeBridge Cargo distribution.",
-        "The TypeBridge owner authorized first publication of the band-8 packages on 2026-08-03.",
-        "These exact source-unmodified packages are the authorized "
-        "compatibility artifacts, with the protocol package preceding the driver package.",
-    )
-    for disclosure in required_disclosures:
-        if disclosure not in compact_notice:
-            raise ValidationError(
-                f"Native notice band-8 registry disposition is missing: {disclosure!r}"
-            )
-    for transient_claim in (
-        "band-8 namespaced registry keys are currently absent",
-        "downstream package key is currently unpublished",
-        "unpublished owner-gated packaging candidate",
-    ):
-        if transient_claim in compact_notice.lower():
-            raise ValidationError(
-                f"Native notice freezes transient band-8 registry state: {transient_claim!r}"
-            )
-    expected_component_rows = tuple(
-        (
-            str(component.band),
-            f"`{component.downstream_name}` {component.downstream_version}",
-            (
-                f"TypeDB `{component.upstream_name}` tag [{component.upstream_version}]"
-                f"(https://github.com/typedb/{component.upstream_name}/tree/"
-                f"{component.upstream_commit}) (commit `{component.upstream_commit}`)"
-            ),
-            component.license_status,
-        )
-        for component in LEGACY_TYPEDB_COMPONENTS
-    )
-    actual_component_rows = tuple(
-        tuple(cell.strip() for cell in row)
-        for row in re.findall(
-            r"^\| (8) \| ([^|]+) \| ([^|]+) \| ([^|]+) \|$",
-            notice,
-            re.MULTILINE,
-        )
-    )
-    if actual_component_rows != expected_component_rows:
-        raise ValidationError(
-            "Native notice band-8 component provenance drifted: "
-            f"actual={actual_component_rows!r}, expected={expected_component_rows!r}"
-        )
-
-    expected_keys = {
-        (component.upstream_name, component.upstream_version)
-        for component in LEGACY_TYPEDB_COMPONENTS
-    }
-    expected_archive_rows = tuple(
-        (
-            component.archive_url,
-            component.upstream_name,
-            component.upstream_version,
-            component.archive_checksum,
-        )
-        for component in LEGACY_TYPEDB_COMPONENTS
-    )
-    all_archive_rows = re.findall(
-        r"^\| <(https://static\.crates\.io/crates/(typedb-(?:driver|protocol))/"
-        r"\2-([^/>]+)\.crate)> \| `([^`]+)` \|$",
-        notice,
-        re.MULTILINE,
-    )
-    actual_archive_rows = tuple(
-        row for row in all_archive_rows if (row[1], row[2]) in expected_keys
-    )
-    if actual_archive_rows != expected_archive_rows:
-        raise ValidationError(
-            "Native notice band-8 archive provenance drifted: "
-            f"actual={actual_archive_rows!r}, expected={expected_archive_rows!r}"
-        )
-
-
 def validate_native_band9_provenance(
     workspace_manifest: Path,
     *,
@@ -2225,7 +1352,6 @@ def validate_native_band9_provenance(
         notice=python_notice_bytes,
     )
     validate_native_crypto_notice_provenance(workspace_root, notice)
-    validate_legacy_notice_provenance(notice)
 
     license_cells = {
         "typedb-driver": "Apache-2.0, unmodified official package",
@@ -2264,13 +1390,6 @@ def validate_native_band9_provenance(
                 f"Native notice {component.name} license/status drifted: {license_cell!r}"
             )
 
-        # Band-8 upstream archives share the crate name; every other archive
-        # row for this crate is band-9 provenance and must match Cargo.lock.
-        band8_archive_versions = {
-            legacy.upstream_version
-            for legacy in LEGACY_TYPEDB_COMPONENTS
-            if legacy.upstream_name == component.name
-        }
         archive_rows = [
             (version, checksum)
             for version, checksum in re.findall(
@@ -2279,7 +1398,6 @@ def validate_native_band9_provenance(
                 notice,
                 re.MULTILINE,
             )
-            if version not in band8_archive_versions
         ]
         expected_archive = (component.version, component.checksum)
         if archive_rows != [expected_archive]:
@@ -2305,12 +1423,6 @@ def validate_native_band9_provenance(
         f"currently that is {driver.version}, exercised",
         "There is no active, consumed, or release-input TypeBridge band-9 fork.",
         "forbidden for consumption and are not release inputs.",
-        "The TypeBridge owner authorized their first publication for Cargo distribution on "
-        "2026-08-03.",
-        "These exact source-unmodified packages "
-        "are the authorized compatibility artifacts, with protocol preceding driver.",
-        "owner-authorized Cargo distribution uses the exact source-unmodified "
-        "protocol-before-driver packages",
         "TypeDB remains the upstream project and original source",
         "TypeBridge-authored crates and bindings remain MIT.",
         "Files derived from the TypeDB drivers retain Apache-2.0",
@@ -2318,16 +1430,6 @@ def validate_native_band9_provenance(
     ):
         if phrase not in compact_vendor_readme:
             raise ValidationError(f"Vendor provenance is missing: {phrase!r}")
-    for transient_claim in (
-        "band-8 namespaced registry keys are currently absent",
-        "downstream package key is currently unpublished",
-        "unpublished owner-gated packaging candidate",
-    ):
-        if transient_claim in compact_vendor_readme.lower():
-            raise ValidationError(
-                f"Vendor provenance freezes transient band-8 registry state: {transient_claim!r}"
-            )
-
     band9_rows = re.findall(
         r"^\| 9 \| ([^|]+) \| ([^|]+) \| ([^|]+) \|$",
         vendor_readme,
@@ -2437,36 +1539,29 @@ def validate_release_identity(
     quarantined_band9_packages = validate_historical_band9_quarantine(workspace_manifest)
     packages = cargo_workspace_packages(workspace_manifest)
     cargo_licenses = validate_cargo_license_boundary(workspace_manifest, packages)
-    legacy_vendor_identities = validate_legacy_vendor_component_identities(
-        workspace_manifest,
-        packages,
-    )
     by_name = {package.name: package for package in packages}
-    missing_v2_crates = sorted(set(UNPUBLISHED_V2_CRATES) - set(by_name))
-    if missing_v2_crates:
+    missing_core_crates = sorted(set(UNPUBLISHED_CORE_CRATES) - set(by_name))
+    if missing_core_crates:
         raise ValidationError(
-            "Authoritative unpublished V2 crates are absent from the workspace: "
-            f"{missing_v2_crates!r}"
+            "Authoritative unpublished core crates are absent from the workspace: "
+            f"{missing_core_crates!r}"
         )
-    non_explicit_v2_publish_settings = sorted(
+    non_explicit_publish_settings = sorted(
         name
         for name in PYTHON_NPM_UNPUBLISHED_CRATES
         if name not in by_name or not by_name[name].publish_explicitly_false
     )
-    if non_explicit_v2_publish_settings:
+    if non_explicit_publish_settings:
         raise ValidationError(
-            "Authoritative V2 and binding crates must declare package.publish = false exactly: "
-            f"{non_explicit_v2_publish_settings!r}"
+            "Authoritative core and binding crates must declare package.publish = false exactly: "
+            f"{non_explicit_publish_settings!r}"
         )
     for package in packages:
         if package.vendored:
-            expected = VENDORED_PINS.get(package.name)
-            if expected is None:
-                raise ValidationError(
-                    f"Unpinned workspace vendor crate: {package.name}@{package.version}"
-                )
-        else:
-            expected = version
+            raise ValidationError(
+                f"Unpinned workspace vendor crate: {package.name}@{package.version}"
+            )
+        expected = version
         if package.version != expected:
             raise ValidationError(
                 f"Cargo package {package.name} version disagrees with its release identity: "
@@ -2476,20 +1571,13 @@ def validate_release_identity(
     runtime_package = by_name.get(TYPEDB_RUNTIME_PACKAGE)
     if runtime_package is None:
         raise ValidationError(f"TypeDB runtime package is absent: {TYPEDB_RUNTIME_PACKAGE}")
-    typedb_runtime_driver_pin, typedb_runtime_band9_driver_pin = (
-        validate_typedb_runtime_driver_pins(runtime_package)
-    )
+    typedb_runtime_driver_pin = validate_typedb_runtime_driver_pins(runtime_package)
     locked_band9_components = validate_native_band9_provenance(
         workspace_manifest,
-        expected_driver_version=typedb_runtime_band9_driver_pin,
+        expected_driver_version=typedb_runtime_driver_pin,
         root_license=root_python_manifest.resolve().parent / "LICENSE",
     )
 
-    missing_vendors = sorted(set(VENDORED_PINS) - set(by_name))
-    if missing_vendors:
-        raise ValidationError(
-            f"Pinned vendor crates are absent from the workspace: {missing_vendors!r}"
-        )
     publishable = frozenset(package.name for package in packages if package.publishable)
     expected_publishable = frozenset(PUBLISHED_CRATES)
     if publishable != expected_publishable:
@@ -2564,7 +1652,7 @@ def validate_release_identity(
                     f"expected={target.version!r}"
                 )
             if not target.publishable or target.name not in publish_position:
-                if target.name not in UNPUBLISHED_V2_CRATES:
+                if target.name not in UNPUBLISHED_CORE_CRATES:
                     raise ValidationError(
                         f"Published crate {package.name} depends on unpublished workspace crate "
                         f"{target.name}"
@@ -2631,21 +1719,20 @@ def validate_release_identity(
         ),
         "crates_io_mutation": crates_io_mutation,
         "historical_band9_quarantine": list(quarantined_band9_packages),
-        "legacy_vendor_identities": list(legacy_vendor_identities),
         "cargo_manifest_dependency_order": {
             name: [dependency.name for dependency in by_name[name].path_dependencies]
             for name in PUBLISHED_CRATES
         },
         "rust_publication_blockers": publication_blockers,
         "unpublished_crates": sorted(set(by_name) - expected_publishable),
-        "unpublished_v2_crates": list(UNPUBLISHED_V2_CRATES),
+        "retired_crates": ["type-bridge-migration", "type-bridge-toml-transpiler"],
         "status": ("blocked" if crates_io_mutation and publication_blockers else "ok"),
         "tag": tag,
         "node_package_lock_version": node_lock_version,
         "python_core_requirement": python_core_requirement,
         "python_package_version": python_package_version,
         "typedb_runtime_driver_pin": typedb_runtime_driver_pin,
-        "typedb_runtime_band9_driver_pin": typedb_runtime_band9_driver_pin,
+        "typedb_runtime_band9_driver_pin": typedb_runtime_driver_pin,
         "typedb_runtime_band9_components": {
             component.name: {
                 "checksum": component.checksum,
@@ -2672,7 +1759,7 @@ def validate_release_identity(
 
 
 def require_unblocked_rust_publication(report: dict[str, Any]) -> None:
-    """Reject a release whose public crates depend on unpublished V2 crates."""
+    """Reject a release whose public crates depend on unpublished core crates."""
     blockers = report.get("rust_publication_blockers")
     if not isinstance(blockers, list):
         raise ValidationError("Release identity report has no Rust publication-blocker inventory")
@@ -2733,7 +1820,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         node_package_lock=args.node_package_lock,
         release_workflow=args.release_workflow,
     )
-    report["legacy_vendor_provenance"] = validate_legacy_vendor_provenance(args.workspace)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 

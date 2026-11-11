@@ -1,13 +1,10 @@
-#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use std::io::Write;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use type_bridge_core_lib::ast::Clause;
 
+use super::traits::PolicyOutcome;
 use super::traits::{InterceptError, Interceptor, RequestContext};
-#[cfg(feature = "v2-query")]
-use super::traits::{V2PolicyOutcome, V2PolicyRequest};
 use crate::config::AuditLogConfig;
 
 #[derive(Debug, serde::Serialize)]
@@ -52,9 +49,8 @@ pub struct AuditLogInterceptor {
     writer: Arc<Mutex<AuditWriter>>,
 }
 
-#[cfg(feature = "v2-query")]
 #[derive(Debug, serde::Serialize)]
-struct V2AuditEntry {
+struct StagedAuditEntry {
     timestamp: String,
     request_id: String,
     client_id: String,
@@ -115,21 +111,10 @@ impl AuditLogInterceptor {
     async fn write_context(
         &self,
         ctx: &RequestContext,
-        status: &str,
-    ) -> Result<(), InterceptError> {
-        let entry = Self::entry_from_context(ctx, status);
-        let mut writer = self.writer.lock().await;
-        writer.write_entry(&entry).map_err(io_to_intercept_error)
-    }
-
-    #[cfg(feature = "v2-query")]
-    async fn write_v2_context(
-        &self,
-        ctx: &RequestContext,
-        outcome: &V2PolicyOutcome<'_>,
+        outcome: &PolicyOutcome<'_>,
     ) -> Result<(), InterceptError> {
         let base = Self::entry_from_context(ctx, if outcome.success() { "ok" } else { "error" });
-        let entry = V2AuditEntry {
+        let entry = StagedAuditEntry {
             timestamp: base.timestamp,
             request_id: base.request_id,
             client_id: base.client_id,
@@ -138,7 +123,7 @@ impl AuditLogInterceptor {
             clause_count: base.clause_count,
             compiled_typeql: base.compiled_typeql,
             status: base.status,
-            transport: "v2",
+            transport: "v3",
             diagnostic_code: outcome.code().to_owned(),
             response_bytes: outcome.response_bytes(),
         };
@@ -157,67 +142,30 @@ impl Interceptor for AuditLogInterceptor {
         "audit-log"
     }
 
-    fn on_request<'a>(
+    // The audit log authorizes nothing; it observes staged replies through
+    // on_response, which /v3/staged also runs.
+
+    fn on_raw<'a>(
         &'a self,
-        clauses: Vec<Clause>,
-        ctx: &'a mut RequestContext,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>,
-    > {
-        Box::pin(async move {
-            ctx.metadata.insert(
-                "audit_clause_count".to_string(),
-                serde_json::json!(clauses.len()),
-            );
-            Ok(clauses)
-        })
-    }
-
-    #[cfg(feature = "v2-query")]
-    fn supports_v2(&self) -> bool {
-        true
-    }
-
-    /// The audit log authorizes nothing; it observes V3 replies through
-    /// [`Interceptor::on_v2_response`], which `/v3/staged` also runs.
-    #[cfg(feature = "v2-query")]
-    fn supports_v3(&self) -> bool {
-        true
-    }
-
-    #[cfg(feature = "v2-query")]
-    fn on_v2_request<'a>(
-        &'a self,
-        request: &'a V2PolicyRequest<'a>,
+        query: &'a str,
+        _kind: type_bridge_orm::session::staged::TransactionKind,
         ctx: &'a mut RequestContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>>
     {
-        Box::pin(async move {
-            ctx.metadata.insert(
-                "audit_clause_count".to_owned(),
-                serde_json::json!(request.plan().pipeline().len()),
-            );
-            Ok(())
-        })
-    }
-
-    #[cfg(feature = "v2-query")]
-    fn on_v2_response<'a>(
-        &'a self,
-        outcome: &'a V2PolicyOutcome<'a>,
-        ctx: &'a RequestContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>>
-    {
-        Box::pin(async move { self.write_v2_context(ctx, outcome).await })
+        ctx.metadata.insert(
+            "compiled_typeql".into(),
+            serde_json::Value::String(query.to_owned()),
+        );
+        Box::pin(async { Ok(()) })
     }
 
     fn on_response<'a>(
         &'a self,
-        _result: &'a serde_json::Value,
+        outcome: &'a PolicyOutcome<'a>,
         ctx: &'a RequestContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>>
     {
-        Box::pin(async move { self.write_context(ctx, "ok").await })
+        Box::pin(async move { self.write_context(ctx, outcome).await })
     }
 }
 
@@ -237,7 +185,6 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
-            crud_info: None,
         }
     }
 
@@ -319,91 +266,9 @@ mod tests {
         assert_eq!(interceptor.name(), "audit-log");
     }
 
-    // --- on_request tests ---
-
     #[tokio::test]
-    async fn on_request_inserts_clause_count_metadata() {
-        let config = AuditLogConfig {
-            output: "stdout".into(),
-            file_path: String::new(),
-        };
-        let interceptor = AuditLogInterceptor::new(&config).unwrap();
-        let mut ctx = make_ctx();
 
-        let clauses = vec![Clause::Match(vec![]), Clause::Fetch(vec![])];
-        interceptor.on_request(clauses, &mut ctx).await.unwrap();
-
-        let count = ctx.metadata.get("audit_clause_count").unwrap();
-        assert_eq!(count, &serde_json::json!(2));
-    }
-
-    #[tokio::test]
-    async fn on_request_returns_clauses_unchanged() {
-        let config = AuditLogConfig {
-            output: "stdout".into(),
-            file_path: String::new(),
-        };
-        let interceptor = AuditLogInterceptor::new(&config).unwrap();
-        let mut ctx = make_ctx();
-
-        let clauses = vec![Clause::Fetch(vec![])];
-        let result = interceptor.on_request(clauses, &mut ctx).await.unwrap();
-        assert_eq!(result.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn on_request_empty_clauses_count_zero() {
-        let config = AuditLogConfig {
-            output: "stdout".into(),
-            file_path: String::new(),
-        };
-        let interceptor = AuditLogInterceptor::new(&config).unwrap();
-        let mut ctx = make_ctx();
-
-        interceptor.on_request(vec![], &mut ctx).await.unwrap();
-        let count = ctx.metadata.get("audit_clause_count").unwrap();
-        assert_eq!(count, &serde_json::json!(0));
-    }
-
-    // --- on_response tests ---
-
-    #[tokio::test]
-    async fn on_response_writes_audit_entry_to_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("audit.jsonl");
-        let config = AuditLogConfig {
-            output: "file".into(),
-            file_path: path.to_str().unwrap().to_string(),
-        };
-        let interceptor = AuditLogInterceptor::new(&config).unwrap();
-
-        let mut ctx = make_ctx();
-        ctx.metadata
-            .insert("audit_clause_count".into(), serde_json::json!(3));
-        ctx.metadata.insert(
-            "compiled_typeql".into(),
-            serde_json::json!("match $p isa person;"),
-        );
-
-        interceptor
-            .on_response(&serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-        assert_eq!(entry["request_id"], "req-123");
-        assert_eq!(entry["client_id"], "client-1");
-        assert_eq!(entry["database"], "test-db");
-        assert_eq!(entry["transaction_type"], "read");
-        assert_eq!(entry["clause_count"], 3);
-        assert_eq!(entry["compiled_typeql"], "match $p isa person;");
-        assert_eq!(entry["status"], "ok");
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "v2-query")]
-    async fn v2_failure_audit_records_only_redacted_deterministic_evidence() {
+    async fn staged_failure_audit_records_only_redacted_deterministic_evidence() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
         let interceptor = AuditLogInterceptor::new(&AuditLogConfig {
@@ -416,8 +281,8 @@ mod tests {
             .expect("fixed timestamp")
             .with_timezone(&chrono::Utc);
         interceptor
-            .on_v2_response(
-                &V2PolicyOutcome::new(false, "query_remote_provider_failed", 128),
+            .on_response(
+                &PolicyOutcome::new(false, "query_remote_provider_failed", 128),
                 &context,
             )
             .await
@@ -426,7 +291,7 @@ mod tests {
         let content = std::fs::read_to_string(path).unwrap();
         let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(entry["status"], "error");
-        assert_eq!(entry["transport"], "v2");
+        assert_eq!(entry["transport"], "v3");
         assert_eq!(entry["diagnostic_code"], "query_remote_provider_failed");
         assert_eq!(entry["response_bytes"], 128);
         assert_eq!(entry.as_object().expect("entry object").len(), 11);
@@ -434,149 +299,8 @@ mod tests {
         assert!(!content.contains("envelope"));
         assert_eq!(
             content.trim(),
-            r#"{"timestamp":"2024-01-01T00:00:00+00:00","request_id":"req-123","client_id":"client-1","database":"test-db","transaction_type":"read","clause_count":0,"compiled_typeql":null,"status":"error","transport":"v2","diagnostic_code":"query_remote_provider_failed","response_bytes":128}"#,
+            r#"{"timestamp":"2024-01-01T00:00:00+00:00","request_id":"req-123","client_id":"client-1","database":"test-db","transaction_type":"read","clause_count":0,"compiled_typeql":null,"status":"error","transport":"v3","diagnostic_code":"query_remote_provider_failed","response_bytes":128}"#,
         );
-    }
-
-    #[tokio::test]
-    async fn on_response_clause_count_absent_defaults_to_zero() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("audit.jsonl");
-        let config = AuditLogConfig {
-            output: "file".into(),
-            file_path: path.to_str().unwrap().to_string(),
-        };
-        let interceptor = AuditLogInterceptor::new(&config).unwrap();
-        let ctx = make_ctx(); // no metadata
-
-        interceptor
-            .on_response(&serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-        assert_eq!(entry["clause_count"], 0);
-    }
-
-    #[tokio::test]
-    async fn on_response_compiled_typeql_absent_is_null() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("audit.jsonl");
-        let config = AuditLogConfig {
-            output: "file".into(),
-            file_path: path.to_str().unwrap().to_string(),
-        };
-        let interceptor = AuditLogInterceptor::new(&config).unwrap();
-        let ctx = make_ctx();
-
-        interceptor
-            .on_response(&serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-        assert!(entry["compiled_typeql"].is_null());
-    }
-
-    #[tokio::test]
-    async fn on_response_timestamp_from_context() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("audit.jsonl");
-        let config = AuditLogConfig {
-            output: "file".into(),
-            file_path: path.to_str().unwrap().to_string(),
-        };
-        let interceptor = AuditLogInterceptor::new(&config).unwrap();
-        let ctx = make_ctx();
-        let expected_ts = ctx.timestamp.to_rfc3339();
-
-        interceptor
-            .on_response(&serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-        assert_eq!(entry["timestamp"].as_str().unwrap(), expected_ts);
-    }
-
-    #[tokio::test]
-    async fn on_response_with_both_metadata_present() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("audit.jsonl");
-        let config = AuditLogConfig {
-            output: "file".into(),
-            file_path: path.to_str().unwrap().to_string(),
-        };
-        let interceptor = AuditLogInterceptor::new(&config).unwrap();
-
-        let mut ctx = make_ctx();
-        ctx.metadata
-            .insert("audit_clause_count".into(), serde_json::json!(5));
-        ctx.metadata.insert(
-            "compiled_typeql".into(),
-            serde_json::json!("match $x isa thing;"),
-        );
-
-        interceptor
-            .on_response(&serde_json::json!({"data": true}), &ctx)
-            .await
-            .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let entry: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-        assert_eq!(entry["clause_count"], 5);
-        assert_eq!(entry["compiled_typeql"], "match $x isa thing;");
-    }
-
-    #[tokio::test]
-    async fn on_response_multiple_writes_append() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("audit.jsonl");
-        let config = AuditLogConfig {
-            output: "file".into(),
-            file_path: path.to_str().unwrap().to_string(),
-        };
-        let interceptor = AuditLogInterceptor::new(&config).unwrap();
-
-        let ctx = make_ctx();
-        interceptor
-            .on_response(&serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-        interceptor
-            .on_response(&serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = content.trim().lines().collect();
-        assert_eq!(lines.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn on_response_stdout_writer_succeeds() {
-        let config = AuditLogConfig {
-            output: "stdout".into(),
-            file_path: String::new(),
-        };
-        let interceptor = AuditLogInterceptor::new(&config).unwrap();
-
-        let mut ctx = make_ctx();
-        ctx.metadata
-            .insert("audit_clause_count".into(), serde_json::json!(1));
-        ctx.metadata.insert(
-            "compiled_typeql".into(),
-            serde_json::json!("match $x isa thing;"),
-        );
-
-        // Stdout writer should succeed without error
-        let result = interceptor
-            .on_response(&serde_json::json!({"data": true}), &ctx)
-            .await;
-        assert!(result.is_ok());
     }
 
     // --- AuditEntry serde ---
@@ -614,23 +338,5 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["compiled_typeql"], "match $p isa person;");
         assert_eq!(value["clause_count"], 2);
-    }
-
-    #[test]
-    fn v1_audit_entry_serialized_shape_is_exactly_frozen() {
-        let entry = AuditEntry {
-            timestamp: "2024-01-01T00:00:00+00:00".into(),
-            request_id: "req-1".into(),
-            client_id: "client-1".into(),
-            database: "db".into(),
-            transaction_type: "read".into(),
-            clause_count: 2,
-            compiled_typeql: Some("match $p isa person;".into()),
-            status: "ok".into(),
-        };
-        assert_eq!(
-            serde_json::to_string(&entry).expect("serialize V1 audit entry"),
-            r#"{"timestamp":"2024-01-01T00:00:00+00:00","request_id":"req-1","client_id":"client-1","database":"db","transaction_type":"read","clause_count":2,"compiled_typeql":"match $p isa person;","status":"ok"}"#,
-        );
     }
 }

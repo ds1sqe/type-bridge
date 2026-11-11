@@ -306,7 +306,13 @@ environments:
 
 /// Delete a managed database and its migration journal.
 async fn drop_databases(config: &Config, database: &str) -> Result<()> {
-    for name in [database.to_owned(), format!("{database}__tbv2_journal")] {
+    for name in [
+        database.to_owned(),
+        format!(
+            "{database}{}",
+            type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX
+        ),
+    ] {
         let admin = type_bridge_orm::Database::connect_with_options(
             &config.address,
             &name,
@@ -331,7 +337,7 @@ struct Target {
     package: SchemaPackage<Shop>,
 }
 
-type Built = Plan<Shop>;
+type Built = Plan<PlanAnswer, Shop>;
 
 fn write_kind() -> TransactionOptions {
     TransactionOptions::default().with_kind(TransactionKind::Write)

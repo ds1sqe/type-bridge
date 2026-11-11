@@ -6,6 +6,9 @@ use std::mem::size_of;
 use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
 use type_bridge_orm::ProjectedResourceMeasure;
 
+use crate::plan_builder::TypeBridgePlanBuilder;
+use crate::plan_builder::context::TypeBridgePlanOptionsV1;
+
 use crate::abi::{
     SchemaPackageState, TypeBridgeDiagnostics, TypeBridgeSchemaPackage, TypeBridgeStatus, guarded,
 };
@@ -122,6 +125,18 @@ pub const GENERATED_INPUT_PROJECTED_STRUCT: u32 = 40;
 pub const GENERATED_INPUT_PROJECTED_STRUCT_MEMBER: u32 = 41;
 /// Versioned canonical codec options input kind.
 pub const GENERATED_INPUT_PROJECTED_CODEC_OPTIONS: u32 = 42;
+/// Mutable generated plan recording input kind.
+pub const GENERATED_INPUT_PLAN_BUILDER: u32 = 43;
+/// Versioned generated plan options and their nested overrides.
+pub const GENERATED_INPUT_PLAN_OPTIONS: u32 = 44;
+/// Validated IID with inline retained text.
+pub const GENERATED_INPUT_IID: u32 = 45;
+/// Immutable canonical manager filter owner.
+pub const GENERATED_INPUT_MANAGER_FILTER: u32 = 46;
+/// Immutable canonical manager read result.
+pub const GENERATED_INPUT_MANAGER_RESULT: u32 = 47;
+/// Package-bound proxy connection.
+pub const GENERATED_INPUT_PROXY_CONNECTION: u32 = 48;
 
 /// Frozen generated create-argument graph layout version.
 pub const GENERATED_CREATE_GRAPH_VERSION: u32 = 1;
@@ -373,17 +388,7 @@ impl DirectOutputPreflight {
         &self,
         package: &SchemaPackageState,
     ) -> Result<(), TypeBridgeStatus> {
-        for bytes in [
-            package.authority_json.as_slice(),
-            package.projection_json.as_slice(),
-            package.semantic_fingerprint_json.as_slice(),
-            package.binding_fingerprint_json.as_slice(),
-            package.managed_scope.as_slice(),
-            package.semantic_profile.as_slice(),
-        ] {
-            self.check_bytes(bytes.as_ptr().cast(), bytes.len())?;
-        }
-        Ok(())
+        BorrowedRangeVisitor::check_package_borrowed_ranges(self, package)
     }
 }
 
@@ -440,6 +445,18 @@ fn object_size(kind: u32) -> Option<usize> {
         }
         GENERATED_INPUT_PROJECTED_CODEC_OPTIONS => {
             Some(size_of::<TypeBridgeProjectedCodecOptionsV1>())
+        }
+        GENERATED_INPUT_PLAN_BUILDER => Some(size_of::<TypeBridgePlanBuilder>()),
+        GENERATED_INPUT_PLAN_OPTIONS => Some(size_of::<TypeBridgePlanOptionsV1>()),
+        GENERATED_INPUT_IID => Some(size_of::<crate::iid::TypeBridgeIid>()),
+        GENERATED_INPUT_MANAGER_RESULT => {
+            Some(size_of::<crate::manager_read::TypeBridgeManagerResult>())
+        }
+        GENERATED_INPUT_PROXY_CONNECTION => {
+            Some(size_of::<crate::query::TypeBridgeProxyConnection>())
+        }
+        GENERATED_INPUT_MANAGER_FILTER => {
+            Some(size_of::<crate::manager_filter::TypeBridgeManagerFilter>())
         }
         _ => None,
     }
@@ -574,6 +591,15 @@ unsafe fn check_deep_object_ranges(
             unsafe { &*pointer.cast::<TypeBridgeProjectedStructMember>() }
                 .check_borrowed_ranges(outputs)
         }
+        GENERATED_INPUT_PLAN_BUILDER => {
+            // SAFETY: the complete live builder was fenced before its captured buffers.
+            unsafe { &*pointer.cast::<TypeBridgePlanBuilder>() }.check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PLAN_OPTIONS => {
+            // SAFETY: the complete options object was fenced before this nested walk.
+            let options = unsafe { pointer.cast::<TypeBridgePlanOptionsV1>().read_unaligned() };
+            unsafe { options.check_borrowed_ranges(outputs) }
+        }
         GENERATED_INPUT_PROJECTED_CODEC_OPTIONS => {
             // SAFETY: the complete options object was checked before dispatch.
             let options = unsafe {
@@ -669,6 +695,21 @@ unsafe fn check_deep_object_ranges(
         GENERATED_INPUT_PROJECTED_BATCH_RESULT => {
             // SAFETY: the complete projected-batch result was checked before dispatch.
             unsafe { &*pointer.cast::<TypeBridgeProjectedBatchResult>() }
+                .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_MANAGER_RESULT => {
+            // SAFETY: complete result was fenced before this dispatch.
+            unsafe { &*pointer.cast::<crate::manager_read::TypeBridgeManagerResult>() }
+                .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PROXY_CONNECTION => {
+            // SAFETY: complete connection was fenced before this dispatch.
+            unsafe { &*pointer.cast::<crate::query::TypeBridgeProxyConnection>() }
+                .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_MANAGER_FILTER => {
+            // SAFETY: the complete immutable filter was checked before dispatch.
+            unsafe { &*pointer.cast::<crate::manager_filter::TypeBridgeManagerFilter>() }
                 .check_borrowed_ranges(outputs)
         }
         _ => Ok(()),
@@ -1361,8 +1402,84 @@ mod tests {
             object_size(GENERATED_INPUT_PROJECTED_CODEC_OPTIONS),
             Some(size_of::<TypeBridgeProjectedCodecOptionsV1>()),
         );
-        assert_eq!(object_size(43), None);
+        assert_eq!(GENERATED_INPUT_PLAN_BUILDER, 43);
+        assert_eq!(
+            object_size(GENERATED_INPUT_PLAN_BUILDER),
+            Some(size_of::<TypeBridgePlanBuilder>())
+        );
+        assert_eq!(GENERATED_INPUT_PLAN_OPTIONS, 44);
+        assert_eq!(
+            object_size(GENERATED_INPUT_PLAN_OPTIONS),
+            Some(size_of::<TypeBridgePlanOptionsV1>())
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_IID),
+            Some(size_of::<crate::iid::TypeBridgeIid>())
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_MANAGER_FILTER),
+            Some(size_of::<crate::manager_filter::TypeBridgeManagerFilter>())
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_MANAGER_RESULT),
+            Some(size_of::<crate::manager_read::TypeBridgeManagerResult>())
+        );
+        assert_eq!(
+            object_size(GENERATED_INPUT_PROXY_CONNECTION),
+            Some(size_of::<crate::query::TypeBridgeProxyConnection>())
+        );
+        assert_eq!(object_size(49), None);
         assert_eq!(object_size(u32::MAX), None);
+    }
+
+    #[test]
+    fn plan_builder_output_aliases_are_fenced_across_the_whole_recording() {
+        let mut builder = ptr::null_mut();
+        // SAFETY: the builder slot is writable and becomes our exclusive handle.
+        unsafe {
+            assert_eq!(
+                crate::plan_builder::type_bridge_plan_builder_new(&mut builder),
+                TypeBridgeStatus::Ok
+            );
+        }
+        let inputs = [input(GENERATED_INPUT_PLAN_BUILDER, builder.cast(), 1)];
+        for offset in [0, size_of::<TypeBridgePlanBuilder>() - 1] {
+            // SAFETY: only the address of an interior byte is formed; preflight never writes it.
+            let pointer = unsafe { builder.cast::<u8>().add(offset).cast() };
+            let outputs = [output(pointer, 1)];
+            // SAFETY: the live descriptors refer to our live recording and an aliasing output range.
+            assert_eq!(
+                unsafe {
+                    type_bridge_generated_opaque_alias_preflight_v1(
+                        inputs.as_ptr(),
+                        inputs.len(),
+                        outputs.as_ptr(),
+                        outputs.len(),
+                    )
+                },
+                TypeBridgeStatus::InvalidArgument
+            );
+        }
+        let mut bytes = [0xa5u8; 32];
+        let outputs = [output(bytes.as_mut_ptr().cast(), bytes.len())];
+        // SAFETY: the live descriptors refer to separate recording/output allocations.
+        assert_eq!(
+            unsafe {
+                type_bridge_generated_opaque_alias_preflight_v1(
+                    inputs.as_ptr(),
+                    inputs.len(),
+                    outputs.as_ptr(),
+                    outputs.len(),
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(bytes, [0xa5; 32]);
+        // SAFETY: we own this builder, and preflight has not mutated it.
+        unsafe {
+            crate::plan_builder::type_bridge_plan_builder_free(&mut builder);
+        }
+        assert!(builder.is_null());
     }
 
     #[test]
@@ -1567,5 +1684,145 @@ mod tests {
             TypeBridgeStatus::Ok
         );
         assert_eq!(caller_output, [0x5a; 16]);
+    }
+}
+
+/// The existing byte-range rules shared by a live preflight and an immutable
+/// retained-storage index. Collection performs the same pointer/length checks.
+pub(crate) trait BorrowedRangeVisitor {
+    fn check_bytes(&self, pointer: *const c_void, length: usize) -> Result<(), TypeBridgeStatus>;
+
+    fn check_package_borrowed_ranges(
+        &self,
+        package: &SchemaPackageState,
+    ) -> Result<(), TypeBridgeStatus> {
+        for bytes in [
+            package.authority_json.as_slice(),
+            package.projection_json.as_slice(),
+            package.semantic_fingerprint_json.as_slice(),
+            package.binding_fingerprint_json.as_slice(),
+            package.managed_scope.as_slice(),
+            package.semantic_profile.as_slice(),
+        ] {
+            self.check_bytes(bytes.as_ptr().cast(), bytes.len())?;
+        }
+        Ok(())
+    }
+}
+impl BorrowedRangeVisitor for DirectOutputPreflight {
+    fn check_bytes(&self, pointer: *const c_void, length: usize) -> Result<(), TypeBridgeStatus> {
+        DirectOutputPreflight::check_bytes(self, pointer, length)
+    }
+}
+
+/// Addresses of immutable allocations retained by one answer owner. Merging
+/// overlaps preserves the exact union of protected bytes, including gaps.
+pub(crate) struct RetainedRangeIndex {
+    ranges: Vec<MemoryRange>,
+}
+impl RetainedRangeIndex {
+    pub(crate) fn collect(
+        visit: impl FnOnce(&dyn BorrowedRangeVisitor) -> Result<(), TypeBridgeStatus>,
+    ) -> Result<Self, TypeBridgeStatus> {
+        struct Collector(std::cell::RefCell<Vec<MemoryRange>>);
+        impl BorrowedRangeVisitor for Collector {
+            fn check_bytes(
+                &self,
+                pointer: *const c_void,
+                length: usize,
+            ) -> Result<(), TypeBridgeStatus> {
+                if length == 0 {
+                    return Ok(());
+                }
+                let range = MemoryRange::checked(pointer, length)
+                    .ok_or(TypeBridgeStatus::InvalidArgument)?;
+                self.0.borrow_mut().push(range);
+                Ok(())
+            }
+        }
+        let collector = Collector(std::cell::RefCell::new(Vec::new()));
+        visit(&collector)?;
+        let mut ranges = collector.0.into_inner();
+        ranges.sort_unstable_by_key(|range| range.start);
+        let mut merged: Vec<MemoryRange> = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            if let Some(last) = merged.last_mut()
+                && range.start <= last.start + last.length
+            {
+                last.length =
+                    (range.start + range.length).max(last.start + last.length) - last.start;
+            } else {
+                merged.push(range);
+            }
+        }
+        Ok(Self { ranges: merged })
+    }
+    pub(crate) fn check(&self, outputs: &DirectOutputPreflight) -> Result<(), TypeBridgeStatus> {
+        self.check_with(outputs, || {})
+    }
+    fn check_with(
+        &self,
+        outputs: &DirectOutputPreflight,
+        mut compared: impl FnMut(),
+    ) -> Result<(), TypeBridgeStatus> {
+        for output in &outputs.ranges[..outputs.count] {
+            let end = output.start + output.length;
+            let index = self.ranges.partition_point(|range| {
+                compared();
+                range.start < end
+            });
+            if index > 0 {
+                compared();
+                if self.ranges[index - 1].overlaps(*output) {
+                    return Err(TypeBridgeStatus::InvalidArgument);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod retained_range_tests {
+    use super::*;
+    #[test]
+    fn merged_index_preserves_exact_alias_boundaries_and_checks_logarithmically() {
+        let inputs = [(100, 8), (102, 2), (106, 6), (112, 4), (120, 4)];
+        let index = RetainedRangeIndex::collect(|collector| {
+            for (start, length) in inputs {
+                collector.check_bytes(start as *const c_void, length)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(index.ranges.len(), 2);
+        for start in 90..130 {
+            for length in 1..12 {
+                let outputs =
+                    DirectOutputPreflight::new(&[(start as *mut c_void, length)]).unwrap();
+                let expected = inputs.iter().all(|&(pointer, length)| {
+                    outputs
+                        .check_bytes(pointer as *const c_void, length)
+                        .is_ok()
+                });
+                assert_eq!(index.check(&outputs).is_ok(), expected, "{start} {length}");
+            }
+        }
+        let index = RetainedRangeIndex::collect(|collector| {
+            for n in 1..=10_000 {
+                collector.check_bytes((n * 32) as *const c_void, 8)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        for address in [31, 32, 40, 160_000, 320_008, 400_000] {
+            let outputs = DirectOutputPreflight::new(&[(address as *mut c_void, 1)]).unwrap();
+            let mut comparisons = 0;
+            let _ = index.check_with(&outputs, || comparisons += 1);
+            assert!(
+                comparisons <= 16,
+                "{comparisons} comparisons for 10k ranges"
+            );
+        }
     }
 }

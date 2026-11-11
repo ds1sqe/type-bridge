@@ -2,6 +2,1704 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [3.0.0] - Unreleased
+
+See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration steps.
+
+### Breaking
+
+<!-- --8<-- [start:breaking-3-0] -->
+
+- The generated C release example uses `tb_sdk` / `TB_SDK` in place of
+  `tb_sdkv3` / `TB_SDKV3`. Regenerate C consumers and update includes,
+  symbols and package names for the ABI 2.0 runtime.
+
+- Migrations write the companion suffix `__tb_journal` and
+  `typebridge-internal-*` labels in place of `__tbv2_journal` and
+  `typebridge-internal-v2-*`. Stop all 2.x migration runners before the first
+  3.0 apply, rollback, or profile upgrade. That operation imports the owned old
+  journal and verified legacy partition once; old rows remain untouched.
+  Read-only verification reports `migration_journal_import_pending` until then.
+  Changes to the old journal afterward fail with `migration_old_writer_after_import`.
+  Pair inspection exposes `ManagedDatabasePairState::ImportPending` /
+  `import_pending` (`TYPE_BRIDGE_DATABASE_PAIR_IMPORT_PENDING` in C); pair
+  deletion also
+  removes the exact owner-verified old companion to prevent later resurrection.
+  A foreign or mismatched reserved `<db>__tbv2_journal` fails pair administration
+  closed with `migration_journal_import_invalid`, including for 3.0 pairs.
+- Persisted-name constants retain their Rust names but now contain the new
+  suffix and label values. `TYPEBRIDGE_INTERNAL_PREFIX` reserves the full
+  `typebridge-internal-` namespace, including the retained old control labels.
+  Changed values include `TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX`,
+  `MANAGED_CONTROL_ENTITY`, `MANAGED_CONTROL_SCOPE`,
+  `MANAGED_CONTROL_LEASE_HOLDER`, `MANAGED_CONTROL_LEASE_FENCE`,
+  `MANAGED_CONTROL_LEASE_STATE`, `LEGACY_CUTOVER_ANCHOR_ENTITY`,
+  `LEGACY_CUTOVER_ANCHOR_KEY`, `LEGACY_CUTOVER_ANCHOR_SCOPE`, and
+  `LEGACY_CUTOVER_ANCHOR_FINGERPRINT`.
+  `JOURNAL_CONTROL_SCHEMA_TYPEQL` and `MANAGED_FENCE_SCHEMA_TYPEQL` change
+  their schema values to the new labels (and data-step declarations), now come
+  from `type_bridge_contract::reserved`, and remain re-exported by their existing modules.
+- `type_bridge_contract::reserved` adds grouped data-step (`DATA_STEP_*`),
+  journal (`JOURNAL_*`), record (`RECORD_*`, `*_RECORD_KIND`), control/lease
+  (`CONTROL_*`, `LEASE_*`, `NEXT_SEQUENCE`), cutover (`LEGACY_CUTOVER_*`),
+  and frozen import (`IMPORT_LEGACY_*`) constants. The public
+  `type_bridge_contract::migration_data` module defines the data-step contracts.
+- `WorkspaceLockError::Stale` now carries `{ field }`, naming the lock claim
+  that differs from the freshly derived workspace identity; its error code
+  remains `Stale`.
+- `MigrationStep` gains `Data(DataStep)`, with `DataProgram::{Plan, Typeql, User}`
+  forward and optional reverse programs. `MigrationStepKind` gains `Data` too;
+  exhaustive matches must handle both `MigrationStep::Data` and
+  `MigrationStepKind::Data`. `VerifiedMigrationApplyStep::Data` and
+  `VerifiedMigrationRollbackOperation::Data` also extend their public enums.
+  Data steps without a reverse are irreversible and rollback refuses them before
+  writes. `migration make --data-step` consumes
+  `typebridge.migration-data-step-intent/v1` YAML; each program has exactly one
+  `user`, `typeql`, or `plan-file` key. Plan paths resolve beside the intent.
+- Workspace `MigrationV2Directory` and `migration_v2_directory` accessors/builders
+  become `MigrationDirectory` and `migration_directory`. History defaults to
+  `migrations/`; explicit confined directories no longer need a `v2` suffix.
+  Unconfigured `migrations/v2` is refused with a move hint. Regenerate workspace
+  locks because the resolved-config identity field also changes. The removed
+  `InvalidMigrationV2Directory` restriction is replaced by ordinary
+  `PathNotConfined` checks and `LegacyMigrationDirectory` for the old default.
+  `migration_v2_absolute_path()` becomes `migration_absolute_path()`.
+- Node migration `MigrationPlan.execute()` and `executeControlled()` now return
+  Promises. Await them, including schema-only migrations. Ordinary manager and
+  transaction methods keep their existing return types.
+- Generated SDK migration catalogs register process-local user data callbacks.
+  Callbacks use engine-owned write transactions; lifecycle calls are refused and
+  retained handles become unusable after callback completion.
+  Python and Node expose `MigrationCatalog.register()` and
+  `MigrationTransaction`; Rust adds `register()`, `register_with_reverse()`, and
+  `MigrationTransaction<S>`. C adds `type_bridge_migration_catalog_register()`
+  with `type_bridge_migration_callback_t` (`TypeBridgeMigrationCallback` in
+  the Rust implementation), and `type_bridge_migration_transaction_execute_query()`, using
+  `type_bridge_execution_diagnostics_t` errors so callbacks can forward failures.
+  C retains callback context pointers until the catalog and every retained plan
+  close; the database refuses close while callbacks retain it. Callback failures
+  preserve the original error text as diagnostic cause evidence.
+- Core data-step APIs include `MigrationStep::as_data()`,
+  `generate_data_migration()`, `author_data_migration_in()`,
+  `data_step_indices()`, `data_steps()`, `DataStepDirection`,
+  `DataStepEventRecord`, and journal `from_store_with_data_events()` /
+  `data_events()`. Provider/store traits add `validate_data_step()`,
+  `observe_data_step()`, `execute_data_step()`, and `record_data_event()`;
+  their defaults refuse unsupported data execution. Providers and runners accept
+  `MigrationUserSteps` through
+  `with_user_steps()`; controlled catalog executors add
+  `execute_catalog_apply_plan_controlled_with_user_steps()` and
+  `execute_catalog_rollback_plan_controlled_with_user_steps()`.
+  The ORM's `BorrowedTransactionContext` is entered through
+  `borrow_migration_context()`, which verifies the held migration fence using
+  the supplied cancellation signal and absolute execution deadline.
+  Compatibility inspection adds `derived_legacy_journal_database()`,
+  `verify_import_pending_query_control_scope()`,
+  `import_legacy_fence_schema_presence()`, `without_import_control()`, and
+  live-authority `import_control_present()` / `current_control_present()`.
+- Removed legacy test helpers `MockEvent`, `EventLog`, `MockMigrationBackend`,
+  `with_responses`, `with_legacy_cutover`, `with_recorded_guards`,
+  `with_legacy_cutover_responses`, `with_state_read_responses`,
+  `with_state_read_and_close_failure`, `with_partial_state_schema`,
+  `with_commit_failure`, and `with_definitely_aborted_commit_failure`.
+  Use canonical migration-store/provider fixtures and ORM backend mocks.
+
+- Removed the `type-bridge-migration` crate; it is not published for 3.0.
+  Use canonical `schema-migration` manifests and SDK migration catalogs or
+  `type-bridge migration` commands. The removed public API families map as follows:
+  - Authoring/planning: `MigrationDependencySpec`, `MigrationSpec`,
+    `MigrationGraph`, `OperationSpec` (including `CopyAttribute`, `RunPlan`,
+    `RunTypeql`), `NativeDataStep`, `StepKind`, `OperationKind`, `ExecutionStep`,
+    `MigrationAction`, `MigrationExecution`, `ExecutionPlan`, `plan`,
+    `render_operation_typeql_steps`, `copy_attribute_typeql` and
+    `OperationSpec::normalized` are replaced by canonical manifests, catalog
+    previews and declarative backfill intents.
+  - Validation/checksums: `ValidationCode`, `MigrationValidationError`,
+    `validate_graph`, `ChecksumDrift`, `migration_file_checksum`,
+    `checksum_drift_errors`, `check_checksum_drift`, `MigrationError` and
+    the crate's `Result` alias are replaced by canonical history verification,
+    manifest fingerprints and typed migration diagnostics.
+  - Execution: `BackfillResult`, `execute_backfill`, `MigrationResult`,
+    `execute_plan`, `execute_plan_with_run_log` and `execute_migration` are
+    replaced by catalog apply/rollback and their execution reports.
+  - Recovery: `RecoveryFuture`, `ExecutionStepId`, `CheckedMigrationIdentity`,
+    `CheckedExecutionStep`, `CheckedMigrationExecution`, `CheckedExecutionPlan`,
+    `plan_recovery`, `prepare_recovery_plan`, `PendingProof`,
+    `StepRecoveryDecision`, `StepRecoveryEventKind`, `StepRecoveryEvent`,
+    `StepRecoveryController`, `StepExecutionResult`, `StepExecutionOutcome`,
+    `RecoveryMigrationStatus`, `RecoveryMigrationResult`, `RecoveryPlanStatus`,
+    `RecoveryExecutionResult` and `execute_recovery_plan` are replaced by the
+    canonical fenced runner and journal recovery. Their constructors and
+    accessors (`as_str`, `ordered_steps`, `program`, `has_reverse`) leave with
+    their owning types.
+  - State stores: `MigrationStateStore`, `TypeDbStateStore`, `InMemoryStateStore`,
+    `MigrationExecutorInfo`, `MigrationRunRecord`, `migration_timestamp_now`,
+    `collect_executor_info`, `started_run_record`, `finished_run_record`,
+    `parse_applied_documents`, `parse_run_documents`, `load_applied_archival`,
+    `load_runs_archival`, `load_applied_in_transaction`,
+    `load_verified_legacy_partition_in_transaction`,
+    `insert_legacy_cutover_sentinel_in_transaction`, `LegacyCutoverSentinelError`,
+    `LegacyCutoverSentinelExpectation` and `VerifiedLegacyAppliedPartition`
+    (including `applied`, `into_applied`, `sentinel_fingerprint`,
+    `is_contract_violation`) are replaced by canonical journal state and its
+    read-only legacy importer. Store `new`, `ensure_schema`, `load_applied`,
+    `load_runs`, `record_applied`, `record_unapplied` and `record_run` are no
+    longer application-owned migration lifecycle APIs.
+  - `AppliedMigrationRecord`, `MigrationStateSchemaKind`,
+    `migration_state_schema`, `applied_migration_entity_label` and
+    `is_migration_state_type` move to `type-bridge-schema-migration-typedb`.
+    Python's existing state-label helpers retain their frozen legacy meanings.
+    `require_legacy_writer_open` and `require_legacy_writer_open_in_transaction`
+    are removed with ORM schema sync (below).
+    `LEGACY_CUTOVER_SENTINEL_APP_LABEL`, `LEGACY_CUTOVER_SENTINEL_APPLIED_AT`,
+    `LEGACY_CUTOVER_SENTINEL_MIGRATION_ID`, `LEGACY_CUTOVER_SENTINEL_NAME` and
+    `LEGACY_WRITER_CUTOVER_MESSAGE` remain in `contract::reserved`; the
+    first four name the frozen sentinel that import reads, and the message is
+    the text released 2.x writers emit, which nothing in 3.0 reads.
+- Legacy `CopyAttribute` rollback, which removed every destination ownership,
+  is removed. Canonical backfill reverse removes only destination values equal
+  to the source and preserves other pre-existing destination values.
+
+- The Python native CLI bridge `type_bridge_core.run_v2_cli` is renamed to
+  `type_bridge_core.run_cli`. The `type-bridge` console command is unchanged.
+
+- Staged answer conversion and runtime limit names are unversioned:
+
+| Removed name | Replacement |
+| --- | --- |
+| `to_staged_v3` | `to_staged` |
+| `from_staged_v3` | `from_staged` |
+| `QueryV2RuntimeAnswerLimits` | `QueryRuntimeAnswerLimits` |
+
+- Plan authoring uses Python `PlanBuilder.where` and `PlanBuilder.let` in place of
+  `where_` and `let_`. Rust typed `Bound.filter` and generated
+  `<Model>Handle.filter` become `where_`; manager
+  filters retain their existing meaning. TypeScript `PendingPlanAnswer` becomes
+  `Pending`, and its duplicate `get()` method is removed in favor of `result()`.
+  Rust `Pending.get()` retains its distinct borrowed-result behavior.
+
+- Python, TypeScript and Rust query/grouped-query `aggregate(...)` terminals
+  are renamed to `reduce(...)`. Aggregate constructors and type namespaces
+  (such as `aggregate.count()`) keep their names. Generated C explicit-root
+  terminal factories `*_query_page`, `*_query_count` and `*_query_exists`
+  become `*_query_page_by`, `*_query_count_by` and `*_query_exists_by`.
+  Manager `count`/`exists` methods and C result-owner/accessor names are unchanged.
+
+- Role-edge predicates use `links`, matching the TypeQL pattern they lower to.
+  Additional query bindings use `match` (Rust `matching`) and are not added to
+  the selected output.
+
+| Removed query API | Replacement |
+| --- | --- |
+| Python `BoundRole.connects` / `BoundRole.is_` | `BoundRole.links` |
+| TypeScript `BoundRole.connects` / `BoundRole.is` | `BoundRole.links` |
+| Rust query role `connects` | `links` |
+| Rust `Query::match_` | `Query::matching` |
+| C `type_bridge_query_role_connects` and generated `*_query_role_connects` | `type_bridge_query_role_links` / `*_query_role_links` |
+| C `type_bridge_query_add_hidden` and generated `*_query_add_hidden` | `type_bridge_query_match` / `*_query_match` |
+
+- Typed query sorting uses `sort` in every SDK. Regenerate projections and
+  update source calls and option names; ordering behavior and plan bytes are
+  unchanged.
+
+| Removed sorting API | Replacement |
+| --- | --- |
+| Python `Collected.order_by`; `Query.first`, `rows` and `page_by` keyword `order_by` | `Collected.sort`; keyword `sort` |
+| TypeScript `Collected.orderBy`; query option `orderBy` | `Collected.sort`; option `sort` |
+| Rust `Collected::order_by`, `RowsOptions::order_by`, `PageOptions::order_by` | `sort` on each type |
+| C `type_bridge_query_selection_descriptor_v1_t.orders` / `.order_count` | `.sorts` / `.sort_count` |
+| C `type_bridge_query_terminal_descriptor_v1_t.orders` / `.order_count` | `.sorts` / `.sort_count` |
+
+- The C descriptor field order, sizes and offsets are unchanged. Generated C
+  sorting-array parameter names follow `sorts` / `sort_count`.
+
+- Typed comparison methods use `ne`, `le`, `ge` and `like` consistently.
+  Manager lookup tokens (`lte`, `gte`, `regex`, and keyword suffixes such as
+  `field__gte`) remain the existing lookup protocol.
+
+| Removed comparison API | Replacement |
+| --- | --- |
+| Python query `neq`, `neq_field`, `neq_value`, `neq_call` | `ne`, `ne_field`, `ne_value`, `ne_call` |
+| Python query `lte`, `lte_field`, `lte_value`, `lte_call` | `le`, `le_field`, `le_value`, `le_call` |
+| Python query `gte`, `gte_field`, `gte_value`, `gte_call` | `ge`, `ge_field`, `ge_value`, `ge_call` |
+| TypeScript query `lte`, `lteField`, `lteValue`, `lteCall` | `le`, `leField`, `leValue`, `leCall` |
+| TypeScript query `gte`, `gteField`, `gteValue`, `gteCall` | `ge`, `geField`, `geValue`, `geCall` |
+| Python, TypeScript and Rust typed query `regex` | `like` |
+| Generated C manager `*_manager_filter_*_lte` / `*_manager_filter_*_gte` | `*_manager_filter_*_le` / `*_manager_filter_*_ge` |
+| Generated C schema-function comparison `equal`, `not_equal`, `less_than`, `less_than_or_equal`, `greater_than`, `greater_than_or_equal` (all field/value/call variants) | `eq`, `ne`, `lt`, `le`, `gt`, `ge` in the same function names |
+| C `TYPE_BRIDGE_QUERY_COMPARE_REGEX` | `TYPE_BRIDGE_QUERY_COMPARE_LIKE` (numeric value 10 unchanged) |
+
+- Active `query_remote_v2_*` / `query_remote_v3_*` diagnostics become
+  `query_remote_*`; `query_v2_model_*` and `query_v2_adapter_*` become
+  `query_model_*` and `query_adapter_*`. Remaining versioned query diagnostic
+  codes also lose the version. The 3.0 upgrade guide lists every exact code
+  replacement; typed categories, paths and details are preserved.
+
+- `query_remote_v3_failure_binding` → `query_remote_failure_binding`.
+- `query_remote_v3_failure_unexpected_binding` → `query_remote_failure_unexpected_binding`.
+- `query_remote_v3_failure_wire_mismatch` → `query_remote_failure_wire_mismatch`.
+
+- Server interceptors use the single staged policy path. `supports_v3`,
+  `InterceptorChain::ensure_v3_coverage` and `QueryPipeline::validate_v3_coverage`
+  are removed; implement the policy hooks directly. Authentication, write
+  authority, plan validation and outcome hooks retain their execution order.
+  `QueryPipeline::v3_request_context` becomes infallible `request_context`;
+  remove the former result handling at that call.
+
+| Removed server API | Replacement |
+| --- | --- |
+| `V3CommitOutcome` | `CommitOutcome` |
+| `V3PolicyOutcome` | `PolicyOutcome` |
+| `V3PolicyPlan` | `PolicyPlan` |
+| `authorize_v3_plan` | `authorize_plan` |
+| `authorize_v3_raw` | `authorize_raw` |
+| `authorize_v3_write` | `authorize_write` |
+| `begin_v3_request` | `begin_request` |
+| `create_v3_router` | `create_router` |
+| `execute_v3_commit` | `execute_commit` |
+| `execute_v3_plan` | `execute_plan` |
+| `execute_v3_raw` | `execute_raw` |
+| `execute_v3_response` | `execute_response` |
+| `execute_v3_transport` | `execute_transport` |
+| `execute_v3_write_authority` | `execute_write_authority` |
+| `finish_v3_request` | `finish_request` |
+| `observe_v3_commit` | `observe_commit` |
+| `on_v3_commit` | `on_commit` |
+| `on_v3_plan` | `on_plan` |
+| `on_v3_raw` | `on_raw` |
+| `on_v3_response` | `on_response` |
+| `on_v3_transport` | `on_transport` |
+| `on_v3_write_authority` | `on_write_authority` |
+| `transport::v3` | `transport::staged` |
+| `v3_endpoint` | `endpoint` |
+| `v3_request_context` | `request_context` |
+| `wants_v3_plan_rows` | `wants_plan_rows` |
+
+- The active plan and staged-envelope contract uses one unversioned Rust API.
+  Wire discriminators, capability strings, canonical bytes and `/v3/*` routes
+  retain their existing versions. Update imports and calls as follows:
+
+| Removed API | Replacement |
+| --- | --- |
+| `CAP_QUERY_REMOTE_STAGED_V3` | `CAP_QUERY_REMOTE_STAGED` |
+| `CAP_QUERY_REMOTE_WRITE_V3` | `CAP_QUERY_REMOTE_WRITE` |
+| `DEFAULT_STAGED_READ_STATEMENTS_V3` | `DEFAULT_STAGED_READ_STATEMENTS` |
+| `DEFAULT_STAGED_WRITE_STATEMENTS_V3` | `DEFAULT_STAGED_WRITE_STATEMENTS` |
+| `MAX_STAGED_ITEMS_V3` | `MAX_STAGED_ITEMS` |
+| `MAX_STAGED_PLANS_V3` | `MAX_STAGED_PLANS` |
+| `MAX_STAGED_STATEMENTS_V3` | `MAX_STAGED_STATEMENTS` |
+| `QUERY_PLAN_CANONICALIZATION_V3` | `QUERY_PLAN_CANONICALIZATION` |
+| `QUERY_PLAN_FORMAT_V3` | `QUERY_PLAN_FORMAT` |
+| `QUERY_REMOTE_FAILURE_FORMAT_V3` | `QUERY_REMOTE_FAILURE_FORMAT` |
+| `QUERY_REMOTE_REPLY_FORMAT_V3` | `QUERY_REMOTE_REPLY_FORMAT` |
+| `QUERY_REMOTE_REQUEST_FORMAT_V3` | `QUERY_REMOTE_REQUEST_FORMAT` |
+| `QueryLimits::V3` | `QueryLimits::PLAN` |
+| `QueryLimits::validate_v3` | `QueryLimits::validate_plan` |
+| `QueryPlanV3` | `QueryPlan` |
+| `QueryPlanV3Encoding` | `QueryPlanEncoding` |
+| `STAGED_REMOTE_CODEC_LIMITS_V3` | `STAGED_REMOTE_CODEC_LIMITS` |
+| `SdkDiagnosticProjectionV3` | `SdkDiagnosticProjection` |
+| `StagedAnswerV3` | `StagedAnswer` |
+| `StagedFailureV3` | `StagedFailure` |
+| `StagedKindV3` | `StagedKind` |
+| `StagedLimitsV3` | `StagedLimits` |
+| `StagedOutcomeV3` | `StagedOutcome` |
+| `StagedPlanV3` | `StagedPlan` |
+| `StagedReplyV3` | `StagedReply` |
+| `StagedRequestSpecV3` | `StagedRequestSpec` |
+| `StagedRequestV3` | `StagedRequest` |
+| `StagedResultRefV3` | `StagedResultRef` |
+| `VerifiedStagedReplyV3` | `VerifiedStagedReply` |
+| `_query_plan_v3_round_trip` | `_query_plan_round_trip` |
+| `decode_query_plan_v3` | `decode_query_plan` |
+| `decode_query_plan_v3_with_limits` | `decode_query_plan_with_limits` |
+| `query_plan::v3` | `query_plan` |
+| `query_plan_v3_capability_vocabulary` | `query_plan_capability_vocabulary` |
+| `query_remote_v3` | `query_remote` |
+| `validate_staged_result_refs_v3` | `validate_staged_result_refs` |
+
+- Legacy caller-owned query ASTs are removed. Build queries through generated
+  models and typed plan builders; raw TypeQL goes through the explicit raw
+  transaction API. Rust engine callers retain `QueryCompiler::compile_typed_*`
+  and `prepare_typed_*` for canonical typed operations.
+
+| Removed API | Replacement |
+| --- | --- |
+| Rust `ast::{Value, LiteralValue, FunctionCallValue, ArithmeticValue, RolePlayer, Constraint, Pattern, Statement, Clause, LetAssignment, FetchItem, QueryNode, SortField, ReduceAssignment}` | Canonical typed query operations and plan builders |
+| Rust `QueryCompiler::{compile, compile_node, compile_clause, compile_pattern, compile_statement, compile_constraint, compile_value, try_compile, try_compile_node}` | `compile_typed_*` / `prepare_typed_*` |
+| Rust `query_parser::{parse_typeql_query, parse_typeql_query_checked, QueryParseError}` | Official TypeQL parsing for parser integrations; explicit raw transactions for execution |
+| Python `QueryCompiler` (including `compile`, `compile_dicts`, `compile_node`, `compile_clause_body`, `parse` and private `_compile_query`, `_compile_batch`, `_compile_fetch_items`, `_compile_node`, `_compile_clause_body`) and `parse_typeql_query` | Generated queries and typed plan builders |
+| Rust and Python `ValidationEngine::{validate_pattern, validate_statement, validate_query}`; Python `_ArchivedTypeSchema.validate_query` | Typed query/plan validation; identifier and custom entity-rule validation remain available |
+| Rust `_parser::parse_typeql`, `_schema::TypeSchema::from_typeql`; Python `_ArchivedTypeSchema.from_typeql` | Split-YAML schema authority and checked schema adapters |
+| Rust `AttributeValue::to_ast_value`, `Expr::to_patterns`, `Agg::to_reduce_assignment` | Pass values and expressions directly to native plan builders |
+
+- The Python wrappers for the removed AST vocabulary are also removed:
+  `LiteralValue`, `FunctionCallValue`, `ArithmeticValue`, `RolePlayer`, `IidConstraint`,
+  `HasConstraint`, `IsaConstraint`, `EntityPattern`, `RelationPattern`, `SubTypePattern`,
+  `AttributePattern`, `HasPattern`, `ValueComparisonPattern`, `NotPattern`, `OrPattern`,
+  `IidPattern`, `RawPattern`, `HasStatement`, `IsaStatement`, `RelationStatement`,
+  `DeleteThingStatement`, `RawStatement`, `MatchClause`, `MatchLetClause`, `LetAssignment`,
+  `InsertClause`, `DeleteClause`, `UpdateClause`, `FetchAttribute`, `FetchVariable`,
+  `FetchAttributeList`, `FetchFunction`, `FetchWildcard`, `FetchNestedWildcard`, `FetchClause`,
+  `AggregateExpr`, `ReduceAssignment`, `ReduceClause`.
+
+- The old generated-query `update_with(func)` and direct-driver
+  `type_bridge.session.Transaction` are gone; use manager filter `update` and
+  the staged `Transaction` API. Deprecated Rust `RemoteDatabase`,
+  `RemoteQueryTransport`, `RemoteConnectionOptions::{generated, new}` and
+  `RemoteQueryLimits` have also been removed. Their replacements are
+  `ProxyDatabase`, `ProxyExchange`, `ProxyConnectionPolicy` and
+  `QueryExecutionResourceLimits`, respectively.
+
+- The generated Python and TypeScript compatibility query aliases are removed:
+
+| Removed generated API | Replacement |
+| --- | --- |
+| `RemoteQuery` | `Query` |
+| `RemoteGroupedQuery` | `GroupedQuery` |
+| `RemoteQueryLimits` | `QueryExecutionResourceLimits` |
+| `RemoteQuerySession` | `QuerySession` with an `ExchangeConnection` |
+| TypeScript `RemoteQueryExchange` | The exchange callback accepted by `ExchangeConnection` |
+
+- Pass limits through `resources` when constructing `QuerySession`. Rename the
+  legacy limit fields to the current resource names, including `deadline_ms` to
+  `timeout_milliseconds` in Python and `deadlineMs` to `timeoutMilliseconds` in
+  TypeScript.
+
+- Remove `DriverBackend::open_schema_fenced_read_transaction` and its public
+  `SchemaFencedReadTransaction` return wrapper (`new`, `into_parts`). Backend
+  implementations use `open_with_options`; fenced reads retain Write mode,
+  deadlines, never-commit behavior, and close on schema-export failure.
+
+- The deprecated Rust aliases and implicit-profile/string helpers are removed.
+
+| Removed Rust API | Replacement |
+| --- | --- |
+| `DirectTls` | TlsPolicy |
+| `MAX_QUERY_ITEMS` | DEFAULT_PROXY_QUERY_ITEMS |
+| `MAX_QUERY_BYTES` | DEFAULT_PROXY_QUERY_BYTES |
+| `MAX_QUERY_GRAPH_NODES` | DEFAULT_PROXY_QUERY_GRAPH_NODES |
+| `MAX_QUERY_ATTRIBUTE_VALUES` | DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES |
+| `MAX_QUERY_COLLECTION_MEMBERS` | DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS |
+| `MAX_QUERY_ROLE_PLAYERS` | DEFAULT_PROXY_QUERY_ROLE_PLAYERS |
+| `type_bridge_orm::Transaction; type_bridge_orm::session::Transaction (eager alias)` | OwnedTransaction for eager calls; Transaction now stages plans |
+| `SchemaLoweringProfileFingerprint::compute(bytes)` | compute_for_profile(profile, bytes) |
+| `SchemaLoweringBinding::current(capabilities)` | for_semantic_profile(profile, capabilities) or for_context(context) |
+| `require_supported_migration_server(database)` | require_supported_migration_server_for_profile(database, profile) |
+| `generate_define_block(info)` | try_generate_define_block(info), handling its Result |
+| `card_annotation(min, max)` | checked tql::schema_card plus render_schema_annotations |
+| `attribute_definition(attribute)` | attribute_node(attribute, true) plus tql::render_schema_definition |
+| `attribute_constraint_definition(attribute)` | attribute_node(attribute, false) plus tql::render_schema_definition |
+
+- The C CRUD policy-aware names below are consolidated; old unsuffixed calls
+  add the limits argument described in the upgrade guide.
+
+| Removed C symbol | Replacement |
+| --- | --- |
+| `type_bridge_database_entity_count_v2` | `type_bridge_database_entity_count` |
+| `type_bridge_database_entity_delete_by_iid_v2` | `type_bridge_database_entity_delete_by_iid` |
+| `type_bridge_database_entity_get_by_iid_v2` | `type_bridge_database_entity_get_by_iid` |
+| `type_bridge_database_entity_insert_v2` | `type_bridge_database_entity_insert` |
+| `type_bridge_database_entity_put_v2` | `type_bridge_database_entity_put` |
+| `type_bridge_database_entity_update_v2` | `type_bridge_database_entity_update` |
+| `type_bridge_database_relation_count_v2` | `type_bridge_database_relation_count` |
+| `type_bridge_database_relation_delete_by_iid_v2` | `type_bridge_database_relation_delete_by_iid` |
+| `type_bridge_database_relation_get_by_iid_v2` | `type_bridge_database_relation_get_by_iid` |
+| `type_bridge_database_relation_insert_v2` | `type_bridge_database_relation_insert` |
+| `type_bridge_database_relation_put_v2` | `type_bridge_database_relation_put` |
+| `type_bridge_database_relation_update_v2` | `type_bridge_database_relation_update` |
+| `type_bridge_read_transaction_entity_count_v2` | `type_bridge_read_transaction_entity_count` |
+| `type_bridge_read_transaction_entity_get_by_iid_v2` | `type_bridge_read_transaction_entity_get_by_iid` |
+| `type_bridge_read_transaction_relation_count_v2` | `type_bridge_read_transaction_relation_count` |
+| `type_bridge_read_transaction_relation_get_by_iid_v2` | `type_bridge_read_transaction_relation_get_by_iid` |
+| `type_bridge_write_transaction_entity_count_v2` | `type_bridge_write_transaction_entity_count` |
+| `type_bridge_write_transaction_entity_delete_by_iid_v2` | `type_bridge_write_transaction_entity_delete_by_iid` |
+| `type_bridge_write_transaction_entity_get_by_iid_v2` | `type_bridge_write_transaction_entity_get_by_iid` |
+| `type_bridge_write_transaction_entity_insert_v2` | `type_bridge_write_transaction_entity_insert` |
+| `type_bridge_write_transaction_entity_put_v2` | `type_bridge_write_transaction_entity_put` |
+| `type_bridge_write_transaction_entity_update_v2` | `type_bridge_write_transaction_entity_update` |
+| `type_bridge_write_transaction_relation_count_v2` | `type_bridge_write_transaction_relation_count` |
+| `type_bridge_write_transaction_relation_delete_by_iid_v2` | `type_bridge_write_transaction_relation_delete_by_iid` |
+| `type_bridge_write_transaction_relation_get_by_iid_v2` | `type_bridge_write_transaction_relation_get_by_iid` |
+| `type_bridge_write_transaction_relation_insert_v2` | `type_bridge_write_transaction_relation_insert` |
+| `type_bridge_write_transaction_relation_put_v2` | `type_bridge_write_transaction_relation_put` |
+| `type_bridge_write_transaction_relation_update_v2` | `type_bridge_write_transaction_relation_update` |
+
+- C entity/relation CRUD now exposes one policy-aware signature: `_v2` names
+  become unsuffixed. Old unsuffixed calls add `limits` before `cancellation`
+  (use `NULL` for defaults). This covers database/write insert, put, update,
+  delete-by-IID, and database/read/write get-by-IID and count. Generated
+  wrappers follow the same rule. Default-policy calls now honor in-flight
+  cancellation; overlapping outputs remain untouched on preflight refusal.
+- C `type_bridge_read_transaction_open`, `type_bridge_write_transaction_open`,
+  and `type_bridge_write_transaction_commit` now take `limits` immediately
+  after their database/transaction argument. Pass `NULL` for defaults.
+  Their `_v2` counterparts become these unsuffixed functions unchanged.
+- C package openers and runtime/generated migration-catalog openers use
+  execution diagnostics. The V1 package openers are removed; generated
+  packages expose one opener. Detail kind 16 retains the exact original
+  admission diagnostics JSON; close these handles with
+  `type_bridge_execution_diagnostics_close`.
+- C removes `type_bridge_database_open_v1` and `type_bridge_database_config_v1_t`;
+  use `type_bridge_database_open` with `type_bridge_database_config_t` and
+  `TYPE_BRIDGE_DATABASE_CONFIG_VERSION` (layout 2). All-zero embedded policies
+  select direct defaults; existing TLS mode values retain their meaning.
+- C ABI 2.0 removes version suffixes from package opening and database
+  configuration. Signatures and descriptor version values are unchanged:
+  - `type_bridge_schema_package_open_v2` → `type_bridge_schema_package_open`.
+  - `type_bridge_schema_package_open_chunked_v2` → `type_bridge_schema_package_open_chunked`.
+  - `type_bridge_database_config_validate_v2` → `type_bridge_database_config_validate`.
+  - `type_bridge_database_open_v2` → `type_bridge_database_open`.
+  - `type_bridge_database_open_with_query_limits_v2` → `type_bridge_database_open_with_query_limits`.
+  - `type_bridge_database_config_v2_t` → `type_bridge_database_config_t`.
+  - `TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION` → `TYPE_BRIDGE_DATABASE_CONFIG_VERSION`.
+  - `*_schema_package_open_v2` → `*_schema_package_open`.
+- Regenerated C manager structs store `root_filter` instead of `binding` and
+  `root_query`; manager filter references expose `value` instead of `query`.
+  Use the generated open/filter/terminal functions and regenerate packages
+  for ABI 2.0. Read terminals now include borrowed write and proxy targets.
+- `type_bridge_query_binding_iid` accepts `const type_bridge_iid_t *`;
+  `type_bridge_query_binding_iid_in` accepts an array of validated IID
+  pointers. Generated query binding wrappers use the same argument types.
+- C by-IID CRUD arguments now require a validated `type_bridge_iid_t *`.
+  Construct it with `type_bridge_iid_open` and release it with
+  `type_bridge_iid_close`; generated manager wrappers use the same type.
+  This changes the following symbols (their former `_v2` forms are removed):
+  - `type_bridge_database_entity_get_by_iid`
+  - `type_bridge_database_entity_update`
+  - `type_bridge_database_entity_delete_by_iid`
+  - `type_bridge_database_relation_get_by_iid`
+  - `type_bridge_database_relation_update`
+  - `type_bridge_database_relation_delete_by_iid`
+  - `type_bridge_read_transaction_entity_get_by_iid`
+  - `type_bridge_read_transaction_relation_get_by_iid`
+  - `type_bridge_write_transaction_entity_get_by_iid`
+  - `type_bridge_write_transaction_entity_update`
+  - `type_bridge_write_transaction_entity_delete_by_iid`
+  - `type_bridge_write_transaction_relation_get_by_iid`
+  - `type_bridge_write_transaction_relation_update`
+  - `type_bridge_write_transaction_relation_delete_by_iid`
+
+- C staged and plan options also use unversioned names:
+  `type_bridge_database_transaction_with_options_v1` → `type_bridge_database_transaction_with_options`;
+  `type_bridge_proxy_connection_transaction_with_options_v1` → `type_bridge_proxy_connection_transaction_with_options`;
+  `type_bridge_staged_transaction_options_v1` → `type_bridge_staged_transaction_options`;
+  `type_bridge_plan_options_v1` → `type_bridge_plan_options`;
+  `TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_V1` → `TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_VERSION`;
+  `TYPE_BRIDGE_PLAN_OPTIONS_V1_INIT` → `TYPE_BRIDGE_PLAN_OPTIONS_VERSION_INIT`;
+  `TYPE_BRIDGE_PLAN_OPTIONS_V1` → `TYPE_BRIDGE_PLAN_OPTIONS_VERSION`.
+- C ABI 2.0 query and plan exports use unversioned names; regenerate C packages:
+  `type_bridge_database_query_execute_v1` → `type_bridge_database_query_execute`;
+  `type_bridge_proxy_query_execute_v1` → `type_bridge_proxy_query_execute`;
+  `type_bridge_query_binding_iid_in_v1` → `type_bridge_query_binding_iid_in`;
+  `type_bridge_query_binding_iid_v1` → `type_bridge_query_binding_iid`;
+  `type_bridge_query_binding_open_v1` → `type_bridge_query_binding_open`;
+  `type_bridge_query_function_call_open_v1` → `type_bridge_query_function_call_open`;
+  `type_bridge_query_open_v1` → `type_bridge_query_open`;
+  `type_bridge_query_order_open_v1` → `type_bridge_query_order_open`;
+  `type_bridge_query_remote_claim_decode_v1` → `type_bridge_query_remote_claim_decode`;
+  `type_bridge_query_remote_context_open_v1` → `type_bridge_query_remote_context_open`;
+  `type_bridge_query_remote_prepare_v1` → `type_bridge_query_remote_prepare`;
+  `type_bridge_query_result_page_metadata_v1` → `type_bridge_query_result_page_metadata`;
+  `type_bridge_query_result_reduction_value_metadata_v1` → `type_bridge_query_result_reduction_value_metadata`;
+  `type_bridge_query_selection_open_v1` → `type_bridge_query_selection_open`;
+  `type_bridge_query_session_open_with_limits_v1` → `type_bridge_query_session_open_with_limits`;
+  `type_bridge_query_terminal_open_v1` → `type_bridge_query_terminal_open`;
+  `type_bridge_read_transaction_query_execute_v1` → `type_bridge_read_transaction_query_execute`;
+  `type_bridge_plan_v3_canonical_bytes` → `type_bridge_plan_canonical_bytes`;
+  `type_bridge_plan_v3_decode` → `type_bridge_plan_decode`.
+- C ABI execution limits replace unsigned `timeout_milliseconds` with signed
+  milliseconds: use a positive deadline or a nonpositive value for no deadline.
+  Omitted C policies use 60 seconds instead of 30 seconds. The limits descriptor
+  replaces `reserved0` with `collect_phase_timestamps` (0 or 1).
+- Removed Python `Database.execute_with_rows`, `TransactionContext.execute`,
+  `TransactionContext.execute_with_rows`, and its transaction view's `execute`;
+  removed Node `TransactionContext.query` and native `queryJson`. Use the
+  database raw pair or an explicit `raw_transaction` / `rawTransaction` context
+  and its `execute_query` / `executeQuery`. Generated bulk managers retain
+  typed row transport; raw queries accept only TypeQL text.
+- Python `Database.execute_query` returns the complete TypeDB HTTP query-answer
+  dictionary instead of a flattened list; use its `answers` member. Raw schema
+  text bypasses the annotation gate. Proxy raw contexts refuse a second query
+  with `raw_transaction_single_query`, and rollback after a committed write with
+  `raw_transaction_already_committed`; use typed staged plans for multi-operation
+  proxy atomicity.
+
+- Generated Node model and reference `.iid` properties return retained `Iid`
+  objects. Reference constructors, manager IID arguments and filters, query
+  `iid`/`iidIn`, and staged `byIid` require `new Iid("0x1234")`, never strings.
+  Declare staged identity columns with `input("target", "iid")` or
+  `optionalInput`; `byIidInput` and staged result references require those
+  nominal columns. Query and staged wire bytes remain unchanged.
+
+- Python native `DynamicExpr.iid` requires a nominal `Iid` value instead of
+  a string. Its stored value and query lowering remain unchanged.
+  `IidConstraint` and `IidPattern` are removed with the AST wrappers.
+- Generated Python model and reference `.iid` properties return `Iid | None`.
+  Reference constructors, `attach_runtime_iid`, manager `get_by_iid`, IID
+  `delete` arguments, and `iid`/`iid__in` filters require `Iid` values. Construct
+  them with `Iid("0x1234")` and use `str(iid)` for text. Malformed string
+  lookups no longer return `None`; string arguments are refused before I/O.
+
+- Python `by_iid_input` and `StagedResultRef` require `PlanInput[Iid]`. Declare
+  identity columns with `input(name, "iid")` or `optional_input(name, "iid")`
+  and bind `Iid` values. The staged wire representation remains a string.
+
+- Python query binding `iid`/`iid_in` and generated model `by_iid` authoring
+  now require `Iid` values instead of strings. Construct them with
+  `Iid("0x1234")`; query plans and staged execution are unchanged.
+
+- Rust query binding `iid`/`iid_in`, `PlanBuilder::by_iid`, and generated model
+  `by_iid` authoring take typed `Iid` values. Staged IID input columns and result
+  references use `Input<Iid>` instead of `Input<String>`; plan bytes and staged
+  execution are unchanged.
+
+- Rust manager `delete_many` and `delete_many_returning` now take `&[Iid]`,
+  `delete_returning` takes `&Iid`, and `update_many` takes `Vec<(Iid, Create)>`,
+  including transaction forms. `delete_many` permanently redirects to
+  `filter()?.iids(iids)?.delete()`. Heterogeneous updates and returning deletes
+  retain their ordinal batch results and hooks.
+
+- Rust entity/relation manager `update` and `delete`, including transaction
+  forms, now require `&Iid`. They permanently redirect to
+  `filter()?.iid(iid)?.update(input)` and `filter()?.iid(iid)?.delete()`.
+
+- Rust entity, relation, subtype, and transaction manager `get_by_iid` methods
+  now require `&Iid` instead of `&str`. They permanently redirect to
+  `filter()?.iid(iid)?.first()`. Construct identifiers with `Iid::new(...)`.
+
+- Generated Rust model and family `iid()` accessors now return `&Iid`; reference
+  accessors return `Option<&Iid>`. Reference `from_iid` constructors accept an
+  owned `Iid`. Construct one with `Iid::new(...)` and use `.as_str()` when text
+  is required.
+
+- Remove Node `TypedQuery`, `TypedGroupByQuery`, `TypedQueryError`, `QueryExpr`,
+  `ComparisonExpr`, `BooleanExpr`, `NotExpr`, `SortExpr`, `AggregateSpec`,
+  `QueryGroupField`, and `agg`. Use generated `QuerySession` queries and their
+  predicates, ordering, grouping, and reduction methods.
+
+- Remove Rust `RemoteDatabase`, `RemoteQueryTransport`,
+  `RemoteConnectionOptions`, and `RemoteQueryLimits`. Use `ProxyDatabase`,
+  `ProxyExchange`, `ProxyConnectionPolicy`, and `QueryExecutionResourceLimits`.
+
+- Remove Python `type_bridge.proxy`, `ProxyDatabase`, `ProxyError`,
+  `ProxyTransaction`, and `ProxyTransactionContext`. Use the generated package's
+  `connect_proxy(...)`, its transaction API, and `type_bridge.Failure`.
+  `Connection` now covers the direct facade only; generated proxy connections
+  carry their own native type.
+
+- New canonical backfill plans and YAML intents use format 2 and require an
+  explicit `isa` or `isa!` mode. Format 1 remains readable for historical
+  validation, interrupted recovery and rollback; new application requires
+  regeneration. `AttributeBackfillPlan::new` takes the mode explicitly.
+
+- `TypeDbMigrationProvider::new` now takes the verified migration plan's
+  `schema_authorities()`. `MigrationAssertionExecutionContext::new` and
+  `lower_migration_assertion` require explicit declared schema authority;
+  assertions compile to native plans with their existing bounded evidence stream.
+
+- Removed core `_manager::query_builder` and its compiler wrappers; use
+  registry-backed `DynamicEntityManager` / `DynamicRelationManager` methods
+  or native `PlanBuilder` plans. Removed wrapper functions:
+  `build_insert_with_iid`, `build_fetch`, `build_delete`,
+  `build_count`, `build_dynamic_entity_insert_with_iid`, `build_dynamic_entity_put`,
+  `build_dynamic_entity_update`, `build_dynamic_entity_update_exact`, `build_dynamic_entity_fetch`,
+  `build_dynamic_entity_fetch_exact`, `build_dynamic_entity_expr_fetch`, `build_dynamic_entity_expr_fetch_exact`,
+  `build_dynamic_has_lookup_query`, `build_dynamic_entity_fetch_by_iid`, `build_dynamic_entity_fetch_by_iid_exact`,
+  `build_dynamic_entity_count`, `build_dynamic_entity_count_exact`, `build_dynamic_entity_identity_discovery`,
+  `build_dynamic_relation_identity_discovery`, `build_dynamic_relation_count_exact`, `build_dynamic_relation_delete_by_iid_exact`,
+  `build_dynamic_entity_exact_key_lookup`, `build_dynamic_entity_expr_count`, `build_dynamic_entity_expr_count_exact`,
+  `build_dynamic_entity_expr_exists_exact`, `build_dynamic_entity_expr_aggregate`, `build_dynamic_entity_expr_group_by_aggregate`,
+  `build_dynamic_entity_aggregate`, `build_dynamic_entity_group_by_aggregate`, `build_dynamic_entity_delete_by_iid`,
+  `build_dynamic_entity_delete_by_iid_exact`, `build_update`, `build_put`,
+  `build_relation_insert_with_iid`, `build_relation_fetch`, `build_relation_delete`,
+  `build_relation_count`, `build_dynamic_relation_insert_with_iid`, `build_dynamic_relation_exact_key_lookup`,
+  `build_dynamic_relation_insert_resolved_with_iid`, `build_dynamic_relation_put`, `build_dynamic_relation_update`,
+  `build_dynamic_relation_update_exact`, `build_dynamic_relation_player_lookup`, `build_dynamic_relation_clear_role`,
+  `build_dynamic_relation_attach`, `build_dynamic_relation_fetch`, `build_dynamic_relation_fetch_exact`,
+  `build_dynamic_relation_fetch_with_role_filters`, `build_dynamic_relation_expr_fetch`, `build_dynamic_relation_expr_fetch_exact`,
+  `build_dynamic_relation_fetch_by_iid`, `build_dynamic_relation_fetch_by_iid_exact`, `build_dynamic_relation_count`,
+  `build_dynamic_relation_expr_count`, `build_dynamic_relation_expr_count_exact`, `build_dynamic_relation_expr_exists_exact`,
+  `build_dynamic_relation_expr_aggregate`, `build_dynamic_relation_expr_group_by_aggregate`, `build_dynamic_relation_aggregate`,
+  `build_dynamic_relation_group_by_aggregate`, `build_dynamic_relation_delete_by_iid`, `build_expr_fetch`,
+  `build_expr_count`, `build_expr_aggregate`, `build_relation_expr_fetch`,
+  `build_relation_expr_count`, `build_relation_expr_aggregate`, `build_expr_group_by_aggregate`,
+  `build_relation_group_by_aggregate`.
+
+- Removed `EntityQuery::new`, `RelationQuery::new`,
+  `GroupByEntityQuery::new` and `GroupByRelationQuery::new`, which accepted
+  a database without schema authority. Use `EntityManager::from_registry`
+  or `RelationManager::from_registry`, then `.query()` and `.group_by()`.
+
+- Removed the V1/V2 plan executor: `QueryPlan`, `QueryInvocation`,
+  `QueryOperation`, `decode_query_plan`, `decode_query_plan_with_limits`,
+  `decode_query_invocation`, `QueryPlanFingerprint::compute`, the V1/V2
+  format/canonicalization constants, and the V1/V2 capability-vocabulary
+  functions. The native plan now owns the unversioned names: use
+  `query_plan::{QueryPlan, PlanSpec, Operation, decode_query_plan,
+  query_plan_capability_vocabulary}` and native builders.
+  The `query_remote_v2` envelope family is replaced by `query_remote`.
+  `ModelQueryV2`, `ModelOutputV2`, `QueryBindingPairV2`, `QueryWindowV2`,
+  `QueryRowCardinalityV2`, and `QueryPlanV2Compatibility` are removed;
+  generated model queries lower directly to native plans.
+- Removed query-crate `ValidatedQuery`, `validate_query_plan`, and
+  `validate_query_local_function`, and ORM's `query_v2`, `query_v2_builder`,
+  `query_v2_prepared`, `query_v2_remote` APIs and `integration_test_support`.
+  Use native plan construction, `plan_explain::explain`, and staged execution;
+  native validation replaces the separate legacy validation/execution path.
+- Removed `ProxyHttpClient::capabilities` / `exchange` and
+  `ProxyHttpTransport::capabilities` / `exchange`. Use `staged_capabilities`
+  and `exchange_staged`, carrying the staged protocol.
+- Removed Python `type_bridge.query_v2` and Node `@type-bridge/node/query-v2`,
+  including `QueryPlanBuilder`, `AuthoredQueryPlan`, `AuthoredQueryInvocation`,
+  `PendingQueryV2Remote`, and Node `QueryV2RemoteLimits`. Use `PlanBuilder` /
+  `Plan` from `type_bridge.plan` or `@type-bridge/node` and staged transactions.
+- Removed Python `query_v2_execute_local`, `query_v2_remote_capabilities`,
+  `query_v2_prepare_remote` and Node `queryV2ExecuteLocal`,
+  `queryV2RemoteCapabilities`, `queryV2PrepareRemote`. Use native staged plans
+  with the direct or proxy connection's transaction.
+- Removed `QueryAuthority::from_declared_bytes_query_only`; use
+  `QueryAuthority::from_declared_bytes` and native staged execution.
+- Removed Python `PlanAuthority.query_only` and `plan_query_only_authority`;
+  use normal `PlanAuthority(...)` construction and native staged execution.
+- Removed Node `PlanAuthority.queryOnly` and `planQueryOnlyAuthority`;
+  use normal `new PlanAuthority(...)` construction and native staged execution.
+
+- Removed `contract::query_plan_v2` symbols: `QueryBindingPairV2`, `QueryWindowV2`,
+  `QueryRowCardinalityV2`, `ModelQueryV2`, `ModelOutputV2`, `QueryPlanV2Compatibility`.
+  Use native `query_plan` / `query_remote` plans and staged envelopes.
+- Removed `contract::query_remote_v2` symbols: `QUERY_REMOTE_REQUEST_FORMAT_V2`,
+  `QUERY_REMOTE_RESPONSE_FORMAT_V2`, `QUERY_REMOTE_FAILURE_FORMAT_V2`,
+  `QUERY_REMOTE_REQUEST_CANONICALIZATION_V2`, `CAP_QUERY_PLAN_V2`,
+  `CAP_QUERY_REMOTE_ENVELOPE_V2`, `CAP_QUERY_REMOTE_STRUCTURED_DIAGNOSTIC`,
+  `CAP_QUERY_OUTPUT_HYDRATED`, `CAP_QUERY_SAME_SNAPSHOT_HYDRATION`,
+  `CAP_QUERY_REMOTE_STATEMENT_LIMIT`, `query_remote_v2_required_capabilities`,
+  `RemoteResultKindV2`, `RemoteQueryRequestV2`, `RemoteRequestFingerprintV2`,
+  `RemoteQueryResponseV2`, `RemoteQueryFailureV2`, `RemoteReplyV2`,
+  `decode_remote_reply_v2`, `decode_signed_remote_failure_v2`,
+  `validate_remote_outcome_v2`. Use native `query_plan` / `query_remote` plans
+  and staged envelopes.
+- Removed `limits::REMOTE_REQUEST_CODEC_LIMITS` and
+  `QueryLimits::remote_request_codec` from `type-bridge-contract`; they framed
+  the removed V1 remote request envelope. Staged requests carry plans as
+  opaque strings under `STAGED_REMOTE_CODEC_LIMITS`.
+- Removed `node::query_v2_builder_runtime` symbols: `NodePlanAuthorityIdentity`,
+  `NodeQueryV2BindingHandle`, `NodeQueryV2InputHandle`, `NodeQueryV2OperandHandle`,
+  `NodeQueryV2PatternHandle`, `NodeQueryV2OrderHandle`,
+  `NodeQueryV2ReduceAssignmentHandle`, `NodeQueryV2LocalReturnHandle`,
+  `NodeQueryV2LocalFunctionHandle`, `NodeQueryV2DocumentFieldHandle`,
+  `NodeAuthoredQueryInvocation`, `NodeAuthoredQueryPlan`, `NodeQueryPlanBuilder`. Use
+  the native package-root `PlanBuilder` and staged transaction API.
+- Removed `node::query_v2_runtime` symbols: `NodePendingQueryV2Remote`,
+  `DecodeRemoteReplyTask`, `query_v2_execute_local`, `query_v2_remote_capabilities`,
+  `query_v2_prepare_remote`. Use the native package-root `PlanBuilder` and staged
+  transaction API.
+- Removed `orm::query_v2` symbols: `LoweredQuery`, `lower_validated_query`,
+  `output_columns`, `QueryRowValue`, `QueryResultRow`, `DocumentFieldValue`,
+  `QueryResultDocument`, `QueryV2Outcome`, `execute_validated_query`. Use native
+  builders, `plan_explain::explain`, and staged transactions.
+- Removed `orm::query_v2_builder` symbols: `QUERY_PLAN_BUILDER_OPERATIONS`,
+  `QueryableTypeKind`, `QUERY_BUILDER_TYPE_KINDS`, `query_builder_type_kind_name`,
+  `QUERY_BUILDER_LOCAL_RETURNS`, `query_builder_type_kind`, `query_builder_comparator`,
+  `query_builder_order_direction`, `query_builder_reducer`,
+  `query_builder_boolean_host_type_error`, `query_builder_host_collection_type_error`,
+  `query_builder_invocation_row_arity_error`, `query_builder_role_player_limit_error`,
+  `query_builder_negation_term_limit_error`,
+  `query_builder_disjunction_term_limit_error`, `query_builder_try_term_limit_error`,
+  `query_builder_function_argument_limit_error`, `query_builder_binding_limit_error`,
+  `query_builder_root_pattern_limit_error`, `query_builder_local_body_limit_error`,
+  `query_builder_local_binding_limit_error`, `query_builder_reduce_term_limit_error`,
+  `query_builder_sort_term_limit_error`, `query_builder_row_output_limit_error`,
+  `query_builder_document_output_limit_error`,
+  `query_builder_invocation_row_limit_error`,
+  `query_builder_invocation_input_byte_limit_error`, `query_builder_bounded_len`,
+  `QueryInvocationRowBudget`, `query_builder_depth`, `query_builder_depth_error`,
+  `query_builder_unsigned`, `query_builder_unsigned_error`, `QueryBindingHandle`,
+  `QueryInputHandle`, `QueryOperandHandle`, `QueryPatternHandle`, `QueryOrderHandle`,
+  `QueryReduceAssignmentHandle`, `QueryLocalReturnHandle`, `QueryLocalFunctionHandle`,
+  `QueryFunctionTarget`, `query_builder_function_target`, `query_builder_role_players`,
+  `query_builder_local_parameters`, `QueryDocumentFieldHandle`, `AuthoredQueryPlan`,
+  `AuthoredQueryInvocation`, `QueryPlanBuilder`. Use native builders,
+  `plan_explain::explain`, and staged transactions.
+- Removed `orm::query_v2_prepared` symbols: `execute_prepared_local`,
+  `PendingRemoteQueryV2`, `ClaimedRemoteReplyV2`, `prepare_remote_query_v2`,
+  `prepare_remote_query_v2_with_budget`, `decode_remote_capabilities`. Use native
+  builders, `plan_explain::explain`, and staged transactions.
+- Removed `orm::query_v2_remote` symbols: `encode_remote_request_v2`,
+  `encode_remote_request_v2_at`, `check_advertised_capabilities_v2`,
+  `decode_remote_outcome_v2`, `AdmittedRemoteRequestV2`, `RemoteRejectionV2`,
+  `encode_unbound_remote_failure_v2`, `preflight_remote_request_v2`,
+  `preflight_remote_request_v2_at`, `RemoteReplyExpectation`, `AuditedRemoteReply`,
+  `execute_admitted_remote_request_v2`, `remote_outcome_v2`. Use native builders,
+  `plan_explain::explain`, and staged transactions.
+- Removed `python::query_v2_builder_runtime` symbols: `PyPlanAuthorityIdentity`,
+  `PyQueryV2BindingHandle`, `PyQueryV2InputHandle`, `PyQueryV2OperandHandle`,
+  `PyQueryV2PatternHandle`, `PyQueryV2OrderHandle`, `PyQueryV2ReduceAssignmentHandle`,
+  `PyQueryV2LocalReturnHandle`, `PyQueryV2LocalFunctionHandle`,
+  `PyQueryV2DocumentFieldHandle`, `PyAuthoredQueryInvocation`, `PyAuthoredQueryPlan`,
+  `PyQueryPlanBuilder`, `register`. Use the native `type_bridge.plan` builder and staged
+  transaction API.
+- Removed `python::query_v2_runtime` symbols: `PyPendingQueryV2Remote`,
+  `query_v2_execute_local`, `query_v2_remote_capabilities`, `query_v2_prepare_remote`,
+  `register`. Use the native `type_bridge.plan` builder and staged transaction API.
+- Removed `query::query_validation` symbols: `ValidatedQuery`, `validate_query_plan`,
+  `validate_query_local_function`. Use native plan validation.
+
+- Python native remote-model entry points `query_v2_prepare_remote_model_*`
+  become `plan_prepare_remote_model_*` (rows, page, count, exists, reduce,
+  reduce_by_field, and reduce_by_fields), and
+  `query_v2_remote_model_context_with_resources` becomes
+  `plan_remote_model_context_with_resources`. Node's corresponding
+  `queryV2PrepareRemoteModel*` and `queryV2RemoteModelContextWithResources`
+  become `planPrepareRemoteModel*` and `planRemoteModelContextWithResources`.
+  Regenerate schema packages to use these live native-plan entry points.
+
+- Rust bounded provider methods `query_v2_bounded` and
+  `query_v2_with_rows_bounded` become `query_plan_bounded` and
+  `query_plan_with_rows_bounded`, including `TransactionOps` implementations.
+  `MAX_QUERY_V2_SCHEMA_FENCE_DURATION` becomes `MAX_SCHEMA_FENCE_DURATION`;
+  its duration and execution behavior are unchanged.
+
+- Rust shared model vocabulary remains under `query_plan` with native names:
+  `CompatibilityValueV2` → `ModelValue`, `ReleasedValueKindV2` → `ModelValueKind`,
+  `QueryFieldV2` → `ModelField`, `QueryComparatorV2` → `ModelComparator`,
+  `QueryPatternV2` → `ModelPredicate`, `QueryOrderDirectionV2` → `ModelOrderDirection`,
+  `QueryMissingOrderV2` → `ModelMissingOrder`, `QueryOrderTermV2` → `ModelOrderTerm`,
+  `QueryStableOrderV2` → `ModelStableOrder`, `QueryModelOutputSlotV2` → `ModelOutputSlot`,
+  `QueryNamedOutputSlotV2` → `ModelNamedOutputSlot`, `QueryModelOutputV2` → `ModelOutput`,
+  `QueryReductionKindV2` → `ModelReductionKind`, `QueryReductionTermV2` → `ModelReductionTerm`,
+  `QueryReductionGroupV2` → `ModelReductionKey`. `HydrationFieldV2`, `HydrationPlayerV2`,
+  `HydrationRoleV2`, `HydrationDescriptorV2`, `HydrationBindingV2`, and
+  `HydrationProjectionV2` drop their `V2` suffix. Their serialized forms stay unchanged.
+
+- Rust hydration evidence moves from `query_remote_v2` to `query_model_evidence`:
+  `HydrationNodeIdV2`, `HydrationReferenceV2`, `HydrationAttributeEvidenceV2`,
+  `HydrationRoleEvidenceV2`, `HydrationNodeKindV2`, `HydrationNodeV2`,
+  `HydrationGraphV2`, `HydrationSlotV2`, and `HydratedRowV2` drop their `V2` suffix.
+  `RemoteOutcomeV2`, `RemoteReducedValueV2`, `RemoteReductionGroupV2`, and
+  `RemoteReductionRowV2` become `ModelOutcome`, `ModelReducedValue`,
+  `ModelReductionGroup`, and `ModelReductionRow`. Their wire shapes are unchanged.
+
+- Rust `query_remote_v2::{RemoteLimitsV2, RemoteReplyDecodeLimitsV2,
+  DEFAULT_REMOTE_MAX_STATEMENTS_V2}` move to `query_model_limits` as
+  `RemoteModelLimits`, `ModelReplyDecodeLimits`, and `DEFAULT_MODEL_MAX_STATEMENTS`.
+  Their budgets, defaults, and serialized fields are unchanged.
+
+- Rust binding scalar helpers move from `query_v2_builder` to `plan_scalar`:
+  `QueryBuilderScalarInput` becomes `PlanScalarInput`, `query_builder_scalar`
+  becomes `plan_scalar`, `query_builder_value_type` becomes `plan_value_type`,
+  and scalar error helper prefixes change from `query_builder_` to `plan_`.
+  `query_v2_prepared::query_v2_host_string_{type,unicode}_error` become
+  `plan_scalar::host_string_{type,unicode}_error`. Diagnostic codes are unchanged.
+
+- Rust live-authority helpers `acquire_live_authority_rebuild_permit` and
+  `verify_managed_query_control_scope` move from `query_v2_prepared` to
+  `plan_authority`, shared by native staged execution and the server.
+
+- Staged pre-request refusals now use `typebridge.query-remote-failure/v3`.
+  Decode them with `query_remote::decode_signed_staged_failure` and
+  `StagedFailure`; servers encode them with
+  `remote_signing::encode_unbound_staged_failure` instead of the V2 helpers.
+  The signed outer envelope and structured diagnostic fields are unchanged.
+
+- Rust `query_remote_v2::{RemoteDiagnosticV2, RemoteDiagnosticDetailV2,
+  RemoteDiagnosticPathSegmentV2}` move to `query_remote_diagnostic` as
+  `RemoteDiagnostic`, `RemoteDiagnosticDetail`, and `RemoteDiagnosticPathSegment`.
+
+- Rust `QueryPlan::to_v3`, `QueryPlanV3::compatibility`, and
+  `PlanSpec::compatibility` are removed. Construct native plans with
+  `QueryPlan::new` or `PlanBuilder`; plan decoding refuses a `compatibility`
+  member, including `null`, instead of admitting lifted legacy evidence.
+
+- Python and Node `QueryV2Authority` and `QueryV2Error` are now
+  `PlanAuthority` and `PlanError`. Native authority constructors are
+  `plan_authority` and `plan_authority_from_schema_authority` in Python, and
+  `planAuthority` and `planAuthorityFromSchemaAuthority` in Node.
+  Generated packages must be regenerated to use the shared plan names.
+  Node `QueryV2ErrorCategory`, `QueryV2ErrorDetail`, and
+  `QueryV2ErrorPathSegment` become `PlanErrorCategory`, `PlanErrorDetail`,
+  and `PlanErrorPathSegment`.
+
+- Rust `query_v2_prepared::QueryAuthority` and
+  `query_v2_builder::QueryAuthorityIdentity` move to `plan_authority`;
+  generated reads and staged plans share this schema-authority owner.
+
+- Rust `query_v2::QueryV2ExecutionError` moves to
+  `error::PlanExecutionError`, shared by native plan execution and hydration.
+
+- Rust staged model-read APIs drop their obsolete V2 names:
+  `RemoteModelQueryV2Error` → `RemoteModelQueryError`,
+  `PendingRemoteModelQueryV2` → `PendingRemoteModelQuery`,
+  `ClaimedRemoteModelReplyV2` → `ClaimedRemoteModelReply`,
+  `prepare_remote_model_query_v2` → `prepare_remote_model_query`, and
+  `prepare_remote_model_query_v2_with_budget` →
+  `prepare_remote_model_query_with_budget`.
+
+- Rust `query_v2_remote::{RemoteReplySigningKey, Ed25519RemoteReplyVerifier}`
+  move to `remote_signing::{RemoteReplySigningKey, Ed25519RemoteReplyVerifier}`;
+  staged reply authentication no longer depends on the V2 executor.
+
+- Python and Rust `insert_many`, `put_many`, `update_many`, and
+  `delete_many_returning`, and Node `insertMany`, `putMany`, `updateMany`,
+  and `deleteManyReturning`, now return `BatchWriteResult`. Read `items`
+  (`items()` or `into_items()` in Rust) for models and `input_indexes`
+  (`inputIndexes` in Node) for each model's original input row. Missing
+  inputs contribute no item; multiple roots repeat their input index.
+- Native Node `insertProjected`, `putProjected`, `updateProjected`, and
+  `deleteByIidReturning` now return fully hydrated `WriteResult` objects;
+  `insertManyProjected`, `putManyProjected`, `updateManyProjected`, and
+  `deleteManyReturning` return fully hydrated `BatchWriteResult` objects.
+  Regenerate model packages instead of decoding native write envelopes.
+
+- Removed generated Python manager `update_with`; use an authored update
+  plan staged in a transaction, or read models and call `update_many` with
+  attached IIDs after application-side changes.
+- Removed detached-model IID lookup from Python `update`, `update_many`,
+  `delete`, `delete_many`, `delete_returning`, and `delete_many_returning`.
+  Supply models with attached canonical TypeDB IIDs (or an `Iid` value to
+  `delete`). Batch inputs are no longer silently dropped before execution.
+- Generated Python manager `delete()` without an instance requires a filter;
+  the unfiltered no-argument form refuses. Use `filter(...).delete()` or an
+  authored match/delete plan staged in one transaction. Explicit IID
+  deletion remains available.
+- Removed native Python `PyProjectedModelManager.resolve_iid`; retrieve
+  models through manager reads and use their attached IIDs.
+
+- Removed Node native manager `insertJson`, `insertManyJson`, `putJson`,
+  `putManyJson`, and `updateJson`; use `insertProjected`,
+  `insertManyProjected`, `putProjected`, `putManyProjected`, and
+  `updateProjected` through regenerated model managers. Removed
+  `getByIidJson` and `filterJson`; use `getByIidProjected` and
+  `filterEntriesJson`. Ordered and unordered packages now share the native
+  manager surface.
+
+- Generated Python managers now use the native projected runtime for ordered
+  and unordered schemas. Regenerate packages that carry the removed V1
+  manager resource. Manager write-lowering failures now use
+  `MatchRequestError` with the native diagnostic path and details.
+
+- Removed `DynamicEntityManager::new` and `DynamicEntityManager::new_canonical`;
+  use `DynamicEntityManager::from_registry`. Removed
+  `DynamicEntityManager::with_transaction` and
+  `DynamicEntityManager::with_canonical_transaction`; use
+  `DynamicEntityManager::with_registry_transaction`.
+- Removed `DynamicRelationManager::new` and
+  `DynamicRelationManager::new_canonical`; use
+  `DynamicRelationManager::from_registry`. Removed
+  `DynamicRelationManager::with_transaction` and
+  `DynamicRelationManager::with_canonical_transaction`; use
+  `DynamicRelationManager::with_registry_transaction`.
+- Removed `EntityManager<T>::new` and `RelationManager<R>::new`; use their
+  `::from_registry` constructors with installed schema authority.
+- Core dynamic single writes return `WriteResult<DynamicEntityRow>` or
+  `WriteResult<DynamicRelationRow>`; generic single writes return
+  `WriteResult<T>` or `WriteResult<R>`. This includes exact put/update and
+  returning deletes. Use `item()` only for one root or iterate `items()`;
+  an input's IID is attached only when exactly one root was returned.
+
+- Python single-item manager `insert`, `put`, `update`, and `delete_returning`
+  return `WriteResult` with `count`, all hydrated `items`, and `item` only for
+  exactly one root. Replace `x = manager.insert(...)` with
+  `x = manager.insert(...).item`. Input IID attachment occurs only for one root.
+- Node single-item manager `insert`, `put`, `update`, and `deleteReturning`
+  return `WriteResult`; use `.item` for the single model or `.items` for all roots.
+- Rust single-item manager writes, including transaction forms and
+  `delete_returning`, return `WriteResult<M>`; use `item()` or `into_items()`
+  instead of consuming the former model or optional snapshot return directly.
+
+- Removed server `schema_source::{SchemaSource,FileSchemaSource,
+  InMemorySchemaSource}`, `config::SchemaSection`,
+  `ServerConfig::schema`, `RuntimeServerConfig::schema`, and
+  `[schema].source_file`. Use `[staged].schema_authority_file` generated by
+  the schema tools; staged execution owns schema authority and validation.
+
+- Removed server `TypeDBClient::{connect,connect_secure,connect_prepared_secure,
+  execute,execute_classified,database_exists,create_database,delete_database,
+  reset_database,is_connected}`, `ExecuteError`, `CommitFailure`, and
+  `CommitCertainty`. Use staged plans for checked execution and the explicit
+  raw runtime entry point for unchecked TypeQL. Administrative operations
+  belong to the shared runtime. `TypeDBClient::prepare_secure_transport`
+  remains the captured transport constructor; its prepared identity provides
+  `connect_database` and `connect_raw_runtime`.
+
+- Server `CommitOutcome::kind()` now returns `TransactionKind` so raw
+  schema commits are distinguishable from data writes; use its `Read`,
+  `Write`, and `Schema` variants instead of `StagedKind`.
+
+- Removed the server `v2-query` feature; default builds serve the staged
+  transport through `axum-transport`. Server `[v2]` becomes `[staged]`,
+  `RuntimeServerConfig::v2` becomes `staged`, `V2Section` becomes
+  `StagedSection`, `V2AuthorityMode` becomes `StagedAuthorityMode`, and
+  `v2_schema_authority_bytes` becomes `staged_schema_authority_bytes`.
+  Staged advertisements no longer include removed V2 capabilities.
+  `StagedQueryState::{new,new_query_only}` no longer take the unused
+  resolved-schema argument; authority is verified from the declared and
+  managed schema.
+
+- Removed server `Interceptor::{on_request,on_response,supports_v2,on_v2_request}`,
+  `V2PolicyRequest`, `CrudInterceptor`, `CrudInterceptorAdapter`, `CrudInfo`,
+  `CrudOperation`, `interceptor::TypeKind`,
+  `interceptor::crud_info::extract_crud_info`, and `RequestContext::crud_info`.
+  Use staged `on_plan` / `on_commit` policies.
+  `on_v2_transport` / `on_v2_response` become `on_transport` /
+  `on_response`; `V2PolicyOutcome` becomes `PolicyOutcome`.
+  Pipeline `v2_request_context`, `begin_v2_request`, and `finish_v2_request`
+  become `request_context`, `begin_request`, and `finish_request`;
+  `validate_v2_coverage` is removed and `authorize_v2_request` is replaced by
+  `authorize_plan`. `InterceptorChain::execute_request`, the former
+  `execute_response`, `ensure_v2_coverage`, and `execute_v2_request` are
+  replaced by the staged chain hooks; `execute_v2_transport` and
+  `execute_v2_response` become `execute_transport` and `execute_response`.
+
+- Removed server `QueryExecutor`, `QueryInput`, `QueryOutput`,
+  `ValidateInput`, `ValidateOutput`, `ValidationErrorDetail`,
+  `QueryPipeline::{execute_query,validate,schema,is_connected,default_database}`,
+  and `PipelineBuilder::{with_schema_source,with_crud_interceptor,with_skip_validation}`.
+  Use `StagedExecutor` and staged plans; `PipelineBuilder::new()` now builds
+  only the policy chain and takes no executor argument.
+- Removed `transport::http::create_router` and all V1 transport models
+  (`QueryRequest`, `RawQueryRequest`, `ValidateRequest`, `QueryResponse`,
+  `ResponseMetadata`, `ValidateResponse`, `HealthResponse`); use
+  `transport::staged::create_router` and the staged request/reply types.
+  `/health` keeps its body; removed query/schema routes return the
+  `route_removed` 404 body naming `/v3/staged`.
+
+- Removed server `transport::v2`, `create_v2_router`,
+  `create_router_with_v2`, `/v2/query`, `/v2/capabilities`, and the
+  `v2_smoke_server` example; use `transport::staged::create_router` and
+  `/v3/staged` or `/v3/capabilities`. `V2QueryState` moves to
+  `transport::staged_state::StagedQueryState`. `RemoteReplayStore`,
+  `InMemoryReplayStore`, and `ReplayStoreError` move from `transport::v2`
+  to `transport::staged_state`.
+
+- Rust manager `insert_many`, `put_many`, `update_many` and `delete_many`
+  always execute shared native plans, including managers from older generated
+  packages and managers borrowing a write transaction. Regenerate packages
+  and handle the shared batch diagnostics: `invalid_iid` becomes
+  `noncanonical_iid` with a `rows[index].iid` path, and post-write generated
+  materialization failures use `generated_model_materialization_failed`
+  instead of the model's private validation code. Separate identity/refetch
+  failures `iid_count_mismatch` and `missing_post_write_row` become
+  `projected_batch_hydration_missing` for an omitted result ordinal;
+  duplicate result ordinals use `projected_batch_hydration_duplicate`
+  instead of `ambiguous_provider_row`. Generated input-validation codes
+  retain their field suffix beneath the new `rows[index]` path. Duplicate
+  create-field and role tokens use `duplicate_field_token` and
+  `duplicate_role_token` from shared projected validation instead of
+  `duplicate_field_evidence` and `duplicate_role_evidence`.
+- Rust managers from older generated packages now share native batch preflight:
+  repeated Put keys fail with `duplicate_batch_key`, and repeated Update or
+  Delete IIDs fail with `duplicate_batch_target` before provider I/O.
+  Earlier Rust loops accepted repeated keys and targets, including repeated
+  idempotent deletes. Batch provider failures now use redacted
+  `provider_operation_failed` diagnostics instead of an unclassified
+  `Error::QueryExecution` carrying provider text.
+- Empty Rust manager batches now validate schema and model authority before
+  returning without provider work; previously bypassed errors now include
+  `schema_not_bound` and `wrong_model_kind`. Rust write-transaction commits
+  use the shared classified boundary: an unclassified transaction error is
+  replaced by `commit_definitely_aborted`, `commit_outcome_unknown`, or
+  `transaction_rollback_only`, according to the retained transaction state.
+
+- Native Python `PyRustDatabase` and `PyRustTransactionContext` are renamed to
+  `PyDatabase` and `PyTransactionContext`. Update direct native consumers and
+  regenerate Python packages.
+
+- Removed `type_bridge.migration.exceptions.SchemaValidationError` and
+  `SchemaConflictError`; replacement: none. Native migration diagnostics carry
+  structured validation failures.
+- Removed unused native `_QueryDynamicEntityManager`,
+  `_QueryDynamicRelationManager`, `_query_build_has_lookup_query`, and
+  `_QueryCrudQueryBuilder`; use generated managers and staged plans.
+  `_generated_declared_descriptors_json` is removed; use generated package
+  schema metadata. Native Python `DynamicSort` and `DynamicSortDir` are also
+  removed with those managers; use generated field ordering tokens.
+- Removed native `calculate_migration_file_checksum`, `check_migration_drift`,
+  `validate_migration_graph`, `normalize_migration_spec`,
+  `normalize_migration_graph`, `migration_spec_to_json`,
+  `migration_spec_from_json`, `migration_graph_to_json`,
+  `migration_graph_from_json`, and `plan_migration_graph`; replacement: none
+  for the retired handwritten migration format. Use the canonical workspace
+  `migration make`, `migration verify`, and `migration plan` commands.
+
+- TypeScript `RustDatabase`, `RustTransactionContext`, and
+  `RustDatabaseConnectOptions` become `Database`, `TransactionContext`, and
+  `DatabaseConnectOptions`. Regenerate generated TypeScript packages.
+- Python private module `type_bridge._rust_runtime` becomes `_native`;
+  `rust_core`, `rust_database_for`, `rust_transaction_for`, and
+  `database_from_rust` become `core_module`, `core_database_for`,
+  `core_transaction_for`, and `database_from_core`. Regenerate Python packages.
+- Python `_backend`, `_rust`, `selected_backend`, `BACKEND_ENV_VAR`,
+  `PYTHON_BACKEND`, `RUST_BACKEND`, and `RUST_AVAILABLE` are removed.
+  The native engine is always used; `TYPE_BRIDGE_BACKEND` is retired.
+  `_native.core_module` imports the required extension or reports its absence.
+- The development guide `development/rust-backend.md` moves to
+  `development/core-engine.md`.
+
+- The published `type-bridge-toml-transpiler` crate and its `TypeKind`,
+  `TranspileError`, and `toml_to_typeql` API are removed. Python
+  `type_bridge_core.toml_to_typeql` and Rust
+  `schema-compat::{toml_to_declared, toml_to_facts}` and the Python binding
+  crate's `transpiler::toml_to_typeql` module/API are also removed.
+  Author Split-YAML and use `type-bridge schema check` / `schema generate`.
+  Convert historical TOML with TypeBridge 2.3.x before upgrading to 3.0.
+
+- Python compatibility packages `type_bridge.models`, `crud`, `fields`,
+  `attribute`, and `expressions` are removed. Use Split-YAML generated
+  packages, their model managers, fields, attributes, and typed queries.
+- Removed retained Python model names `TypeDBType`, `Entity`, `Relation`,
+  `Role`, `ModelRegistry`, and `SchemaScanner`; attribute names `Attribute`,
+  `Boolean`, `Date`, `DateTime`, `DateTimeTZ`, `Decimal`, `Double`, `Duration`,
+  `Integer`, `NumericAttribute`, `String`, `Doc`, `Meta`, `TypeNameCase`,
+  `TypeFlags`, `Card`, `AttributeFlags`, and `Flag`; and `format_type_name`.
+  Use generated models, attributes, schema annotations, and package metadata.
+- Removed Python field implementation names `FieldRef`, `StringFieldRef`,
+  `NumericFieldRef`, `OrderedFieldRef`, `FieldDescriptor`, `RolePlayerFieldRef`,
+  `RolePlayerStringFieldRef`, `RolePlayerNumericFieldRef`, `RoleRef`,
+  `GeneratedFieldDescriptor`, `GeneratedStringFieldDescriptor`,
+  `GeneratedNumericFieldDescriptor`, `GeneratedOrderedFieldDescriptor`, and
+  `generated_descriptor_default`. Use generated bound-field and role tokens.
+- Removed Python CRUD implementation names `RustTypeDBManager`,
+  `RustTypeDBQuery`, `RustTypeDBGroupByQuery`, `HookRunner`, `ModelStrategy`,
+  `EntityStrategy`, `RelationStrategy`, `parse_aggregate_results`,
+  `parse_grouped_aggregate_results`, `format_value`, `unwrap_attribute`,
+  `build_lookup_expression`, `build_entity_match_ast`,
+  `build_entity_match_pattern`, `build_relation_match_ast`,
+  `build_relation_match_pattern`, `normalize_role_players`,
+  `parse_role_lookup_filters`, `build_role_player_match`,
+  `resolve_entity_class_from_label`, `build_role_player_fetch_items`,
+  `group_results_by_iid`, `extract_relation_attributes`,
+  `extract_role_players_from_results`, `wrap_attribute_value`,
+  `is_multi_value_attribute`, `build_metadata_fetch`, `hydrate_attributes`, and
+  `extract_entity_key`. Use generated managers, projections, and plan codecs.
+- Removed Python model/query helpers `attribute_wrapper`, `MatchClauseInfo`,
+  `WriteQueryInfo`, `FieldInfo`, `ModelAttrInfo`, `extract_metadata`,
+  `get_base_type_for_attribute`, `get_ast_value_type`, `validate_type_name`,
+  `validate_iid`, `generate_attr_var`, `generate_has_pattern`,
+  `get_reserved_words`, `is_reserved_word`, `ValidationError`,
+  `ReservedWordError`, `validate_query_against_schema`, `validate_entity_data`,
+  `model_definition`, `attribute_definition`, and `owns_lines`. Use Split-YAML
+  schema checks, generated projections, and typed plan validation.
+- Removed archive implementation names `AdoptionDirectoryError`,
+  `AdoptionDirectoryEntry`, `AdoptionDirectoryAuthority`, `RetainedImportError`,
+  `CapturedImportInput`, `CapturedImportDirectory`, `RetainedImportMirror`,
+  `retained_import_mirror`, `archive_import_context`, `archive_attribute`,
+  `archive_builtins`, `IgnoredMigrationSource`, `compare_schemas`,
+  `lower_operation`, `lower_migration`, `lower_loaded_migration`,
+  `lower_migration_graph`, `lower_validation_graph`, `lower_execution_migration`,
+  `lower_execution_graph`, `Operation`, `ModifyTypeAnnotations`,
+  `ModifyRoleAnnotations`, `AddAttribute`, `RemoveAttribute`, `AddEntity`,
+  `RemoveEntity`, `AddOwnership`, `RemoveOwnership`, `ModifyOwnership`,
+  `AddRelation`, `RemoveRelation`, `AddRole`, `RemoveRole`, `AddRolePlayer`,
+  `RemoveRolePlayer`, `RunTypeQL`, `RunPython`, `RenameAttribute`,
+  `CopyAttribute`, `EntityRef`, `RelationRef`, and `AttributeRef`. Adopt with
+  TypeBridge 2.3.x first, then use canonical workspace migration commands.
+- Python `expressions::{Expression, ComparisonExpr, AttributeExistsExpr,
+  StringExpr, BooleanExpr, AggregateExpr, FunctionCallExpr, FunctionQuery,
+  ReturnType, IidExpr, RolePlayerExpr, BuiltinFunctionExpr, ArithmeticExpr,
+  iid, label, abs_, ceil, floor, round_, len_, max_, min_, add, sub, mul, div,
+  mod, pow_}` are removed. Use generated bound-field predicates, reductions,
+  function queries, and `PlanBuilder` operations.
+- Python `Query`, `QueryBuilder`, `type_bridge.query` (including `QueryCompiler`,
+  `parse_typeql_query`, and AST nodes), `rules.RuleBuilder`, `validation`,
+  `coercion`, and `reserved_words` are removed. Use generated typed queries
+  and `PlanBuilder`; execute raw TypeQL text with `Database.execute_query`.
+- Python `TypeDBQuery`, `GroupByQuery`, and `has_lookup` are removed; use
+  generated query sessions and typed field predicates. `NotFoundError` and
+  `HydrationError` are removed; use the generated typed `MatchRequestError`.
+- Python `type_bridge.typeql` annotation helpers (`format_card_annotation`,
+  `format_type_annotations`, `escape_annotation_string`, and
+  `format_doc_meta_annotations`) are removed; author annotations in Split-YAML.
+- Removed raw `Query::{match, fetch, delete, insert, limit, offset, sort, build}`,
+  `QueryBuilder::{match_entity, insert_entity, match_relation}`, and
+  `QueryCompiler::{compile, compile_clause_body, compile_batch}`. Use generated
+  query terminals and `PlanBuilder`, or `Database.execute_query` for raw text.
+- Removed `type_bridge.query.ast` types `QueryNode`, `Value`,
+  `FunctionCallValue`, `LiteralValue`, `ArithmeticValue`, `RolePlayer`,
+  `Constraint`, `IidConstraint`, `HasConstraint`, `IsaConstraint`, `Pattern`,
+  `EntityPattern`, `RelationPattern`, `SubTypePattern`, `AttributePattern`,
+  `HasPattern`, `ValueComparisonPattern`, `NotPattern`, `TryPattern`,
+  `OrPattern`, `IidPattern`, `RawPattern`, `Statement`, `RawStatement`,
+  `HasStatement`, `IsaStatement`, `RelationStatement`, `DeleteThingStatement`,
+  `Clause`, `MatchClause`, `MatchLetClause`, `LetAssignment`, `InsertClause`,
+  `DeleteClause`, `UpdateClause`, `FetchItem`, `FetchAttribute`, `FetchVariable`,
+  `FetchAttributeList`, `FetchFunction`, `FetchWildcard`, `FetchNestedWildcard`,
+  `FetchClause`, `AggregateExpr`, `ReduceAssignment`, and `ReduceClause`.
+  Use generated tokens and `PlanBuilder` operations.
+- Python root `CrudEvent`, `CrudHook`, and `HookCancelled` exports are removed;
+  import the equivalents from the generated package. `EntityNotFoundError`,
+  `RelationNotFoundError`, `NotUniqueError`, and `KeyAttributeError` are removed;
+  use the generated query's typed `MatchRequestError` refusal.
+- Python `session.Transaction` and `ConnectionExecutor` are removed. Use
+  `Database.staged_transaction` for plans or `Database.transaction` for
+  explicit native query execution.
+- Python frozen migration recovery is removed: `MigrationLoader`,
+  `LoadedMigration`, `MigrationLoadError`, `MigrationState`,
+  `MigrationStateManager`, `MigrationRecord`, `MigrationRunRecord`,
+  `SchemaIntrospector`, `IntrospectedSchema`, `IntrospectedAttribute`,
+  `IntrospectedEntity`, `IntrospectedRelation`, `IntrospectedRole`,
+  `IntrospectedOwnership`, `SidecarConversionError`, `generate_sidecars`,
+  `get_snapshot_metadata`, `type_exists`, and `without_migration_state_schema`.
+  Use `type-bridge migration` workspace commands and `Database.get_schema`.
+  `SchemaConflictError` and `SchemaValidationError` root exports are removed;
+  use `type-bridge schema check` and `migration verify` diagnostics.
+  Migration-state label helpers remain in
+  `type_bridge.migration.state_schema`.
+- Archive and sidecar adoption (`migration adopt --archive-directory`,
+  native `import_legacy_frontier`, `import_legacy_frontier_in`,
+  `import_verified_legacy_frontier_in`, `load_adoption_history`,
+  `reconstruct_legacy_head`, and the `LegacyAdoption*` directory/metadata APIs)
+  is removed. Adopt old histories with TypeBridge 2.3.x before upgrading;
+  existing canonical adopted histories remain readable and executable.
+- Removed `schema-migration-typedb::{extract_legacy_frontier,
+  extract_legacy_applied_set_digest, verify_legacy_continuity}` with archive
+  import. Adopt with 2.3.x first; canonical histories keep permanent ledger
+  verification through `digest_legacy_applied_records` and the runner.
+- Legacy Python/JSON migration authoring, the `type-bridge-migration` binary,
+  `legacy_cli`, `author`, `map_schema_diff`, `load_sidecar`, `load_dir`, and
+  `load_dir_checked` are removed. Use `type-bridge migration` over Split-YAML.
+  Native Python archive helpers (`PyMigrationStateReader`,
+  `migration_state_reader`, `PyAdoption*`, `load_migration_sidecar`, migration
+  spec/graph conversion and planning, and `_render_migration_operation`) are
+  removed; use canonical workspace commands and catalogs.
+- Legacy model generators `core::_bindgen`, `orm::_codegen`,
+  `_ArchivedTypeSchema.render_models_json`, `_render_models_json`,
+  `generate_package_with_declared_descriptors`, and `attach_declared_descriptors`
+  are removed. Use `type-bridge schema generate` and `schema-codegen` emitters.
+- Removed `core::_bindgen::{AnnotationMap, TargetLanguage, PythonRenderMetadata,
+  BindgenOptions, GeneratedFile, GeneratedPackage, GeneratedRustModels,
+  BindgenPlan, generate_from_typeql, generate_json_from_typeql, python_class_name}`.
+  This includes `GeneratedPackage::{to_json, file}`,
+  `GeneratedRustModels::into_package`, and
+  `BindgenPlan::{from_schema, from_typeql, render, render_rust_models,
+  render_rust_inline}`. Use `type-bridge schema generate` or the
+  `schema-codegen` emitters.
+- Removed `orm::_codegen::generator::{GeneratedModels, generate_from_typeql,
+  generate_for_target, generate_rust_models}` and
+  `orm::_codegen::naming::{to_pascal_case, to_snake_case}`. Use
+  `type-bridge schema generate` and generated package names.
+- Removed `migration::author::{MigrationMetadata, SnapshotContext,
+  PositionedOperations, AuthoredArtifact, AuthoredMigration,
+  AuthorMigrationRequest, author_migration, PythonRenderRequest,
+  render_migration_python, migration_class_name, py_repr, SnapshotRenderRequest,
+  RenderedSnapshot, render_snapshot, ExistingArtifactPolicy,
+  write_authored_migration}`. Use `type-bridge migration make`.
+  Removed `migration::legacy_cli::run_cli` and its display helpers
+  `print_no_pending`, `print_migration_header`, `print_step`,
+  `print_sqlmigrate_forward`, `print_sqlmigrate_reverse`, `print_result`,
+  `print_app_label`, and `print_migration_status`; use `type_bridge_cli::run_cli`.
+- Removed archive constants `LEGACY_ADOPTION_METADATA_V2`,
+  `LEGACY_SIDECAR_ADOPTION_METADATA_V1`, `LEGACY_IGNORED_SOURCE_METADATA_V1`,
+  `MAX_LEGACY_DIRECTORY_ENTRIES`, `MAX_LEGACY_ARTIFACT_BYTES`, and
+  `MAX_LEGACY_HISTORY_BYTES`, plus `LegacyMetadataRevision`,
+  `LegacyDirectoryEntry::{name, revision, is_file, is_directory, is_symlink}`,
+  `LegacyDirectoryAuthority::{open_root, directory_revision,
+  require_directory_revision, entries_relative, inspect_relative,
+  read_relative_bounded, write_atomic_no_replace, validate_publication_name,
+  remove_owned_temporary_if_matches, remove_if_matches}`, `LegacySchemaEffect`,
+  `LegacyAdoptionMetadata::{new, verify, checksum, source_sha256}`,
+  `LegacySidecarAdoptionMetadata::new`,
+  `LegacyIgnoredSourceMetadata::{new, verify, name, checksum, source_sha256}`,
+  `LegacyAdoptionHistory::{graph, directory, require_unchanged,
+  require_unchanged_head}`, and
+  `VerifiedLegacyHead::{source_migration, schema_typeql}`. Adopt with 2.3.x
+  first, then use canonical workspace histories.
+
+- TypeDB admission now requires 3.12.0 or newer. The removed semantic profile
+  `typedb-3.11.5/v1` and Rust `TYPEDB_3_11_SEMANTIC_PROFILE_ID` are replaced
+  by `typedb-3.12.1/v1` and `TYPEDB_3_12_SEMANTIC_PROFILE_ID`; generated
+  packages keep their measured profile patch floors. Newer lines retain the
+  existing warning without an upper admission ceiling.
+- The Python `typedb-driver` extra now requires `>=3.12.3,<3.15`;
+  upgrade older driver installations before using the extra.
+- The `band8` Cargo feature is removed from `type-bridge-typedb-runtime`,
+  `type-bridge-orm`, `type-bridge-server`, and `type-bridge`; use `band9`.
+  The removed `type-bridge-typedb-driver-b8` and
+  `type-bridge-typedb-protocol-b8` compatibility packages are replaced in the
+  runtime graph by official `typedb-driver` and `typedb-protocol` 3.14.0.
+  `PINNED_DRIVER_VERSION` now aliases `PINNED_DRIVER_VERSION_B9`, and
+  `embedded_driver_version()` and `embedded_driver_versions()` expose the
+  retained band-9 pin.
+- The schema diagnostic `ordered_collection_profile_unsupported` is retired
+  with the old profile. Unknown and retired profiles now consistently return
+  `unsupported_semantic_profile` before schema resolution.
+- Failed HTTP version discovery now refuses the connection before constructing
+  the gRPC driver. Configure a reachable HTTP version endpoint, or use the
+  existing exact `server_version` declaration for gRPC-only connections.
+  Generated-package admission still clears that declaration and requires
+  authoritative HTTP discovery before checking its profile floor.
+- In 2.3.3, ordered role players were written through scalar links without
+  list order. Nonempty ordered role and attribute writes now refuse before
+  provider IO with `query_plan_ordered_collection_unsupported`; use empty
+  lists until TypeDB implements list DML. Batch pre-hooks still observe the
+  attempted write before this refusal; post-hooks do not run. Populated
+  ordered roles from other clients remain refused at hydration.
+
+- `OrmError::ExecutionDiagnostic` carries canonical execution failures through
+  native managers. Exhaustive matches must handle this variant; commit errors
+  retain their transaction category and durability outcome.
+
+- Rename Rust `QueryV2AnswerLimits` to `AnswerLimits`, shared by query paths.
+  Transaction options and the materialized provider seam use this policy.
+  Native runtime answer-limit errors now carry measured `actual` and `maximum`
+  counters in `RuntimeError::AnswerLimit`.
+- Remove `query_remote_v3_documents_unsupported`: fetch plans now return
+  document evidence, with specific document-validation diagnostics.
+
+- Keyless `put` is TypeQL `put` of the whole given pattern on the exact model
+  type in every SDK, direct and through the proxy. Single keyless `put` (all
+  SDKs) and Rust keyless `put_many` change from insert to match-or-insert: an
+  instance of exactly that type holding every given value and role player is
+  returned, otherwise the pattern is inserted. Nothing is updated, and a
+  subtype instance is not matched. The upgrade guide's "Keyless put" section
+  lists the semantics.
+- Python, Node and C keyless `put_many` and explicit batch `Put` change from
+  refused to match-or-insert in one transaction, with the answers of
+  sequential single-row puts in row order; identical rows return the same
+  instance. The `put_requires_projected_key` refusal is removed. Rows of one
+  shape (the same fields and player references) share one put statement, so
+  distinct rows need one statement whatever their number. A row that may
+  match an earlier row's instance (equal values, or a subset of its fields
+  and players) runs in a later statement. Through the proxy one call holds at
+  most 64 statements (staged plans); a call that needs more is refused with
+  `query_remote_plan_limit` before anything runs. A direct call is bounded by
+  its effective resource limits; a caller-set `statements` limit is charged
+  with the statements the call needs, before anything runs. Exceeding it is
+  refused with `projected_batch_statement_limit` when the call executes,
+  where a keyless batch used to fail with `batch_statement_limit` when it was
+  built.
+- A keyless put whose pattern matches more than one existing instance fails
+  with `put_ambiguous_match` (invalid input) before commit; in `put_many` the
+  whole call is refused and no row is committed. The same rule applies to
+  authored single-row put plans: `[Put, Fetch]` of one thing, or
+  `[Match, Put, Fetch]` whose match binds only the put's role players, each by
+  IID or by a key attribute equal to a literal or input value. Such a plan
+  that matches several instances now reports `put_ambiguous_match`; a
+  single-entity `[Put, Fetch]` plan previously reported
+  `query_remote_document_value`.
+- ORM schema sync is removed; Split-YAML through reviewed migrations is the
+  only way to create or change a schema. Rust
+  `type_bridge_orm::_schema::SchemaManager::{sync_schema, register_entity,
+  register_relation, schema_info, generate_schema, has_existing_schema}` are
+  removed; `SchemaManager::new` and the read-only `introspect` remain, and
+  `SchemaError::Sync`, which only sync produced, is removed. The
+  2.x writer guard that only sync used is removed with it:
+  `require_legacy_writer_open` and `require_legacy_writer_open_in_transaction`
+  (crate root and `session`), the `session::legacy_writer` module and the
+  `TransactionOps::schema_snapshot` backend hook. The upgrade guide's "ORM
+  schema sync" section lists the replacement.
+- The resource-limit error code `query_v2_document_member_limit`, raised when
+  a fetched document exceeds its member budget, is renamed to
+  `document_member_limit`, matching `processed_item_limit` and
+  `response_byte_limit`. Update code that matches the old string.
+- Rust `ProxyExchange` loses the forwarding `staged_capabilities()` and
+  `exchange_staged()` methods. Implement the required `capabilities()`
+  (`GET /v3/capabilities`) and `exchange()` (`POST /v3/staged`), which every
+  terminal and transaction now calls; move any `staged_*` override into them.
+
+<!-- --8<-- [end:breaking-3-0] -->
+
+### Added
+
+- C held typed selections expose their exact executable plan through
+  `type_bridge_plan_builder_selection_plan` for canonical bytes and explain.
+- Typed pending plans expose `documents()` in Python, TypeScript, and Rust
+  to inspect the raw documents of the same committed execution without
+  another query or model hydration.
+- Generated C projected batches execute insert, put, update, and delete
+  through proxy connections with the same nominal results as direct writes.
+- Generated C entity and relation managers expose single and many returning
+  deletes with nominal snapshot results and typed IID inputs.
+- C managers expose typed-IID `delete_returning` and `delete_many_returning`
+  on database, write transaction, and proxy targets. Results retain deleted
+  snapshots, omit missing IIDs, and perform no provider I/O for an empty list.
+- Generated C managers expose canonical `insert`, `put`, filtered `update`,
+  and filtered `delete` methods for database, write transaction, and proxy
+  targets, preserving complete write results and exact-model validation.
+- Generated C managers expose typed `filter_iid` and `filter_iids` builders.
+  IID lists retain empty-list matches-none behavior and fence both the pointer
+  array and each IID owner before initializing outputs.
+- C manager filters expose exact-model validation against a manager root and
+  generated token, rejecting foreign package brands before dispatch.
+- C proxy connections execute projected batches and returning delete batches
+  through the shared staged path, preserving remote commit diagnostics.
+- C canonical manager `insert` and `put` terminals accept database, borrowed
+  write, and proxy targets and return complete write results through the
+  shared single-write executor.
+- C canonical filter `update` and `delete` terminals support database, borrowed
+  write, and proxy targets. Updates return every root through the common write
+  result; direct result mapping finishes before commit. Empty IID filters
+  perform no provider requests.
+- C canonical manager `all`, `first`, `count`, and `exists` terminals accept
+  database, borrowed read/write, and proxy connection targets. Owned read
+  results expose nominal `count`/`at`/`close`; empty IID filters skip provider
+  requests, and borrowed provider panics poison the transaction.
+- C immutable manager filters expose `type_bridge_manager_filter_open`,
+  `_iid`, `_iids`, `_compare`, and `_close`. Predicates use validated IID
+  owners and nominal field/value tokens; an empty IID list matches none.
+- C `type_bridge_database_projected_batch_delete_returning` and
+  `type_bridge_write_transaction_projected_batch_delete_returning` return
+  complete deleted roots from entity or relation delete batches, omitting
+  missing IIDs. The common result accessors retain the deleted objects.
+- C projected write results expose `type_bridge_projected_batch_result_item`
+  and generated `*_batch_result_item` accessors: an independently owned item
+  for exactly one root, otherwise a successful null result.
+- C `type_bridge_iid_open`, `type_bridge_iid_text`, and `type_bridge_iid_close`
+  own validated TypeDB identities and preserve their original spelling.
+- C unchecked TypeQL supports database/proxy `execute_query` and owned raw
+  transactions for read, write, and schema work. Results retain exact provider
+  JSON bytes; diagnostics retain provider details and commit certainty. Direct
+  transactions support multiple queries, while proxy contexts accept one.
+- C execution policies accept signed millisecond timeouts: nonpositive values
+  disable the deadline, and omitted policies now default to 60 seconds. Proxy
+  admission windows are independent; query and staged policies can collect
+  execution timelines exposed through read-only diagnostic accessors.
+- Node `executeQuery(text, kind)` and `rawTransaction(kind)` expose unchecked
+  TypeQL on direct and proxy connections. Provider answers preserve unsafe
+  integer tokens as `bigint`, with safe integers and doubles as `number`.
+  `RawQueryError` retains provider details and commit certainty. Direct raw
+  contexts support atomic multi-query work; proxy contexts accept one query.
+- Python `raw_transaction(kind)` and `RawTransaction.execute_query` share the
+  unchecked core with database-level `execute_query`, including proxy contexts
+  and `RawQueryError` provider details/commit certainty. Python integers retain
+  full provider precision; context-manager exit supports explicit rollback.
+- Rust SDK unchecked TypeQL pair: `Database::execute_query` and
+  `RawTransaction::execute_query`, also on proxy/configured connections.
+  Direct raw contexts retain atomic multi-query transactions; proxy contexts
+  allow one query, refuse a second with `raw_transaction_single_query`, and
+  refuse rollback after a write with `raw_transaction_already_committed`.
+  `RawQueryError` preserves provider details and uncertain commit outcomes.
+
+- Node canonical and explicit keyword filters expose `update(replacement)` for
+  every match, returning one `WriteResult`. IID `update(iid, replacement)`
+  permanently redirects to `filter({ iid }).update(replacement)`. Hydration
+  remains inside the mutation lease; unfiltered one-argument updates refuse.
+
+- Node canonical filters and explicit keyword filters expose `delete()` for all
+  matches. IID `delete(iid)` permanently redirects to `filter({ iid }).delete()`;
+  existing keyword predicates are retained. Unfiltered zero-argument manager
+  deletion is refused; use an explicit `filter({})` or `where()` to select all.
+
+- Python canonical manager filters expose `delete()` and `update(replacement)`
+  for all matches through the shared native mutation path. These terminals run
+  no instance CRUD hooks;
+  use an explicit read followed by instance operations when hooks are needed.
+
+- Read-only query plans may match after a validated reduction, retaining typed
+  group bindings and Long count outputs. Bindings dropped by the reduction
+  cannot be reused; write plans retain their existing stage restrictions.
+
+- The staged contract carries typed IID result references. Singleton
+  answers broadcast; one fixed template row inherits every row from its single
+  IID source. Other larger answers zip only with equal template row counts.
+  Forward, scalar, incompatible-type and cross-source references are refused.
+  Rust, Python and Node builders author invocation templates and queue them
+  with `stage_stack` / `stageStack`; future IID cells remain absent until execution.
+
+- Direct manager connections accept independently configured `QueryLimits`;
+  borrowed transactions and projected single/batch writes inherit them.
+  Raising every needed dimension keeps wide rows in one statement; an
+  unchanged dimension retains bounded pieces in the same transaction.
+  Python and Node connection options and generated direct policies expose
+  the same full policy. Proxy ceilings intersect the staged advertisement.
+  C adds direct/proxy open functions taking named query-limit overrides;
+  existing configuration layouts retain their meanings.
+
+- Python, Node, and Rust expose a nominal `Iid` value validated by the shared
+  engine. Construction rejects malformed provider identifiers before I/O and
+  preserves the exact accepted hexadecimal spelling. Rust entity and relation
+  filters expose `delete()` and `update(replacement)` terminals and accept
+  `iid(&Iid)` and `iids(&[Iid])` predicates; an empty IID set matches nothing
+  without a provider request. Rust subtype managers expose the same read filter
+  terminals and retain their concrete leaf or family result types.
+- Python `filter(iid=...)` and `filter(iid__in=...)` retain their selection
+  through `.where()` and expose canonical `delete()` and `update(replacement)`
+  terminals directly. Empty IID lists
+  match nothing without provider work; list iterators are consumed once.
+
+- `DocumentScalar` fetch fields accept bound entities and relations and
+  return their canonical IID. Optional thing bindings omit the field when
+  absent, preserving source identity evidence across key-changing writes.
+
+- Opt-in server `/v3/raw`, enabled by `[staged].raw_enabled` (false by
+  default), with `query.remote.raw` discovery, finite nonce admission,
+  host `on_raw` authorization and raw-text auditing. Shared runtime
+  `execute_raw` / `query_raw` return TypeDB HTTP query-answer JSON for
+  unchecked TypeQL without generated-model admission or hydration. Raw
+  write/schema requests use staged write vouching; every refusal is audited.
+  `execute_raw_with_options` accepts host deadline and answer-byte bounds;
+  remote raw answers fit the remote-envelope ceiling without truncation.
+  `RawQueryError::commit_outcome` preserves uncertain commit durability.
+
+- Generated plan idioms in Python, TypeScript, Rust, and C bind caller values
+  as typed given inputs and retain the shared builder's canonical bytes.
+  Model and mixed model/scalar selections publish only after the full Core
+  fetch proof succeeds, before commit; SDKs share its row and model ordinals.
+  A bound value may compare with a class field token on the right, as in
+  `item.price.le(Account.balance)` (TypeScript) or
+  `item.price <= Account.balance` (Python); the handle receiving `where()`
+  resolves the token, and a token of another model is refused.
+- C ABI 2.0 includes typed scalar carriers, held model/scalar/tuple selections,
+  frozen recording caches, and borrowed model views checked against generated
+  layout digests. Result owners may outlive recordings and transactions.
+  Regenerate old packages and rebuild consumers for the ABI 2.0 target.
+
+- Generated C authoring handles stay 16 bytes regardless of model width and reuse
+  per-recording model metadata. Boolean unset selections and nominal unordered
+  role edits treat zeroed structs as no change; role arrays are borrowed only
+  during the call.
+- Explicit `fetch` terminals in the Python, TypeScript, Rust and C plan
+  builders; plain writes keep their matched-count default.
+- C ABI 2.0 includes borrowed row and document cursors with typed scalar
+  getters, attribute-kind queries and optional role-player access.
+- Fetch documents on direct and staged query-plan execution, with schema-derived
+  validation, bounded answers, and Python, TypeScript and Rust answer variants.
+- The staged endpoint advertises `query.fetch.thing` and `query.write.attach`.
+- Opt-in deletion snapshots: a fetch immediately before a terminal delete
+  captures documents in the same transaction and requires
+  `query.write.delete-snapshot`. Plain deletion keeps its existing behavior.
+- `delete_returning` and `delete_many_returning` in Rust and Python, and
+  `deleteReturning` / `deleteManyReturning` in generated TypeScript managers.
+  Snapshots retain stored fields and relation players; deleted roots refuse
+  further mutation with `thing_deleted`.
+
+- Registry-backed Rust dynamic and handwritten managers execute native plans,
+  retaining descriptor and registry authority without per-call descriptor copies.
+- Add capability-fenced nested IID operands, subtype-inclusive Put, optional
+  attach items, key attachments, typed fetch scalar fields, collected unordered
+  role documents, and Select/Distinct between write stages. Existing constructor
+  defaults and canonical plan bytes remain unchanged.
+
+### Changed
+
+- C typed-IID update/delete exports now redirect to canonical filter terminals.
+  Insert/put exports also use the shared controlled single-write path.
+- C entity/relation get-by-IID exports now redirect to an IID filter and the
+  canonical `first` terminal, retaining the existing typed-IID signatures.
+
+- C `type_bridge_projected_batch_builder_add_v1` and generated update/delete
+  batch builders take validated IID owners. Insert/put pass a null IID; each
+  added update/delete row copies its identity before the owner can close.
+
+- C batch insert/put/update results count and retain every returned root,
+  including missing inputs and several roots from one input. Additional
+  result storage is reserved before commit.
+
+- C database and write-transaction entity/relation `insert`, `put`, and
+  `update` functions return an owned projected result
+  instead of one thing. Use `count`, `thing_at`, and optional `item`, then
+  close the result. Generated wrappers expose operation-specific result types.
+  Zero or multiple roots no longer cause a binding cardinality refusal;
+  complete result storage is prepared before commit.
+
+- Canonical manager filter reads accept borrowed read or write transactions
+  across SDKs, preserving read-after-write; borrowed schema targets remain
+  refused and transaction ownership is unchanged.
+
+- Python projected single writes hydrate and stage facade publication under
+  Core's controlled write mapper. A failed write restores the input facade;
+  zero or multiple roots leave it unchanged.
+
+- Rust single writes retain the mutation lease through generated model
+  materialization. A failed materializer makes a borrowed transaction
+  rollback-only and preserves the original binding error.
+
+- Node projected single-write envelopes materialize inside Core's controlled
+  write mapper and use the connection-selected direct or proxy target.
+
+- Proxy staged commit failures retain a caller-owned transport error as
+  their source while keeping `commit_outcome_unknown` as the outcome.
+  Rust SDK conversion preserves that cause and the typed commit failure.
+  Application error text remains absent from public diagnostics and rendering.
+  Proxy stack materialization failures and post-mapping cancellation retain
+  an indeterminate outcome after remote commit, with the typed cause available.
+
+- Single writes that match nothing now return `count: 0`, empty `items`, and
+  absent `item`, including missing-player inserts and absent-root updates.
+  The zero-answer `provider_identity_cardinality_invalid`,
+  `mutation_rehydration_missing`, `provider_hydration_failed`,
+  `projected_batch_mutation_result_missing`, and
+  `projected_batch_reference_missing` refusals and their diagnostic lookup
+  are removed from single writes. Input validation and the rare split-wide
+  existence guard remain.
+
+- Manager `all()` keeps the caller's authored window across direct and proxy
+  targets. Proxy execution ceilings stay outside plan bytes and refuse an
+  oversized answer without silently truncating it.
+
+- `TransactionContext::execute_plans`, `OwnedTransaction::execute_plans`,
+  and `EagerTransaction::execute_plans` now accept write plans in caller-owned
+  Write and Schema transactions, sharing answer budgets and rollback-only
+  latches. A write plan on a Read context fails with
+  `query_plan_read_only`; the old `borrowed_target_not_read_only` refusal is
+  removed.
+- Typed Long SUM/MEAN share exact high/low partial aggregates, preventing
+  native integer wrap without an extra query. SUM checks the final `i64`
+  domain (`reduction_overflow`); MEAN divides the exact total by the count in
+  binary64. More than 2^31 inputs per group fails as `reduction_input_bound`.
+  Long MEDIAN/STD share a binary64 input projection, matching the 2.x numeric
+  domain; MIN/MAX retain exact Long values.
+- Native floating aggregates can differ from 2.x in the last bit.
+  Witness-dependent reductions keep the bounded client reducer and choose
+  the minimum witness IID per root/group.
+- Native output columns now default to the binding ceiling (256), allowing
+  complete hidden-witness identity evidence. The configured column ceiling
+  cannot exceed the binding ceiling. Lower advertised plan caps remain binding.
+- Explicit staged byte/item budgets can rise to the shared answer-policy
+  maxima, while defaults and independent codec/envelope hard caps stay fixed.
+- Typed reads execute native plan stacks directly and through `/v3/staged`.
+  Proxy `stage_match` shares the tightest program, connection and transaction
+  budget across the complete commit and reports which bound constrained it;
+  projection failures after commit publish no partial results.
+- Explicitly raised string limits now survive final model projection and size
+  measurement, including nested role-player keys and scalar group values.
+- Unset typed-read statement limits now cover the complete static adapter
+  stack, with a minimum of three. Explicit limits remain strict; Rust stores
+  `statements: Option<u32>` and Python/Node preserve an omitted value.
+  The supported explicit maximum is 4,096. An explicitly advertised
+  `statements: 3` remains distinct from an unset ceiling; a 2.x receiver
+  refuses that explicit advertisement as noncanonical.
+- Typed string values default to a 1 MiB ceiling in 3.0. The existing
+  `canonical_string_bytes` query-limit option can raise it up to the complete
+  artifact budget (16 MiB by default); servers retain their own configured
+  maximum and refusals name the limit. In 2.x, typed predicate strings could
+  reach the caller's artifact ceiling. Plan requests carrying strings above
+  1 MiB require `query.input.wide-strings`.
+
+- Typed-plan execution timeouts now default to 60,000 ms on direct and proxy
+  connections, with no 24-hour maximum. Signed timeout inputs of zero or
+  less mean no deadline; Rust uses `QueryTimeout`. Server ceilings remain
+  tighten-only, and a dispatched commit runs to its actual outcome. Raw and
+  schema calls retain their previous defaults. C ABI 2.0 uses the same
+  60,000 ms default and signed timeout semantics. Frozen parity tests pass
+  their historical policy values explicitly.
+- Proxy request freshness is independent of execution duration. Configure
+  `admission_window_milliseconds` on the client and server (default 60,000 ms);
+  the server ceiling wins and even unbounded calls retain finite replay expiry.
+
+- Plan calls report the failing execution phase and total elapsed time on
+  deadline and cancellation diagnostics. Enable `collect_phase_timestamps`
+  (Node: `collectPhaseTimestamps`) or a plan tracing subscriber for full
+  UTC-anchored monotonic timelines, including each dispatched statement.
+  Default execution retains scalar phase state without per-phase clock reads.
+
+- Manager writes preserve TypeQL fan-out and repeated-player behavior.
+  Multiple answered roots no longer cause `provider_identity_cardinality_invalid`,
+  and repeated resolved role-player references no longer cause
+  `duplicate_resolved_role_player`. All roots appear in the write result;
+  a missing reference matches nothing and returns `count == 0`, and
+  split-wide existence guards remain. No strict option or extra pre-flight
+  query is introduced.
+
+- Policy-controlled single entity and relation inserts use the same single
+  native plan as ordinary inserts, retaining cancellation, resource limits,
+  precommit hydration and transaction failure handling.
+- Policy-controlled exact entity and relation reads use the same native
+  manager plans as ordinary reads, retaining bounded streaming, cancellation,
+  deadlines, cumulative resource limits and caller-owned transaction reuse.
+- Empty ordered ownerships and roles now use native query plans. Nonempty
+  ordered writes fail before provider IO with
+  `query_plan_ordered_collection_unsupported`; TypeDB 3.12.3, 3.13.6 and
+  3.14.0 do not implement list DML. Complete authored write/fetch model
+  projections accept empty ordered roles and refuse populated ordered roles
+  during hydration before commit.
+
+- Generated C borrowed result views use `<model>_plan_view_t`, and nested
+  player views use
+  `<model>_plan_player_view_t`. Existing owned `<model>_t` types and hydrated
+  getters retain their names. A held set is spelled `<model>_set` followed
+  by the explicit `<model>_row` projection.
+- Generated TypeScript model members reserve plan-authoring names and append
+  `_` to their projected spelling: `byIid`, `definition`, `delete`,
+  `deleteReturning`, `deleted`, `field`, `insert`, `insertMany`, `link`,
+  `linkPlayers`, `match`, `modelType`, `models`, `open`, `put`, `putMany`,
+  `recording`, `set`, `setFields`, `subtypes`, `thing`, `unlink`, `unset`,
+  and `where`. For example, physical `by-iid` becomes `byIid_`, `set` becomes
+  `set_`, and `model-type` becomes `modelType_`. Physical schema labels and
+  query values keep their spelling.
+- Generated Python model members additionally refuse `match`, `subtypes`,
+  `by_iid`, `insert`, `put`, `insert_many`, `put_many`, `Values`, `where`,
+  `set`, `unset`, `link`, `unlink`, `delete`, `delete_returning`, and
+  `__plan_roles__` with `python_emitter_name_collision`; they receive no alias.
+- Generated Rust models reserve `matching`, `matching_by`, `subtypes`,
+  `by_iid`, `insert`, `put`, `insert_many`, and `put_many`; generated plan handles reserve `where_`,
+  `models`, `delete`, `delete_returning`, `set`, `unset`, `link`, `unlink`,
+  `clone`, and `player_reference`. Named-match builders reserve `handle`,
+  and setter/role builders reserve `models`. Derived `Handle`, `Match`,
+  `Set`, `Link`, `Insert`, and `Values` type names share the existing root namespace.
+  Family enums reserve `exact_type`, which returns their physical concrete
+  TypeDB label. Collisions refuse with `rust_emitter_name_collision`, without aliasing.
+  Raw Rust builder values, expressions, and conditions are now named
+  `PlanValue`, `PlanExpr`, and `PlanCondition`; typed authoring uses
+  `Value<T>`, `Expr<T>`, and `Condition`.
+- Generated C recordings open with `<package>_plan_open(options, out_builder)`
+  (`shop_plan_open`), capturing the package and selected query limits once.
+  Generated initializers retain their projection-brand check; an unbound raw
+  builder reports `plan_context_missing`, with the opener in its typed path.
+- Generated C plan-value getters use `<model>_plan_<field>`; for example,
+  `shop_item_plan_stock` leaves the existing hydrated `shop_item_stock`
+  accessor available. Match, set, and insert helper names retain their model
+  prefixes. Real collisions refuse with `c_emitter_generated_symbol_collision`
+  through the existing C inventory. Physical `-`, `_`, and `z` retain their
+  `zh`, `zu`, and `zz` escapes, so `plan-stock`, `plan_stock`, and `has-stock`
+  remain distinct from generated `plan_stock` and `has_stock` helpers.
+  New authoring struct members append `zk` for C17/C++17 keywords (`classzk`,
+  `intzk`, `operatorzk`); physical `classz` remains the distinct `classzz`.
+- Standalone scalar entity insert/put plans correlate fetched rows with their
+  canonical inputs before commit. Inconsistent replies roll back direct and
+  proxy writes; the same check applies to explicit core-builder plans.
+
+### Fixed
+
+- A proxy request that exceeds the advertised budgets, such as more staged
+  plans than one request admits, now reports its contract code (for example
+  `query_remote_plan_limit`) instead of `transaction_state_invalid`. Nothing
+  is sent in either case.
+
+- Exact manager reads of relations with many roles now split their fetch
+  projection within the effective query limits, using one transaction.
+  Results preserve all fields and role players; in-budget plans are unchanged.
+
+- Provider statement TRACE now covers manager, streaming, split, counted, and
+  migration-assertion paths with prepared input redaction.
+- Node debug listeners no longer silently lose events under synchronous load.
+- Provider panics during shared controlled write commits now report an unknown
+  commit outcome across C, Rust, Python, and Node, preserving durability
+  uncertainty instead of surfacing a generic panic.
+
+- Node generated `manager.filter(...).where(...)` retains keyword predicates.
+  The 2.3.3 chain discarded them and could read extra rows. Wider lookups refuse
+  the canonical path with `unsupported_manager_filter`; read their matches
+  before explicit instance or IID batch operations.
+
+- Python generated `manager.filter(...).where(...)` now retains the keyword
+  predicates. In 2.3.3, this chain discarded those predicates and could read
+  extra rows. Unsupported wider lookups refuse the canonical path; use the
+  keyword filter's read terminal and explicit instance operations instead.
+
+- The server `/health` response reports its actual crate version instead of
+  the stale `1.5.11` literal.
+
+- Signed staged proxy cancellations retain their `cancelled` category and
+  original diagnostic code when surfaced to callers and pending answers.
+- Server call deadlines remain absolute while plans are staged. Preparing a
+  transaction no longer refreshes its remaining execution time before commit.
+
+- Provider datetime ingress accepts one through nine fractional digits and
+  normalizes insignificant trailing zeros without losing precision. Canonical
+  wire datetime parsing remains strict.
+- Polymorphic relation `delete_returning` and `delete_many_returning` now
+  capture complete subtype snapshots in one plan, preserving optional roles
+  instead of refusing with `plan_returning_models_given_window`.
+- Refuse nonliteral IID predicates under negation on the TypeDB 3.12 profile
+  before dispatch (`query_plan_negated_given_iid_unsupported`), avoiding a
+  provider connection failure. Positive, optional, and literal IID filters
+  retain their existing lowering.
+- Preserve nullable `given` columns in native plan lowering so sparse batch cells
+  bind as absent instead of failing at the provider.
+- Refuse playerless projected relation creates with `relation_requires_player`
+  before I/O: TypeDB accepts their insertion but removes them at commit.
+
 ## [2.3.3] - 2026-10-27
 
 ### Fixed
@@ -35,6 +1733,24 @@ All notable changes to TypeBridge will be documented in this file.
   documented on the V3 interceptor hooks and pinned by a test.
 
 ### Changed
+
+- Native typed queries refuse a populated ordered relation role with
+  `query_plan_hydration_ordered_role`: native role evidence cannot prove
+  its authored order. Empty ordered roles remain queryable. Canonical
+  snapshot codecs continue to preserve ordered role values.
+
+- Predicate nesting is bounded by canonical encoding depth (default 64) and
+  native predicate depth (64), whichever is reached first. The alternating
+  AND/OR typed terminal now admits depth 39; depth 40 refuses with
+  `canonical_json_too_deep`. Raising the caller and receiver codec depth
+  explicitly admits native depth 64; depth 65 refuses with
+  `predicate_limit_exceeded`. The former depth 38 encoding refusal now
+  reaches normal capability negotiation. Production limits are unchanged.
+- Native typed reply binding failures use `query_remote_binding_mismatch`
+  with `reason` equal to `nonce` or `request`; foreign embedded programs
+  differ through the whole request digest. Unsupported reply formats use
+  `query_remote_format_unsupported` before binding checks. Frozen raw V2
+  diagnostics remain unchanged.
 
 - TypeDB 3.14's query rules are refused at plan build on every profile and
   in every language (#268): a sort on a duration (`query_plan_sort_unordered_value`,
@@ -1358,7 +3074,7 @@ carry managers or typed queries.
   raised later by application-owned Node `warning` listeners retain ordinary
   Node process semantics.
   The removal schedule names a single release, documented exactly in
-  [V2 Deprecations](docs/guide/v2-deprecations.md#removed-in-21).
+  [V2 Deprecations](https://github.com/ds1sqe/type-bridge/blob/v2.3.2/docs/guide/v2-deprecations.md#removed-in-21).
   Every scheduled removal lands in the 2.1.0 minor release as a deliberate,
   exactly-enumerated exception to ordinary major-version scheduling:
   active TypeDB 3.8/3.10 provider and driver support ends (the wheel then

@@ -95,10 +95,10 @@ ordinal_id!(
     "A deterministic plan-local identity for a role-edge predicate."
 );
 
-/// A field identity qualified by its declaring descriptor.
+/// A field identity qualified by its effective binding descriptor.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct FieldId {
-    /// Descriptor that declares the field.
+    /// Descriptor that supplies the effective field.
     pub owner: DescriptorId,
     /// Canonical schema member name.
     pub name: String,

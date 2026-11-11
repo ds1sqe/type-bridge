@@ -58,7 +58,7 @@ pub fn count<S: Schema>() -> Agg<S, u64> {
 }
 
 /// Sealed decoding of one typed reduced scalar into its facade output.
-pub trait ReducedOutput: reduced_sealed::Sealed + Sized {
+pub trait ReducedOutput: reduced_sealed::Sealed + Sized + 'static {
     #[doc(hidden)]
     fn decode(value: &ReducedValue) -> Result<Self>;
 }
@@ -175,7 +175,7 @@ where
 /// Sealed tuple of typed reducer terms through the sixteen-slot ceiling.
 pub trait AggregateTuple<S: Schema>: tuple_sealed::Sealed<S> {
     /// The typed tuple output decoded from one reduction row.
-    type Output;
+    type Output: 'static;
     #[doc(hidden)]
     fn terms(&self) -> Vec<(Reduction, Option<(BindingKey, &'static str)>)>;
     #[doc(hidden)]

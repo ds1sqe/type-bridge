@@ -6,20 +6,26 @@
 //! fingerprint and live invocation token.
 
 pub mod capability;
+pub(crate) mod descriptor_plan;
 pub mod diagnostic;
 pub mod error;
 pub mod handles;
 pub mod ids;
 pub mod limits;
 pub mod model;
+#[cfg(test)]
+pub(crate) mod model_outcome_fixture;
+pub(crate) mod plan_adapter;
+pub(crate) mod plan_diagnostic;
+pub(crate) mod plan_fetch_stack;
+pub(crate) mod plan_hydration;
+pub(crate) mod plan_result;
 pub(crate) mod provider_order;
 pub mod recording;
 pub(crate) mod reducer;
 pub mod result;
 pub(crate) mod result_validation;
 pub(crate) mod selected_result_executor;
-#[cfg(test)]
-pub(crate) mod v2_outcome_fixture;
 pub mod validation;
 
 pub use capability::{Capability, CapabilitySet, derive_required_capabilities};
@@ -41,8 +47,13 @@ pub use ids::{
 };
 pub use limits::*;
 pub use model::*;
+pub use plan_fetch_stack::{
+    OwnedPlanFetchResult, PlanFetchCell, PlanFetchResult, PlanFetchStack,
+    build_bulk_plan_fetch_stack, build_plan_fetch_stack,
+};
 pub use recording::{RecordingMatchExecutor, RecordingMatchResponse};
 pub use result::*;
+pub use result_validation::validated_match_result_from_plan;
 pub use selected_result_executor::MatchExecutionLimits;
 pub use validation::{
     StableOrderOrigin, StableOrderSpec, StableOrderTerm, ValidatedMatchRequest,

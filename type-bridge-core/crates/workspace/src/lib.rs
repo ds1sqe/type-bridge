@@ -34,6 +34,7 @@ use unicode_normalization::UnicodeNormalization as _;
 mod authority;
 mod backfill_intent;
 mod bundle;
+mod data_intent;
 mod lock;
 mod migration;
 mod workspace;
@@ -41,7 +42,8 @@ mod workspace_yaml;
 
 pub use authority::{WorkspaceDirectoryAuthority, WorkspaceOutputDirectory};
 pub use backfill_intent::{
-    MAX_BACKFILL_INTENT_BYTES, TYPEBRIDGE_BACKFILL_INTENT_V1, parse_backfill_intent,
+    MAX_BACKFILL_INTENT_BYTES, TYPEBRIDGE_BACKFILL_INTENT_V1, TYPEBRIDGE_BACKFILL_INTENT_V2,
+    parse_backfill_intent,
 };
 pub use bundle::{
     BundleProjectionContext, BundleVerificationContext, MAX_SCHEMA_BUNDLE_BYTES,
@@ -60,21 +62,17 @@ pub use workspace_yaml::{
     ConfigOrigin, LocatedConfigSpec, TYPEBRIDGE_WORKSPACE_V1_FORMAT, TypeBridgeConfigSpec,
 };
 
-/// The preferred server-semantic profile for newly authored V2 workspaces.
+/// The preferred server-semantic profile for newly authored workspaces.
 ///
-/// It pairs with TypeDB 3.13.6, the recommended server. Existing workspaces
-/// keep the profile they declare.
+/// It pairs with TypeDB 3.13.6 and 3.14.0; 3.14.0 is the recommended server.
+/// Existing workspaces keep the profile they declare.
 pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID: &str = "typedb-3.13.6/v1";
 /// Frozen server-semantic profiles accepted for workspace generation.
 ///
-/// Connected migration commands accept only the migration-authority profiles
-/// (`typedb-3.12.1/v1` and `typedb-3.13.6/v1`) and refuse the others with a
-/// stable diagnostic.
-pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS: &[&str] = &[
-    "typedb-3.11.5/v1",
-    "typedb-3.12.1/v1",
-    TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID,
-];
+/// Connected migrations use the same retained semantic profiles, with their
+/// measured server patch floors.
+pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS: &[&str] =
+    &["typedb-3.12.1/v1", TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID];
 
 const MAX_SYMBOLIC_ID_BYTES: usize = 255;
 const MAX_EXTENSION_VERSION_BYTES: usize = 64;
@@ -100,8 +98,8 @@ pub enum WorkspaceConfigErrorCode {
     InvalidSchemaSetPath,
     /// The schema-authority output was not a lowercase JSON path.
     InvalidSchemaAuthorityOutputPath,
-    /// The migration path did not identify a direct V2 history directory.
-    InvalidMigrationV2Directory,
+    /// An unconfigured legacy subdirectory needs an explicit move.
+    LegacyMigrationDirectory,
     /// A required builder field was absent.
     MissingRequiredField,
     /// A singleton builder field was assigned more than once.
@@ -556,27 +554,35 @@ impl SchemaSetPath {
     }
 }
 
-/// A confined direct V2 migration-history directory.
+/// A confined migration-history directory.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct MigrationV2Directory(PathBuf);
+pub struct MigrationDirectory {
+    path: PathBuf,
+    configured: bool,
+}
 
-impl MigrationV2Directory {
-    /// Validate a confined directory whose final component is exactly `v2`.
-    pub fn new(path: impl Into<PathBuf>) -> Result<Self, WorkspaceConfigError> {
-        let path = confined_relative_path(path, "migration_v2_directory")?;
-        if path.file_name().and_then(|name| name.to_str()) != Some("v2") {
-            return Err(WorkspaceConfigError::new(
-                WorkspaceConfigErrorCode::InvalidMigrationV2Directory,
-                "canonical migration directory must identify the V2 history directly",
-            ));
+impl Default for MigrationDirectory {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::from("migrations"),
+            configured: false,
         }
-        Ok(Self(path))
+    }
+}
+
+impl MigrationDirectory {
+    /// Validate an explicitly configured, confined history directory.
+    pub fn new(path: impl Into<PathBuf>) -> Result<Self, WorkspaceConfigError> {
+        Ok(Self {
+            path: confined_relative_path(path, "migration_directory")?,
+            configured: true,
+        })
     }
 
     /// Return the canonical workspace-relative directory.
     #[must_use]
     pub fn as_path(&self) -> &Path {
-        &self.0
+        &self.path
     }
 }
 
@@ -1120,7 +1126,7 @@ pub struct TypeBridgeConfig {
     extensions: BTreeSet<ExtensionRequirement>,
     managed_scope: ManagedScopeBinding,
     migration_policy: MigrationSafetyPolicy,
-    migration_v2_directory: MigrationV2Directory,
+    migration_directory: MigrationDirectory,
     outputs: BTreeMap<BindingTarget, OutputDirectory>,
     type_names: BTreeMap<BindingTarget, Vec<type_bridge_contract::projection::TypeNameOverride>>,
     required_capabilities: CapabilitySet,
@@ -1181,8 +1187,8 @@ impl TypeBridgeConfig {
 
     /// Return the confined canonical V2 migration directory.
     #[must_use]
-    pub const fn migration_v2_directory(&self) -> &MigrationV2Directory {
-        &self.migration_v2_directory
+    pub const fn migration_directory(&self) -> &MigrationDirectory {
+        &self.migration_directory
     }
 
     /// Return every named deployment environment.
@@ -1209,10 +1215,10 @@ impl TypeBridgeConfig {
 
     /// Return the V2 migration directory resolved under the root.
     #[must_use]
-    pub fn migration_v2_absolute_path(&self) -> PathBuf {
+    pub fn migration_absolute_path(&self) -> PathBuf {
         self.workspace_root
             .as_path()
-            .join(self.migration_v2_directory.as_path())
+            .join(self.migration_directory.as_path())
     }
 
     /// Return additive workspace capability requirements.
@@ -1267,7 +1273,7 @@ pub struct TypeBridgeConfigBuilder {
     extensions: Vec<ExtensionRequirement>,
     managed_scope_id: Option<ManagedScopeId>,
     migration_policy: Option<MigrationSafetyPolicy>,
-    migration_v2_directory: Option<MigrationV2Directory>,
+    migration_directory: Option<MigrationDirectory>,
     outputs: Vec<(BindingTarget, OutputDirectory)>,
     type_names: Vec<(BindingTarget, type_bridge_contract::id::TypeId, String)>,
     required_capabilities: CapabilitySet,
@@ -1287,7 +1293,7 @@ impl TypeBridgeConfigBuilder {
             extensions: Vec::new(),
             managed_scope_id: None,
             migration_policy: None,
-            migration_v2_directory: None,
+            migration_directory: None,
             outputs: Vec::new(),
             type_names: Vec::new(),
             required_capabilities: CapabilitySet::new(),
@@ -1360,11 +1366,11 @@ impl TypeBridgeConfigBuilder {
 
     /// Select the confined direct V2 migration directory.
     #[must_use]
-    pub fn migration_v2_directory(mut self, directory: MigrationV2Directory) -> Self {
+    pub fn migration_directory(mut self, directory: MigrationDirectory) -> Self {
         Self::mark_duplicate(
-            &mut self.migration_v2_directory,
+            &mut self.migration_directory,
             directory,
-            "migration_v2_directory",
+            "migration_directory",
             &mut self.duplicate_required_fields,
         );
         self
@@ -1487,8 +1493,7 @@ impl TypeBridgeConfigBuilder {
         let app_label = required(self.app_label, "app_label")?;
         let managed_scope_id = required(self.managed_scope_id, "managed_scope")?;
         let semantic_profile = required(self.semantic_profile, "semantic_profile")?;
-        let migration_v2_directory =
-            required(self.migration_v2_directory, "migration_v2_directory")?;
+        let migration_directory = self.migration_directory.unwrap_or_default();
         let schema_authority_output = self.schema_authority_output;
 
         if !TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS.contains(&semantic_profile.as_str())
@@ -1496,7 +1501,7 @@ impl TypeBridgeConfigBuilder {
         {
             return Err(WorkspaceConfigError::new(
                 WorkspaceConfigErrorCode::UnsupportedSemanticProfile,
-                "workspace requires a frozen TypeDB 3.11.5, 3.12.1, or 3.13.6 semantic profile",
+                "workspace requires a frozen TypeDB 3.12.1 or 3.13.6 semantic profile",
             )
             .with_detail(semantic_profile.as_str()));
         }
@@ -1576,7 +1581,7 @@ impl TypeBridgeConfigBuilder {
 
         let mut workspace_paths: Vec<(&'static str, &Path)> = vec![
             ("schema_set", schema_set.as_path()),
-            ("migration_v2_directory", migration_v2_directory.as_path()),
+            ("migration_directory", migration_directory.as_path()),
         ];
         for (target, directory) in &outputs {
             workspace_paths.push((output_field_name(*target)?, directory.as_path()));
@@ -1648,11 +1653,16 @@ impl TypeBridgeConfigBuilder {
                 if left_endpoints.is_disjoint(right_endpoints) {
                     continue;
                 }
-                let left_journal =
-                    format!("{}{TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX}", left.database());
-                let right_journal =
-                    format!("{}{TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX}", right.database());
-                if left_journal == right.database() || right_journal == left.database() {
+                let aliases_journal = [
+                    TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX,
+                    type_bridge_contract::reserved::IMPORT_LEGACY_JOURNAL_SUFFIX,
+                ]
+                .iter()
+                .any(|suffix| {
+                    format!("{}{suffix}", left.database()) == right.database()
+                        || format!("{}{suffix}", right.database()) == left.database()
+                });
+                if aliases_journal {
                     return Err(WorkspaceConfigError::new(
                         WorkspaceConfigErrorCode::EnvironmentDatabaseCollision,
                         "one environment's managed database aliases another environment's reserved migration journal on overlapping TypeDB endpoint sets",
@@ -1738,7 +1748,7 @@ impl TypeBridgeConfigBuilder {
             migration_policy: self
                 .migration_policy
                 .unwrap_or_else(MigrationSafetyPolicy::default_policy),
-            migration_v2_directory,
+            migration_directory,
             outputs,
             type_names,
             required_capabilities: self.required_capabilities,

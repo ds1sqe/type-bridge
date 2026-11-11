@@ -18,7 +18,7 @@ compatibility:
   semantic-profile: typedb-3.13.6/v1
 
 migrations:
-  directory: migrations/v2
+  directory: migrations
   app-label: application
   destructive: require-approval
 
@@ -95,13 +95,13 @@ runtime during import. Installation verifies exact generated classes and
 fingerprints. Rust generated crates bind the equivalent `SchemaPackage` through
 the public SDK.
 
-Generated proxy connections derive Query V2 authority from those private
+Generated proxy connections derive query authority from those private
 package bytes: `connect_proxy`/`connectProxy` and `ExchangeConnection` in
 Python and TypeScript, `SCHEMA.connect(ProxyConnectionPolicy)` in Rust, and
 `type_bridge_proxy_connection_open_v1` with the package in C. Applications
 supply a server endpoint (or advertisement bytes and a caller-owned exchange)
 and resource limits; they do not read an authority file or construct
-`QueryV2Authority`.
+`PlanAuthority`.
 
 ## Server authority artifact
 
@@ -125,7 +125,7 @@ from `typebridge.yaml` after a schema change.
 
 The generic server cannot import an arbitrary generated application package and
 does not compile raw Split-YAML at startup. Mount this generated artifact
-read-only and reference it with `[v2].schema_authority_file`; the server
+read-only and reference it with `[staged].schema_authority_file`; the server
 independently compares it with the schema-fenced live TypeDB state.
 
 Generated code is deterministic for the same workspace inputs and toolchain
@@ -158,10 +158,10 @@ schema/migration diff, regenerate, and run the target type checker.
 === "Rust"
 
     ```rust
-    let person = db.entities::<Person>().put(PersonCreate::new(
-        PersonId::new("ada".to_owned()),
-        Some(Age::new(36)),
-    )).await?;
+    let person = db.entities::<Person>().put(PersonCreate::try_new(
+        PersonId::new("ada".to_owned())?,
+        Some(Age::new(36)?),
+    )?).await?;
     ```
 
 Exact constructor order and optional fields in Rust are schema-generated; use
@@ -175,5 +175,5 @@ consumer. TypeBridge's own acceptance suites generate fresh packages and reject
 dependencies on handwritten authoring modules.
 
 Programmatic TypeQL/TOML-to-model functions and target-language model factories
-are not generator alternatives. Historical TOML is supported only through the
-read-only conversion described in [TOML recovery](toml.md).
+are removed. Use Split-YAML generation. Convert historical TOML with TypeBridge
+2.3.x before upgrading to 3.0.

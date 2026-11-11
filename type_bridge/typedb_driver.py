@@ -46,7 +46,7 @@ else:
     except ModuleNotFoundError:
 
         class TransactionType(Enum):
-            """Rust-safe fallback transaction type for the default backend."""
+            """Native transaction type when the external Python driver is unavailable."""
 
             READ = "read"
             WRITE = "write"
@@ -80,7 +80,7 @@ def _load_tls_config() -> Any:
     """Import and return ``DriverTlsConfig`` from a supported typedb driver.
 
     Isolated so tests can patch ``type_bridge.typedb_driver._load_tls_config``
-    without needing a real band-8/band-9 driver installed.
+    without needing a real driver installed.
     """
     from typedb.driver import DriverTlsConfig  # type: ignore[attr-defined]
 
@@ -92,7 +92,7 @@ def _ensure_driver_interpreter_supported(installed: str) -> int | None:
 
     Driver metadata import can succeed even when its bundled native library is
     incompatible with the running interpreter. Keep this check ahead of every
-    native constructor so a manually installed 3.11 wheel cannot crash
+    native constructor so a manually installed retired wheel cannot crash
     CPython 3.14 before TypeBridge can report the supported band-9 driver path.
     """
     import type_bridge.version as _version  # local import avoids circular dependency
@@ -127,7 +127,7 @@ def create_driver_options(
     """Create TypeDB driver options for the retained driver lines.
 
     The same band map that drives the version gate drives option construction.
-    Supported 3.11, 3.12, 3.13 and 3.14 drivers all use the positional
+    Supported 3.12, 3.13 and 3.14 drivers all use the positional
     ``DriverOptions(tls_config)`` form.
 
     Args:
@@ -199,7 +199,7 @@ def embedded_driver_version() -> str:
     driver. The latter is consulted only for direct ``typedb.driver`` access.
     Delegates to ``type_bridge_core.embedded_driver_version``.
 
-    Returns the band-8 (3.11.x) pin for back-compat.  Use
+    Returns the retained band-9 pin.  Use
     :func:`embedded_driver_versions` to get all compiled-in bands.
     """
     return _core.embedded_driver_version()
@@ -209,8 +209,7 @@ def embedded_driver_versions() -> dict[int, str]:
     """Return all driver versions compiled into the Rust runtime, keyed by band.
 
     Delegates to ``type_bridge_core.embedded_driver_versions``.  The default
-    build returns ``{8: "3.11.5", 9: "3.14.0"}``; a
-    single-band build returns only the one entry for its compiled band.
+    build returns ``{9: "3.14.0"}``.
     """
     return _core.embedded_driver_versions()
 

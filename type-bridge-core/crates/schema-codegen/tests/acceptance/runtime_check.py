@@ -5,7 +5,6 @@ import json
 import os
 import struct
 import sys
-import warnings
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import generated_identical as identical
-import generated_v2._query as generated_query_module
+import generated_package._query as generated_query_module
 import generated_variant as variant
 import type_bridge_core
 from generated_ordered import CrudHook as OrderedCrudHook
@@ -26,7 +25,7 @@ from generated_ordered import PersonRef as OrderedPersonRef
 from generated_ordered import ProjectedModelManager as OrderedProjectedModelManager
 from generated_ordered import Tag as OrderedTag
 from generated_ordered import connect as ordered_connect
-from generated_v2 import (
+from generated_package import (
     PLAYING_FACTS,
     PROJECTION_FINGERPRINT_JSON,
     RUNTIME_PROJECTION_JSON,
@@ -40,10 +39,8 @@ from generated_v2 import (
     ExchangeConnection,
     FieldToken,
     FooBar,
-    GroupedQuery,
     Identifier,
     Interaction,
-    Membership,
     Nickname,
     Party,
     Person,
@@ -51,15 +48,10 @@ from generated_v2 import (
     ProjectedManagerComparison,
     ProjectedModelFilter,
     ProjectedModelManager,
-    Query,
     QueryCancellation,
     QueryExecutionResourceLimits,
     QueryLimits,
     QuerySession,
-    RemoteGroupedQuery,
-    RemoteQuery,
-    RemoteQueryLimits,
-    RemoteQuerySession,
     Robot,
     RobotId,
     RoleToken,
@@ -79,7 +71,7 @@ from generated_v2 import (
 from generated_variant import Person as VariantPerson
 from type_bridge_core import MatchRequestError, blocking
 
-from type_bridge.query import QueryBuilder
+from type_bridge import Iid
 from type_bridge.session import Database
 
 
@@ -143,6 +135,16 @@ else:
     raise AssertionError("connect accepted a foreign direct connection policy")
 
 
+try:
+    ordered_connect(
+        OrderedDirectConnectionPolicy("127.0.0.1:1", "app", query_limits=QueryLimits(bindings=8))
+    )
+except ValueError as error:
+    assert "selected_slots" in str(error)
+else:
+    raise AssertionError("generated direct policy did not forward staged query limits before I/O")
+
+
 class FakeCanonicalFilterNative:
     def __init__(
         self,
@@ -152,6 +154,7 @@ class FakeCanonicalFilterNative:
     ) -> None:
         self.calls = calls
         self.rejected = rejected
+        self.deletes = 0
 
     def where_field(
         self,
@@ -167,6 +170,12 @@ class FakeCanonicalFilterNative:
 
     def reject_unissued_field(self) -> "FakeCanonicalFilterNative":
         return FakeCanonicalFilterNative(self.calls, rejected=True)
+
+    def update(self, instance: object) -> object:
+        return instance
+
+    def delete(self) -> None:
+        self.deletes += 1
 
     def all(self) -> list[object]:
         return []
@@ -202,6 +211,22 @@ canonical_filter = canonical_manager.where(
 assert isinstance(canonical_filter, ProjectedModelFilter)
 assert canonical_filter._native.calls[0][0:2] == (Person, "foo__bar")
 assert canonical_filter._native.calls[0][3] == "gte"
+canonical_manager._hooks.append(object())  # Any instance-hook dispatch would fail.
+canonical_filter.delete()
+replacement_sentinel = object()
+assert canonical_filter.update(replacement_sentinel) is replacement_sentinel
+assert canonical_filter._native.deletes == 1
+object.__setattr__(canonical_manager, "_filtered", True)
+assert canonical_manager.update(replacement_sentinel) is replacement_sentinel
+canonical_manager.delete()
+object.__setattr__(canonical_manager, "_filtered", False)
+try:
+    canonical_manager.delete()
+except TypeError as error:
+    assert str(error) == "delete() without an instance requires filter(...)"
+else:
+    raise AssertionError("unfiltered no-argument delete was accepted")
+canonical_manager._hooks.clear()
 assert (
     canonical_filter.where(
         Person.identifier,
@@ -350,15 +375,16 @@ for invalid_scalar_value in (
     else:
         raise AssertionError("unconstrained scalar bypassed canonical conversion")
 
-container = Container(item=[EventRef("event-iid")])
+container = Container(item=[EventRef(Iid("0xe0"))])
 assert len(container.item) == 1
+assert container.item[0].iid == Iid("0xe0")
 
 try:
     Container(
         item=[
-            EventRef("event-1"),
-            EventRef("event-2"),
-            EventRef("event-3"),
+            EventRef(Iid("0xe1")),
+            EventRef(Iid("0xe2")),
+            EventRef(Iid("0xe3")),
         ]
     )
 except ValueError as error:
@@ -386,25 +412,36 @@ except TypeError:
 else:
     raise AssertionError("specialized-away keyword was accepted")
 
-reference = PersonRef("person-iid", identifier=Identifier("person-1"))
-assert reference.iid == "person-iid"
+reference_iid = Iid("0xa1")
+reference = PersonRef(reference_iid, identifier=Identifier("person-1"))
+assert reference.iid is reference_iid
+assert reference.iid is reference.iid
+assert reference.iid == Iid("0xa1")
 assert reference.__model_form__ == "reference"
 assert person.iid is None
+for invalid_identity in ["0xa1", "not-an-iid"]:
+    try:
+        person.attach_runtime_iid(invalid_identity)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("model accepted a string IID")
+    try:
+        PersonRef(invalid_identity, identifier=Identifier("person-1"))
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("reference accepted a string IID")
 assert person.identifier.value == "person-1"
-try:
-    weakref.ref(person)
-except TypeError:
-    pass
-else:
-    raise AssertionError("legacy unordered facade unexpectedly changed weakref layout")
+assert weakref.ref(person)() is person
 
 ordered_person = OrderedPerson(tag=[OrderedTag("first"), OrderedTag("second")])
 assert [tag.value for tag in ordered_person.tag] == ["first", "second"]
 ordered_person_weak = weakref.ref(ordered_person)
 assert ordered_person_weak() is ordered_person
-ordered_person_ref = OrderedPersonRef("0xa1")
+ordered_person_ref = OrderedPersonRef(Iid("0xa1"))
 assert weakref.ref(ordered_person_ref)() is ordered_person_ref
-ordered_membership_ref = OrderedMembershipRef("0xb1")
+ordered_membership_ref = OrderedMembershipRef(Iid("0xb1"))
 assert weakref.ref(ordered_membership_ref)() is ordered_membership_ref
 try:
     OrderedPerson(tag=[OrderedTag("duplicate"), OrderedTag("duplicate")])
@@ -432,7 +469,7 @@ else:
     raise AssertionError("ordered ownership reassignment accepted a duplicate scalar")
 assert ordered_person.tag is previous_ordered_tags
 
-ordered_person.attach_runtime_iid("0xa")
+ordered_person.attach_runtime_iid(Iid("0xa"))
 try:
     OrderedMembership(member=[ordered_person, ordered_person])
 except MatchRequestError as error:
@@ -441,7 +478,7 @@ except MatchRequestError as error:
 else:
     raise AssertionError("ordered create role accepted a duplicate identity")
 other_ordered_person = OrderedPerson(tag=[OrderedTag("other")])
-other_ordered_person.attach_runtime_iid("0xc")
+other_ordered_person.attach_runtime_iid(Iid("0xc"))
 ordered_membership = OrderedMembership(member=[ordered_person, other_ordered_person])
 previous_ordered_members = ordered_membership.member
 try:
@@ -466,7 +503,7 @@ foreign_person = variant.Person(
     val_double=variant.ValDouble(3.5),
     val_duration=variant.ValDuration(timedelta(seconds=3)),
 )
-foreign_person.attach_runtime_iid("0xb")
+foreign_person.attach_runtime_iid(Iid("0xb"))
 try:
     OrderedMembership(member=[foreign_person])
 except MatchRequestError as error:
@@ -549,29 +586,80 @@ assert ordered_update_hook.post_update_calls == 0
 assert fake_ordered_native.resolve_iid_calls == 0
 assert fake_ordered_native.update_calls == 0
 
-entity_match = QueryBuilder.match_entity(
-    Person,
-    "$person",
-    identifier=Identifier("person-1"),
-).build()
-assert "$person isa person" in entity_match
-assert 'has identifier "person-1"' in entity_match
-entity_insert = QueryBuilder.insert_entity(person, "$person").build()
-assert "$person isa person" in entity_insert
-assert 'has identifier "person-1"' in entity_insert
-relation_match = QueryBuilder.match_relation(
-    Membership,
-    "$membership",
-    role_players={"member": "$person"},
-).build()
-assert "$membership isa membership" in relation_match
-assert "member: $person" in relation_match
-try:
-    QueryBuilder.match_entity(type("ForgedEntity", (), {}))
-except TypeError:
-    pass
-else:
-    raise AssertionError("raw QueryBuilder accepted an uninstalled model class")
+
+class FakeExplicitIidBatchNative:
+    def __init__(self) -> None:
+        self.inputs: list[OrderedPerson] = []
+        self.deleted_iids: list[Iid] = []
+        self.selection = FakeCanonicalFilterNative()
+
+    def canonical_filter(self) -> FakeCanonicalFilterNative:
+        return self.selection
+
+    def update_many(
+        self, instances: list[OrderedPerson]
+    ) -> type_bridge_core.BatchWriteResult[OrderedPerson]:
+        self.inputs = instances
+        return type_bridge_core.BatchWriteResult(instances[1:], [1])
+
+    def delete_many(self, iids: list[Iid]) -> None:
+        self.deleted_iids = iids
+
+
+explicit_first = OrderedPerson(tag=[OrderedTag("first")])
+explicit_second = OrderedPerson(tag=[OrderedTag("second")])
+explicit_first.attach_runtime_iid(Iid("0x10"))
+explicit_second.attach_runtime_iid(Iid("0x20"))
+explicit_native = FakeExplicitIidBatchNative()
+explicit_manager = OrderedProjectedModelManager.__new__(OrderedProjectedModelManager)
+object.__setattr__(explicit_manager, "_model", OrderedPerson)
+object.__setattr__(explicit_manager, "_native", explicit_native)
+object.__setattr__(explicit_manager, "_hooks", [])
+object.__setattr__(explicit_manager, "_filtered", True)
+explicit_result = explicit_manager.update_many([explicit_first, explicit_second])
+assert explicit_result.count == 1
+assert explicit_result.items == [explicit_second]
+assert explicit_result.input_indexes == [1]
+assert explicit_native.inputs == [explicit_first, explicit_second]
+assert explicit_manager.delete_many([explicit_first, explicit_second]) == [
+    explicit_first,
+    explicit_second,
+]
+assert explicit_native.deleted_iids == [Iid("0x10"), Iid("0x20")]
+assert not hasattr(explicit_manager, "update_with")
+assert not hasattr(OrderedProjectedModelManager, "_resolve_instance_iid")
+assert not hasattr(type_bridge_core.PyProjectedModelManager, "resolve_iid")
+explicit_manager.delete()
+assert explicit_native.selection.deletes == 1
+assert explicit_native.deleted_iids == [Iid("0x10"), Iid("0x20")]
+
+
+class InstanceDeleteHook(OrderedCrudHook[OrderedPerson]):
+    def pre_delete(self, sender: type[OrderedPerson], instance: OrderedPerson) -> None:
+        assert sender is OrderedPerson
+        delete_events.append(("pre", instance))
+
+    def post_delete(self, sender: type[OrderedPerson], instance: OrderedPerson) -> None:
+        assert sender is OrderedPerson
+        delete_events.append(("post", instance))
+
+
+class InstanceDeleteNative:
+    def delete(self, instance: OrderedPerson) -> None:
+        delete_events.append(("delete", instance))
+
+
+# A filtered manager's explicit instance operation retains its instance hooks.
+# Native selection coverage checks both matching and excluded instances by IID.
+for instance in [explicit_first, explicit_second]:
+    delete_events: list[tuple[str, OrderedPerson]] = []
+    instance_manager = OrderedProjectedModelManager.__new__(OrderedProjectedModelManager)
+    object.__setattr__(instance_manager, "_model", OrderedPerson)
+    object.__setattr__(instance_manager, "_native", InstanceDeleteNative())
+    object.__setattr__(instance_manager, "_hooks", [InstanceDeleteHook()])
+    object.__setattr__(instance_manager, "_filtered", True)
+    assert instance_manager.delete(instance) is instance
+    assert delete_events == [("pre", instance), ("delete", instance), ("post", instance)]
 
 try:
     make_person("person-1", aliases="not-a-sequence-value")
@@ -629,16 +717,16 @@ employment_var = query_session.exact(Employment)
 party_var = query_session.subtypes(Party)
 actor_var = query_session.subtypes(Actor)
 other_actor_var = query_session.subtypes(Actor)
-adult = person_var.field(Person.score).gte(Score(18))
+adult = person_var.field(Person.score).ge(Score(18))
 query = query_session.query(person_var).where(adult).match(party_var)
 assert query is not None
-employee = employment_var.role(Employment.employee).connects(person_var)
+employee = employment_var.role(Employment.employee).links(person_var)
 named = query_session.query_as(
     EmploymentRow,
     person=person_var,
     employment=employment_var,
 ).where(employee)
-assert type(named).__module__ == "generated_v2._query"
+assert type(named).__module__ == "generated_package._query"
 reachable = query_session.reachable(
     person_var,
     other_person_var,
@@ -663,7 +751,7 @@ assert query_session.query(person_var, employment_var.collect()).where(employee)
 
 lifecycle_session = Person.query(Database(address="localhost:1729", database="lifecycle-only"))
 lifecycle_person = lifecycle_session.exact(Person)
-lifecycle_predicate = lifecycle_person.field(Person.score).gte(Score(1))
+lifecycle_predicate = lifecycle_person.field(Person.score).ge(Score(1))
 lifecycle_source = lifecycle_session.query(lifecycle_person)
 lifecycle_clone = lifecycle_source.clone()
 lifecycle_derived = lifecycle_source.where(lifecycle_predicate)
@@ -700,11 +788,9 @@ for immutable in (query_session, person_var, employee, query, named):
         raise AssertionError("generated query wrapper was mutable")
 for rejected_same_package_query in (
     lambda: person_var.field(Employment.employee),
-    lambda: person_var.field(Person.score).gte(Identifier("wrong-wrapper")),
+    lambda: person_var.field(Person.score).ge(Identifier("wrong-wrapper")),
     lambda: (
-        query_session.exact(Employment)
-        .role(Employment.employee)
-        .connects(query_session.exact(Event))
+        query_session.exact(Employment).role(Employment.employee).links(query_session.exact(Event))
     ),
     lambda: query_session.query_as(MutableRow, person=person_var),
     lambda: query_session.query_as(
@@ -846,37 +932,46 @@ def _canonical(payload: dict[str, object]) -> bytes:
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
 
-_REMOTE_CAPABILITIES = [
-    "query.execution.batch-identity-rebind",
-    "query.execution.same-snapshot-hydration",
-    "query.input.given-rows",
-    "query.operation.distinct-count",
-    "query.operation.distinct-exists",
-    "query.operation.exactly-one",
-    "query.operation.page",
-    "query.order.stable-collection",
-    "query.order.stable-root",
-    "query.order.stable-selected",
-    "query.output.collect",
-    "query.output.collect-distinct",
-    "query.output.hydrated",
-    "query.output.named",
-    "query.output.rows",
-    "query.pattern.has",
-    "query.pattern.iid",
-    "query.pattern.isa",
-    "query.pattern.isa-subtypes",
-    "query.plan",
-    "query.plan.v2",
-    "query.remote.envelope-v2",
-    "query.remote.structured-diagnostic",
-    "query.stage.distinct",
-    "query.stage.limit",
-    "query.stage.offset",
-    "query.stage.require",
-    "query.stage.select",
-    "query.stage.sort",
-]
+_REMOTE_CAPABILITIES = sorted(
+    [
+        "query.execution.batch-identity-rebind",
+        "query.execution.same-snapshot-hydration",
+        "query.input.given-rows",
+        "query.operation.distinct-count",
+        "query.operation.distinct-exists",
+        "query.operation.exactly-one",
+        "query.operation.page",
+        "query.order.stable-collection",
+        "query.order.stable-root",
+        "query.order.stable-selected",
+        "query.output.collect",
+        "query.output.collect-distinct",
+        "query.output.hydrated",
+        "query.output.named",
+        "query.output.rows",
+        "query.pattern.has",
+        "query.pattern.iid",
+        "query.pattern.isa",
+        "query.pattern.isa-subtypes",
+        "query.plan",
+        "query.plan.v2",
+        "query.remote.envelope-v2",
+        "query.remote.structured-diagnostic",
+        "query.stage.distinct",
+        "query.stage.limit",
+        "query.stage.offset",
+        "query.stage.require",
+        "query.stage.select",
+        "query.stage.sort",
+        "query.fetch.thing",
+        "query.let",
+        "query.expr.iid",
+        "query.pipeline.rematch",
+        "query.plan.v3",
+        "query.remote.envelope-v3",
+        "query.remote.answer-dimensions",
+    ]
+)
 
 
 def _remote_advertisement() -> bytes:
@@ -895,6 +990,36 @@ def _remote_advertisement() -> bytes:
 
 
 def _remote_signed_reply(payload: dict[str, object], advertisement: bytes) -> bytes:
+    if payload.get("format") == "typebridge.query-remote-failure/v2":
+        kinds = {"long": "signed", "text_list": "query_identity_list", "text": "query_identity"}
+        details = {
+            name: {
+                "kind": kinds.get(value["kind"], value["kind"]),
+                "value": value["value"],
+            }
+            for name, value in payload["details"].items()
+        }
+        path_kinds = {"field": "contract_field", "identifier": "contract_identity"}
+        diagnostic = {
+            "version": 1,
+            "category": "result_decode",
+            "sdk_category": "integrity",
+            "query_category": "result_decode",
+            "code": payload["code"],
+            "message": "Typed query evidence does not match the validated request invocation",
+            "path": [
+                {"kind": path_kinds.get(item["kind"], item["kind"]), "value": item["value"]}
+                for item in payload["path"]
+            ],
+            "details": details,
+        }
+        payload = {
+            "answers": [],
+            "format": "typebridge.query-remote-response/v3",
+            "nonce": payload["nonce"],
+            "outcome": {"kind": "failed", "diagnostic": diagnostic},
+            "request": payload["request"],
+        }
     payload_bytes = _canonical(payload)
     advertisement_fingerprint = _remote_fingerprint(
         b"typebridge.query.remote-capabilities",
@@ -943,7 +1068,7 @@ async def generated_failure_exchange(request: bytes) -> bytes:
             ],
             "request": _remote_fingerprint(
                 b"typebridge.query.remote-request",
-                b"typebridge.query-remote-request/v2",
+                b"typebridge.query-remote-request/v3",
                 request,
             ),
         },
@@ -1062,8 +1187,8 @@ try:
     asyncio.run(
         limited_remote_session.query(limited_remote_person)
         .where(
-            limited_remote_person.field(Person.score).gte(Score(1)),
-            limited_remote_person.field(Person.score).gte(Score(2)),
+            limited_remote_person.field(Person.score).ge(Score(1)),
+            limited_remote_person.field(Person.score).ge(Score(2)),
         )
         .rows(limit=1)
     )
@@ -1133,11 +1258,11 @@ for session_slots in (None, 4):
         slots,
     )
     expect_core_refusal(
-        lambda: core_query.aggregate(core_person, *(aggregate.count() for _ in range(slots + 1))),
+        lambda: core_query.reduce(core_person, *(aggregate.count() for _ in range(slots + 1))),
         "reducer_cap_exceeded",
         slots,
     )
-    expect_core_refusal(lambda: core_query.aggregate(core_person), "empty_reducers")
+    expect_core_refusal(lambda: core_query.reduce(core_person), "empty_reducers")
     expect_core_refusal(lambda: core_query.rows(limit=0), "zero_window_limit")
     expect_core_refusal(lambda: core_query.page_by(core_person, limit=0), "zero_window_limit")
     expect_core_refusal(lambda: core_query.rows(offset=2**64 - 2, limit=2), "window_overflow")
@@ -1207,7 +1332,7 @@ wide_remote_person = wide_remote_session.exact(Person)
 try:
     asyncio.run(
         wide_remote_session.query(wide_remote_person)
-        .where(*(wide_remote_person.field(Person.score).gte(Score(1)) for _ in range(38)))
+        .where(*(wide_remote_person.field(Person.score).ge(Score(1)) for _ in range(38)))
         .rows(limit=1)
     )
 except MatchRequestError as error:
@@ -1216,33 +1341,69 @@ else:
     raise AssertionError("the fixture advertisement cannot execute a field comparison")
 assert wide_remote_requests == []
 
-# Nesting the caller actually wrote is still bounded: alternating conjunction
-# and disjunction thirty-eight deep is refused during adaptation, before
-# capability negotiation, and the refusal names the limit to raise.
-nested_remote_predicate = wide_remote_person.field(Person.score).gte(Score(1))
-for depth in range(1, 38):
-    nested_remote_term = wide_remote_person.field(Person.score).gte(Score(1))
-    nested_remote_predicate = (
-        nested_remote_predicate.and_(nested_remote_term)
-        if depth % 2 == 0
-        else nested_remote_predicate.or_(nested_remote_term)
-    )
-try:
-    asyncio.run(
-        wide_remote_session.query(wide_remote_person).where(nested_remote_predicate).rows(limit=1)
-    )
-except MatchRequestError as error:
-    assert error.category == "resource_limit", (error.category, error.code)
-    assert error.code == "canonical_json_too_deep"
-else:
-    raise AssertionError("a predicate nested past the encoding depth must be refused")
-assert wide_remote_requests == []
+# Measured default encoding boundary for this alternating AND/OR terminal.
+native_predicate_depth = QueryLimits().get("predicate_depth")
+
+
+def nested_predicate(binding, nesting):
+    predicate = binding.field(Person.score).ge(Score(1))
+    for depth in range(1, nesting):
+        term = binding.field(Person.score).ge(Score(1))
+        predicate = predicate.and_(term) if depth % 2 == 0 else predicate.or_(term)
+    return predicate
+
+
+for nesting in (38, 39, 40):
+    try:
+        asyncio.run(
+            wide_remote_session.query(wide_remote_person)
+            .where(nested_predicate(wide_remote_person, nesting))
+            .rows(limit=1)
+        )
+    except MatchRequestError as error:
+        expected = (
+            ("unsupported_capability", "unsupported_required_capability")
+            if nesting <= 39
+            else ("resource_limit", "canonical_json_too_deep")
+        )
+        assert (error.category, error.code) == expected, (nesting, error.category, error.code)
+    else:
+        raise AssertionError("fixture comparison capability is intentionally absent")
+    assert wide_remote_requests == []
+
+# Raise only this fixture's codec ceiling to isolate the native structural bound.
+raised_canonical_depth = 2 * native_predicate_depth - 2
+raised_advertisement = json.loads(generated_advertisement)
+raised_advertisement["query_limits"] = {"canonical_depth": raised_canonical_depth}
+raised_session = QuerySession(
+    ExchangeConnection(_canonical(raised_advertisement), wide_remote_exchange),
+    query_limits=QueryLimits(canonical_depth=raised_canonical_depth),
+)
+raised_person = raised_session.exact(Person)
+for nesting in (native_predicate_depth, native_predicate_depth + 1):
+    try:
+        asyncio.run(
+            raised_session.query(raised_person)
+            .where(nested_predicate(raised_person, nesting))
+            .rows(limit=1)
+        )
+    except MatchRequestError as error:
+        expected = (
+            ("unsupported_capability", "unsupported_required_capability")
+            if nesting == native_predicate_depth
+            else ("resource_limit", "predicate_limit_exceeded")
+        )
+        assert (error.category, error.code) == expected, (nesting, error.category, error.code)
+    else:
+        raise AssertionError("fixture comparison capability is intentionally absent")
+    assert wide_remote_requests == []
+raised_session.close()
 wide_remote_session.close()
 assert generated_failure_reply is not None
 try:
     getattr(captured_failure_pending[0], "decode_reply")(generated_failure_reply)
 except MatchRequestError as error:
-    assert error.code == "query_remote_v2_reply_replayed", error.code
+    assert error.code == "query_remote_reply_replayed", error.code
 else:
     raise AssertionError("authenticated remote application failure did not consume its claim")
 remote_diagnostic_observation["claim_consumed"] = True
@@ -1291,7 +1452,7 @@ async def _cancelled_after_remote_exchange() -> tuple[int, bool, str, str]:
                 "path": [],
                 "request": _remote_fingerprint(
                     b"typebridge.query.remote-request",
-                    b"typebridge.query-remote-request/v2",
+                    b"typebridge.query-remote-request/v3",
                     request,
                 ),
             },
@@ -1397,103 +1558,6 @@ assert (
 assert QueryExecutionResourceLimits().items == type_bridge_core.DEFAULT_DIRECT_QUERY_ITEMS
 
 
-# The 2.2 remote-session names are deprecated aliases: the 2.2.4 typed-query
-# guide's remote example runs unchanged, warns, and sends the same request and
-# gets the same outcome as the 2.3 spelling.
-async def _remote_example_outcome(legacy: bool) -> tuple[dict[str, object], str, str]:
-    sent: list[dict[str, object]] = []
-
-    async def exchange(request: bytes) -> bytes:
-        decoded = json.loads(request)
-        # Drop the per-request nonce and clock readings; the rest must match.
-        assert 0 < decoded["limits"]["deadline_ms"] <= 30_000, decoded["limits"]
-        for clock in ("nonce", "prepared_at_unix_ms", "expires_at_unix_ms"):
-            del decoded[clock]
-        del decoded["limits"]["deadline_ms"]
-        sent.append(decoded)
-        return b"{}"
-
-    advertisement_bytes = generated_advertisement
-    try:
-        if legacy:
-            # Verbatim from the 2.2.4 guide (docs/guide/typed-queries.md).
-            remote = RemoteQuerySession(
-                advertisement_bytes,
-                exchange,
-                RemoteQueryLimits(
-                    max_items=100,
-                    max_bytes=8_388_608,
-                    max_collection_members=1_000,
-                    max_graph_nodes=1_000,
-                    max_attribute_values=1_000,
-                    max_role_players=1_000,
-                    deadline_ms=30_000,
-                ),
-            )
-            person = remote.exact(Person)
-            rows = await remote.query(person).rows(limit=50)
-        else:
-            remote = QuerySession(
-                ExchangeConnection(advertisement_bytes, exchange),
-                resources=QueryExecutionResourceLimits(
-                    timeout_milliseconds=30_000,
-                    items=100,
-                    bytes=8_388_608,
-                    collection_members=1_000,
-                    graph_nodes=1_000,
-                    attribute_values=1_000,
-                    role_players=1_000,
-                ),
-            )
-            person = remote.exact(Person)
-            rows = await remote.query(person).rows(limit=50)
-    except MatchRequestError as error:
-        assert len(sent) == 1, sent
-        return sent[0], error.category, error.code
-    raise AssertionError(f"the offline exchange cannot produce rows: {rows!r}")
-
-
-with warnings.catch_warnings(record=True) as legacy_remote_warnings:
-    warnings.simplefilter("always")
-    legacy_remote_outcome = asyncio.run(_remote_example_outcome(legacy=True))
-assert sorted(
-    str(warning.message).split(" ", 1)[0]
-    for warning in legacy_remote_warnings
-    if warning.category is DeprecationWarning
-) == ["RemoteQueryLimits", "RemoteQuerySession"], [
-    str(warning.message) for warning in legacy_remote_warnings
-]
-assert all(warning.filename == __file__ for warning in legacy_remote_warnings), [
-    warning.filename for warning in legacy_remote_warnings
-]
-with warnings.catch_warnings():
-    warnings.simplefilter("error", DeprecationWarning)
-    current_remote_outcome = asyncio.run(_remote_example_outcome(legacy=False))
-assert legacy_remote_outcome == current_remote_outcome, (
-    legacy_remote_outcome,
-    current_remote_outcome,
-)
-assert legacy_remote_outcome[0]["limits"]["max_items"] == 100, legacy_remote_outcome
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", DeprecationWarning)
-    legacy_limits = RemoteQueryLimits(
-        max_items=1,
-        max_bytes=2,
-        max_collection_members=3,
-        max_graph_nodes=4,
-        max_attribute_values=5,
-        max_role_players=6,
-    )
-    legacy_session = RemoteQuerySession(
-        generated_advertisement, wide_remote_exchange, legacy_limits
-    )
-assert type(legacy_limits) is QueryExecutionResourceLimits
-assert isinstance(legacy_limits, RemoteQueryLimits)
-assert legacy_limits.timeout_milliseconds == QueryExecutionResourceLimits().timeout_milliseconds
-assert isinstance(legacy_session, QuerySession)
-assert isinstance(legacy_session.query(legacy_session.exact(Person)), RemoteQuery)
-assert RemoteQuery is Query and RemoteGroupedQuery is GroupedQuery
-legacy_session.close()
 remote_cancellation_observation = {
     "before_exchange": {
         "category": before_exchange_category,
@@ -1576,7 +1640,7 @@ def _emit_sdk_queries_remote_proof_fragment() -> None:
     producer_paths = sorted(
         (
             "type-bridge-core/crates/python/src/match_runtime.rs",
-            "type-bridge-core/crates/python/src/query_v2_model_remote_runtime.rs",
+            "type-bridge-core/crates/python/src/plan_model_remote_runtime.rs",
             "type-bridge-core/crates/schema-codegen/src/python/query.py",
             "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
         )
@@ -1814,7 +1878,7 @@ def _emit_sdk_models_package_proof_fragment() -> None:
 remote_lifecycle = generated_remote_session.query(generated_remote_person)
 remote_lifecycle_clone = remote_lifecycle.clone()
 remote_lifecycle_derived = remote_lifecycle.where(
-    generated_remote_person.field(Person.score).gte(Score(1))
+    generated_remote_person.field(Person.score).ge(Score(1))
 )
 remote_lifecycle.close()
 remote_lifecycle.close()
@@ -1916,13 +1980,13 @@ remote_terminals = {
     for name in ("_FETCH_ROWS", "_PAGE_BY", "_COUNT_BY", "_EXISTS_BY", "_REDUCE_BY")
 }
 saved_prepare = {name: terminal.prepare for name, terminal in remote_terminals.items()}
-saved_context = generated_query_module.query_v2_remote_model_context_with_resources
+saved_context = generated_query_module.plan_remote_model_context_with_resources
 saved_row_materializer = generated_query_module.Query.materialize_row
 saved_page_materializer = generated_query_module.Query.materialize_page
 saved_reduction_materializer = generated_query_module.Query.materialize_reduction
 reduce_calls: list[tuple[object, ...]] = []
 try:
-    generated_query_module.query_v2_remote_model_context_with_resources = (
+    generated_query_module.plan_remote_model_context_with_resources = (
         lambda *arguments, **keywords: object()
     )
     for terminal_name in ("_FETCH_ROWS", "_PAGE_BY", "_COUNT_BY", "_EXISTS_BY"):
@@ -1960,7 +2024,7 @@ try:
     remote_minimum = integer_input(remote_session, Score(18))
     remote_call = qualifying_score(remote_session, remote_person, remote_minimum)
     remote_nested_call = qualifying_score(remote_session, remote_person, remote_call)
-    assert remote_call.gte_call(remote_nested_call) is not None
+    assert remote_call.ge_call(remote_nested_call) is not None
     remote_query = remote_session.query(remote_person)
     assert asyncio.run(remote_query.one()) is person
     assert asyncio.run(remote_query.first()) is person
@@ -1972,14 +2036,14 @@ try:
     assert remote_page.total == 1
     remote_score = remote_person.field(Person.score)
     assert asyncio.run(
-        remote_query.aggregate(
+        remote_query.reduce(
             remote_person,
             aggregate.count(),
             aggregate.sum(remote_score),
         )
     ) == (1, 2)
     assert asyncio.run(
-        remote_query.group_by(remote_person, remote_person).aggregate(aggregate.count())
+        remote_query.group_by(remote_person, remote_person).reduce(aggregate.count())
     ) == ((person, (1,)),)
     assert reduce_calls[0][3] is None
     assert reduce_calls[0][4] == ["count", "sum"]
@@ -1987,20 +2051,20 @@ try:
     # The host forwards any term count; the core refuses it (checked with a
     # real native prepare above).
     for invalid_terms in ((), tuple(aggregate.count() for _ in range(17))):
-        asyncio.run(remote_query.aggregate(remote_person, *invalid_terms))
+        asyncio.run(remote_query.reduce(remote_person, *invalid_terms))
         assert len(reduce_calls[-1][4]) == len(invalid_terms)
     # The blocking facade runs the same coroutine terminals to completion.
     blocking_query = blocking(remote_session).query(remote_person)
     assert blocking_query.one() is person
     assert blocking_query.rows(limit=1) == [person]
     assert blocking_query.count_by(remote_person) == 1
-    assert blocking_query.group_by(remote_person, remote_person).aggregate(aggregate.count()) == (
+    assert blocking_query.group_by(remote_person, remote_person).reduce(aggregate.count()) == (
         (person, (1,)),
     )
 finally:
     for name, prepare in saved_prepare.items():
         remote_terminals[name].prepare = prepare
-    generated_query_module.query_v2_remote_model_context_with_resources = saved_context
+    generated_query_module.plan_remote_model_context_with_resources = saved_context
     generated_query_module.Query.materialize_row = saved_row_materializer
     generated_query_module.Query.materialize_page = saved_page_materializer
     generated_query_module.Query.materialize_reduction = saved_reduction_materializer
@@ -2009,8 +2073,8 @@ finally:
 # A generated package exposes its embedded authority for the plan builder,
 # in both runtime resource variants; the package's own tokens build a plan.
 from generated_ordered import schema_authority as ordered_schema_authority  # noqa: E402
-from generated_v2 import Person as PlanPerson  # noqa: E402
-from generated_v2 import schema_authority  # noqa: E402
+from generated_package import Person as PlanPerson  # noqa: E402
+from generated_package import schema_authority  # noqa: E402
 
 from type_bridge.plan import Plan  # noqa: E402
 
@@ -2019,7 +2083,7 @@ assert ordered_schema_authority() is ordered_schema_authority()
 _plan = Plan.builder()
 _planned = _plan.exact(PlanPerson)
 _score = _plan.field(_planned, PlanPerson.score)
-_plan.where_(_score.ge(20)).update(_planned, PlanPerson.score, _plan.let_("next_score", _score + 1))
+_plan.where(_score.ge(20)).update(_planned, PlanPerson.score, _plan.let("next_score", _score + 1))
 _built = _plan.build(schema_authority())
 assert _built.writes()
 assert json.loads(_built.canonical_bytes())["bindings"][0]["variable"] == "person"

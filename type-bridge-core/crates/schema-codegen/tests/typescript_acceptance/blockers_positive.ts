@@ -1,3 +1,4 @@
+import { Iid } from "@type-bridge/node";
 import { Archive, Marker, Name, NameValue, type MarkerRef } from "./generated_blockers/src/index.js";
 
 const name = Name.create("marker");
@@ -7,7 +8,7 @@ const marker: Marker = Marker.create({
   aliases: [],
   revision: null,
 });
-const reference: MarkerRef = Marker.reference("marker-iid", { name_: name });
+const reference: MarkerRef = Marker.reference(new Iid("0xa1"), { name_: name });
 const archive: Archive = Archive.create({
   name_: [marker, marker, marker],
   nameValue: [],
@@ -23,7 +24,7 @@ Marker.create({ name, nameValue: NameValue.create("label"), aliases: [], revisio
 import { Powertrain, PowertrainReferenceValue, type PowertrainRef } from "./generated_blockers/src/index.js";
 const engineValue: PowertrainReferenceValue = PowertrainReferenceValue.create("engine-1");
 const engine: Powertrain = Powertrain.create({ powertrainRef: engineValue });
-const engineRef: PowertrainRef = Powertrain.reference("0x501", { powertrainRef: engineValue });
+const engineRef: PowertrainRef = Powertrain.reference(new Iid("0x501"), { powertrainRef: engineValue });
 const engineField: PowertrainReferenceValue = engine.powertrainRef;
 void engineRef;
 void engineField;

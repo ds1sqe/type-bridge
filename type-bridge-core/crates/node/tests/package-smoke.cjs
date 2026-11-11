@@ -6,13 +6,11 @@ const packageJson = require("../package.json");
 const typeBridge = require("../");
 
 const retainedFunctions = [
-  "QueryV2Authority",
-  "QueryV2Error",
-  "RustDatabase",
-  "RustTransactionContext",
-  "TypedGroupByQuery",
-  "TypedQuery",
-  "TypedQueryError",
+  "Iid",
+  "PlanAuthority",
+  "PlanError",
+  "Database",
+  "TransactionContext",
   "boolean",
   "date",
   "datetime",
@@ -23,9 +21,6 @@ const retainedFunctions = [
   "ensureDatabase",
   "long",
   "longFromNumberUnsafe",
-  "queryV2ExecuteLocal",
-  "queryV2PrepareRemote",
-  "queryV2RemoteCapabilities",
   "string",
 ];
 for (const name of retainedFunctions) {
@@ -39,6 +34,20 @@ assert.deepEqual(typeBridge.long(9223372036854775807n), {
 assert.throws(() => typeBridge.long(1), /bigint/);
 
 const removedAuthoringNames = [
+  "AggregateSpec",
+  "BooleanExpr",
+  "ComparisonExpr",
+  "NotExpr",
+  "QueryExpr",
+  "SortExpr",
+  "TypedGroupByQuery",
+  "TypedQuery",
+  "TypedQueryError",
+  "agg",
+  "queryV2ExecuteLocal",
+  "queryV2PrepareRemote",
+  "queryV2RemoteCapabilities",
+
   "Attribute",
   "AttributeFlags",
   "Card",
@@ -112,8 +121,8 @@ for (const name of [
   "NodeRuntimeProjection",
   "connectRustDatabase",
   "ensureRustDatabase",
-  "queryV2Authority",
-  "queryV2RemoteModelContextWithResources",
+  "planAuthority",
+  "planRemoteModelContextWithResources",
 ]) {
   assert.equal(typeof native[name], "function", `${name} must remain native`);
 }
@@ -135,11 +144,11 @@ assert.throws(
   "match sessions must come from a verified runtime projection",
 );
 assert.equal(
-  Object.hasOwn(native.NodeRustDatabase.prototype, "entityManagerJson"),
+  Object.hasOwn(native.NodeDatabase.prototype, "entityManagerJson"),
   false,
 );
 assert.equal(
-  Object.hasOwn(native.NodeRustDatabase.prototype, "relationManagerJson"),
+  Object.hasOwn(native.NodeDatabase.prototype, "relationManagerJson"),
   false,
 );
 assert.equal(
@@ -152,24 +161,24 @@ assert.equal(
 );
 
 assert.equal(
-  Object.hasOwn(typeBridge.RustDatabase.prototype, "entityManager"),
+  Object.hasOwn(typeBridge.Database.prototype, "entityManager"),
   false,
-  "RustDatabase must not construct descriptor-driven entity managers",
+  "Database must not construct descriptor-driven entity managers",
 );
 assert.equal(
-  Object.hasOwn(typeBridge.RustDatabase.prototype, "relationManager"),
+  Object.hasOwn(typeBridge.Database.prototype, "relationManager"),
   false,
-  "RustDatabase must not construct descriptor-driven relation managers",
+  "Database must not construct descriptor-driven relation managers",
 );
 assert.equal(
-  Object.hasOwn(typeBridge.RustTransactionContext.prototype, "entityManager"),
+  Object.hasOwn(typeBridge.TransactionContext.prototype, "entityManager"),
   false,
-  "RustTransactionContext must not construct descriptor-driven entity managers",
+  "TransactionContext must not construct descriptor-driven entity managers",
 );
 assert.equal(
-  Object.hasOwn(typeBridge.RustTransactionContext.prototype, "relationManager"),
+  Object.hasOwn(typeBridge.TransactionContext.prototype, "relationManager"),
   false,
-  "RustTransactionContext must not construct descriptor-driven relation managers",
+  "TransactionContext must not construct descriptor-driven relation managers",
 );
 
 assert.equal(packageJson.main, "dist/public.js");
@@ -191,6 +200,7 @@ for (const forbiddenSubpath of [
   "./native",
   "./parser",
   "./typed",
+  "./query-v2",
 ]) {
   assert.equal(
     Object.hasOwn(packageJson.exports, forbiddenSubpath),
@@ -198,15 +208,6 @@ for (const forbiddenSubpath of [
     `${forbiddenSubpath} must not be a package export`,
   );
 }
-
-const queryV2 = require("@type-bridge/node/query-v2");
-assert.deepEqual(Object.keys(queryV2).sort(), [
-  "AuthoredQueryInvocation",
-  "AuthoredQueryPlan",
-  "QueryPlanBuilder",
-  "QueryV2Authority",
-]);
-assert.equal(queryV2.QueryV2Authority, typeBridge.QueryV2Authority);
 
 const runtimeProjection = require("@type-bridge/node/runtime-projection");
 assert.deepEqual(Object.keys(runtimeProjection).sort(), [
@@ -217,7 +218,9 @@ assert.deepEqual(Object.keys(runtimeProjection).sort(), [
   "QueryLimits",
   "installGeneratedSchemaAuthority",
   "installRuntimeProjection",
+  "projectedBatchDeleted",
   "projectedManagerNativeCall",
+  "writeResult",
 ]);
 // Query execution enters through one connection-bound executor per kind.
 for (const name of ["direct", "remote"]) {
@@ -250,8 +253,6 @@ const packedFiles = packInfo.files.map((file) => file.path);
 for (const required of [
   "dist/public.js",
   "dist/public.d.ts",
-  "dist/query-v2.js",
-  "dist/query-v2.d.ts",
   "dist/runtime-projection.js",
   "dist/runtime-projection.d.ts",
   "THIRD_PARTY_NOTICES.md",

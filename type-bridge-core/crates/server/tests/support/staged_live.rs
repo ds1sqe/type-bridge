@@ -4,10 +4,9 @@
 //! and the Rust SDK's live plan-builder tests, so the server's own tests
 //! never depend on the SDK crate.
 
-#![allow(deprecated)] // `Interceptor::on_request` still takes legacy AST clauses.
 #![allow(dead_code)]
 
-#[path = "../../../orm/tests/support/plan_v3_race.rs"]
+#[path = "../../../orm/tests/support/plan_race.rs"]
 pub mod race;
 
 use std::future::Future;
@@ -28,19 +27,18 @@ use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
 use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_orm::TxType;
-use type_bridge_orm::session::backend::{QueryResult, QueryV2AnswerLimits};
+use type_bridge_orm::session::backend::{AnswerLimits, QueryResult};
 use type_bridge_orm::session::database::Database;
 use type_bridge_orm::session::real_driver::ConnectOptions;
-use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
-use type_bridge_server::error::PipelineError;
-use type_bridge_server::executor::QueryExecutor;
+use type_bridge_schema::{ManagedDeltaContext, managed_schema_state};
 use type_bridge_server::interceptor::{
-    InterceptError, Interceptor, RequestContext, StagedWriteAuthority, V2PolicyOutcome,
-    V3CommitOutcome, V3PolicyPlan,
+    CommitOutcome, InterceptError, Interceptor, PolicyOutcome, PolicyPlan, RequestContext,
+    StagedWriteAuthority,
 };
 use type_bridge_server::pipeline::PipelineBuilder;
-use type_bridge_server::transport::v2::{V2QueryState, create_router_with_v2};
-use type_bridge_server::transport::v3::{StagedExecutor, StagedOutcome};
+use type_bridge_server::transport::staged::create_router;
+use type_bridge_server::transport::staged::{StagedExecutor, StagedOutcome};
+use type_bridge_server::transport::staged_state::StagedQueryState;
 
 pub static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -56,8 +54,12 @@ pub type CommitRecord = (
 /// records every commit outcome.
 #[derive(Default)]
 pub struct LivePolicy {
+    pub managed_control: bool,
     pub vouch: bool,
     pub refuse: Option<&'static str>,
+    pub query_limits: Option<type_bridge_contract::limits::QueryLimits>,
+    pub execution_timeout: Option<type_bridge_orm::QueryTimeout>,
+    pub answer_limits: Option<type_bridge_orm::QueryExecutionResourceLimits>,
     pub withhold_next_reply: Arc<AtomicBool>,
     pub commits: Arc<Mutex<Vec<CommitRecord>>>,
 }
@@ -67,30 +69,8 @@ impl Interceptor for LivePolicy {
         "live-staged-policy"
     }
 
-    fn on_request<'a>(
-        &'a self,
-        clauses: Vec<type_bridge_core_lib::ast::Clause>,
-        _ctx: &'a mut RequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Vec<type_bridge_core_lib::ast::Clause>, InterceptError>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move { Ok(clauses) })
-    }
-
-    fn supports_v2(&self) -> bool {
-        true
-    }
-
-    fn supports_v3(&self) -> bool {
-        true
-    }
-
     /// A vouching policy authenticates its caller.
-    fn on_v2_transport<'a>(
+    fn on_transport<'a>(
         &'a self,
         ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
@@ -100,7 +80,7 @@ impl Interceptor for LivePolicy {
         Box::pin(async { Ok(()) })
     }
 
-    fn on_v3_write_authority<'a>(
+    fn on_write_authority<'a>(
         &'a self,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<StagedWriteAuthority, InterceptError>> + Send + 'a>>
@@ -115,10 +95,10 @@ impl Interceptor for LivePolicy {
         })
     }
 
-    fn on_v3_plan<'a>(
+    fn on_plan<'a>(
         &'a self,
         _index: usize,
-        plan: &'a V3PolicyPlan<'a>,
+        plan: &'a PolicyPlan<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         let refused = self.refuse.is_some_and(|cap| plan.requires(cap));
@@ -133,9 +113,9 @@ impl Interceptor for LivePolicy {
         })
     }
 
-    fn on_v2_response<'a>(
+    fn on_response<'a>(
         &'a self,
-        _outcome: &'a V2PolicyOutcome<'a>,
+        _outcome: &'a PolicyOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         let withhold = self.withhold_next_reply.swap(false, Ordering::SeqCst);
@@ -150,9 +130,9 @@ impl Interceptor for LivePolicy {
         })
     }
 
-    fn on_v3_commit<'a>(
+    fn on_commit<'a>(
         &'a self,
-        outcome: &'a V3CommitOutcome<'a>,
+        outcome: &'a CommitOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         self.commits.lock().expect("commits").push((
@@ -162,29 +142,6 @@ impl Interceptor for LivePolicy {
             outcome.failure().and_then(|f| f.code()).map(str::to_owned),
         ));
         Box::pin(async { Ok(()) })
-    }
-}
-
-/// The v1 executor behind the pipeline; the staged routes run on the
-/// `V2QueryState` database instead, so it only reports a connection.
-struct UnusedV1Executor;
-
-impl QueryExecutor for UnusedV1Executor {
-    fn execute<'a>(
-        &'a self,
-        _database: &'a str,
-        _typeql: &'a str,
-        _transaction_type: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, PipelineError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(PipelineError::QueryExecution(
-                "the staged live fixture serves no v1 queries".to_owned(),
-            ))
-        })
-    }
-
-    fn is_connected(&self) -> bool {
-        true
     }
 }
 
@@ -211,11 +168,9 @@ pub async fn connect(name: &str) -> Database {
 }
 
 /// Whether the live server takes `given` rows, which every staged purchase
-/// plan binds. TypeDB 3.11 does not, so those tests skip there with a reason
-/// instead of failing with `query_plan_given_transport_unsupported`; test.sh
-/// runs them only on the lanes that support given rows.
+/// plan binds. A custom provider must also advertise given-row transport.
 pub async fn given_rows_supported(test: &str) -> bool {
-    let db = connect("tb_server_v3_given_rows_probe").await;
+    let db = connect("tb_server_given_rows_probe").await;
     let supported = db.supports_given_stage();
     if !supported {
         eprintln!(
@@ -233,11 +188,14 @@ pub async fn given_rows_supported(test: &str) -> bool {
 /// The declared authority carries no key or cardinality facts, so the live
 /// schema omits those annotations to keep the live-authority check exact.
 pub async fn seeded(test: &str) -> (String, Database) {
-    let name = format!(
-        "tb_server_v3_{test}_{}_{}",
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
+    let name = match std::env::var("TB_STAGED_DATABASE_PREFIX") {
+        Ok(prefix) => format!(
+            "{prefix}{test}_{}_{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ),
+        Err(_) => live_database::name(&format!("server_staged_{test}")),
+    };
     let db = connect(&name).await;
     db.create_database().await.expect("database created");
     let schema = race::SCHEMA_TYPEQL
@@ -278,11 +236,11 @@ impl Proxy {
         let pipeline = self.executor.pipeline();
         let metadata = std::collections::HashMap::from([
             ("transport".to_owned(), serde_json::json!("v3")),
-            ("v3_endpoint".to_owned(), serde_json::json!("staged")),
+            ("endpoint".to_owned(), serde_json::json!("staged")),
         ]);
-        let mut ctx = pipeline.v3_request_context(metadata).expect("v3 context");
+        let mut ctx = pipeline.request_context(metadata);
         pipeline
-            .begin_v2_request(&mut ctx)
+            .begin_request(&mut ctx)
             .await
             .expect("transport admission");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -293,7 +251,7 @@ impl Proxy {
 }
 
 pub async fn proxy(name: &str, policy: LivePolicy, allow_unauthenticated: bool) -> Proxy {
-    let scope = format!("server-v3-live-{name}");
+    let scope = format!("server-live-{name}");
     proxy_with(name, policy, allow_unauthenticated, race::schema(), &scope).await
 }
 
@@ -306,33 +264,76 @@ pub async fn proxy_with(
     scope: &str,
 ) -> Proxy {
     let database = connect(name).await;
+    proxy_with_database(
+        name,
+        policy,
+        allow_unauthenticated,
+        declared,
+        scope,
+        database,
+    )
+    .await
+}
+
+/// The same signed proxy fixture over a controlled provider backend.
+pub async fn proxy_with_database(
+    name: &str,
+    policy: LivePolicy,
+    allow_unauthenticated: bool,
+    declared: DeclaredSchema,
+    scope: &str,
+    database: Database,
+) -> Proxy {
     let profile = SemanticProfileId::new(
         semantic_profile_id(&database.server_version().expect("server version"))
             .expect("supported profile"),
     )
     .expect("profile");
-    let resolved = resolve(&declared, &profile).expect("resolved");
     let delta_context = ManagedDeltaContext::new(
         ManagedScopeId::new(scope).expect("scope"),
         profile,
         CapabilitySet::new(),
     );
     let managed = managed_schema_state(&declared, &delta_context).expect("managed");
-    let state = Arc::new(
-        V2QueryState::new_query_only(
-            CapabilitySet::new(),
-            QueryV2AnswerLimits::default(),
-            database,
-            declared.clone(),
-            delta_context,
-            managed,
-            resolved,
-        )
-        .expect("executor advertisement")
-        .with_unauthenticated_staged_writes(allow_unauthenticated),
-    );
+    let constructor = if policy.managed_control {
+        StagedQueryState::new
+    } else {
+        StagedQueryState::new_query_only
+    };
+    let mut state = constructor(
+        CapabilitySet::new(),
+        AnswerLimits::default(),
+        database,
+        declared.clone(),
+        delta_context,
+        managed,
+    )
+    .expect("executor advertisement")
+    .with_query_limits(policy.query_limits.unwrap_or_default())
+    .expect("query limits")
+    .with_unauthenticated_staged_writes(allow_unauthenticated);
+    let answer_limits = policy
+        .answer_limits
+        .map(|mut limits| {
+            if let Some(timeout) = policy.execution_timeout {
+                limits.timeout_milliseconds = timeout;
+            }
+            limits
+        })
+        .or_else(|| {
+            policy
+                .execution_timeout
+                .map(|timeout| type_bridge_orm::QueryExecutionResourceLimits {
+                    timeout_milliseconds: timeout,
+                    ..type_bridge_orm::QueryExecutionResourceLimits::default()
+                })
+        });
+    if let Some(limits) = answer_limits {
+        state = state.with_answer_limits(limits).expect("answer limits");
+    }
+    let state = Arc::new(state);
     let commits = Arc::clone(&policy.commits);
-    let pipeline = PipelineBuilder::new(UnusedV1Executor)
+    let pipeline = PipelineBuilder::new()
         .with_default_database(name)
         .with_interceptor(policy)
         .build()
@@ -342,9 +343,9 @@ pub async fn proxy_with(
         Arc::clone(&pipeline),
         Arc::clone(&state),
     ));
-    let router = create_router_with_v2(pipeline, state);
+    let router = create_router(pipeline, state);
     let bytes = call(&router, "GET", "/v3/capabilities", Vec::new()).await;
-    let advertisement = RemoteCapabilities::decode(&bytes).expect("v3 advertisement");
+    let advertisement = RemoteCapabilities::decode(&bytes).expect("staged advertisement");
     Proxy {
         router,
         advertisement,
@@ -405,3 +406,6 @@ pub async fn state(db: &Database) -> (usize, usize, usize, usize) {
 pub async fn drop_database(db: Database) {
     db.delete_database().await.expect("database deleted");
 }
+
+#[path = "../../../orm/tests/support/live_database.rs"]
+pub mod live_database;

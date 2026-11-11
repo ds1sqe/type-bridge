@@ -120,6 +120,33 @@ pub struct ProjectedQueryOrigin {
 }
 
 impl ProjectedQueryOrigin {
+    /// Bind materialized things to the connection target that authenticated them.
+    #[doc(hidden)]
+    pub fn for_target(target: &crate::QueryTarget<'_>) -> Result<Self, SdkExecutionDiagnostic> {
+        match target {
+            crate::QueryTarget::Database(database) => Ok(Self::for_database(database)),
+            crate::QueryTarget::Transaction(transaction) => Self::for_transaction(transaction),
+            crate::QueryTarget::Proxy(proxy) => Ok(Self {
+                database_identity: Some(proxy.execution_identity().clone()),
+            }),
+        }
+    }
+
+    pub(crate) fn for_manager_target(
+        target: &crate::QueryTarget<'_>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        match target {
+            crate::QueryTarget::Transaction(transaction)
+                if transaction.tx_type() == TxType::Write =>
+            {
+                Ok(Self {
+                    database_identity: Some(transaction.execution_identity().clone()),
+                })
+            }
+            _ => Self::for_target(target),
+        }
+    }
+
     /// Bind materialized things to one direct database.
     #[doc(hidden)]
     #[must_use]
@@ -129,12 +156,14 @@ impl ProjectedQueryOrigin {
         }
     }
 
-    /// Bind materialized things to the database of one borrowed read context.
+    /// Bind materialized things to a borrowed read or engine-scoped write context.
     #[doc(hidden)]
     pub fn for_transaction(
         transaction: &TransactionContext,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        if transaction.tx_type() != TxType::Read {
+        if transaction.tx_type() != TxType::Read
+            && !(transaction.tx_type() == TxType::Write && transaction.is_scoped_borrow())
+        {
             return Err(SdkExecutionDiagnostic::invalid_input(
                 sdk_code("query_borrowed_transaction_not_read"),
                 sdk_message("Typed query terminals require a borrowed read transaction"),
@@ -518,6 +547,61 @@ pub(crate) fn materialize_projected_manager_things_with_budget(
     cancellation: &AnswerCancellation,
     deadline: Option<QueryExecutionDeadline>,
 ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+    materialize_manager_roots_with_budget(
+        installed,
+        registry,
+        origin,
+        things,
+        limits,
+        cancellation,
+        deadline,
+        |_, value| value.type_id() == model,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the manager materializer keeps authority, scope and invocation budget explicit"
+)]
+pub(crate) fn materialize_projected_manager_subtypes_with_budget(
+    installed: &InstalledRuntimeProjection,
+    registry: &DescriptorRegistry,
+    origin: ProjectedQueryOrigin,
+    model: &TypeId,
+    things: &[&HydratedThing],
+    limits: ProjectedQueryMaterializationLimits,
+    cancellation: &AnswerCancellation,
+    deadline: Option<QueryExecutionDeadline>,
+) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+    let expected = registry
+        .descriptor_id(model.label().as_str())
+        .ok_or_else(result_integrity)?;
+    materialize_manager_roots_with_budget(
+        installed,
+        registry,
+        origin,
+        things,
+        limits,
+        cancellation,
+        deadline,
+        |thing, _| registry.is_same_or_subtype(thing.concrete_descriptor(), &expected),
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the manager materializer keeps every authority and invocation budget explicit"
+)]
+fn materialize_manager_roots_with_budget(
+    installed: &InstalledRuntimeProjection,
+    registry: &DescriptorRegistry,
+    origin: ProjectedQueryOrigin,
+    things: &[&HydratedThing],
+    limits: ProjectedQueryMaterializationLimits,
+    cancellation: &AnswerCancellation,
+    deadline: Option<QueryExecutionDeadline>,
+    accepts: impl Fn(&HydratedThing, &ProjectedThing) -> bool,
+) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
     check_materialization_budget(cancellation, deadline)?;
     let mut materializer =
         Materializer::new(installed, registry, origin, limits, cancellation, deadline);
@@ -529,7 +613,7 @@ pub(crate) fn materialize_projected_manager_things_with_budget(
     for thing in things {
         materializer.checkpoint()?;
         let value = materializer.thing(thing)?;
-        if value.type_id() != model {
+        if !accepts(thing, &value) {
             return Err(result_integrity());
         }
         projected.push(value);
@@ -559,8 +643,11 @@ fn materialize_projected_query_value_with_budget(
     check_materialization_budget(cancellation, deadline)?;
     let mut materializer =
         Materializer::new(installed, registry, origin, limits, cancellation, deadline);
-    let value = materializer.materialize_result(request, canonical)?;
+    let value = materializer.materialize_result(request, canonical).inspect_err(|error| {
+        tracing::debug!(target: "type_bridge.plan", refusal = %error.code(), "type_bridge.plan.hydrate");
+    })?;
     materializer.checkpoint()?;
+    tracing::debug!(target: "type_bridge.plan", rows = materializer.measure.rows(), things = materializer.measure.things(), bytes = materializer.measure.bytes(), "type_bridge.plan.hydrate");
     Ok((value, materializer.measure))
 }
 
@@ -572,6 +659,7 @@ struct Materializer<'a> {
     cancellation: &'a AnswerCancellation,
     deadline: Option<QueryExecutionDeadline>,
     measure: ProjectedQueryResourceMeasure,
+    codec: type_bridge_contract::limits::CodecLimits,
 }
 
 impl<'a> Materializer<'a> {
@@ -590,6 +678,7 @@ impl<'a> Materializer<'a> {
             limits,
             cancellation,
             deadline,
+            codec: type_bridge_contract::limits::CodecLimits::CANONICAL,
             measure: ProjectedQueryResourceMeasure {
                 rows: 0,
                 cells: 0,
@@ -610,6 +699,7 @@ impl<'a> Materializer<'a> {
         result: &MatchResult,
     ) -> Result<ProjectedQueryValue, SdkExecutionDiagnostic> {
         self.checkpoint()?;
+        self.codec = request.limits().codec;
         match result {
             MatchResult::Rows { rows } => Ok(ProjectedQueryValue::Rows {
                 rows: self.rows(request, rows)?,
@@ -823,7 +913,7 @@ impl<'a> Materializer<'a> {
         let projected = ProjectedAttributeValue::try_new(
             self.installed,
             attribute_type,
-            canonical_attribute_value(value).map_err(|_| result_integrity())?,
+            canonical_attribute_value(value, self.codec).map_err(|_| result_integrity())?,
         )?;
         self.add_attribute_value(&projected)?;
         Ok(Arc::new(projected))
@@ -835,10 +925,11 @@ impl<'a> Materializer<'a> {
     ) -> Result<Arc<ProjectedThing>, SdkExecutionDiagnostic> {
         self.checkpoint()?;
         let type_id = projected_type_id(self.registry, thing.concrete_descriptor())?;
+        let _span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.hydrate", type_label = %type_id.label(), model = self.installed.projection().models().get(&type_id).map_or(thing.concrete_descriptor().as_str(), |model| model.target_name().as_str())).entered();
         let fields = self.attributes(&type_id, thing.attributes())?;
         let roles = self.roles(&type_id, thing)?;
         self.checkpoint()?;
-        let projected = match &self.origin.database_identity {
+        let mut projected = match &self.origin.database_identity {
             Some(identity) => ProjectedThing::try_new_for_database(
                 self.installed,
                 type_id,
@@ -855,6 +946,9 @@ impl<'a> Materializer<'a> {
                 roles,
             ),
         }?;
+        if thing.is_deleted() {
+            projected.mark_deleted()?;
+        }
         let projected_things = projected
             .roles()
             .values()
@@ -944,7 +1038,7 @@ impl<'a> Materializer<'a> {
                 let value = ProjectedAttributeValue::try_new(
                     self.installed,
                     attribute_type.clone(),
-                    canonical_attribute_value(value).map_err(|_| result_integrity())?,
+                    canonical_attribute_value(value, self.codec).map_err(|_| result_integrity())?,
                 )?;
                 values.push(value);
             }
@@ -1124,7 +1218,8 @@ impl<'a> Materializer<'a> {
                         ProjectedAttributeValue::try_new(
                             self.installed,
                             attribute_type.clone(),
-                            canonical_attribute_value(value).map_err(|_| result_integrity())?,
+                            canonical_attribute_value(value, self.codec)
+                                .map_err(|_| result_integrity())?,
                         )?,
                     ));
                 }
@@ -1300,8 +1395,18 @@ fn descriptor_type_id(descriptor: &DescriptorId) -> Result<TypeId, SdkExecutionD
     .map_err(|_| result_integrity())
 }
 
-fn canonical_attribute_value(value: &AttributeValue) -> Result<CanonicalValue, ()> {
-    crate::runtime_projection::canonical_attribute_value(value).map_err(|_| ())
+fn canonical_attribute_value(
+    value: &AttributeValue,
+    limits: type_bridge_contract::limits::CodecLimits,
+) -> Result<CanonicalValue, ()> {
+    match value {
+        AttributeValue::String(value) => {
+            type_bridge_contract::value::CanonicalString::new_with_limits(value, limits)
+                .map(CanonicalValue::String)
+                .map_err(|_| ())
+        }
+        _ => crate::runtime_projection::canonical_attribute_value(value).map_err(|_| ()),
+    }
 }
 
 fn add_limit(
@@ -1409,11 +1514,11 @@ mod tests {
     use super::*;
     use crate::OrmError;
     use crate::ProjectedCrudExecutor;
-    use crate::match_request::result::{ConceptId, HydratedRole, ReductionRow};
-    use crate::match_request::result_validation::validated_match_result_from_v2;
-    use crate::match_request::v2_outcome_fixture::{
+    use crate::match_request::model_outcome_fixture::{
         distinct_count, distinct_exists, hydrated_page, hydrated_rows, model_reduction,
     };
+    use crate::match_request::result::{ConceptId, HydratedRole, ReductionRow};
+    use crate::match_request::result_validation::validated_match_result_from_model;
     use crate::match_request::{
         BindingPair, ComparisonOp, MatchBinding, MatchPlan, MatchRequest, ReduceTerm, Reduction,
         RowCardinality, SessionHandle, ThingKind, validate_match_request,
@@ -1593,7 +1698,7 @@ plays:
     ) -> (ValidatedMatchRequest, ValidatedMatchResult) {
         let request = validate_match_request(registry, request).unwrap();
         let result =
-            validated_match_result_from_v2(registry, &request, hydrated_rows(registry, rows))
+            validated_match_result_from_model(registry, &request, hydrated_rows(registry, rows))
                 .unwrap();
         (request, result)
     }
@@ -1682,7 +1787,7 @@ plays:
         let (installed, registry) = fixture();
         let request_a = validate_match_request(&registry, one_rows_request(&registry)).unwrap();
         let result_for_a = || {
-            validated_match_result_from_v2(
+            validated_match_result_from_model(
                 &registry,
                 &request_a,
                 hydrated_rows(&registry, Vec::new()),
@@ -1815,7 +1920,7 @@ plays:
                 RowCardinality::ExactlyOne,
             )
             .unwrap();
-        let result = validated_match_result_from_v2(
+        let result = validated_match_result_from_model(
             &registry,
             &request,
             hydrated_rows(
@@ -2083,7 +2188,7 @@ plays:
                     SlotValue::Many(vec![member.clone(), member]),
                 ]],
             );
-            let result = validated_match_result_from_v2(&registry, &request, outcome).unwrap();
+            let result = validated_match_result_from_model(&registry, &request, outcome).unwrap();
             (request, result)
         };
         let (request, result) = make();
@@ -2232,7 +2337,15 @@ plays:
             diagnostic.code().as_str(),
             "query_borrowed_transaction_not_read"
         );
+        let scoped = write.clone().borrowed();
+        let borrowed = ProjectedQueryOrigin::for_transaction(&scoped).unwrap();
+        assert_eq!(borrowed.database_identity, direct.database_identity);
         write.close().await.unwrap();
+
+        let schema = database.transaction_context(TxType::Schema).await.unwrap();
+        assert!(ProjectedQueryOrigin::for_transaction(&schema).is_err());
+        assert!(ProjectedQueryOrigin::for_transaction(&schema.clone().borrowed()).is_err());
+        schema.close().await.unwrap();
     }
 
     #[test]
@@ -2267,7 +2380,7 @@ plays:
             )
         };
         let result_for = |request: &ValidatedMatchRequest| {
-            validated_match_result_from_v2(
+            validated_match_result_from_model(
                 &registry,
                 request,
                 hydrated_rows(
@@ -2549,7 +2662,7 @@ plays:
 
         let count_request =
             reduction_request(&registry, |root, _| MatchOperation::CountBy { root });
-        let count_result = validated_match_result_from_v2(
+        let count_result = validated_match_result_from_model(
             &registry,
             &count_request,
             distinct_count(root, u64::MAX),
@@ -2574,9 +2687,12 @@ plays:
 
         let exists_request =
             reduction_request(&registry, |root, _| MatchOperation::ExistsBy { root });
-        let exists_result =
-            validated_match_result_from_v2(&registry, &exists_request, distinct_exists(root, true))
-                .unwrap();
+        let exists_result = validated_match_result_from_model(
+            &registry,
+            &exists_request,
+            distinct_exists(root, true),
+        )
+        .unwrap();
         let exists = materialize_projected_query_result(
             &installed,
             &registry,
@@ -2606,7 +2722,7 @@ plays:
                     },
                 ],
             });
-        let ungrouped_result = validated_match_result_from_v2(
+        let ungrouped_result = validated_match_result_from_model(
             &registry,
             &ungrouped_request,
             model_reduction(
@@ -2669,7 +2785,7 @@ plays:
             ),
         )
         .unwrap();
-        let grouped_result = validated_match_result_from_v2(
+        let grouped_result = validated_match_result_from_model(
             &registry,
             &grouped_request,
             model_reduction(
@@ -2715,7 +2831,7 @@ plays:
                 },
             ],
         });
-        let result = validated_match_result_from_v2(
+        let result = validated_match_result_from_model(
             &registry,
             &request,
             model_reduction(
@@ -2776,7 +2892,7 @@ plays:
             ),
         )
         .unwrap();
-        let tuple_result = validated_match_result_from_v2(
+        let tuple_result = validated_match_result_from_model(
             &registry,
             &tuple_request,
             model_reduction(
@@ -2833,7 +2949,7 @@ plays:
             ),
         )
         .unwrap();
-        let tuple_result = validated_match_result_from_v2(
+        let tuple_result = validated_match_result_from_model(
             &registry,
             &tuple_request,
             model_reduction(
@@ -2909,7 +3025,7 @@ plays:
             result,
             ProjectedQueryMaterializationLimits::default(),
             &AnswerCancellation::default(),
-            Some(QueryExecutionDeadline::from_timeout_milliseconds(0)),
+            Some(QueryExecutionDeadline::expired()),
         )
         .expect_err("an expired invocation cannot publish a materialized result");
         assert_eq!(error.category(), SdkDiagnosticCategory::ResourceLimit);
@@ -2920,5 +3036,32 @@ plays:
                 SdkQueryDiagnosticPathKind::ProviderEvidence,
             )]
         );
+    }
+    #[test]
+    fn projected_models_preserve_explicitly_raised_string_limits() {
+        let (installed, registry) = fixture();
+        let mut limits = type_bridge_contract::limits::QueryLimits::CANONICAL;
+        limits.codec.max_string_bytes = 2 * 1024 * 1024;
+        let request = crate::match_request::validate_match_request_with_limits(
+            &registry,
+            one_rows_request(&registry),
+            limits,
+        )
+        .unwrap();
+        let wide = "x".repeat(1024 * 1024 + 1);
+        let rows = vec![one(employee(&registry, "0xaa", "person", &wide, i64::MAX))];
+        let result =
+            validated_match_result_from_model(&registry, &request, hydrated_rows(&registry, rows))
+                .unwrap();
+        let value = materialize_projected_query_result(
+            &installed,
+            &registry,
+            ProjectedQueryOrigin::remote_unbound(),
+            request,
+            result,
+            ProjectedQueryMaterializationLimits::default(),
+        )
+        .unwrap();
+        assert!(matches!(value.value(), ProjectedQueryValue::Rows { rows } if rows.len() == 1));
     }
 }

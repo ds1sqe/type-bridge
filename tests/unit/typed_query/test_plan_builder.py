@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from type_bridge_core import QueryV2Authority, QueryV2Error, query_v2_authority
+from type_bridge_core import PlanAuthority, PlanError, plan_authority
 
+from type_bridge import Iid
 from type_bridge import Plan as TopLevelPlan
 from type_bridge.plan import (
     Count,
@@ -32,8 +33,8 @@ FIXTURE = json.loads(
 )
 
 
-def _authority() -> QueryV2Authority:
-    return query_v2_authority(
+def _authority() -> PlanAuthority:
+    return plan_authority(
         bytes.fromhex(FIXTURE["declared_hex"]), FIXTURE["scope"], FIXTURE["profile"]
     )
 
@@ -87,13 +88,13 @@ def purchase(order: str, item_id: str, account_id: str) -> Plan:
     price = plan.field(item, PRICE)
     balance = plan.field(buyer, BALANCE)
     (
-        plan.where_(item_key.eq(item_input))
-        .where_(buyer_key.eq(account_input))
-        .where_(stock.gt(0))
-        .where_(balance.ge(price))
+        plan.where(item_key.eq(item_input))
+        .where(buyer_key.eq(account_input))
+        .where(stock.gt(0))
+        .where(balance.ge(price))
     )
-    next_stock = plan.let_("next_stock", stock - 1)
-    next_balance = plan.let_("next_balance", balance - price)
+    next_stock = plan.let("next_stock", stock - 1)
+    next_balance = plan.let("next_balance", balance - price)
     plan.update(item, STOCK, next_stock).update(buyer, BALANCE, next_balance)
     (plan.insert(Purchase).field(ORDER_ID, order_input).player(BUYER, buyer).player(ITEM, item))
     plan.row([order_input.value(order), item_input.value(item_id), account_input.value(account_id)])
@@ -129,7 +130,7 @@ def test_reads_answer_rows_count_or_exists_and_never_write(terminal: str) -> Non
     plan = PlanBuilder()
     item = plan.exact(Item)
     stock = plan.field(item, STOCK)
-    plan.where_(stock.ge(0))
+    plan.where(stock.ge(0))
     if terminal == "rows":
         plan.returning([item, stock])
     elif terminal == "count":
@@ -145,7 +146,7 @@ def test_expressions_and_typed_literals_build() -> None:
     item = plan.exact(Item)
     stock = plan.field(item, STOCK)
     price = plan.field(item, PRICE)
-    total = plan.let_("total", PlanExpr.max(stock * price, literal("long", 0)) % 7)
+    total = plan.let("total", PlanExpr.max(stock * price, literal("long", 0)) % 7)
     plan.returning([total])
     assert "total" in _variables(plan.build(_authority()))
 
@@ -156,7 +157,7 @@ def test_content_errors_surface_at_build_with_a_stable_code() -> None:
     plan.input("dup", "string")
     plan.input("dup", "string")
     plan.returning([item])
-    with pytest.raises(QueryV2Error) as raised:
+    with pytest.raises(PlanError) as raised:
         plan.build(_authority())
     assert getattr(raised.value, "code", None) == "query_plan_builder_duplicate_name"
 
@@ -165,7 +166,7 @@ def test_count_on_a_write_is_refused_at_build() -> None:
     plan = PlanBuilder()
     item = plan.exact(Item)
     plan.delete(item).count()
-    with pytest.raises(QueryV2Error) as raised:
+    with pytest.raises(PlanError) as raised:
         plan.build(_authority())
     assert getattr(raised.value, "code", None) == "query_plan_builder_write_operation"
 
@@ -173,8 +174,8 @@ def test_count_on_a_write_is_refused_at_build() -> None:
 def test_a_literal_of_the_wrong_host_type_is_refused_at_build() -> None:
     plan = PlanBuilder()
     item = plan.exact(Item)
-    plan.where_(plan.field(item, STOCK).gt(literal("long", "zero")))
-    with pytest.raises(QueryV2Error):
+    plan.where(plan.field(item, STOCK).gt(literal("long", "zero")))
+    with pytest.raises(PlanError):
         plan.build(_authority())
 
 
@@ -202,3 +203,181 @@ def test_plan_answers_are_typed_values() -> None:
             assert n == 3
         case _:
             pytest.fail("Count did not match")
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_fetch_bytes_equal_the_core_builder(required: bool) -> None:
+    plan = Plan.builder()
+    purchase = plan.exact(Purchase)
+    key = plan.field(purchase, ORDER_ID)
+    order = plan.input("order_id", "string")
+    plan.where(key.eq(order)).fetch(purchase, [BUYER, (ITEM, required)])
+    plan.row([order.value("O1")])
+    expected = FIXTURE["read_back_hex" if required else "read_back_optional_hex"]
+    assert plan.build(_authority()).canonical_bytes().hex() == expected
+
+
+@pytest.mark.parametrize("terminal", ["returning", "count", "exists", "fetch"])
+@pytest.mark.parametrize("fetch_first", [False, True])
+def test_fetch_terminal_errors_surface_from_the_core(terminal: str, fetch_first: bool) -> None:
+    plan = Plan.builder()
+    thing = plan.exact(Purchase)
+    if fetch_first:
+        plan.fetch(thing)
+    if terminal == "fetch":
+        plan.fetch(thing)
+    elif terminal == "returning":
+        plan.returning([])
+    elif terminal == "count":
+        plan.count()
+    else:
+        plan.exists()
+    if not fetch_first:
+        plan.fetch(thing)
+    with pytest.raises(PlanError) as caught:
+        plan.build(_authority())
+    expected = "fetch_once" if terminal == "fetch" else "terminal_conflict"
+    assert caught.value.code == f"query_plan_builder_{expected}"
+
+
+def test_plan_build_reaches_python_logging(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+    import time
+
+    with caplog.at_level(logging.DEBUG, logger="type_bridge.plan"):
+        purchase("LOG_SECRET", "I1", "A1").canonical_bytes()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(
+            "type_bridge.plan.build" in record.message for record in caplog.records
+        ):
+            time.sleep(0.01)
+    assert any("type_bridge.plan.build" in record.message for record in caplog.records)
+    assert all("LOG_SECRET" not in record.message for record in caplog.records)
+
+
+def test_rust_log_fallback_reaches_stderr() -> None:
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        f"import runpy,time; ns=runpy.run_path({str(Path(__file__).resolve())!r}); "
+        "ns['purchase']('FALLBACK_SECRET','I1','A1').canonical_bytes(); time.sleep(0.2)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=os.environ | {"RUST_LOG": "type_bridge=debug"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "type_bridge.plan.build" in result.stderr
+    assert "FALLBACK_SECRET" not in result.stderr
+
+
+def test_explanation_matches_plan_and_omits_given_values() -> None:
+    from dataclasses import asdict
+
+    plan = purchase("EXPLAIN_SECRET", "I1", "A1")
+    explanation = plan.explain()
+    assert explanation.fingerprint["digest"] != plan.fingerprint()
+    assert explanation.fingerprint["domain"] == "typebridge.query.plan-shape"
+    assert explanation.fingerprint == purchase("OTHER_SECRET", "I2", "A2").explain().fingerprint
+    assert explanation.given["row_count"] == 1
+    assert explanation.read_statements == 0
+    assert explanation.write_statements == 1
+    assert len(explanation.statements) == 1
+    assert "EXPLAIN_SECRET" not in json.dumps(asdict(explanation))
+    assert asdict(explanation) == json.loads(plan.explain_json())
+
+
+def test_staged_builder_keeps_typed_iid_references_and_rejects_invalid_templates() -> None:
+    from type_bridge.plan import StagedResultRef
+
+    builder = PlanBuilder()
+    iid = builder.input("target_iid", "iid")
+    item = builder.exact(Item)
+    builder.by_iid_input(item, iid).returning([item])
+    reference = StagedResultRef(iid, 0, 0, [Item])
+    staged = builder.build_staged(_authority(), [[iid.absent()]] * 3, [reference])
+    assert json.loads(staged.result_refs_json()) == [
+        {
+            "input": 0,
+            "source_plan": 0,
+            "source_column": 0,
+            "expected_types": [{"kind": "entity", "label": "item"}],
+        }
+    ]
+    with pytest.raises(PlanError) as error:
+        builder.build_staged(_authority(), [[iid.value(Iid("0x10"))]], [reference])
+    assert error.value.code == "query_stage_result_ref_template"
+    foreign = PlanBuilder().input("foreign", "string")
+    with pytest.raises(TypeError, match="does not belong"):
+        builder.build_staged(_authority(), [[foreign.absent()]], [reference])
+
+
+@pytest.mark.parametrize("optional", [False, True])
+def test_nominal_iid_input_preserves_string_wire_bytes(optional: bool) -> None:
+    builder = PlanBuilder()
+    declare = builder.optional_input if optional else builder.input
+    target = declare("target_iid", "iid")
+    item = builder.exact(Item)
+    builder.by_iid_input(item, target).returning([item])
+    builder.row([target.value(Iid("0xAb12"))])
+    actual = builder.build(_authority())
+
+    from type_bridge_core import _PlanBuilderCore
+
+    legacy = _PlanBuilderCore()
+    text = legacy.input("target_iid", "string", optional)
+    legacy_item = legacy.exact(Item.__type_id__)
+    legacy.by_iid_input(legacy_item, text)
+    legacy.returning([legacy_item])
+    legacy.row([(text, legacy.literal("string", "0xAb12"))])
+    assert actual.canonical_bytes() == legacy.build(_authority()).canonical_bytes()
+
+
+@pytest.mark.parametrize("value", ["0xAb12", "invalid", literal("string", "0xAb12")])
+def test_iid_input_refuses_plain_strings_before_build(value: Any) -> None:
+    builder = PlanBuilder()
+    target = builder.input("target_iid", "iid")
+    item = builder.exact(Item)
+    builder.by_iid_input(item, target).count()
+    with pytest.raises(TypeError, match="IID input values require Iid"):
+        builder.row([target.value(value)])
+    with pytest.raises(TypeError, match="IID input values require Iid"):
+        builder.build_staged(_authority(), [[target.value(value)]])
+
+
+def test_iid_predicates_and_result_references_refuse_string_columns() -> None:
+    from type_bridge.plan import StagedResultRef
+
+    builder = PlanBuilder()
+    text: Any = builder.input("target_iid", "string")
+    item = builder.exact(Item)
+    with pytest.raises(TypeError, match="IID predicates require an IID input column"):
+        builder.by_iid_input(item, text)
+    with pytest.raises(TypeError, match="staged IID result references require an IID input column"):
+        StagedResultRef(text, 0, 0, [Item])
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_iid_literals_keep_the_shared_string_value_encoding(wrapped: bool) -> None:
+    builder = PlanBuilder()
+    item = builder.exact(Item)
+    value = Iid("0xAb12")
+    operand = literal("iid", value) if wrapped else value
+    builder.where(builder.field(item, ITEM_ID).eq(operand)).count()
+    typed = builder.build(_authority())
+
+    old = PlanBuilder()
+    old_item = old.exact(Item)
+    old.where(old.field(old_item, ITEM_ID).eq("0xAb12")).count()
+    assert typed.canonical_bytes() == old.build(_authority()).canonical_bytes()
+
+
+def test_iid_literal_refuses_a_string_payload() -> None:
+    builder = PlanBuilder()
+    item = builder.exact(Item)
+    with pytest.raises(TypeError, match="IID input values require Iid"):
+        builder.where(builder.field(item, ITEM_ID).eq(literal("iid", "0xAb12")))

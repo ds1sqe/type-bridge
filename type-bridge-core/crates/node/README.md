@@ -15,8 +15,8 @@ npm run build
 
 The package entry is `dist/public.js`, with declarations emitted to
 `dist/public.d.ts`. Generated packages consume the exported
-`./runtime-projection` subpath. The separately retained low-level Query V2 plan
-builder is exported from `./query-v2`.
+`./runtime-projection` subpath. The staged plan
+builder is exported from the package root.
 
 For local smoke runs after `cargo build -p type-bridge-node`, copy the built
 library to a `.node` file or point the loader at one:
@@ -43,12 +43,12 @@ Linux musl and processor architectures outside this list are not prebuilt.
 ## Public Surface
 
 ```ts
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 import { Age, Person, PersonId } from "./generated/index.js";
 
-const db = RustDatabase.connect("127.0.0.1:1729", "example", {
+const db = Database.connect("127.0.0.1:1729", "example", {
   httpPort: 8000,
-  serverVersion: "3.11.5",
+  serverVersion: "3.14.0",
 });
 const ada = Person.create({
   personId: PersonId.create("ada"),
@@ -72,7 +72,7 @@ that contradicts `tlsEnabled`. TLS is opt-in through `tlsEnabled`; with no
 bundle requires both options explicitly:
 
 ```ts
-const secureDb = RustDatabase.connect("db.example.com:1729", "example", {
+const secureDb = Database.connect("db.example.com:1729", "example", {
   tlsEnabled: true,
   tlsRootCa: "/run/secrets/type-db-root.pem",
 });
@@ -85,7 +85,7 @@ never enables TLS implicitly.
 
 `db.close()` synchronously marks the connection terminal and dispatches the
 upstream driver's shutdown request; once dispatched, the connection admits no
-new work. The unmodified upstream 3.12.1 driver releases its final callback
+new work. The unmodified upstream 3.14.0 driver releases its final callback
 worker when the last native driver lease drops, so a retained closed handle is
 not a synchronous worker-join boundary. Close is also not an out-of-band
 cancellation channel for the synchronous CRUD APIs. While one of those native
@@ -94,10 +94,10 @@ calls occupies the JavaScript event-loop thread, JavaScript cannot dispatch
 Promises and run off that thread; cancel them through the session's
 `QueryCancellation` and bound them with its `timeoutMilliseconds`.
 
-For V2 work that must remain cancellable, use the Promise-returning
-`queryV2ExecuteLocal(...)` surface and supply its `deadlineMs` argument. Remote
-V2 requests likewise carry the bounded `QueryV2RemoteLimits.deadlineMs` expiry.
-Do not rely on a later synchronous `db.close()` call as the timeout mechanism.
+Generated query sessions and staged transactions carry cancellation and timeout
+policy through the shared Rust execution path. Proxy requests use the staged
+protocol and its bounded admission expiry. Do not rely on a later synchronous
+`db.close()` call as the timeout mechanism.
 
 ## Immutable Typed Queries
 
@@ -108,20 +108,20 @@ model descriptors:
 
 ```ts
 import { Person, QuerySession } from "./generated/app-models/index.js";
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "example");
+const db = Database.connect("localhost:1729", "example");
 const session = new QuerySession(db);
 const person = session.exact(Person);
 
 const page = await session.query(person).pageBy(person, {
   limit: 25n,
-  orderBy: [person.field(Person.name).asc()],
+  sort: [person.field(Person.name).asc()],
   includeTotal: true,
 });
 ```
 
-The session runs on a direct `RustDatabase` or transaction, or on a proxy
+The session runs on a direct `Database` or transaction, or on a proxy
 connection, with the same queries and results. Composition is synchronous;
 every terminal returns a `Promise`. Variables, generated field and role tokens,
 predicates, orders, and queries retain opaque native handles. The same immutable `Query` supports exact or
@@ -131,12 +131,11 @@ and subtype closures come only from the installed generated projection. See the
 [typed-query guide](https://ds1sqe.github.io/type-bridge/guide/typed-queries/)
 for the complete contract and transaction rules.
 
-## V2 Plan Authoring and Prepared Execution
+## Native plans and proxy execution
 
-The `./query-v2` subpath exposes `QueryPlanBuilder`,
-`AuthoredQueryPlan`, and `AuthoredQueryInvocation`. Every operation delegates
-to the shared Rust builder through opaque native handles; Node never assembles
-mutable plan JSON or owns a second validator.
+The package root exposes `PlanBuilder` and `Plan`. Builder calls forward
+to Rust; build with the generated schema authority and stage the result with
+`db.stagedTransaction()` or the proxy connection's staged transaction.
 
 A generated session reaches a TypeBridge server through a proxy connection
 passed to the same `QuerySession`. Each awaited terminal performs exactly one
@@ -161,88 +160,15 @@ const rows = await remote.query(person).rows({ limit: 50n });
 ```
 
 Generated sessions never read a schema-authority file or accept a low-level
-`QueryV2Authority` argument. The generated package also re-exports
+`PlanAuthority` argument. The generated package also re-exports
 `ProxyConnection`, `ProxyConnectionOptions`, and `ProxyTlsMode` from
 `@type-bridge/node/runtime-projection`.
 
-The package root retains a lower-level prepared-plan execution boundary for
-integrators that already own independently verified authority. It is not part
-of the generated-model workflow and does not replace `schema generate`; see
-[Low-level Query V2 plans](https://github.com/ds1sqe/type-bridge/blob/master/docs/guide/typed-queries.md#low-level-query-v2-plans)
-for its separation rules.
-
-`QueryV2RemoteLimits.maxBytes` limits the complete signed wire size of a
-successful typed response. Authenticated structured failures instead use the protocol hard ceiling, so a
-zero or otherwise tiny success budget can still return the bound diagnostic
-explaining why no success could fit.
-
-The low-level `QueryV2Authority` constructor creates managed/offline authority
-for prepared remote execution. For local execution against a database with no
-migration controls, bind a separate local-only handle:
-
-```ts
-import {
-  QueryV2Authority,
-  queryV2ExecuteLocal,
-} from "@type-bridge/node";
-
-const localAuthority = QueryV2Authority.queryOnly(
-  database,
-  trustedDeclaredSchemaBytes,
-  managedScope,
-  semanticProfile,
-);
-const outcomeJson = await queryV2ExecuteLocal(
-  database,
-  localAuthority,
-  planBytes,
-  JSON.stringify({ operation: "rows", rows: [] }),
-);
-```
-
-`queryOnly` binds the exact native database identity, requires both V2 and
-legacy migration controls to be absent, and is rejected by
-`queryV2PrepareRemote`. Managed local execution instead requires the exact V2
-migration-control singleton to be free.
-
-Low-level callers must obtain `trustedDeclaredSchemaBytes` through an explicit
-trust boundary. Canonical JSON is an internal codec, not a user-maintained
-schema source; generated applications use the embedded authority instead.
-
-An authored plan and a generated model query travel in the same remote
-envelope (`typebridge.query-remote-request/v2`); the executor must advertise
-`query.plan.v2`, `query.remote.envelope-v2`, and
-`query.remote.structured-diagnostic`, and a remote failure carries its
-complete structured diagnostic.
-
-Each pending request accepts exactly one reply. A second `decodeReply` call is
-rejected before parsing the supplied bytes, including when the first reply was
-a remote failure. Reply parsing and typed evidence validation run on a worker
-and `decodeReply` returns a `Promise`, so maximal envelopes do not block the
-JavaScript event loop. Preparation binds the exact capability advertisement
-and its executor epoch and reply-signing identity into the request. The
-advertisement is an explicit trust input: retrieve it over authenticated TLS
-for the intended executor or pin/provision its exact bytes or fingerprint out
-of band. Fetching it over unauthenticated HTTP is discovery only and cannot
-authenticate the key an intermediary supplies. `deadlineMs` is resolved once to an
-absolute expiry (30 seconds by default and at most five minutes), so a captured
-request cannot regain a fresh relative deadline after replay-cache eviction or
-a standalone executor restart.
-
-## Descriptor Shape
-
-Descriptors use the canonical Rust serde shape:
-
-- Entity descriptor: `type_name`, `is_abstract`, `parent_type`, and
-  `owned_attributes`.
-- Relation descriptor: entity fields plus `roles`.
-- Owned attributes: `field_name` is the JavaScript-facing field key,
-  `attr_name` is the TypeDB attribute label, `value_type` is one TypeDB
-  primitive value type, `annotations` carries `Key`, `Unique`, or `Card`, and
-  `is_optional` mirrors the model field optionality. `is_ordered` declares
-  ordered multi-valued storage and is required even when `false`.
-- Relation roles: `role_name`, accepted `player_type_names`, and optional
-  `[min, max]` cardinality.
+Native plans use the authenticated staged protocol. The capability
+advertisement is a trust input: retrieve it over authenticated TLS for the
+intended executor or pin its bytes or fingerprint out of band.
+See the [3.0 upgrade guide](https://ds1sqe.github.io/type-bridge/guide/upgrade-3.0/)
+for replacements for the removed V1/V2 entry points.
 
 ## BigInt Rule
 
@@ -257,10 +183,10 @@ while crossing JSON.
 
 ## Supported Runtime Operations
 
-The current facade exposes descriptor registration, value marshalling, database
-and transaction handles, entity and relation managers, insert/put/update/get,
-batch insert/put, count, aggregate, group-by aggregate, relation role-player
-filters, and IID deletes.
+The current facade exposes value marshalling, database and transaction
+handles, generated entity and relation managers (insert, put, update, delete,
+their batch forms, `getByIid`, filters, count and exists), immutable typed
+queries with `reduce` reductions, staged plans, and IID deletes.
 
 The facade does not expose a direct TypeDB driver or accept caller-provided
 TypeQL for the immutable typed path. Its native Rust compiler and validator own

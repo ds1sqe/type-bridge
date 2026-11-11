@@ -11,7 +11,7 @@ use type_bridge_contract::decimal::parse_decimal;
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
 use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::projection::ProjectionHandler;
-use type_bridge_contract::query_plan::CompatibilityValueV2;
+use type_bridge_contract::query_plan::ModelValue;
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
@@ -36,7 +36,8 @@ use type_bridge_orm::{
     AnswerCancellation, AttributeValue, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer,
     InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedQueryOrigin, ProjectedQueryRow,
     ProjectedQuerySlotValue, ProjectedQueryValue, ProjectedReducedValue, ProjectedReductionGroup,
-    ProjectedThing, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryTarget,
+    ProjectedThing, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    QueryTarget as OrmQueryTarget,
 };
 
 use crate::__codegen::{
@@ -51,8 +52,10 @@ use crate::relation_codec::hydrate_relation;
 use crate::schema::Schema;
 use crate::{Database, Result};
 
+mod target;
 #[cfg(test)]
 mod tests;
+pub use target::{Direct, Pending, QueryTarget, Staged};
 
 static QUERY_SESSION_NONCE: AtomicU64 = AtomicU64::new(1);
 
@@ -152,9 +155,9 @@ impl SelectionMode for Subtypes {}
 /// lightweight `Copy` values valid only for the session that created them.
 /// Bindings from another session fail before I/O with
 /// `cross_session_handle`.
-pub struct QuerySession<'db, S: Schema> {
+pub struct QuerySession<'db, S: Schema, Target: QueryTarget = Direct> {
     cancellation: AnswerCancellation,
-    installed: &'db InstalledRuntimeProjection,
+    installed: Arc<InstalledRuntimeProjection>,
     execution: QueryExecution<'db, S>,
     resources: QueryExecutionResourceLimits,
     session: OrmSessionHandle,
@@ -162,16 +165,21 @@ pub struct QuerySession<'db, S: Schema> {
     nonce: u64,
     bindings: Vec<OrmBindingHandle>,
     closed: AtomicBool,
-    marker: PhantomData<fn() -> S>,
+    marker: PhantomData<fn() -> (S, Target)>,
 }
 
 enum QueryExecution<'db, S: Schema> {
     Local(&'db Database<S>),
     Borrowed(&'db type_bridge_orm::session::context::TransactionContext),
     Remote(&'db crate::remote::ProxyDatabase<S>),
+    Staged {
+        transaction: std::sync::Mutex<&'db mut type_bridge_orm::session::staged::Transaction>,
+        origin: ProjectedQueryOrigin,
+    },
+    Decode(ProjectedQueryOrigin),
 }
 
-impl<S: Schema> std::fmt::Debug for QuerySession<'_, S> {
+impl<S: Schema, Target: QueryTarget> std::fmt::Debug for QuerySession<'_, S, Target> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("QuerySession")
@@ -230,19 +238,22 @@ impl<S: Schema, M: ThingModel<Schema = S>, Mode: SelectionMode> Binding<S, M, Mo
 
     /// Match this generated binding by one canonical TypeDB thing IID.
     #[must_use]
-    pub fn iid(self, iid: impl Into<String>) -> Predicate<S> {
+    pub fn iid(self, iid: &crate::Iid) -> Predicate<S> {
         Predicate::new(PredicateExpr::BindingIid {
             binding: self.key,
-            iid: iid.into(),
+            iid: iid.as_str().to_owned(),
         })
     }
 
     /// Match this generated binding by one of a non-empty bounded IID set.
     #[must_use]
-    pub fn iid_in(self, iids: impl IntoIterator<Item = impl Into<String>>) -> Predicate<S> {
+    pub fn iid_in<'iid>(self, iids: impl IntoIterator<Item = &'iid crate::Iid>) -> Predicate<S> {
         Predicate::new(PredicateExpr::BindingIidIn {
             binding: self.key,
-            iids: iids.into_iter().map(Into::into).collect(),
+            iids: iids
+                .into_iter()
+                .map(|iid| iid.as_str().to_owned())
+                .collect(),
         })
     }
 
@@ -570,7 +581,7 @@ impl<S: Schema> Database<S> {
         let registry = self.match_registry().ok_or_else(schema_not_bound)?;
         let installed = self
             .installed_schema()
-            .map(Arc::as_ref)
+            .cloned()
             .ok_or_else(schema_not_bound)?;
         Ok(QuerySession::new(
             installed,
@@ -582,9 +593,9 @@ impl<S: Schema> Database<S> {
     }
 }
 
-impl<'db, S: Schema> QuerySession<'db, S> {
+impl<'db, S: Schema, Target: QueryTarget> QuerySession<'db, S, Target> {
     fn new(
-        installed: &'db InstalledRuntimeProjection,
+        installed: Arc<InstalledRuntimeProjection>,
         registry: Arc<DescriptorRegistry>,
         execution: QueryExecution<'db, S>,
         resources: QueryExecutionResourceLimits,
@@ -605,7 +616,7 @@ impl<'db, S: Schema> QuerySession<'db, S> {
     }
 
     pub(crate) fn borrowed(
-        installed: &'db InstalledRuntimeProjection,
+        installed: Arc<InstalledRuntimeProjection>,
         registry: Arc<DescriptorRegistry>,
         transaction: &'db type_bridge_orm::session::context::TransactionContext,
         resources: QueryExecutionResourceLimits,
@@ -621,7 +632,7 @@ impl<'db, S: Schema> QuerySession<'db, S> {
     }
 
     pub(crate) fn remote(
-        installed: &'db InstalledRuntimeProjection,
+        installed: Arc<InstalledRuntimeProjection>,
         registry: Arc<DescriptorRegistry>,
         remote: &'db crate::remote::ProxyDatabase<S>,
         resources: QueryExecutionResourceLimits,
@@ -680,6 +691,9 @@ impl<'db, S: Schema> QuerySession<'db, S> {
                 })
             }
             QueryExecution::Remote(_) => Ok(ProjectedQueryOrigin::remote_unbound()),
+            QueryExecution::Staged { origin, .. } | QueryExecution::Decode(origin) => {
+                Ok(origin.clone())
+            }
         }
     }
 
@@ -692,7 +706,7 @@ impl<'db, S: Schema> QuerySession<'db, S> {
         self.check_invocation(deadline, ModelValidationPhase::Hydration)?;
         self.projected_query_origin()?
             .materialize_borrowed_with_budget(
-                self.installed,
+                &self.installed,
                 &self.registry,
                 validated,
                 result,
@@ -705,7 +719,7 @@ impl<'db, S: Schema> QuerySession<'db, S> {
     }
 }
 
-impl<'db, S: Schema> QuerySession<'db, S> {
+impl<'db, S: Schema, Target: QueryTarget> QuerySession<'db, S, Target> {
     /// Explicitly close this authoring session.
     ///
     /// Closing is idempotent. Existing query lineages retain their immutable
@@ -882,7 +896,7 @@ impl<'db, S: Schema> QuerySession<'db, S> {
         input: &FunctionInputExpr,
     ) -> Result<type_bridge_orm::FunctionValueHandle> {
         let projected = ProjectedAttributeValue::try_from_attribute_value(
-            self.installed,
+            &self.installed,
             input.attribute_type.clone(),
             &input.value,
         )
@@ -929,7 +943,7 @@ impl<'db, S: Schema> QuerySession<'db, S> {
     }
 
     fn installed(&self) -> Result<&InstalledRuntimeProjection> {
-        Ok(self.installed)
+        Ok(&self.installed)
     }
 
     fn field_name_for(&self, owner_label: &str, attribute_label: &str) -> Result<String> {
@@ -1274,7 +1288,7 @@ fn canonicalize_selected_value(value: AttributeValue) -> Result<AttributeValue> 
             let value = normalize_provider_fraction(value);
             match value.parse::<CanonicalDuration>() {
                 Ok(value) => Ok(AttributeValue::Duration(value.to_string())),
-                Err(_) => CompatibilityValueV2::released_duration(value.clone())
+                Err(_) => ModelValue::released_duration(value.clone())
                     .map(|_| AttributeValue::Duration(value))
                     .map_err(|_| malformed()),
             }
@@ -1590,7 +1604,7 @@ impl<S: Schema> Predicate<S> {
     }
 }
 
-impl<'db, S: Schema> QuerySession<'db, S> {
+impl<'db, S: Schema, Target: QueryTarget> QuerySession<'db, S, Target> {
     /// Require a bounded directed walk between two generated endpoint
     /// bindings through one exact generated relation.
     ///
@@ -1608,7 +1622,7 @@ impl<'db, S: Schema> QuerySession<'db, S> {
         ToPlayers,
         Source,
         SourceMode,
-        Target,
+        Destination,
         TargetMode,
     >(
         &self,
@@ -1616,7 +1630,7 @@ impl<'db, S: Schema> QuerySession<'db, S> {
         role_from: RoleToken<FromOwner, FromPlayers>,
         role_to: RoleToken<ToOwner, ToPlayers>,
         source: Binding<S, Source, SourceMode>,
-        target: Binding<S, Target, TargetMode>,
+        target: Binding<S, Destination, TargetMode>,
         min_depth: u8,
         max_depth: u8,
     ) -> Result<Predicate<S>>
@@ -1628,10 +1642,10 @@ impl<'db, S: Schema> QuerySession<'db, S> {
         FromOwner: RelationModel<Schema = S>,
         ToOwner: RelationModel<Schema = S>,
         FromPlayers: RolePlayerBinding<Source, SourceMode>,
-        ToPlayers: RolePlayerBinding<Target, TargetMode>,
+        ToPlayers: RolePlayerBinding<Destination, TargetMode>,
         Source: ThingModel<Schema = S>,
         SourceMode: SelectionMode,
-        Target: ThingModel<Schema = S>,
+        Destination: ThingModel<Schema = S>,
         TargetMode: SelectionMode,
     {
         let predicate = Predicate::new(PredicateExpr::Reachable {
@@ -1863,7 +1877,7 @@ impl<S: Schema, Owner: Model<Schema = S>, V> BoundField<S, Owner, V> {
     /// Regular-expression match against a client-owned validated pattern;
     /// admitted only for text field domains.
     #[must_use]
-    pub fn regex(self, pattern: crate::value::Regex) -> Predicate<S>
+    pub fn like(self, pattern: crate::value::Regex) -> Predicate<S>
     where
         V: crate::__codegen::TextValued,
     {
@@ -2068,7 +2082,7 @@ impl<S: Schema, B: Selectable<S>> Collected<S, B> {
     }
 
     /// Append one stable order term owned by this collected binding.
-    pub fn order_by(mut self, order: Order<S>) -> Result<Self> {
+    pub fn sort(mut self, order: Order<S>) -> Result<Self> {
         if order.key != self.selection.binding_key() {
             return Err(Error::model_validation(
                 ModelValidationPhase::Input,
@@ -2102,7 +2116,7 @@ impl<S: Schema, Owner: Model<Schema = S>, Players> BoundRole<S, Owner, Players> 
     /// Require this relation role to connect an admitted generated player
     /// binding.
     #[must_use]
-    pub fn connects<MP: ThingModel<Schema = S>, ModeP: SelectionMode>(
+    pub fn links<MP: ThingModel<Schema = S>, ModeP: SelectionMode>(
         self,
         player: Binding<S, MP, ModeP>,
     ) -> Predicate<S>
@@ -2122,17 +2136,17 @@ mod selectable_sealed {
 }
 
 /// Sealed resolution from one selected binding to its typed query output.
-pub trait Selectable<S: Schema>: selectable_sealed::Sealed + Copy {
+pub trait Selectable<S: Schema>: selectable_sealed::Sealed + Copy + 'static {
     /// The materialized output type for one selected row.
-    type Output;
+    type Output: 'static;
     #[doc(hidden)]
     fn binding_key(self) -> BindingKey;
     #[doc(hidden)]
     fn materialize_output(row: &HydratedRow) -> std::result::Result<Self::Output, ValidationError>;
 
     #[doc(hidden)]
-    fn __materialize_projected_output(
-        session: &QuerySession<'_, S>,
+    fn __materialize_projected_output<Target: QueryTarget>(
+        session: &QuerySession<'_, S, Target>,
         thing: &ProjectedThing,
     ) -> Result<Self::Output> {
         let row = session.client_row_for_projected(thing)?;
@@ -2141,14 +2155,17 @@ pub trait Selectable<S: Schema>: selectable_sealed::Sealed + Copy {
     }
 
     #[doc(hidden)]
-    fn __selection_handle(self, session: &QuerySession<'_, S>) -> Result<OrmSelectionHandle> {
+    fn __selection_handle<Target: QueryTarget>(
+        self,
+        session: &QuerySession<'_, S, Target>,
+    ) -> Result<OrmSelectionHandle> {
         Ok(session.handle_by_key(self.binding_key())?.one())
     }
 
     #[doc(hidden)]
-    fn __materialize_slot(
+    fn __materialize_slot<Target: QueryTarget>(
         self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &SlotValue,
     ) -> Result<Self::Output> {
         let SlotValue::One(thing) = slot else {
@@ -2166,9 +2183,9 @@ pub trait Selectable<S: Schema>: selectable_sealed::Sealed + Copy {
     }
 
     #[doc(hidden)]
-    fn __materialize_slot_with_checkpoint(
+    fn __materialize_slot_with_checkpoint<Target: QueryTarget>(
         self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &SlotValue,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2216,28 +2233,31 @@ mod selected_slot_sealed {
 /// Sealed resolution from one singular or collected selection to its typed
 /// slot output.
 #[doc(hidden)]
-pub trait SelectedSlot<S: Schema>: selected_slot_sealed::Sealed<S> + Clone {
-    type Output;
+pub trait SelectedSlot<S: Schema>: selected_slot_sealed::Sealed<S> + Clone + 'static {
+    type Output: 'static;
 
-    fn __selection_handle(&self, session: &QuerySession<'_, S>) -> Result<OrmSelectionHandle>;
-
-    fn __materialize_slot(
+    fn __selection_handle<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
+    ) -> Result<OrmSelectionHandle>;
+
+    fn __materialize_slot<Target: QueryTarget>(
+        &self,
+        session: &QuerySession<'_, S, Target>,
         slot: &SlotValue,
     ) -> Result<Self::Output>;
 
     #[doc(hidden)]
-    fn __materialize_projected_slot(
+    fn __materialize_projected_slot<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &ProjectedQuerySlotValue,
     ) -> Result<Self::Output>;
 
     #[doc(hidden)]
-    fn __materialize_slot_with_checkpoint(
+    fn __materialize_slot_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &SlotValue,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2248,9 +2268,9 @@ pub trait SelectedSlot<S: Schema>: selected_slot_sealed::Sealed<S> + Clone {
     }
 
     #[doc(hidden)]
-    fn __materialize_projected_slot_with_checkpoint(
+    fn __materialize_projected_slot_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &ProjectedQuerySlotValue,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2265,21 +2285,24 @@ impl<S: Schema, B: Selectable<S>> selected_slot_sealed::Sealed<S> for B {}
 impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for B {
     type Output = B::Output;
 
-    fn __selection_handle(&self, session: &QuerySession<'_, S>) -> Result<OrmSelectionHandle> {
+    fn __selection_handle<Target: QueryTarget>(
+        &self,
+        session: &QuerySession<'_, S, Target>,
+    ) -> Result<OrmSelectionHandle> {
         (*self).__selection_handle(session)
     }
 
-    fn __materialize_slot(
+    fn __materialize_slot<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &SlotValue,
     ) -> Result<Self::Output> {
         (*self).__materialize_slot(session, slot)
     }
 
-    fn __materialize_projected_slot(
+    fn __materialize_projected_slot<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &ProjectedQuerySlotValue,
     ) -> Result<Self::Output> {
         let ProjectedQuerySlotValue::One(thing) = slot else {
@@ -2294,18 +2317,18 @@ impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for B {
         B::__materialize_projected_output(session, thing)
     }
 
-    fn __materialize_slot_with_checkpoint(
+    fn __materialize_slot_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &SlotValue,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
         (*self).__materialize_slot_with_checkpoint(session, slot, checkpoint)
     }
 
-    fn __materialize_projected_slot_with_checkpoint(
+    fn __materialize_projected_slot_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &ProjectedQuerySlotValue,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2320,7 +2343,10 @@ impl<S: Schema, B: Selectable<S>> selected_slot_sealed::Sealed<S> for Collected<
 impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for Collected<S, B> {
     type Output = Vec<B::Output>;
 
-    fn __selection_handle(&self, session: &QuerySession<'_, S>) -> Result<OrmSelectionHandle> {
+    fn __selection_handle<Target: QueryTarget>(
+        &self,
+        session: &QuerySession<'_, S, Target>,
+    ) -> Result<OrmSelectionHandle> {
         let binding = session.handle_by_key(self.selection.binding_key())?;
         let mut selection = binding
             .collect()
@@ -2334,9 +2360,9 @@ impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for Collected<S, B> {
         Ok(selection)
     }
 
-    fn __materialize_slot(
+    fn __materialize_slot<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &SlotValue,
     ) -> Result<Self::Output> {
         let SlotValue::Many(things) = slot else {
@@ -2360,9 +2386,9 @@ impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for Collected<S, B> {
         Ok(outputs)
     }
 
-    fn __materialize_projected_slot(
+    fn __materialize_projected_slot<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &ProjectedQuerySlotValue,
     ) -> Result<Self::Output> {
         let ProjectedQuerySlotValue::Many(things) = slot else {
@@ -2380,9 +2406,9 @@ impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for Collected<S, B> {
             .collect()
     }
 
-    fn __materialize_slot_with_checkpoint(
+    fn __materialize_slot_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &SlotValue,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2410,9 +2436,9 @@ impl<S: Schema, B: Selectable<S>> SelectedSlot<S> for Collected<S, B> {
         Ok(outputs)
     }
 
-    fn __materialize_projected_slot_with_checkpoint(
+    fn __materialize_projected_slot_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slot: &ProjectedQuerySlotValue,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2444,31 +2470,34 @@ mod selected_shape_sealed {
 ///
 /// Implementations are supplied for one binding, positional tuples through
 /// the canonical sixteen-slot ceiling, and derive-backed named rows.
-pub trait SelectedShape<S: Schema>: selected_shape_sealed::Sealed<S> + Clone {
+pub trait SelectedShape<S: Schema>: selected_shape_sealed::Sealed<S> + Clone + 'static {
     /// One fully materialized public row.
-    type Output;
+    type Output: 'static;
 
     #[doc(hidden)]
-    fn __shape_handle(&self, session: &QuerySession<'_, S>) -> Result<OrmShapeHandle>;
-
-    #[doc(hidden)]
-    fn __materialize_row(
+    fn __shape_handle<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
+    ) -> Result<OrmShapeHandle>;
+
+    #[doc(hidden)]
+    fn __materialize_row<Target: QueryTarget>(
+        &self,
+        session: &QuerySession<'_, S, Target>,
         row: &MatchRow,
     ) -> Result<Self::Output>;
 
     #[doc(hidden)]
-    fn __materialize_projected_row(
+    fn __materialize_projected_row<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &ProjectedQueryRow,
     ) -> Result<Self::Output>;
 
     #[doc(hidden)]
-    fn __materialize_row_with_checkpoint(
+    fn __materialize_row_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &MatchRow,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2479,9 +2508,9 @@ pub trait SelectedShape<S: Schema>: selected_shape_sealed::Sealed<S> + Clone {
     }
 
     #[doc(hidden)]
-    fn __materialize_projected_row_with_checkpoint(
+    fn __materialize_projected_row_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &ProjectedQueryRow,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2496,16 +2525,19 @@ impl<S: Schema, B: Selectable<S>> selected_shape_sealed::Sealed<S> for B {}
 impl<S: Schema, B: Selectable<S>> SelectedShape<S> for B {
     type Output = B::Output;
 
-    fn __shape_handle(&self, session: &QuerySession<'_, S>) -> Result<OrmShapeHandle> {
+    fn __shape_handle<Target: QueryTarget>(
+        &self,
+        session: &QuerySession<'_, S, Target>,
+    ) -> Result<OrmShapeHandle> {
         session
             .session
             .positional([SelectedSlot::__selection_handle(self, session)?])
             .map_err(Error::from_orm)
     }
 
-    fn __materialize_row(
+    fn __materialize_row<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &MatchRow,
     ) -> Result<Self::Output> {
         let [slot] = row.slots() else {
@@ -2514,9 +2546,9 @@ impl<S: Schema, B: Selectable<S>> SelectedShape<S> for B {
         SelectedSlot::__materialize_slot(self, session, slot)
     }
 
-    fn __materialize_projected_row(
+    fn __materialize_projected_row<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &ProjectedQueryRow,
     ) -> Result<Self::Output> {
         let [slot] = row.slots() else {
@@ -2530,16 +2562,19 @@ impl<S: Schema, B: Selectable<S>> selected_shape_sealed::Sealed<S> for Collected
 impl<S: Schema, B: Selectable<S>> SelectedShape<S> for Collected<S, B> {
     type Output = Vec<B::Output>;
 
-    fn __shape_handle(&self, session: &QuerySession<'_, S>) -> Result<OrmShapeHandle> {
+    fn __shape_handle<Target: QueryTarget>(
+        &self,
+        session: &QuerySession<'_, S, Target>,
+    ) -> Result<OrmShapeHandle> {
         session
             .session
             .positional([SelectedSlot::__selection_handle(self, session)?])
             .map_err(Error::from_orm)
     }
 
-    fn __materialize_row(
+    fn __materialize_row<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &MatchRow,
     ) -> Result<Self::Output> {
         let [slot] = row.slots() else {
@@ -2548,9 +2583,9 @@ impl<S: Schema, B: Selectable<S>> SelectedShape<S> for Collected<S, B> {
         SelectedSlot::__materialize_slot(self, session, slot)
     }
 
-    fn __materialize_projected_row(
+    fn __materialize_projected_row<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &ProjectedQueryRow,
     ) -> Result<Self::Output> {
         let [slot] = row.slots() else {
@@ -2559,9 +2594,9 @@ impl<S: Schema, B: Selectable<S>> SelectedShape<S> for Collected<S, B> {
         SelectedSlot::__materialize_projected_slot(self, session, slot.value())
     }
 
-    fn __materialize_row_with_checkpoint(
+    fn __materialize_row_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &MatchRow,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2571,9 +2606,9 @@ impl<S: Schema, B: Selectable<S>> SelectedShape<S> for Collected<S, B> {
         SelectedSlot::__materialize_slot_with_checkpoint(self, session, slot, checkpoint)
     }
 
-    fn __materialize_projected_row_with_checkpoint(
+    fn __materialize_projected_row_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &ProjectedQueryRow,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2603,31 +2638,33 @@ impl<S: Schema, B: Selectable<S>> singular_selected_shape_sealed::Sealed<S> for 
 impl<S: Schema, B: Selectable<S>> SingularSelectedShape<S> for B {}
 
 #[doc(hidden)]
-pub trait SelectedTuple<S: Schema>: Clone {
+pub trait SelectedTuple<S: Schema>: Clone + 'static {
     const ARITY: usize;
 
-    type Output;
+    type Output: 'static;
 
-    fn __selection_handles(&self, session: &QuerySession<'_, S>)
-    -> Result<Vec<OrmSelectionHandle>>;
-
-    fn __materialize_slots(
+    fn __selection_handles<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
+    ) -> Result<Vec<OrmSelectionHandle>>;
+
+    fn __materialize_slots<Target: QueryTarget>(
+        &self,
+        session: &QuerySession<'_, S, Target>,
         slots: &[SlotValue],
     ) -> Result<Self::Output>;
 
     #[doc(hidden)]
-    fn __materialize_projected_slots(
+    fn __materialize_projected_slots<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slots: &[type_bridge_orm::ProjectedQuerySlot],
     ) -> Result<Self::Output>;
 
     #[doc(hidden)]
-    fn __materialize_slots_with_checkpoint(
+    fn __materialize_slots_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slots: &[SlotValue],
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2638,9 +2675,9 @@ pub trait SelectedTuple<S: Schema>: Clone {
     }
 
     #[doc(hidden)]
-    fn __materialize_projected_slots_with_checkpoint(
+    fn __materialize_projected_slots_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         slots: &[type_bridge_orm::ProjectedQuerySlot],
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2661,16 +2698,16 @@ macro_rules! selected_tuple {
 
             type Output = ($(<$type as SelectedSlot<S>>::Output,)+);
 
-            fn __selection_handles(
+            fn __selection_handles<Target: QueryTarget>(
                 &self,
-                session: &QuerySession<'_, S>,
+                session: &QuerySession<'_, S, Target>,
             ) -> Result<Vec<OrmSelectionHandle>> {
                 Ok(vec![$(SelectedSlot::__selection_handle(&self.$index, session)?),+])
             }
 
-            fn __materialize_slots(
+            fn __materialize_slots<Target: QueryTarget>(
                 &self,
-                session: &QuerySession<'_, S>,
+                session: &QuerySession<'_, S, Target>,
                 slots: &[SlotValue],
             ) -> Result<Self::Output> {
                 let slots: &[SlotValue; $length] = slots
@@ -2683,9 +2720,9 @@ macro_rules! selected_tuple {
                 )?,)+))
             }
 
-            fn __materialize_projected_slots(
+            fn __materialize_projected_slots<Target: QueryTarget>(
                 &self,
-                session: &QuerySession<'_, S>,
+                session: &QuerySession<'_, S, Target>,
                 slots: &[type_bridge_orm::ProjectedQuerySlot],
             ) -> Result<Self::Output> {
                 let slots: &[type_bridge_orm::ProjectedQuerySlot; $length] = slots
@@ -2698,9 +2735,9 @@ macro_rules! selected_tuple {
                 )?,)+))
             }
 
-            fn __materialize_slots_with_checkpoint(
+            fn __materialize_slots_with_checkpoint<Target: QueryTarget>(
                 &self,
-                session: &QuerySession<'_, S>,
+                session: &QuerySession<'_, S, Target>,
                 slots: &[SlotValue],
                 checkpoint: &dyn Fn() -> Result<()>,
             ) -> Result<Self::Output> {
@@ -2716,9 +2753,9 @@ macro_rules! selected_tuple {
             }
 
 
-            fn __materialize_projected_slots_with_checkpoint(
+            fn __materialize_projected_slots_with_checkpoint<Target: QueryTarget>(
                 &self,
-                session: &QuerySession<'_, S>,
+                session: &QuerySession<'_, S, Target>,
                 slots: &[type_bridge_orm::ProjectedQuerySlot],
                 checkpoint: &dyn Fn() -> Result<()>,
             ) -> Result<Self::Output> {
@@ -2742,9 +2779,9 @@ macro_rules! selected_tuple {
         impl<S: Schema, $($type: SelectedSlot<S>),+> SelectedShape<S> for ($($type,)+) {
             type Output = <Self as SelectedTuple<S>>::Output;
 
-            fn __shape_handle(
+            fn __shape_handle<Target: QueryTarget>(
                 &self,
-                session: &QuerySession<'_, S>,
+                session: &QuerySession<'_, S, Target>,
             ) -> Result<OrmShapeHandle> {
                 session
                     .session
@@ -2752,26 +2789,26 @@ macro_rules! selected_tuple {
                     .map_err(Error::from_orm)
             }
 
-            fn __materialize_row(
+            fn __materialize_row<Target: QueryTarget>(
                 &self,
-                session: &QuerySession<'_, S>,
+                session: &QuerySession<'_, S, Target>,
                 row: &MatchRow,
             ) -> Result<Self::Output> {
                 self.__materialize_slots(session, row.slots())
             }
 
-            fn __materialize_projected_row(
+            fn __materialize_projected_row<Target: QueryTarget>(
                 &self,
-                session: &QuerySession<'_, S>,
+                session: &QuerySession<'_, S, Target>,
                 row: &ProjectedQueryRow,
             ) -> Result<Self::Output> {
                 self.__materialize_projected_slots(session, row.slots())
             }
 
 
-            fn __materialize_row_with_checkpoint(
+            fn __materialize_row_with_checkpoint<Target: QueryTarget>(
                 &self,
-                session: &QuerySession<'_, S>,
+                session: &QuerySession<'_, S, Target>,
                 row: &MatchRow,
                 checkpoint: &dyn Fn() -> Result<()>,
             ) -> Result<Self::Output> {
@@ -2779,9 +2816,9 @@ macro_rules! selected_tuple {
             }
 
 
-            fn __materialize_projected_row_with_checkpoint(
+            fn __materialize_projected_row_with_checkpoint<Target: QueryTarget>(
                 &self,
-                session: &QuerySession<'_, S>,
+                session: &QuerySession<'_, S, Target>,
                 row: &ProjectedQueryRow,
                 checkpoint: &dyn Fn() -> Result<()>,
             ) -> Result<Self::Output> {
@@ -2829,7 +2866,7 @@ selected_tuple!(16; (A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5), (G, 6), (H, 
 
 /// Construction contract generated by `#[derive(type_bridge::SelectedRow)]`.
 #[doc(hidden)]
-pub trait SelectedRowSpec<Outputs>: Sized {
+pub trait SelectedRowSpec<Outputs>: Sized + 'static {
     fn __from_selected_outputs(outputs: Outputs) -> Self;
 }
 
@@ -2884,7 +2921,10 @@ where
 {
     type Output = Row;
 
-    fn __shape_handle(&self, session: &QuerySession<'_, S>) -> Result<OrmShapeHandle> {
+    fn __shape_handle<Target: QueryTarget>(
+        &self,
+        session: &QuerySession<'_, S, Target>,
+    ) -> Result<OrmShapeHandle> {
         let selections = self.slots.__selection_handles(session)?;
         session
             .session
@@ -2898,9 +2938,9 @@ where
             .map_err(Error::from_orm)
     }
 
-    fn __materialize_row(
+    fn __materialize_row<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &MatchRow,
     ) -> Result<Self::Output> {
         Ok(Row::__from_selected_outputs(
@@ -2908,9 +2948,9 @@ where
         ))
     }
 
-    fn __materialize_projected_row(
+    fn __materialize_projected_row<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &ProjectedQueryRow,
     ) -> Result<Self::Output> {
         Ok(Row::__from_selected_outputs(
@@ -2919,9 +2959,9 @@ where
         ))
     }
 
-    fn __materialize_row_with_checkpoint(
+    fn __materialize_row_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &MatchRow,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -2931,9 +2971,9 @@ where
         ))
     }
 
-    fn __materialize_projected_row_with_checkpoint(
+    fn __materialize_projected_row_with_checkpoint<Target: QueryTarget>(
         &self,
-        session: &QuerySession<'_, S>,
+        session: &QuerySession<'_, S, Target>,
         row: &ProjectedQueryRow,
         checkpoint: &dyn Fn() -> Result<()>,
     ) -> Result<Self::Output> {
@@ -3011,7 +3051,7 @@ impl<S: Schema> RowsOptions<S> {
 
     /// Append one stable public ordering term.
     #[must_use]
-    pub fn order_by(mut self, order: Order<S>) -> Self {
+    pub fn sort(mut self, order: Order<S>) -> Self {
         self.order.push(order);
         self
     }
@@ -3065,7 +3105,7 @@ impl<S: Schema> PageOptions<S> {
 
     /// Append one stable root-ordering term.
     #[must_use]
-    pub fn order_by(mut self, order: Order<S>) -> Self {
+    pub fn sort(mut self, order: Order<S>) -> Self {
         self.order.push(order);
         self
     }
@@ -3116,8 +3156,8 @@ impl<T> Page<T> {
 ///
 /// Each authoring method returns a new lineage and leaves its ancestor
 /// usable.
-pub struct Query<'s, 'db, S: Schema, Shape: SelectedShape<S>> {
-    session: &'s QuerySession<'db, S>,
+pub struct Query<'s, 'db, S: Schema, Shape: SelectedShape<S>, Target: QueryTarget = Direct> {
+    session: &'s QuerySession<'db, S, Target>,
     selection: Shape,
     hidden: Vec<BindingKey>,
     predicates: Vec<Predicate<S>>,
@@ -3125,7 +3165,9 @@ pub struct Query<'s, 'db, S: Schema, Shape: SelectedShape<S>> {
     closed: AtomicBool,
 }
 
-impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Clone for Query<'s, 'db, S, Shape> {
+impl<'s, 'db, S: Schema, Shape: SelectedShape<S>, Target: QueryTarget> Clone
+    for Query<'s, 'db, S, Shape, Target>
+{
     fn clone(&self) -> Self {
         Self {
             session: self.session,
@@ -3138,12 +3180,12 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Clone for Query<'s, 'db, S, Sh
     }
 }
 
-impl<'db, S: Schema> QuerySession<'db, S> {
+impl<'db, S: Schema, Target: QueryTarget> QuerySession<'db, S, Target> {
     /// Begin one persistent query lineage from a singular selected shape.
     pub fn query<Shape: SelectedShape<S>>(
         &self,
         selection: Shape,
-    ) -> Result<Query<'_, 'db, S, Shape>> {
+    ) -> Result<Query<'_, 'db, S, Shape, Target>> {
         selection.__shape_handle(self)?;
         Ok(Query {
             session: self,
@@ -3156,7 +3198,9 @@ impl<'db, S: Schema> QuerySession<'db, S> {
     }
 }
 
-impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
+impl<'s, 'db, S: Schema, Shape: SelectedShape<S>, Target: QueryTarget>
+    Query<'s, 'db, S, Shape, Target>
+{
     /// Explicitly close this immutable query handle.
     ///
     /// Closing is idempotent and affects only this handle. Clones, ancestors,
@@ -3185,7 +3229,7 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
     }
 
     /// Attach one generated binding for predicates without selecting it.
-    pub fn match_<M: ThingModel<Schema = S>, Mode: SelectionMode>(
+    pub fn matching<M: ThingModel<Schema = S>, Mode: SelectionMode>(
         &self,
         binding: Binding<S, M, Mode>,
     ) -> Result<Self> {
@@ -3493,82 +3537,44 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
             total,
         })
     }
-
-    async fn execute(
-        &self,
-        validated: ValidatedMatchRequest,
-        deadline: QueryExecutionDeadline,
-    ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult)> {
-        self.ensure_open(ModelValidationPhase::Input)?;
-        self.session
-            .check_invocation(deadline, ModelValidationPhase::Input)?;
-        let target = match &self.session.execution {
-            QueryExecution::Borrowed(transaction) => QueryTarget::Transaction(transaction),
-            QueryExecution::Local(database) => QueryTarget::Database(database.inner_orm()),
-            QueryExecution::Remote(remote) => {
-                let result = remote
-                    .execute_match(
-                        &self.session.registry,
-                        validated,
-                        self.session.resources,
-                        self.session.cancellation.clone(),
-                        deadline,
-                    )
-                    .await?;
-                self.ensure_open(ModelValidationPhase::Hydration)?;
-                return Ok(result);
-            }
-        };
-        let result = target
-            .execute(
-                &self.session.registry,
-                validated,
-                self.session.resources,
-                &self.session.cancellation,
-                deadline,
-            )
-            .await;
-        self.session
-            .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-        self.ensure_open(ModelValidationPhase::Hydration)?;
-        result.map_err(crate::remote::target_error)
-    }
 }
 
-impl<'s, 'db, S, Shape> Query<'s, 'db, S, Shape>
+impl<'s, 'db, S, Shape, Target: QueryTarget> Query<'s, 'db, S, Shape, Target>
 where
     S: Schema,
     Shape: SingularSelectedShape<S>,
 {
     /// Return exactly one distinct selected identity, failing `no_result` on
     /// an empty stream and `not_unique` on more than one.
-    pub async fn one(&self) -> Result<Shape::Output> {
+    pub async fn one(&self) -> Result<Target::Out<Shape::Output>> {
         let deadline = self.session.begin_invocation()?;
         let validated = self.validated_one()?;
-        let (validated, result) = self.execute(validated, deadline).await?;
-        let mut outputs = self.outputs_from_rows(&validated, &result, deadline)?;
-        match outputs.len() {
-            0 => Err(Error::model_validation(
-                ModelValidationPhase::Hydration,
-                "no_result",
-                vec![],
-                "query selected no distinct identity",
-                None,
-            )),
-            1 => Ok(outputs.remove(0)),
-            _ => Err(Error::model_validation(
-                ModelValidationPhase::Hydration,
-                "not_unique",
-                vec![],
-                "query selected more than one distinct identity",
-                None,
-            )),
-        }
+        self.invoke(validated, deadline, |query, validated, result, deadline| {
+            let mut outputs = query.outputs_from_rows(validated, result, deadline)?;
+            match outputs.len() {
+                0 => Err(Error::model_validation(
+                    ModelValidationPhase::Hydration,
+                    "no_result",
+                    vec![],
+                    "query selected no distinct identity",
+                    None,
+                )),
+                1 => Ok(outputs.remove(0)),
+                _ => Err(Error::model_validation(
+                    ModelValidationPhase::Hydration,
+                    "not_unique",
+                    vec![],
+                    "query selected more than one distinct identity",
+                    None,
+                )),
+            }
+        })
+        .await
     }
 
     /// Return a resource-bounded ordered sequence of distinct selected
     /// identities; the limit must be nonzero.
-    pub async fn rows(&self, options: RowsOptions<S>) -> Result<Vec<Shape::Output>> {
+    pub async fn rows(&self, options: RowsOptions<S>) -> Result<Target::Out<Vec<Shape::Output>>> {
         let deadline = self.session.begin_invocation()?;
         if options.limit == 0 {
             return Err(Error::model_validation(
@@ -3586,12 +3592,14 @@ where
                 limit: options.limit,
             },
         )?;
-        let (validated, result) = self.execute(validated, deadline).await?;
-        self.outputs_from_rows(&validated, &result, deadline)
+        self.invoke(validated, deadline, |query, validated, result, deadline| {
+            query.outputs_from_rows(validated, result, deadline)
+        })
+        .await
     }
 
     /// Return the first distinct selected identity under a stable order.
-    pub async fn first(&self, order: Order<S>) -> Result<Option<Shape::Output>> {
+    pub async fn first(&self, order: Order<S>) -> Result<Target::Out<Option<Shape::Output>>> {
         let deadline = self.session.begin_invocation()?;
         let validated = self.validated_rows(
             &[order],
@@ -3600,18 +3608,22 @@ where
                 limit: 1,
             },
         )?;
-        let (validated, result) = self.execute(validated, deadline).await?;
-        Ok(self.outputs_from_rows(&validated, &result, deadline)?.pop())
+        self.invoke(validated, deadline, |query, validated, result, deadline| {
+            Ok(query.outputs_from_rows(validated, result, deadline)?.pop())
+        })
+        .await
     }
 }
 
-impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
+impl<'s, 'db, S: Schema, Shape: SelectedShape<S>, Target: QueryTarget>
+    Query<'s, 'db, S, Shape, Target>
+{
     /// Return one resource-bounded page grouped by distinct root identity.
     pub async fn page_by<R: Selectable<S>>(
         &self,
         root: R,
         options: PageOptions<S>,
-    ) -> Result<Page<Shape::Output>> {
+    ) -> Result<Target::Out<Page<Shape::Output>>> {
         let deadline = self.session.begin_invocation()?;
         if options.limit == 0 {
             return Err(Error::model_validation(
@@ -3631,64 +3643,72 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
             },
             options.include_total,
         )?;
-        let (validated, result) = self.execute(validated, deadline).await?;
-        self.output_page(&validated, &result, deadline)
+        self.invoke(validated, deadline, |query, validated, result, deadline| {
+            query.output_page(validated, result, deadline)
+        })
+        .await
     }
 
     /// Count distinct identities of one selected root binding.
-    pub async fn count_by<R: Selectable<S>>(&self, root: R) -> Result<u64> {
+    pub async fn count_by<R: Selectable<S>>(&self, root: R) -> Result<Target::Out<u64>> {
         let deadline = self.session.begin_invocation()?;
         let validated = self.validated_count_by(root)?;
-        let (validated, result) = self.execute(validated, deadline).await?;
-        self.session
-            .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-        match result
-            .for_request(&validated)
-            .map_err(|error| Error::from_orm_hydration(error.into()))?
-        {
-            MatchResult::Count { value, .. } => Ok(*value),
-            _ => Err(Error::model_validation(
-                ModelValidationPhase::Hydration,
-                "wrong_result_shape",
-                vec![],
-                "provider returned a non-count result for a count",
-                None,
-            )),
-        }
+        self.invoke(validated, deadline, |query, validated, result, deadline| {
+            query
+                .session
+                .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+            match result
+                .for_request(validated)
+                .map_err(|error| Error::from_orm_hydration(error.into()))?
+            {
+                MatchResult::Count { value, .. } => Ok(*value),
+                _ => Err(Error::model_validation(
+                    ModelValidationPhase::Hydration,
+                    "wrong_result_shape",
+                    vec![],
+                    "provider returned a non-count result for a count",
+                    None,
+                )),
+            }
+        })
+        .await
     }
 
     /// Test whether any distinct identity of one selected root binding
     /// exists.
-    pub async fn exists_by<R: Selectable<S>>(&self, root: R) -> Result<bool> {
+    pub async fn exists_by<R: Selectable<S>>(&self, root: R) -> Result<Target::Out<bool>> {
         let deadline = self.session.begin_invocation()?;
         let validated = self.validated_exists_by(root)?;
-        let (validated, result) = self.execute(validated, deadline).await?;
-        self.session
-            .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-        match result
-            .for_request(&validated)
-            .map_err(|error| Error::from_orm_hydration(error.into()))?
-        {
-            MatchResult::Exists { value, .. } => Ok(*value),
-            _ => Err(Error::model_validation(
-                ModelValidationPhase::Hydration,
-                "wrong_result_shape",
-                vec![],
-                "provider returned a non-existence result for an existence test",
-                None,
-            )),
-        }
+        self.invoke(validated, deadline, |query, validated, result, deadline| {
+            query
+                .session
+                .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+            match result
+                .for_request(validated)
+                .map_err(|error| Error::from_orm_hydration(error.into()))?
+            {
+                MatchResult::Exists { value, .. } => Ok(*value),
+                _ => Err(Error::model_validation(
+                    ModelValidationPhase::Hydration,
+                    "wrong_result_shape",
+                    vec![],
+                    "provider returned a non-existence result for an existence test",
+                    None,
+                )),
+            }
+        })
+        .await
     }
 }
 
-impl<'s, 'db, S: Schema, B: Selectable<S>> Query<'s, 'db, S, B> {
+impl<'s, 'db, S: Schema, B: Selectable<S>, Target: QueryTarget> Query<'s, 'db, S, B, Target> {
     /// Count distinct selected identities.
-    pub async fn count(&self) -> Result<u64> {
+    pub async fn count(&self) -> Result<Target::Out<u64>> {
         self.count_by(self.selection).await
     }
 
     /// Test whether any distinct selected identity exists.
-    pub async fn exists(&self) -> Result<bool> {
+    pub async fn exists(&self) -> Result<Target::Out<bool>> {
         self.exists_by(self.selection).await
     }
 
@@ -3836,35 +3856,42 @@ impl<'s, 'db, S: Schema, B: Selectable<S>> Query<'s, 'db, S, B> {
 
     /// Reduce the distinct selected stream to one typed tuple of aggregate
     /// values.
-    pub async fn aggregate<T: crate::aggregate::AggregateTuple<S>>(
+    pub async fn reduce<T: crate::aggregate::AggregateTuple<S>>(
         &self,
         terms: T,
-    ) -> Result<T::Output> {
+    ) -> Result<Target::Out<T::Output>> {
         let deadline = self.session.begin_invocation()?;
         let term_list = terms.terms();
         let validated = self.validated_reduce(None, &term_list)?;
-        let (validated, result) = self.execute(validated, deadline).await?;
-        let rows = self.decoded_reduction_rows(&validated, &result, deadline)?;
-        let [row] = rows else {
-            return Err(Error::model_validation(
-                ModelValidationPhase::Hydration,
-                "wrong_result_shape",
-                vec![],
-                "ungrouped aggregates require exactly one reduction row",
-                None,
-            ));
-        };
-        self.session
-            .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-        let output = T::decode(row.values())?;
-        self.session
-            .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-        Ok(output)
+        self.invoke(validated, deadline, |query, validated, result, deadline| {
+            let rows = query.decoded_reduction_rows(validated, result, deadline)?;
+            let [row] = rows else {
+                return Err(Error::model_validation(
+                    ModelValidationPhase::Hydration,
+                    "wrong_result_shape",
+                    vec![],
+                    "ungrouped aggregates require exactly one reduction row",
+                    None,
+                ));
+            };
+            query
+                .session
+                .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+            let output = T::decode(row.values())?;
+            query
+                .session
+                .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+            Ok(output)
+        })
+        .await
     }
 
     /// Group the distinct selected stream by another attached binding's
     /// distinct identities before aggregating.
-    pub fn group_by<G: Selectable<S>>(&self, group: G) -> Result<GroupedQuery<'s, 'db, S, B, G>> {
+    pub fn group_by<G: Selectable<S>>(
+        &self,
+        group: G,
+    ) -> Result<GroupedQuery<'s, 'db, S, B, G, Target>> {
         self.ensure_open(ModelValidationPhase::Input)?;
         self.session.handle_by_key(group.binding_key())?;
         Ok(GroupedQuery {
@@ -3878,7 +3905,7 @@ impl<'s, 'db, S: Schema, B: Selectable<S>> Query<'s, 'db, S, B> {
     pub fn group_by_field<Owner, V>(
         &self,
         group: BoundField<S, Owner, V>,
-    ) -> Result<FieldGroupedQuery<'s, 'db, S, B, Owner, V>>
+    ) -> Result<FieldGroupedQuery<'s, 'db, S, B, Owner, V, Target>>
     where
         Owner: Model<Schema = S>,
         V: GroupedQueryValue,
@@ -3893,7 +3920,10 @@ impl<'s, 'db, S: Schema, B: Selectable<S>> Query<'s, 'db, S, B> {
 
     /// Group the distinct selected stream by the Cartesian tuple of multiple
     /// generated owned fields' witnessed values before aggregating.
-    pub fn group_by_fields<G>(&self, groups: G) -> Result<FieldTupleGroupedQuery<'s, 'db, S, B, G>>
+    pub fn group_by_fields<G>(
+        &self,
+        groups: G,
+    ) -> Result<FieldTupleGroupedQuery<'s, 'db, S, B, G, Target>>
     where
         G: FieldGroupTuple<S>,
     {
@@ -3909,12 +3939,21 @@ impl<'s, 'db, S: Schema, B: Selectable<S>> Query<'s, 'db, S, B> {
 }
 
 /// One query lineage grouped by a second attached binding for aggregation.
-pub struct GroupedQuery<'s, 'db, S: Schema, B: Selectable<S>, G: Selectable<S>> {
-    query: Query<'s, 'db, S, B>,
+pub struct GroupedQuery<
+    's,
+    'db,
+    S: Schema,
+    B: Selectable<S>,
+    G: Selectable<S>,
+    Target: QueryTarget = Direct,
+> {
+    query: Query<'s, 'db, S, B, Target>,
     group: G,
 }
 
-impl<'s, 'db, S: Schema, B: Selectable<S>, G: Selectable<S>> GroupedQuery<'s, 'db, S, B, G> {
+impl<'s, 'db, S: Schema, B: Selectable<S>, G: Selectable<S>, Target: QueryTarget>
+    GroupedQuery<'s, 'db, S, B, G, Target>
+{
     /// Explicitly close this independently owned grouped-query lineage.
     pub fn close(&self) {
         self.query.close();
@@ -3928,84 +3967,83 @@ impl<'s, 'db, S: Schema, B: Selectable<S>, G: Selectable<S>> GroupedQuery<'s, 'd
 
     /// Reduce each witnessed distinct group identity to one typed tuple,
     /// returning materialized group keys with their aggregate values.
-    pub async fn aggregate<T: crate::aggregate::AggregateTuple<S>>(
+    pub async fn reduce<T: crate::aggregate::AggregateTuple<S>>(
         &self,
         terms: T,
-    ) -> Result<Vec<(G::Output, T::Output)>> {
+    ) -> Result<Target::Out<Vec<(G::Output, T::Output)>>> {
         let deadline = self.query.session.begin_invocation()?;
         let term_list = terms.terms();
         let validated = self
             .query
             .validated_reduce(Some(self.group.binding_key()), &term_list)?;
-        let (validated, result) = self.query.execute(validated, deadline).await?;
-        if self
-            .query
-            .session
-            .uses_successor_projected_materialization()
-        {
-            let projected = self
-                .query
-                .session
-                .materialize_projected_query_value(&validated, &result, deadline)?;
-            let ProjectedQueryValue::Reduction { rows, .. } = projected else {
-                return Err(Error::model_validation(
-                    ModelValidationPhase::Hydration,
-                    "wrong_result_shape",
-                    vec![],
-                    "provider returned a non-reduction result for an aggregate",
-                    None,
-                ));
-            };
-            let mut outputs = Vec::with_capacity(rows.len());
-            for row in rows {
-                self.query
+        self.query
+            .invoke(validated, deadline, |query, validated, result, deadline| {
+                if query.session.uses_successor_projected_materialization() {
+                    let projected = query
+                        .session
+                        .materialize_projected_query_value(validated, result, deadline)?;
+                    let ProjectedQueryValue::Reduction { rows, .. } = projected else {
+                        return Err(Error::model_validation(
+                            ModelValidationPhase::Hydration,
+                            "wrong_result_shape",
+                            vec![],
+                            "provider returned a non-reduction result for an aggregate",
+                            None,
+                        ));
+                    };
+                    let mut outputs = Vec::with_capacity(rows.len());
+                    for row in rows {
+                        query
+                            .session
+                            .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+                        let Some(ProjectedReductionGroup::Thing(thing)) = row.group() else {
+                            return Err(Error::model_validation(
+                                ModelValidationPhase::Hydration,
+                                "wrong_result_shape",
+                                vec![],
+                                "grouped aggregates require group evidence per row",
+                                None,
+                            ));
+                        };
+                        let key = G::__materialize_projected_output(query.session, thing)?;
+                        let values = decoded_projected_reduction_values(row.values());
+                        outputs.push((key, T::decode(&values)?));
+                    }
+                    query
+                        .session
+                        .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+                    return Ok(outputs);
+                }
+                let rows = query.decoded_reduction_rows(validated, result, deadline)?;
+                let mut outputs = Vec::with_capacity(rows.len());
+                for row in rows {
+                    query
+                        .session
+                        .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+                    let thing = row.group().ok_or_else(|| {
+                        Error::model_validation(
+                            ModelValidationPhase::Hydration,
+                            "wrong_result_shape",
+                            vec![],
+                            "grouped aggregates require group evidence per row",
+                            None,
+                        )
+                    })?;
+                    let client_row = query.session.client_row_for(thing)?;
+                    let key = G::materialize_output(&client_row).map_err(|error| {
+                        crate::entity_codec::map_validation_error(
+                            error,
+                            ModelValidationPhase::Hydration,
+                        )
+                    })?;
+                    outputs.push((key, T::decode(row.values())?));
+                }
+                query
                     .session
                     .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-                let Some(ProjectedReductionGroup::Thing(thing)) = row.group() else {
-                    return Err(Error::model_validation(
-                        ModelValidationPhase::Hydration,
-                        "wrong_result_shape",
-                        vec![],
-                        "grouped aggregates require group evidence per row",
-                        None,
-                    ));
-                };
-                let key = G::__materialize_projected_output(self.query.session, thing)?;
-                let values = decoded_projected_reduction_values(row.values());
-                outputs.push((key, T::decode(&values)?));
-            }
-            self.query
-                .session
-                .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-            return Ok(outputs);
-        }
-        let rows = self
-            .query
-            .decoded_reduction_rows(&validated, &result, deadline)?;
-        let mut outputs = Vec::with_capacity(rows.len());
-        for row in rows {
-            self.query
-                .session
-                .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-            let thing = row.group().ok_or_else(|| {
-                Error::model_validation(
-                    ModelValidationPhase::Hydration,
-                    "wrong_result_shape",
-                    vec![],
-                    "grouped aggregates require group evidence per row",
-                    None,
-                )
-            })?;
-            let client_row = self.query.session.client_row_for(thing)?;
-            let key = G::materialize_output(&client_row).map_err(|error| {
-                crate::entity_codec::map_validation_error(error, ModelValidationPhase::Hydration)
-            })?;
-            outputs.push((key, T::decode(row.values())?));
-        }
-        self.query
-            .session
-            .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-        Ok(outputs)
+                Ok(outputs)
+            })
+            .await
     }
 }
 
@@ -4018,12 +4056,14 @@ pub struct FieldGroupedQuery<
     B: Selectable<S>,
     Owner: Model<Schema = S>,
     V: GroupedQueryValue,
+    Target: QueryTarget = Direct,
 > {
-    query: Query<'s, 'db, S, B>,
+    query: Query<'s, 'db, S, B, Target>,
     group: BoundField<S, Owner, V>,
 }
 
-impl<'s, 'db, S, B, Owner, V> FieldGroupedQuery<'s, 'db, S, B, Owner, V>
+impl<'s, 'db, S, B, Owner, V, Target: QueryTarget>
+    FieldGroupedQuery<'s, 'db, S, B, Owner, V, Target>
 where
     S: Schema,
     B: Selectable<S>,
@@ -4043,49 +4083,52 @@ where
 
     /// Reduce each witnessed distinct field value to one typed tuple,
     /// returning its exact generated attribute wrapper with the aggregates.
-    pub async fn aggregate<T: crate::aggregate::AggregateTuple<S>>(
+    pub async fn reduce<T: crate::aggregate::AggregateTuple<S>>(
         &self,
         terms: T,
-    ) -> Result<Vec<(V, T::Output)>> {
+    ) -> Result<Target::Out<Vec<(V, T::Output)>>> {
         let deadline = self.query.session.begin_invocation()?;
         let term_list = terms.terms();
         let validated = self
             .query
             .validated_reduce_by_field(self.group, &term_list)?;
-        let (validated, result) = self.query.execute(validated, deadline).await?;
-        let rows = self
-            .query
-            .decoded_reduction_rows(&validated, &result, deadline)?;
-        let mut outputs = Vec::with_capacity(rows.len());
-        for row in rows {
-            self.query
-                .session
-                .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-            let value = row.field_group().ok_or_else(|| {
-                Error::model_validation(
-                    ModelValidationPhase::Hydration,
-                    "wrong_result_shape",
-                    vec![],
-                    "field-grouped aggregates require scalar group evidence per row",
-                    None,
-                )
-            })?;
-            let key = V::from_group_scalar(encoded_group_scalar(value)?)
-                .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))?;
-            outputs.push((key, T::decode(row.values())?));
-        }
         self.query
-            .session
-            .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-        Ok(outputs)
+            .invoke(validated, deadline, |query, validated, result, deadline| {
+                let rows = query.decoded_reduction_rows(validated, result, deadline)?;
+                let mut outputs = Vec::with_capacity(rows.len());
+                for row in rows {
+                    query
+                        .session
+                        .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+                    let value = row.field_group().ok_or_else(|| {
+                        Error::model_validation(
+                            ModelValidationPhase::Hydration,
+                            "wrong_result_shape",
+                            vec![],
+                            "field-grouped aggregates require scalar group evidence per row",
+                            None,
+                        )
+                    })?;
+                    let key =
+                        V::from_group_scalar(encoded_group_scalar(value)?).map_err(|error| {
+                            map_validation_error(error, ModelValidationPhase::Hydration)
+                        })?;
+                    outputs.push((key, T::decode(row.values())?));
+                }
+                query
+                    .session
+                    .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+                Ok(outputs)
+            })
+            .await
     }
 }
 
 /// A sealed tuple of two through sixteen generated owned fields used as one
 /// typed grouped-reduction key.
-pub trait FieldGroupTuple<S: Schema>: field_group_tuple_sealed::Sealed<S> + Copy {
+pub trait FieldGroupTuple<S: Schema>: field_group_tuple_sealed::Sealed<S> + Copy + 'static {
     /// Exact generated attribute-wrapper tuple returned for each group row.
-    type Output;
+    type Output: 'static;
 
     #[doc(hidden)]
     fn fields(&self) -> Vec<(BindingKey, &'static str)>;
@@ -4298,12 +4341,19 @@ field_group_tuple!(
 
 /// One query lineage grouped by a generated owned-field tuple for
 /// aggregation.
-pub struct FieldTupleGroupedQuery<'s, 'db, S: Schema, B: Selectable<S>, G: FieldGroupTuple<S>> {
-    query: Query<'s, 'db, S, B>,
+pub struct FieldTupleGroupedQuery<
+    's,
+    'db,
+    S: Schema,
+    B: Selectable<S>,
+    G: FieldGroupTuple<S>,
+    Target: QueryTarget = Direct,
+> {
+    query: Query<'s, 'db, S, B, Target>,
     groups: G,
 }
 
-impl<'s, 'db, S, B, G> FieldTupleGroupedQuery<'s, 'db, S, B, G>
+impl<'s, 'db, S, B, G, Target: QueryTarget> FieldTupleGroupedQuery<'s, 'db, S, B, G, Target>
 where
     S: Schema,
     B: Selectable<S>,
@@ -4322,39 +4372,40 @@ where
 
     /// Reduce each witnessed distinct field-value tuple to one typed tuple,
     /// returning exact generated attribute wrappers with the aggregates.
-    pub async fn aggregate<T: crate::aggregate::AggregateTuple<S>>(
+    pub async fn reduce<T: crate::aggregate::AggregateTuple<S>>(
         &self,
         terms: T,
-    ) -> Result<Vec<(G::Output, T::Output)>> {
+    ) -> Result<Target::Out<Vec<(G::Output, T::Output)>>> {
         let deadline = self.query.session.begin_invocation()?;
         let term_list = terms.terms();
         let group_fields = self.groups.fields();
         let validated = self
             .query
             .validated_reduce_by_fields(&group_fields, &term_list)?;
-        let (validated, result) = self.query.execute(validated, deadline).await?;
-        let rows = self
-            .query
-            .decoded_reduction_rows(&validated, &result, deadline)?;
-        let mut outputs = Vec::with_capacity(rows.len());
-        for row in rows {
-            self.query
-                .session
-                .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-            let values = row.field_groups().ok_or_else(|| {
-                Error::model_validation(
-                    ModelValidationPhase::Hydration,
-                    "wrong_result_shape",
-                    vec![],
-                    "tuple-field-grouped aggregates require tuple group evidence per row",
-                    None,
-                )
-            })?;
-            outputs.push((G::decode(values)?, T::decode(row.values())?));
-        }
         self.query
-            .session
-            .check_invocation(deadline, ModelValidationPhase::Hydration)?;
-        Ok(outputs)
+            .invoke(validated, deadline, |query, validated, result, deadline| {
+                let rows = query.decoded_reduction_rows(validated, result, deadline)?;
+                let mut outputs = Vec::with_capacity(rows.len());
+                for row in rows {
+                    query
+                        .session
+                        .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+                    let values = row.field_groups().ok_or_else(|| {
+                        Error::model_validation(
+                            ModelValidationPhase::Hydration,
+                            "wrong_result_shape",
+                            vec![],
+                            "tuple-field-grouped aggregates require tuple group evidence per row",
+                            None,
+                        )
+                    })?;
+                    outputs.push((G::decode(values)?, T::decode(row.values())?));
+                }
+                query
+                    .session
+                    .check_invocation(deadline, ModelValidationPhase::Hydration)?;
+                Ok(outputs)
+            })
+            .await
     }
 }

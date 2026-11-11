@@ -1,4 +1,4 @@
-//! ABI 1.7 deferred transactions: decoded v3 plans are staged on one
+//! ABI 2.0 deferred transactions: decoded plans are staged on one
 //! transaction and nothing reaches the provider until commit.
 //!
 //! C never serializes plans. A plan handle is decoded from canonical
@@ -12,19 +12,20 @@
 //! output is cleared before any other check, so it is initialized on every
 //! path.
 
+use crate::staged_answers::PendingState;
 use std::mem::size_of;
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tracing::Instrument as _;
 
 use type_bridge_contract::diagnostic::Diagnostic;
-use type_bridge_contract::query_plan::v3::{QueryPlanV3, decode_query_plan_v3};
+use type_bridge_contract::query_plan::{QueryPlan, decode_query_plan};
 use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
 use type_bridge_orm::session::staged::{
-    Pending, PendingError, PlanAnswer, Transaction, TransactionKind, TransactionOptions,
+    PendingError, PlanAnswer, Transaction, TransactionKind, TransactionOptions,
 };
 
 use crate::abi::{TypeBridgeStatus, guarded};
@@ -36,17 +37,57 @@ use crate::runtime::{
     poisoned_transaction_diagnostic,
 };
 
-/// Opaque validated `query-plan/v3` plan.
-pub struct TypeBridgePlan {
-    plan: QueryPlanV3,
-    // Encoded once at decode so the accessor cannot fail and its source
-    // range can be fenced against caller buffers.
-    canonical: Vec<u8>,
+/// Configuration for a deferred transaction. A null options pointer keeps defaults.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TypeBridgeStagedTransactionOptionsV1 {
+    /// Exact size of this struct.
+    pub struct_size: u32,
+    /// Must equal 1.
+    pub version: u32,
+    /// Positive execution duration; zero or negative means no deadline.
+    pub timeout_milliseconds: i64,
+    /// Exactly zero (off) or one (on).
+    pub collect_phase_timestamps: u32,
 }
 
+impl TypeBridgeStagedTransactionOptionsV1 {
+    fn options(self) -> Result<TransactionOptions, TypeBridgeStatus> {
+        if self.struct_size as usize != size_of::<Self>()
+            || self.version != 1
+            || self.collect_phase_timestamps > 1
+        {
+            return Err(TypeBridgeStatus::InvalidArgument);
+        }
+        Ok(TransactionOptions::default()
+            .with_timeout(type_bridge_orm::QueryTimeout::from_signed_milliseconds(
+                self.timeout_milliseconds,
+            ))
+            .with_collect_phase_timestamps(self.collect_phase_timestamps == 1))
+    }
+}
+
+/// Opaque validated `query-plan/v3` plan.
+pub struct TypeBridgePlan {
+    pub(crate) source: Arc<CompiledRawPlan>,
+}
+pub(crate) struct CompiledRawPlan {
+    pub(crate) plan: QueryPlan,
+    pub(crate) canonical: Vec<u8>,
+}
+impl AsRef<[QueryPlan]> for CompiledRawPlan {
+    fn as_ref(&self) -> &[QueryPlan] {
+        std::slice::from_ref(&self.plan)
+    }
+}
 impl TypeBridgePlan {
-    pub(crate) fn new(plan: QueryPlanV3, canonical: Vec<u8>) -> Self {
-        Self { plan, canonical }
+    pub(crate) fn new(plan: QueryPlan, canonical: Vec<u8>) -> Self {
+        Self {
+            source: Arc::new(CompiledRawPlan { plan, canonical }),
+        }
+    }
+    pub(crate) fn from_shared(source: Arc<CompiledRawPlan>) -> Self {
+        Self { source }
     }
 }
 
@@ -59,24 +100,45 @@ pub struct TypeBridgeStagedTransaction {
     poisoned: bool,
     // Dropped after the transaction so the database stays busy until then.
     owner: StagedOwner,
+    pending_views: Vec<Weak<PendingState>>,
 }
 
 /// What a staged transaction runs on: a direct database, or a proxy
 /// connection's I/O runtime.
-enum StagedOwner {
+pub(crate) enum StagedOwner {
     Database(StagedDatabaseGuard),
     Proxy(StagedProxyGuard),
 }
 
 impl StagedOwner {
-    fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+    fn package_state(&self) -> &Arc<crate::abi::SchemaPackageState> {
+        match self {
+            Self::Database(guard) => guard.package_state(),
+            Self::Proxy(guard) => guard.package_state(),
+        }
+    }
+
+    fn projected_origin(&self) -> type_bridge_orm::ProjectedQueryOrigin {
+        match self {
+            Self::Database(guard) => guard.projected_origin(),
+            Self::Proxy(_) => type_bridge_orm::ProjectedQueryOrigin::remote_unbound(),
+        }
+    }
+
+    fn debug_dispatch(&self) -> Option<tracing::Dispatch> {
+        match self {
+            Self::Database(guard) => guard.debug_dispatch(),
+            Self::Proxy(_) => None,
+        }
+    }
+    pub(crate) fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         match self {
             Self::Database(guard) => guard.block_on(future),
             Self::Proxy(guard) => guard.block_on(future),
         }
     }
 
-    fn check_borrowed_ranges(
+    pub(crate) fn check_borrowed_ranges(
         &self,
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
@@ -87,9 +149,46 @@ impl StagedOwner {
     }
 }
 
+impl TypeBridgeStagedTransaction {
+    pub(crate) fn package_state(&self) -> &Arc<crate::abi::SchemaPackageState> {
+        self.owner.package_state()
+    }
+
+    pub(crate) fn stage_query(
+        &mut self,
+        registry: &type_bridge_orm::_registry::DescriptorRegistry,
+        request: Arc<type_bridge_orm::ValidatedMatchRequest>,
+        limits: type_bridge_orm::MatchExecutionLimits,
+    ) -> Result<
+        (
+            type_bridge_orm::session::staged::Pending<type_bridge_orm::ValidatedMatchResult>,
+            type_bridge_orm::ProjectedQueryOrigin,
+        ),
+        SdkExecutionDiagnostic,
+    > {
+        if self.poisoned {
+            return Err(poisoned_transaction_diagnostic());
+        }
+        let dispatch = self.owner.debug_dispatch();
+        let pending = match dispatch {
+            Some(dispatch) => tracing::dispatcher::with_default(&dispatch, || {
+                self.transaction
+                    .stage_shared_match_with_limits(registry, request, limits)
+            }),
+            None => self
+                .transaction
+                .stage_shared_match_with_limits(registry, request, limits),
+        }
+        .map_err(|error| pending_diagnostic(&error))?;
+        Ok((pending, self.owner.projected_origin()))
+    }
+}
+
 /// Opaque staged answer, readable after a successful commit.
+#[repr(C)]
 pub struct TypeBridgePending {
-    pending: Pending<PlanAnswer>,
+    pub(crate) tag: u64,
+    pub(crate) state: Arc<PendingState>,
 }
 
 /// Answer kinds a staged plan resolves to (`type_bridge_plan_answer_kind_t`).
@@ -100,6 +199,7 @@ pub enum TypeBridgePlanAnswerKind {
     Count = 2,
     Exists = 3,
     Matched = 4,
+    Documents = 5,
 }
 
 /// Transaction kinds accepted by [`type_bridge_database_transaction`].
@@ -121,14 +221,11 @@ pub(crate) fn contract_error(
     invalid(diagnostic.code().as_str(), message)
 }
 
-fn pending_diagnostic(error: &PendingError) -> SdkExecutionDiagnostic {
+pub(crate) fn pending_diagnostic(error: &PendingError) -> SdkExecutionDiagnostic {
     match error {
-        PendingError::Failed {
-            failure: Some(failure),
-            context,
-            ..
-        } => SdkExecutionDiagnostic::from_failure(failure, context.as_ref().clone()),
-        PendingError::Refused { diagnostic, .. } => diagnostic.as_ref().clone(),
+        PendingError::Failed { diagnostic, .. } | PendingError::Refused { diagnostic, .. } => {
+            diagnostic.as_ref().clone()
+        }
         PendingError::InvalidPlan(diagnostic) => {
             contract_error(diagnostic, "the plan cannot be staged")
         }
@@ -183,7 +280,7 @@ unsafe fn check_plan(
     check_object(preflight, plan)?;
     if !plan.is_null() {
         // SAFETY: the complete live handle was fenced above.
-        let canonical = &unsafe { &*plan }.canonical;
+        let canonical = &unsafe { &*plan }.source.canonical;
         preflight.check_bytes(canonical.as_ptr().cast(), canonical.len())?;
     }
     Ok(())
@@ -191,7 +288,7 @@ unsafe fn check_plan(
 
 /// # Safety
 /// A non-null `transaction` is a live handle.
-unsafe fn check_transaction(
+pub(crate) unsafe fn check_transaction(
     preflight: &DirectOutputPreflight,
     transaction: *const TypeBridgeStagedTransaction,
 ) -> Result<(), TypeBridgeStatus> {
@@ -276,7 +373,7 @@ unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
 
 /// Decode canonical `query-plan/v3` bytes under declared schema bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_plan_v3_decode(
+pub unsafe extern "C" fn type_bridge_plan_decode(
     schema: *const u8,
     schema_len: usize,
     plan: *const u8,
@@ -309,7 +406,7 @@ pub unsafe extern "C" fn type_bridge_plan_v3_decode(
                 );
             }
         };
-        let decoded = decode_query_plan_v3(plan, &schema)
+        let decoded = decode_query_plan(plan, &schema)
             .and_then(|plan| plan.canonical_bytes().map(|canonical| (plan, canonical)));
         let (plan, canonical) = match decoded {
             Ok(value) => value,
@@ -327,10 +424,65 @@ pub unsafe extern "C" fn type_bridge_plan_v3_decode(
     })
 }
 
+/// Explain a bound plan as owned canonical JSON, excluding given values.
+/// Close the returned buffer with `type_bridge_canonical_bytes_close`.
+///
+/// # Safety
+/// The plan must be live. Output slots must be writable and must not overlap
+/// each other, the plan, or its retained canonical bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_plan_explain(
+    plan: *const TypeBridgePlan,
+    out_bytes: *mut *mut crate::canonical_archive::TypeBridgeCanonicalBytes,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: validate and initialize caller outputs before reading the plan.
+    if let Err(status) = unsafe {
+        prepare_handle_outputs(out_bytes, out_diagnostics, |outputs| {
+            check_plan(outputs, plan)
+        })
+    } {
+        return status;
+    }
+    if plan.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    guarded(|| {
+        // SAFETY: a non-null plan is live by the caller contract.
+        let plan = unsafe { &*plan };
+        let bytes = match type_bridge_orm::plan_explain::explain(&plan.source.plan)
+            .and_then(|explanation| explanation.canonical_bytes())
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return return_execution_error(
+                    contract_error(&error, "the plan cannot be explained"),
+                    out_diagnostics,
+                );
+            }
+        };
+        let handle = match crate::allocation::try_box(
+            crate::allocation::AllocationSite::CanonicalBytesHandle,
+            crate::canonical_archive::TypeBridgeCanonicalBytes { bytes },
+        ) {
+            Ok(handle) => handle,
+            Err(_) => {
+                return return_execution_error(
+                    crate::allocation::allocation_exhausted(),
+                    out_diagnostics,
+                );
+            }
+        };
+        // SAFETY: the output slot was fenced and initialized above.
+        unsafe { out_bytes.write_unaligned(Box::into_raw(handle)) };
+        TypeBridgeStatus::Ok
+    })
+}
+
 /// Write the canonical bytes of `plan` into a caller buffer. With a null or
 /// short buffer, only the required length is reported.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_plan_v3_canonical_bytes(
+pub unsafe extern "C" fn type_bridge_plan_canonical_bytes(
     plan: *const TypeBridgePlan,
     buffer: *mut u8,
     capacity: usize,
@@ -360,7 +512,7 @@ pub unsafe extern "C" fn type_bridge_plan_v3_canonical_bytes(
         return TypeBridgeStatus::InvalidArgument;
     }
     // SAFETY: a non-null plan is a live handle by contract.
-    let encoded = &unsafe { &*plan }.canonical;
+    let encoded = &unsafe { &*plan }.source.canonical;
     // SAFETY: as above.
     unsafe { out_len.write_unaligned(encoded.len()) };
     if buffer.is_null() || capacity < encoded.len() {
@@ -408,7 +560,30 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
     out_transaction: *mut *mut TypeBridgeStagedTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: forwards the same handle/output contracts with default options.
+    unsafe {
+        type_bridge_database_transaction_with_options(
+            database,
+            kind,
+            ptr::null(),
+            out_transaction,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Open a deferred transaction with an explicit timeout and phase collection policy.
+/// A null options pointer preserves the default 60000 ms and collection off.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_database_transaction_with_options(
+    database: *const TypeBridgeDatabase,
+    kind: u32,
+    options: *const TypeBridgeStagedTransactionOptionsV1,
+    out_transaction: *mut *mut TypeBridgeStagedTransaction,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
     let inputs = |outputs: &DirectOutputPreflight| {
+        check_object(outputs, options)?;
         check_object(outputs, database)?;
         if !database.is_null() {
             // SAFETY: the complete database handle was fenced above.
@@ -423,6 +598,15 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
         return status;
     }
     guarded(|| {
+        let options = if options.is_null() {
+            TransactionOptions::default()
+        } else {
+            // SAFETY: the options were fenced against both outputs above.
+            match unsafe { options.read_unaligned() }.options() {
+                Ok(options) => options,
+                Err(status) => return status,
+            }
+        };
         let kind = match kind {
             TYPE_BRIDGE_TRANSACTION_READ => TransactionKind::Read,
             TYPE_BRIDGE_TRANSACTION_WRITE => TransactionKind::Write,
@@ -433,15 +617,15 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
         }
         // SAFETY: a non-null database is a live handle by contract.
         let database = unsafe { &*database };
-        let (transaction, database) =
-            match database.staged_transaction(TransactionOptions::default().with_kind(kind)) {
-                Ok(value) => value,
-                Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-            };
+        let (transaction, database) = match database.staged_transaction(options.with_kind(kind)) {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
         let handle = Box::new(TypeBridgeStagedTransaction {
             transaction,
             poisoned: false,
             owner: StagedOwner::Database(database),
+            pending_views: Vec::new(),
         });
         // SAFETY: the output slot was fenced and initialized above.
         unsafe { out_transaction.write_unaligned(Box::into_raw(handle)) };
@@ -461,7 +645,30 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
     out_transaction: *mut *mut TypeBridgeStagedTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: forwards the same handle/output contracts with default options.
+    unsafe {
+        type_bridge_proxy_connection_transaction_with_options(
+            proxy,
+            kind,
+            ptr::null(),
+            out_transaction,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Open a deferred transaction with an explicit timeout and phase collection policy.
+/// A null options pointer preserves the default 60000 ms and collection off.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_proxy_connection_transaction_with_options(
+    proxy: *const TypeBridgeProxyConnection,
+    kind: u32,
+    options: *const TypeBridgeStagedTransactionOptionsV1,
+    out_transaction: *mut *mut TypeBridgeStagedTransaction,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
     let inputs = |outputs: &DirectOutputPreflight| {
+        check_object(outputs, options)?;
         check_object(outputs, proxy)?;
         if !proxy.is_null() {
             // SAFETY: the complete connection handle was fenced above.
@@ -476,6 +683,15 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
         return status;
     }
     guarded(|| {
+        let options = if options.is_null() {
+            TransactionOptions::default()
+        } else {
+            // SAFETY: the options were fenced against both outputs above.
+            match unsafe { options.read_unaligned() }.options() {
+                Ok(options) => options,
+                Err(status) => return status,
+            }
+        };
         let kind = match kind {
             TYPE_BRIDGE_TRANSACTION_READ => TransactionKind::Read,
             TYPE_BRIDGE_TRANSACTION_WRITE => TransactionKind::Write,
@@ -486,15 +702,15 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
         }
         // SAFETY: a non-null connection is a live handle by contract.
         let proxy = unsafe { &*proxy };
-        let (transaction, guard) =
-            match proxy.staged_transaction(TransactionOptions::default().with_kind(kind)) {
-                Ok(value) => value,
-                Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
-            };
+        let (transaction, guard) = match proxy.staged_transaction(options.with_kind(kind)) {
+            Ok(value) => value,
+            Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
+        };
         let handle = Box::new(TypeBridgeStagedTransaction {
             transaction,
             poisoned: false,
             owner: StagedOwner::Proxy(guard),
+            pending_views: Vec::new(),
         });
         // SAFETY: the output slot was fenced and initialized above.
         unsafe { out_transaction.write_unaligned(Box::into_raw(handle)) };
@@ -531,15 +747,124 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_stage(
         if transaction.poisoned {
             return return_execution_error(poisoned_transaction_diagnostic(), out_diagnostics);
         }
-        match transaction.transaction.stage_plan(&plan.plan) {
+        let dispatch = transaction.owner.debug_dispatch();
+        let pending = match dispatch {
+            Some(dispatch) => tracing::dispatcher::with_default(&dispatch, || {
+                transaction
+                    .transaction
+                    .stage_shared_plan(Arc::clone(&plan.source), 0)
+            }),
+            None => transaction
+                .transaction
+                .stage_shared_plan(Arc::clone(&plan.source), 0),
+        };
+        match pending {
             Ok(pending) => {
-                let handle = Box::new(TypeBridgePending { pending });
+                let state = Arc::new(PendingState::new(pending, &plan.source.plan));
+                transaction.pending_views.push(Arc::downgrade(&state));
+                let handle = Box::new(TypeBridgePending {
+                    tag: crate::staged_answers::PENDING_TAG,
+                    state,
+                });
                 // SAFETY: the output slot was fenced and initialized above.
                 unsafe { out_pending.write_unaligned(Box::into_raw(handle)) };
                 TypeBridgeStatus::Ok
             }
             Err(error) => return_execution_error(pending_diagnostic(&error), out_diagnostics),
         }
+    })
+}
+
+/// Stage a borrowed generated terminal. The first typed stage freezes its recording.
+/// Repeated staging retains the same lazily compiled source; the pending may
+/// outlive the recording. A marker itself is invalid after its recording is freed.
+///
+/// # Safety
+/// Inputs are live and exclusively borrowed. Outputs are writable, possibly
+/// unaligned owner slots, disjoint from all inputs and their retained bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_staged_transaction_stage_selection(
+    transaction: *mut TypeBridgeStagedTransaction,
+    builder: *mut crate::plan_builder::TypeBridgePlanBuilder,
+    selection: u32,
+    out_pending: *mut *mut TypeBridgePending,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    use crate::plan_builder::selections::{AuthoredAnswers, AuthoredPending, SelectionProgram};
+    let inputs = |outputs: &DirectOutputPreflight| {
+        // SAFETY: caller retains both live input handles.
+        unsafe {
+            check_transaction(outputs, transaction)?;
+        }
+        check_object(outputs, builder)?;
+        if !builder.is_null() {
+            // SAFETY: the complete builder was fenced above.
+            unsafe { &*builder }.check_borrowed_ranges(outputs)?;
+        }
+        Ok(())
+    };
+    // SAFETY: both owner outputs are fenced before either is initialized.
+    if let Err(status) = unsafe { prepare_handle_outputs(out_pending, out_diagnostics, inputs) } {
+        return status;
+    }
+    if transaction.is_null() || builder.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    guarded(|| {
+        // SAFETY: exclusive, live inputs by contract.
+        let (transaction, builder) = unsafe { (&mut *transaction, &mut *builder) };
+        if transaction.poisoned {
+            return return_execution_error(poisoned_transaction_diagnostic(), out_diagnostics);
+        }
+        let source = match builder.finish_selection(selection) {
+            Ok(source) => source,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
+        let mut stage = || match &source.program {
+            SelectionProgram::Raw(plans) => transaction
+                .transaction
+                .stage_plans(Arc::clone(&source), plans.returns_documents())
+                .map(AuthoredAnswers::Raw),
+            SelectionProgram::Models(_) => transaction
+                .transaction
+                .stage_plan_fetch(
+                    Arc::clone(&source),
+                    Arc::clone(
+                        source
+                            .registry
+                            .as_ref()
+                            .expect("model program retains its registry"),
+                    ),
+                    Default::default(),
+                )
+                .map(AuthoredAnswers::Models),
+        };
+        let dispatch = transaction.owner.debug_dispatch();
+        let answers = match dispatch {
+            Some(dispatch) => tracing::dispatcher::with_default(&dispatch, stage),
+            None => stage(),
+        };
+        let answers = match answers {
+            Ok(answers) => answers,
+            Err(error) => {
+                return return_execution_error(pending_diagnostic(&error), out_diagnostics);
+            }
+        };
+        let origin = match &transaction.owner {
+            StagedOwner::Database(guard) => guard.projected_origin(),
+            StagedOwner::Proxy(_) => type_bridge_orm::ProjectedQueryOrigin::remote_unbound(),
+        };
+        let state = Arc::new(PendingState::authored(AuthoredPending::new(
+            source, answers, origin,
+        )));
+        transaction.pending_views.push(Arc::downgrade(&state));
+        let handle = Box::new(TypeBridgePending {
+            tag: crate::staged_answers::PENDING_TAG,
+            state,
+        });
+        // SAFETY: the output was fenced and initialized above.
+        unsafe { out_pending.write_unaligned(Box::into_raw(handle)) };
+        TypeBridgeStatus::Ok
     })
 }
 
@@ -577,9 +902,16 @@ unsafe fn finish_commit(
         let outcome = handle.owner.block_on(
             tx.commit()
                 // The provider may poll on another thread; the span follows it.
-            .instrument(entry.clone()),
+                .instrument(entry.clone()),
         );
         handle.poisoned = false;
+        for state in handle
+            .pending_views
+            .drain(..)
+            .filter_map(|state| state.upgrade())
+        {
+            state.prepare();
+        }
         match outcome {
             Ok(()) => TypeBridgeStatus::Ok,
             Err(error) => return_execution_error(error.diagnostic(), out_diagnostics),
@@ -604,6 +936,7 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_rollback(
         match handle.transaction.rollback() {
             Ok(()) => {
                 handle.poisoned = false;
+                handle.pending_views.clear();
                 TypeBridgeStatus::Ok
             }
             Err(_) => TypeBridgeStatus::ExecutionFailed,
@@ -634,7 +967,7 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_close(
     });
 }
 
-fn answer_status(error: &PendingError) -> TypeBridgeStatus {
+pub(crate) fn answer_status(error: &PendingError) -> TypeBridgeStatus {
     match error {
         PendingError::NotCommitted => TypeBridgeStatus::InUse,
         // The commit already reported the typed failure; rollback and close
@@ -644,7 +977,11 @@ fn answer_status(error: &PendingError) -> TypeBridgeStatus {
 }
 
 fn answer(pending: &TypeBridgePending) -> Result<Arc<PlanAnswer>, TypeBridgeStatus> {
-    pending.pending.get().map_err(|error| answer_status(&error))
+    pending
+        .state
+        .pending
+        .get()
+        .map_err(|error| answer_status(&error))
 }
 
 /// Report the resolved answer kind and, for count, exists (0/1), matched
@@ -663,9 +1000,17 @@ pub unsafe extern "C" fn type_bridge_pending_answer(
         Ok(value) => value,
         Err(status) => return status,
     };
-    if let Err(status) = check_object(&outputs, pending) {
-        return status;
-    }
+    // SAFETY: a non-null input is a live cursor retained by the caller.
+    let tag = match unsafe {
+        crate::staged_answers::check_cursor_ranges(
+            &outputs,
+            pending.cast(),
+            size_of::<TypeBridgePending>(),
+        )
+    } {
+        Ok(tag) => tag,
+        Err(status) => return status,
+    };
     if !out_kind.is_null() {
         // SAFETY: the slot is writable and overlaps no fenced input.
         unsafe { out_kind.write_unaligned(0) };
@@ -674,7 +1019,8 @@ pub unsafe extern "C" fn type_bridge_pending_answer(
         // SAFETY: as above.
         unsafe { out_value.write_unaligned(0) };
     }
-    if pending.is_null() || out_kind.is_null() || out_value.is_null() {
+    if tag != Some(crate::staged_answers::PENDING_TAG) || out_kind.is_null() || out_value.is_null()
+    {
         return TypeBridgeStatus::InvalidArgument;
     }
     guarded(|| {
@@ -687,6 +1033,10 @@ pub unsafe extern "C" fn type_bridge_pending_answer(
             PlanAnswer::Rows(rows) => (
                 TypeBridgePlanAnswerKind::Rows,
                 u64::try_from(rows.len()).unwrap_or(u64::MAX),
+            ),
+            PlanAnswer::Documents(documents) => (
+                TypeBridgePlanAnswerKind::Documents,
+                u64::try_from(documents.len()).unwrap_or(u64::MAX),
             ),
             PlanAnswer::Count(count) => (TypeBridgePlanAnswerKind::Count, *count),
             PlanAnswer::Exists(exists) => (TypeBridgePlanAnswerKind::Exists, u64::from(*exists)),
@@ -715,18 +1065,17 @@ mod tests {
     use std::sync::Mutex;
 
     use type_bridge_contract::capability::CapabilityId;
-    use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
+    use type_bridge_contract::query_plan::query_plan_capability_vocabulary;
+    use type_bridge_contract::query_remote::{CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_WRITE};
     use type_bridge_contract::query_remote::{
         RemoteCapabilities, RemoteExecutorBinding, RemoteSigningPublicKey,
-    };
-    use type_bridge_contract::query_remote_v3::{
-        CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3,
     };
     use type_bridge_contract::sdk_diagnostic::{SdkCommitFailureOutcome, SdkProviderOperation};
     use type_bridge_orm::session::backend::QueryResult;
     use type_bridge_orm::{ClassifiedCommitError, CommitFailureCertainty, TxType};
 
     use super::*;
+    use crate::TypeBridgeByteView;
     use crate::entity_crud::tests::{
         COMMIT_CONFLICT, COMMIT_CONFLICT_MESSAGE, COMMIT_PANIC, COMMIT_SUCCESS, COMMIT_UNKNOWN,
         Fixture, Response, close_diagnostics, diagnostic, fixture,
@@ -738,12 +1087,12 @@ mod tests {
     };
     use crate::runtime::type_bridge_database_close;
 
-    const SCHEMA: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/schema.json");
-    const PURCHASE: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/purchase.json");
-    const ROWS: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/rows.json");
-    const COUNT: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/count.json");
-    const EXISTS: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/exists.json");
-    const BATCH: &[u8] = include_bytes!("../../../../tests/contracts/plan_v3/batch.json");
+    const SCHEMA: &[u8] = include_bytes!("../../../../tests/contracts/plan/schema.json");
+    const PURCHASE: &[u8] = include_bytes!("../../../../tests/contracts/plan/purchase.json");
+    const ROWS: &[u8] = include_bytes!("../../../../tests/contracts/plan/rows.json");
+    const COUNT: &[u8] = include_bytes!("../../../../tests/contracts/plan/count.json");
+    const EXISTS: &[u8] = include_bytes!("../../../../tests/contracts/plan/exists.json");
+    const BATCH: &[u8] = include_bytes!("../../../../tests/contracts/plan/batch.json");
     const HEADER: &str = include_str!("../include/typebridge/type_bridge.h");
 
     type Diagnostics = *mut TypeBridgeExecutionDiagnostics;
@@ -752,7 +1101,7 @@ mod tests {
         let mut handle = ptr::dangling_mut();
         let mut diagnostics = ptr::dangling_mut();
         let status = unsafe {
-            type_bridge_plan_v3_decode(
+            type_bridge_plan_decode(
                 SCHEMA.as_ptr(),
                 SCHEMA.len(),
                 plan.as_ptr(),
@@ -806,7 +1155,7 @@ mod tests {
     fn rows(count: usize) -> Response {
         Response::Result(QueryResult::Rows(
             (0..count)
-                .map(|row| serde_json::json!({ "row": row }))
+                .map(|row| serde_json::json!({ "row": row, "account": {"kind":"thing", "iid":format!("0x{:02x}", row + 1), "type_id":{"kind":"entity", "label":"account"}} }))
                 .collect(),
         ))
     }
@@ -825,6 +1174,88 @@ mod tests {
             close_diagnostics(&mut diagnostics);
         }
         status
+    }
+
+    #[test]
+    fn debug_listener_is_scoped_to_its_database() {
+        unsafe extern "C" fn record(view: TypeBridgeByteView, context: *mut std::ffi::c_void) {
+            // SAFETY: the test retains this vector and the callback receives live bytes.
+            let records = unsafe { &*(context.cast::<std::sync::Mutex<Vec<serde_json::Value>>>()) };
+            let bytes = unsafe { std::slice::from_raw_parts(view.data, view.length) };
+            records
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(bytes).unwrap());
+        }
+        let records = std::sync::Mutex::new(Vec::<serde_json::Value>::new());
+        let a = fixture(vec![rows(0)], COMMIT_SUCCESS);
+        let b = fixture(vec![rows(0)], COMMIT_SUCCESS);
+        // SAFETY: listener context lives until cleared below; handles are exclusive.
+        assert_eq!(
+            unsafe {
+                crate::runtime::type_bridge_debug_listener_set(
+                    &*a.database,
+                    Some(record),
+                    (&records as *const _ as *mut std::sync::Mutex<Vec<serde_json::Value>>).cast(),
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        let mut plan = decode(COUNT);
+        let mut transaction = open(&b, TYPE_BRIDGE_TRANSACTION_READ);
+        let mut pending = stage(transaction, plan);
+        assert_eq!(commit(transaction).0, TypeBridgeStatus::Ok);
+        assert!(records.lock().unwrap().is_empty());
+        // SAFETY: these owned handles are no longer in use.
+        unsafe {
+            type_bridge_pending_free(&mut pending);
+            type_bridge_staged_transaction_close(&mut transaction);
+        }
+        transaction = open(&a, TYPE_BRIDGE_TRANSACTION_READ);
+        pending = stage(transaction, plan);
+        assert_eq!(commit(transaction).0, TypeBridgeStatus::Ok);
+        {
+            let events = records.lock().unwrap();
+            assert!(
+                events
+                    .iter()
+                    .any(|record| record["name"] == "type_bridge.plan.commit"),
+                "{events:?}"
+            );
+        }
+        // A running transaction can retain a dispatch after the callback is cleared.
+        let retained = unsafe { &*transaction }.owner.debug_dispatch().unwrap();
+        // SAFETY: clear the callback before its context is released and close owned handles.
+        unsafe {
+            crate::runtime::type_bridge_debug_listener_set(&*a.database, None, ptr::null_mut());
+            type_bridge_pending_free(&mut pending);
+            type_bridge_staged_transaction_close(&mut transaction);
+            type_bridge_plan_free(&mut plan);
+        }
+        let count = records.lock().unwrap().len();
+        tracing::dispatcher::with_default(&retained, || {
+            tracing::debug!(target: "type_bridge.plan", "late event");
+        });
+        assert_eq!(records.lock().unwrap().len(), count);
+        // Closing the database also ends the callback context's lifetime.
+        let mut database = Box::into_raw(a.database);
+        // SAFETY: the database is owned and the records remain live through close.
+        assert_eq!(
+            unsafe {
+                crate::runtime::type_bridge_debug_listener_set(
+                    database,
+                    Some(record),
+                    (&records as *const _ as *mut std::sync::Mutex<Vec<serde_json::Value>>).cast(),
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(close_database(&mut database), TypeBridgeStatus::Ok);
+        assert!(database.is_null());
+        tracing::dispatcher::with_default(&retained, || {
+            tracing::debug!(target: "type_bridge.plan", "late event after close");
+        });
+        assert_eq!(records.lock().unwrap().len(), count);
     }
 
     /// Category, path count and detail keys as an ABI 1.6 consumer reads them.
@@ -906,19 +1337,14 @@ mod tests {
         let mut plan = decode(PURCHASE);
         let mut length = usize::MAX;
         assert_eq!(
-            unsafe { type_bridge_plan_v3_canonical_bytes(plan, ptr::null_mut(), 0, &mut length) },
+            unsafe { type_bridge_plan_canonical_bytes(plan, ptr::null_mut(), 0, &mut length) },
             TypeBridgeStatus::ResourceLimit
         );
         assert_eq!(length, PURCHASE.len());
         let mut short = vec![0xa5; PURCHASE.len() - 1];
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_canonical_bytes(
-                    plan,
-                    short.as_mut_ptr(),
-                    short.len(),
-                    &mut length,
-                )
+                type_bridge_plan_canonical_bytes(plan, short.as_mut_ptr(), short.len(), &mut length)
             },
             TypeBridgeStatus::ResourceLimit
         );
@@ -930,27 +1356,20 @@ mod tests {
         let mut exact = vec![0; PURCHASE.len()];
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_canonical_bytes(
-                    plan,
-                    exact.as_mut_ptr(),
-                    exact.len(),
-                    &mut length,
-                )
+                type_bridge_plan_canonical_bytes(plan, exact.as_mut_ptr(), exact.len(), &mut length)
             },
             TypeBridgeStatus::Ok
         );
         assert_eq!(exact, PURCHASE, "the contract fixture bytes round-trip");
         // Null handles and outputs.
         assert_eq!(
-            unsafe {
-                type_bridge_plan_v3_canonical_bytes(plan, ptr::null_mut(), 0, ptr::null_mut())
-            },
+            unsafe { type_bridge_plan_canonical_bytes(plan, ptr::null_mut(), 0, ptr::null_mut()) },
             TypeBridgeStatus::InvalidArgument
         );
         length = usize::MAX;
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_canonical_bytes(ptr::null(), ptr::null_mut(), 0, &mut length)
+                type_bridge_plan_canonical_bytes(ptr::null(), ptr::null_mut(), 0, &mut length)
             },
             TypeBridgeStatus::InvalidArgument
         );
@@ -967,7 +1386,7 @@ mod tests {
             let mut handle = ptr::dangling_mut();
             let mut diagnostics = ptr::dangling_mut();
             let status = unsafe {
-                type_bridge_plan_v3_decode(
+                type_bridge_plan_decode(
                     schema.as_ptr(),
                     schema.len(),
                     bytes.as_ptr(),
@@ -989,7 +1408,7 @@ mod tests {
         let mut diagnostics = ptr::dangling_mut();
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_decode(
+                type_bridge_plan_decode(
                     ptr::null(),
                     1,
                     PURCHASE.as_ptr(),
@@ -1015,7 +1434,7 @@ mod tests {
         let sentinel = shared;
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_decode(
+                type_bridge_plan_decode(
                     SCHEMA.as_ptr(),
                     SCHEMA.len(),
                     PURCHASE.as_ptr(),
@@ -1032,7 +1451,7 @@ mod tests {
         let inside = unsafe { input.as_mut_ptr().add(3) }.cast::<*mut TypeBridgePlan>();
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_decode(
+                type_bridge_plan_decode(
                     SCHEMA.as_ptr(),
                     SCHEMA.len(),
                     input.as_ptr(),
@@ -1053,7 +1472,7 @@ mod tests {
             unsafe { slots.as_mut_ptr().add(1 + size_of::<usize>()) }.cast::<Diagnostics>();
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_decode(
+                type_bridge_plan_decode(
                     SCHEMA.as_ptr(),
                     SCHEMA.len(),
                     PURCHASE.as_ptr(),
@@ -1073,26 +1492,21 @@ mod tests {
         let out_len = storage.as_mut_ptr().cast::<usize>();
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_canonical_bytes(
-                    plan,
-                    storage.as_mut_ptr(),
-                    storage.len(),
-                    out_len,
-                )
+                type_bridge_plan_canonical_bytes(plan, storage.as_mut_ptr(), storage.len(), out_len)
             },
             TypeBridgeStatus::InvalidArgument
         );
         assert_eq!(storage, [0; 64]);
-        let own = unsafe { &*plan }.canonical.as_ptr().cast_mut();
+        let own = unsafe { &*plan }.source.canonical.as_ptr().cast_mut();
         let mut length = usize::MAX;
         assert_eq!(
-            unsafe { type_bridge_plan_v3_canonical_bytes(plan, own, PURCHASE.len(), &mut length) },
+            unsafe { type_bridge_plan_canonical_bytes(plan, own, PURCHASE.len(), &mut length) },
             TypeBridgeStatus::InvalidArgument
         );
         assert_eq!(length, usize::MAX);
         assert_eq!(
             unsafe {
-                type_bridge_plan_v3_canonical_bytes(
+                type_bridge_plan_canonical_bytes(
                     plan,
                     plan.cast(),
                     size_of::<TypeBridgePlan>(),
@@ -1407,7 +1821,7 @@ mod tests {
     #[test]
     fn commit_failures_keep_the_handle_and_the_released_detail_set() {
         // An unknown outcome leaves the handle for new work.
-        let fixture_unknown = fixture(vec![rows(1)], COMMIT_UNKNOWN);
+        let fixture_unknown = fixture(vec![rows(2)], COMMIT_UNKNOWN);
         let plan = decode(BATCH);
         let mut transaction = open(&fixture_unknown, TYPE_BRIDGE_TRANSACTION_WRITE);
         let original = transaction;
@@ -1480,7 +1894,7 @@ mod tests {
         }
 
         // A provider panic poisons the handle: only rollback and close remain.
-        let Fixture { database, .. } = fixture(vec![rows(1)], COMMIT_PANIC);
+        let Fixture { database, .. } = fixture(vec![rows(2)], COMMIT_PANIC);
         let mut database = Box::into_raw(database);
         let mut transaction = ptr::dangling_mut();
         let mut diagnostics = ptr::dangling_mut();
@@ -1544,7 +1958,7 @@ mod tests {
 
     #[test]
     fn one_handle_commits_again_after_rollback_and_after_commit() {
-        let fixture = fixture(vec![rows(1), rows(2)], COMMIT_SUCCESS);
+        let fixture = fixture(vec![rows(2), rows(2)], COMMIT_SUCCESS);
         let mut plan = decode(BATCH);
         let mut transaction = open(&fixture, TYPE_BRIDGE_TRANSACTION_WRITE);
         let original = transaction;
@@ -1561,7 +1975,7 @@ mod tests {
         assert_eq!(status, TypeBridgeStatus::Ok);
         assert!(diagnostics.is_null());
         let matched = TypeBridgePlanAnswerKind::Matched as u32;
-        assert_eq!(read(kept), (TypeBridgeStatus::Ok, matched, 1));
+        assert_eq!(read(kept), (TypeBridgeStatus::Ok, matched, 2));
         assert_eq!(
             fixture.state.query_count(),
             1,
@@ -1574,7 +1988,7 @@ mod tests {
         assert_eq!(status, TypeBridgeStatus::Ok);
         assert!(diagnostics.is_null());
         assert_eq!(read(again), (TypeBridgeStatus::Ok, matched, 2));
-        assert_eq!(read(kept), (TypeBridgeStatus::Ok, matched, 1));
+        assert_eq!(read(kept), (TypeBridgeStatus::Ok, matched, 2));
         assert_eq!(transaction, original);
         assert_eq!(
             fixture.state.opened_transactions(),
@@ -1625,8 +2039,8 @@ mod tests {
                 ))
             })
         });
-        let mut capabilities = query_plan_v3_capability_vocabulary();
-        for capability in [CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3] {
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_WRITE] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
         let advertisement = RemoteCapabilities::new(
@@ -1674,5 +2088,325 @@ mod tests {
             type_bridge_pending_free(&mut again);
             type_bridge_plan_free(&mut plan);
         }
+    }
+    #[test]
+    fn borrowed_cursors_follow_pending_commit_and_owner_lifetimes() {
+        use crate::staged_answers::*;
+        let response = Response::Result(QueryResult::Documents(vec![serde_json::json!({
+            "_iid":"0x01", "_type":"account", "attributes":{"id":"account-b","score":1}
+        })]));
+        let fixture = fixture(vec![response], COMMIT_SUCCESS);
+        let mut plan = decode(include_bytes!(
+            "../../../../tests/contracts/plan/fetch_entity.json"
+        ));
+        let mut transaction = open(&fixture, TYPE_BRIDGE_TRANSACTION_WRITE);
+        let mut pending = stage(transaction, plan);
+        let mut count = usize::MAX;
+        // SAFETY: live handles and writable distinct outputs throughout.
+        unsafe {
+            assert_eq!(
+                type_bridge_pending_document_count(pending, &mut count),
+                TypeBridgeStatus::InUse
+            );
+            assert_eq!(count, 0);
+            type_bridge_plan_free(&mut plan);
+            let (status, diagnostics) = commit(transaction);
+            assert_eq!(status, TypeBridgeStatus::Ok);
+            assert!(diagnostics.is_null());
+            type_bridge_staged_transaction_close(&mut transaction);
+            assert_eq!(
+                read(pending),
+                (
+                    TypeBridgeStatus::Ok,
+                    TypeBridgePlanAnswerKind::Documents as u32,
+                    1
+                )
+            );
+            assert_eq!(
+                type_bridge_pending_document_count(pending, &mut count),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(count, 1);
+            let mut doc = ptr::null();
+            assert_eq!(
+                type_bridge_pending_document(pending, 1, &mut doc),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert!(doc.is_null());
+            assert_eq!(
+                type_bridge_pending_document(pending, 0, &mut doc),
+                TypeBridgeStatus::Ok
+            );
+            let mut value = 0;
+            let label = crate::abi::TypeBridgeByteView {
+                data: b"score".as_ptr(),
+                length: 5,
+            };
+            assert_eq!(
+                type_bridge_document_attribute_long(doc, label, 0, &mut value),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(value, 1);
+            assert_eq!(
+                type_bridge_pending_row_count(pending, &mut count),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(count, 0);
+            type_bridge_pending_free(&mut pending);
+            assert!(pending.is_null());
+            // `doc` and borrowed byte views expire here; they must not be used.
+        }
+    }
+    #[test]
+    fn mock_pending_keeps_all_scalar_domains_and_listed_players_after_commit() {
+        use crate::staged_answers::*;
+        let fixture = fixture(
+            vec![Response::Result(QueryResult::Documents(vec![
+                crate::staged_answers::tests::answer(),
+            ]))],
+            COMMIT_SUCCESS,
+        );
+        let core_plan = crate::staged_answers::tests::plan();
+        let bytes = core_plan.canonical_bytes().unwrap();
+        let mut plan = Box::into_raw(Box::new(TypeBridgePlan::new(core_plan, bytes)));
+        let mut transaction = open(&fixture, TYPE_BRIDGE_TRANSACTION_READ);
+        let mut pending = stage(transaction, plan);
+        // SAFETY: live handles, readable labels and distinct writable outputs.
+        unsafe {
+            type_bridge_plan_free(&mut plan);
+            let (status, diagnostics) = commit(transaction);
+            assert_eq!(status, TypeBridgeStatus::Ok);
+            assert!(diagnostics.is_null());
+            type_bridge_staged_transaction_close(&mut transaction);
+            let mut doc = ptr::null();
+            assert_eq!(
+                type_bridge_pending_document(pending, 0, &mut doc),
+                TypeBridgeStatus::Ok
+            );
+            let mut player = ptr::null();
+            assert_eq!(
+                type_bridge_document_role(doc, 0, &mut player),
+                TypeBridgeStatus::Ok
+            );
+            assert!(!player.is_null());
+            let label = |text: &'static [u8]| crate::abi::TypeBridgeByteView {
+                data: text.as_ptr(),
+                length: text.len(),
+            };
+            let mut count = 0;
+            assert_eq!(
+                type_bridge_document_attribute_count(player, label(b"key"), &mut count),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(count, 2);
+            let mut long = 0;
+            assert_eq!(
+                type_bridge_document_attribute_long(player, label(b"measure-long"), 0, &mut long),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(long, i64::MIN);
+            let mut duration = crate::abi::TypeBridgeByteView {
+                data: ptr::null(),
+                length: 0,
+            };
+            assert_eq!(
+                type_bridge_document_attribute_duration(
+                    player,
+                    label(b"elapsed"),
+                    0,
+                    &mut duration
+                ),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                std::slice::from_raw_parts(duration.data, duration.length),
+                b"P1D"
+            );
+            assert_eq!(
+                type_bridge_document_role(doc, 1, &mut player),
+                TypeBridgeStatus::Ok
+            );
+            assert!(player.is_null());
+            assert_eq!(
+                type_bridge_document_role(doc, 0, &mut player),
+                TypeBridgeStatus::Ok
+            );
+            let mut text = crate::abi::TypeBridgeByteView {
+                data: ptr::null(),
+                length: 0,
+            };
+            assert_eq!(
+                type_bridge_document_attribute_string(player, label(b"key"), 1, &mut text),
+                TypeBridgeStatus::Ok
+            );
+            let before = std::slice::from_raw_parts(text.data, text.length).to_vec();
+            assert_eq!(
+                type_bridge_row_value_kind(
+                    pending.cast(),
+                    label(b"key"),
+                    text.data.cast_mut().cast()
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(std::slice::from_raw_parts(text.data, text.length), before);
+            assert_eq!(
+                type_bridge_document_attribute_kind(
+                    pending.cast(),
+                    label(b"key"),
+                    1,
+                    text.data.cast_mut().cast()
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(std::slice::from_raw_parts(text.data, text.length), before);
+            type_bridge_pending_free(&mut pending);
+        }
+    }
+}
+
+#[cfg(test)]
+mod explain_tests {
+    use super::*;
+    #[test]
+    fn owned_explanation_matches_core_and_checks_output_aliases() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/contracts/plan");
+        let schema = type_bridge_contract::schema::decode_declared_schema(
+            &std::fs::read(root.join("schema.json")).unwrap(),
+        )
+        .unwrap();
+        let bytes = std::fs::read(root.join("purchase.json")).unwrap();
+        let plan = type_bridge_contract::query_plan::decode_query_plan(&bytes, &schema).unwrap();
+        let expected = type_bridge_orm::plan_explain::explain(&plan)
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        let plan = TypeBridgePlan::new(plan, bytes);
+        let mut output = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: the plan and distinct output slots are live for the call.
+        assert_eq!(
+            unsafe { type_bridge_plan_explain(&plan, &mut output, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(diagnostics.is_null());
+        // SAFETY: a successful call returned this owned buffer.
+        assert_eq!(unsafe { &*output }.bytes, expected);
+        // SAFETY: the exclusively owned buffer slot is live.
+        assert_eq!(
+            unsafe { crate::canonical_archive::type_bridge_canonical_bytes_close(&mut output) },
+            TypeBridgeStatus::Ok
+        );
+        // SAFETY: both output slots are intentionally aliased to test preflight.
+        assert_eq!(
+            unsafe {
+                type_bridge_plan_explain(
+                    &plan,
+                    (&mut diagnostics as *mut *mut TypeBridgeExecutionDiagnostics).cast(),
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        // SAFETY: null plan with writable outputs is an invalid-input probe.
+        assert_eq!(
+            unsafe { type_bridge_plan_explain(ptr::null(), &mut output, &mut diagnostics) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert!(output.is_null());
+    }
+}
+
+#[cfg(test)]
+mod pending_diagnostic_redaction_tests {
+    use super::*;
+    #[test]
+    fn pending_failure_uses_the_canonical_diagnostic_without_server_text() {
+        let error = PendingError::Failed {
+            diagnostic: Box::new(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::commit_failure(
+                    type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome::Unknown,
+                ),
+            ),
+            op_index: None,
+            message: "signed-server-secret".into(),
+            failure: Some(Box::new(
+                type_bridge_contract::failure::Failure::Indeterminate { code: None },
+            )),
+            context: Default::default(),
+        };
+        assert!(!error.to_string().contains("signed-server-secret"));
+        let surfaced = pending_diagnostic(&error);
+        assert!(
+            !serde_json::to_string(&surfaced.host_json())
+                .unwrap()
+                .contains("signed-server-secret")
+        );
+        assert_eq!(surfaced.code().as_str(), "commit_outcome_unknown");
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn staged_policy_defaults_and_signed_timeouts() {
+        let defaults = TransactionOptions::default();
+        assert_eq!(
+            defaults.timeout.unwrap_or_default().milliseconds(),
+            Some(60_000)
+        );
+        assert!(!defaults.collect_phase_timestamps);
+        let mut value = TypeBridgeStagedTransactionOptionsV1 {
+            struct_size: size_of::<TypeBridgeStagedTransactionOptionsV1>() as u32,
+            version: 1,
+            timeout_milliseconds: 0,
+            collect_phase_timestamps: 1,
+        };
+        for (input, expected) in [(0, None), (-1, None), (86_400_001, Some(86_400_001))] {
+            value.timeout_milliseconds = input;
+            let options = value.options().unwrap();
+            assert_eq!(options.timeout.unwrap().milliseconds(), expected);
+            assert!(options.collect_phase_timestamps);
+        }
+        value.collect_phase_timestamps = 2;
+        assert!(matches!(
+            value.options(),
+            Err(TypeBridgeStatus::InvalidArgument)
+        ));
+        value.collect_phase_timestamps = 0;
+        value.version = 2;
+        assert!(matches!(
+            value.options(),
+            Err(TypeBridgeStatus::InvalidArgument)
+        ));
+    }
+
+    #[test]
+    fn staged_options_are_fenced_before_output_initialization() {
+        let mut value = TypeBridgeStagedTransactionOptionsV1 {
+            struct_size: size_of::<TypeBridgeStagedTransactionOptionsV1>() as u32,
+            version: 1,
+            timeout_milliseconds: 60_000,
+            collect_phase_timestamps: 0,
+        };
+        let alias = (&mut value as *mut TypeBridgeStagedTransactionOptionsV1).cast();
+        // SAFETY: the call must refuse the output overlapping the complete options.
+        let status = unsafe {
+            type_bridge_database_transaction_with_options(
+                ptr::null(),
+                TYPE_BRIDGE_TRANSACTION_WRITE,
+                &value,
+                alias,
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::InvalidArgument);
+        assert_eq!(value.version, 1);
+        assert_eq!(
+            value.struct_size as usize,
+            size_of::<TypeBridgeStagedTransactionOptionsV1>()
+        );
     }
 }

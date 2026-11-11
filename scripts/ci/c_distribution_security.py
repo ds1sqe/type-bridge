@@ -458,7 +458,7 @@ def signature_policy() -> dict[str, Any]:
         "protected-release": {
             "required": True,
             "issuer": "https://token.actions.githubusercontent.com",
-            "identity-regexp": r"^https://github\.com/ds1sqe/type-bridge/\.github/workflows/c-release\.yml@refs/tags/v2\.3\.3$",
+            "identity-regexp": r"^https://github\.com/ds1sqe/type-bridge/\.github/workflows/c-release\.yml@refs/tags/v2\.3\.2$",
             "cosign-version": "3.0.6",
             "offline-verification-required": True,
         },
@@ -491,7 +491,7 @@ def provenance(artifacts: Sequence[Mapping[str, Any]], commit: str, tree: str) -
         "builder": {
             "workflow": ".github/workflows/ci.yml",
             "jobs": ["standalone-cli-artifact", "c-package-artifacts"],
-            "runner": "ubuntu-latest",
+            "runner": "ubuntu-24.04",
         },
         "materials": [
             {

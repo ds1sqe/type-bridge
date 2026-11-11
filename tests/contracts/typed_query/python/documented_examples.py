@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import assert_type
 
-from generated_v2 import (
+from generated_package import (
     Container,
     Employment,
     Event,
@@ -22,9 +22,9 @@ event = session.exact(Event)
 container = session.exact(Container)
 employment = session.exact(Employment)
 
-employee = employment.role(Employment.employee).connects(person)
-subject = event.role(Event.subject).connects(person)
-contained = container.role(Container.item).connects(event)
+employee = employment.role(Employment.employee).links(person)
+subject = event.role(Event.subject).links(person)
+contained = container.role(Container.item).links(event)
 
 one_person: Query[Person] = session.query(person)
 two_slots: Query[Person, Event] = session.query(person, event).where(subject)
@@ -40,8 +40,8 @@ five_slots: Query[Person, Event, Container, Event, Person] = session.query(
 ).where(
     subject,
     contained,
-    other_event.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(other_event),
+    other_event.role(Event.subject).links(colleague),
+    container.role(Container.item).links(other_event),
 )
 
 person_pair: Query[Person, Person] = (
@@ -50,8 +50,8 @@ person_pair: Query[Person, Person] = (
     .where(
         subject,
         contained,
-        other_event.role(Event.subject).connects(colleague),
-        container.role(Container.item).connects(other_event),
+        other_event.role(Event.subject).links(colleague),
+        container.role(Container.item).links(other_event),
     )
 )
 
@@ -73,11 +73,11 @@ async def selection_shapes() -> None:
 # seventeenth selection is a static diagnostic and Rust rejects forged input.
 
 adults = one_person.where(
-    person.field(Person.score).gte(Score(18)),
+    person.field(Person.score).ge(Score(18)),
     person.field(Person.identifier).starts_with(Identifier("Al")),
     person.field(Person.identifier).contains(Identifier("Research")),
     person.field(Person.identifier).ends_with(Identifier("Labs")),
-    person.field(Person.identifier).regex(Identifier(r"^A[[:alpha:]]+$")),
+    person.field(Person.identifier).like(Identifier(r"^A[[:alpha:]]+$")),
 )
 
 # Percent is literal input here; it has no SQL wildcard meaning.
@@ -106,7 +106,7 @@ async def terminals() -> None:
     ordered_people = await one_person.rows(
         limit=50,
         offset=0,
-        order_by=(person.field(Person.identifier).asc(),),
+        sort=(person.field(Person.identifier).asc(),),
     )
     assert_type(ordered_people, list[Person])
 
@@ -118,7 +118,7 @@ async def terminals() -> None:
         person,
         limit=50,
         offset=0,
-        order_by=(person.field(Person.identifier).asc(),),
+        sort=(person.field(Person.identifier).asc(),),
         include_total=True,
     )
     assert_type(page.items, tuple[PersonEvents, ...])

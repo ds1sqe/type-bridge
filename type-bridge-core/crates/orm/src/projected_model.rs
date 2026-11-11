@@ -4,7 +4,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN};
 use type_bridge_contract::projection::{
@@ -37,7 +36,7 @@ pub(crate) struct ProjectionBrand {
 }
 
 #[derive(Eq, PartialEq)]
-struct ProjectedDatabaseOrigin(DatabaseExecutionIdentity);
+struct ProjectedDatabaseOrigin(DatabaseExecutionIdentity, bool);
 
 impl std::fmt::Debug for ProjectedDatabaseOrigin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -50,11 +49,19 @@ impl std::fmt::Debug for ProjectedDatabaseOrigin {
 /// Bindings cannot construct or inspect this value. Its debug form is
 /// permanently redacted and its private, non-serializable payload is shared so
 /// bindings can retain it cheaply without exposing an identity token. It
-/// exists only to preserve same-database reference fencing across complete or
-/// reference hydration and a later relation write.
+/// preserves same-database reference fencing and deleted-snapshot status
+/// across facade reconstruction and later writes.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct ProjectedReferenceOrigin(Arc<ProjectedDatabaseOrigin>);
+
+impl ProjectedReferenceOrigin {
+    /// Whether the retained value is a deleted root snapshot.
+    #[must_use]
+    pub fn is_deleted(&self) -> bool {
+        self.0.1
+    }
+}
 
 impl std::fmt::Debug for ProjectedReferenceOrigin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -429,6 +436,7 @@ impl ProjectedReference {
             keys,
             Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
                 database_identity,
+                false,
             )))),
         )
     }
@@ -440,6 +448,13 @@ impl ProjectedReference {
         keys: Vec<(OwnsFactId, ProjectedAttributeValue)>,
         database_origin: Option<ProjectedReferenceOrigin>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
+        if database_origin.as_ref().is_some_and(|origin| origin.0.1) {
+            return Err(invalid_input(
+                "thing_deleted",
+                "A deleted snapshot cannot be used as a live reference",
+                type_path(&type_id),
+            ));
+        }
         let model = require_projected_thing_model(installed, &type_id)?;
         if model.reference_read().target_name().is_none() {
             return Err(invalid_input(
@@ -1195,6 +1210,7 @@ pub struct ProjectedCreate {
     roles: BTreeMap<RoleId, Vec<ProjectedReference>>,
     present_roles: BTreeSet<RoleId>,
     size: ProjectedSize,
+    unsupported_ordered_member: Option<SdkDiagnosticPathSegment>,
 }
 
 impl ProjectedCreate {
@@ -1218,12 +1234,26 @@ impl ProjectedCreate {
             collect_unique_fields(&type_id, fields, &mut budget, ValidationOrigin::Input)?;
         let supplied_roles =
             collect_unique_roles(&type_id, roles, &mut budget, ValidationOrigin::Input)?;
-        let (fields, present_fields) =
-            validate_create_fields(installed, &type_id, model, supplied_fields, &mut budget)?;
-        let (roles, present_roles) =
-            validate_create_roles(installed, &type_id, model, supplied_roles, &mut budget)?;
+        let mut unsupported_ordered_member = None;
+        let (fields, present_fields) = validate_create_fields(
+            installed,
+            &type_id,
+            model,
+            supplied_fields,
+            &mut budget,
+            &mut unsupported_ordered_member,
+        )?;
+        let (roles, present_roles) = validate_create_roles(
+            installed,
+            &type_id,
+            model,
+            supplied_roles,
+            &mut budget,
+            &mut unsupported_ordered_member,
+        )?;
         let size = budget.finish();
         Ok(Self {
+            unsupported_ordered_member,
             brand: ProjectionBrand::from_installed(installed),
             type_id,
             fields,
@@ -1232,6 +1262,24 @@ impl ProjectedCreate {
             present_roles,
             size,
         })
+    }
+
+    /// All measured providers reject nonempty lists; keep this refusal before IO.
+    #[doc(hidden)]
+    pub fn validate_native_write(&self) -> Result<(), SdkExecutionDiagnostic> {
+        if let Some(member) = &self.unsupported_ordered_member {
+            return Err(with_path(
+                SdkExecutionDiagnostic::unsupported_capability(
+                    sdk_code("query_plan_ordered_collection_unsupported"),
+                    sdk_message("Supported TypeDB providers do not implement ordered list DML"),
+                ),
+                vec![
+                    SdkDiagnosticPathSegment::Type(self.type_id.clone()),
+                    member.clone(),
+                ],
+            ));
+        }
+        Ok(())
     }
 
     /// Return the exact projected model type.
@@ -1378,6 +1426,7 @@ impl ProjectedThing {
             roles,
             Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
                 database_identity,
+                false,
             )))),
         )
     }
@@ -1468,6 +1517,27 @@ impl ProjectedThing {
     #[must_use]
     pub const fn resource_measure(&self) -> ProjectedResourceMeasure {
         ProjectedResourceMeasure(self.size)
+    }
+
+    /// Whether this value is a snapshot of a deleted thing.
+    #[must_use]
+    pub fn is_deleted(&self) -> bool {
+        self.database_origin
+            .as_ref()
+            .is_some_and(|origin| origin.0.1)
+    }
+
+    pub(crate) fn mark_deleted(&mut self) -> Result<(), SdkExecutionDiagnostic> {
+        let origin = self
+            .database_origin
+            .as_ref()
+            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+        // Replace only the root's carrier; surviving role players stay live.
+        self.database_origin = Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
+            origin.0.0.clone(),
+            true,
+        ))));
+        Ok(())
     }
 
     /// Derive an exact nonrecursive reference while preserving database origin.
@@ -1616,6 +1686,7 @@ fn validate_create_fields(
     model: &ModelProjection,
     mut supplied: BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
     budget: &mut ProjectedBudget,
+    unsupported_ordered_member: &mut Option<SdkDiagnosticPathSegment>,
 ) -> Result<PresentFields, SdkExecutionDiagnostic> {
     let allowed = model
         .create()
@@ -1667,6 +1738,12 @@ fn validate_create_fields(
             budget,
             ValidationOrigin::Input,
         )?;
+        if unsupported_ordered_member.is_none()
+            && !values.is_empty()
+            && !token.multiplicity().collection_mode().is_unordered()
+        {
+            *unsupported_ordered_member = Some(SdkDiagnosticPathSegment::Field(field_id.clone()));
+        }
         output.insert(field_id.clone(), values);
     }
     Ok((output, present_fields))
@@ -1804,6 +1881,7 @@ fn validate_create_roles(
     model: &ModelProjection,
     mut supplied: BTreeMap<RoleId, Vec<ProjectedReference>>,
     budget: &mut ProjectedBudget,
+    unsupported_ordered_member: &mut Option<SdkDiagnosticPathSegment>,
 ) -> Result<PresentReferenceRoles, SdkExecutionDiagnostic> {
     let allowed = model.create().roles().keys().collect::<BTreeSet<_>>();
     if let Some(role_id) = supplied.keys().find(|role_id| !allowed.contains(role_id)) {
@@ -1884,7 +1962,20 @@ fn validate_create_roles(
                 duplicate_index,
             ));
         }
+        if unsupported_ordered_member.is_none()
+            && !references.is_empty()
+            && !token.multiplicity().collection_mode().is_unordered()
+        {
+            *unsupported_ordered_member = Some(SdkDiagnosticPathSegment::Role(role_id.clone()));
+        }
         output.insert(role_id.clone(), references);
+    }
+    if type_id.kind() == TypeKind::Relation && output.values().all(Vec::is_empty) {
+        return Err(invalid_input(
+            "relation_requires_player",
+            "A relation requires at least one player to survive commit",
+            type_path(type_id),
+        ));
     }
     Ok((output, present_roles))
 }
@@ -2005,7 +2096,7 @@ fn validate_role_player_database_origin(
     path: Vec<SdkDiagnosticPathSegment>,
 ) -> Result<(), SdkExecutionDiagnostic> {
     match (thing_origin, player_origin) {
-        (Some(expected), Some(actual)) if expected.0 == actual.0 => Ok(()),
+        (Some(expected), Some(actual)) if expected.0.0 == actual.0.0 => Ok(()),
         (Some(_), None) => Err(integrity(
             "hydrated_role_player_database_origin_missing",
             "A database-bound hydrated role player is missing its opaque database origin",
@@ -2450,7 +2541,8 @@ fn cardinality_diagnostic(
 }
 
 fn canonical_value_bytes(value: &CanonicalValue) -> Result<usize, SdkExecutionDiagnostic> {
-    to_canonical_json(value)
+    // Canonical scalars are already admitted; measurement must retain their explicit codec policy.
+    serde_json::to_vec(value)
         .map(|bytes| bytes.len())
         .map_err(|_| {
             integrity(
@@ -2764,6 +2856,36 @@ pub(crate) mod tests {
     use type_bridge_contract::value::{CanonicalDouble, CanonicalString};
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
+    #[test]
+    fn scalar_measurement_matches_canonical_bytes_without_reapplying_default_limits() {
+        for value in [
+            CanonicalValue::String(CanonicalString::new("한\n\"\\").unwrap()),
+            CanonicalValue::Long(i64::MAX),
+            CanonicalValue::Double(CanonicalDouble::new(-0.0).unwrap()),
+            CanonicalValue::Boolean(true),
+        ] {
+            assert_eq!(
+                canonical_value_bytes(&value).unwrap(),
+                type_bridge_contract::codec::to_canonical_json(&value)
+                    .unwrap()
+                    .len()
+            );
+        }
+        let limits = type_bridge_contract::limits::CodecLimits {
+            max_string_bytes: 2 * 1024 * 1024,
+            ..Default::default()
+        };
+        let value = CanonicalValue::String(
+            CanonicalString::new_with_limits("x".repeat(1024 * 1024 + 1), limits).unwrap(),
+        );
+        assert_eq!(
+            canonical_value_bytes(&value).unwrap(),
+            type_bridge_contract::codec::to_canonical_json_with_limits(&value, limits)
+                .unwrap()
+                .len()
+        );
+    }
+
     const ORIGIN_SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:
   identifier: { value: string }
@@ -3053,13 +3175,81 @@ plays:
     }
 
     #[test]
+    fn deleted_relation_carrier_preserves_surviving_players_and_refuses_root_references() {
+        let installed = origin_projection();
+        let identity = DatabaseExecutionIdentity::isolated("deleted-relation");
+        let player = origin_complete_player(
+            &installed,
+            ProjectedReference::try_new_for_database(
+                &installed,
+                TypeId::new(TypeKind::Entity, "person").unwrap(),
+                Some("0x1".into()),
+                vec![],
+                identity.clone(),
+            )
+            .unwrap(),
+        );
+        let relation = TypeId::new(TypeKind::Relation, "friendship").unwrap();
+        let roles = vec![(
+            RoleId::new("friendship", "friend").unwrap(),
+            vec![player.clone()],
+        )];
+        let mut snapshot = ProjectedThing::try_new_for_database(
+            &installed,
+            relation.clone(),
+            "0x10".into(),
+            vec![],
+            roles.clone(),
+            identity,
+        )
+        .unwrap();
+        let live_copy = snapshot.clone();
+        snapshot.mark_deleted().unwrap();
+        assert!(snapshot.is_deleted());
+        assert!(!live_copy.is_deleted());
+        let restored = ProjectedThing::try_new_with_origin_carrier(
+            &installed,
+            relation.clone(),
+            "0x10".into(),
+            vec![],
+            roles,
+            snapshot.origin_carrier(),
+        )
+        .unwrap();
+        assert!(restored.is_deleted());
+        assert_eq!(
+            restored
+                .try_to_reference(&installed)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "thing_deleted"
+        );
+        assert_eq!(
+            ProjectedReference::try_new_with_origin_carrier(
+                &installed,
+                relation,
+                Some("0x10".into()),
+                vec![],
+                snapshot.origin_carrier(),
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "thing_deleted"
+        );
+        assert!(!player.reference().origin_carrier().unwrap().0.1);
+    }
+
+    #[test]
     fn hydrated_database_origins_are_coherent_and_redacted() {
         let identity = DatabaseExecutionIdentity::isolated("projected-model-a");
         let matching =
-            ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity.clone())));
-        let same = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity)));
+            ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity.clone(), false)));
+        let same = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity, false)));
         let different = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
             DatabaseExecutionIdentity::isolated("projected-model-a"),
+            false,
         )));
 
         validate_role_player_database_origin(Some(&matching), Some(&same), Vec::new()).unwrap();

@@ -1,18 +1,18 @@
 //! Canonical implementation-independent codec ceilings.
 
-/// Maximum aggregate answer items in one staged V3 reply.
-pub const MAX_STAGED_ITEMS_V3: u64 = 65_536;
+/// Maximum aggregate answer items in one staged reply.
+pub const MAX_STAGED_ITEMS: u64 = 65_536;
 
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticDetailValue};
 
-/// Maximum plans in one staged V3 transaction; callers may tighten this ceiling.
-pub const MAX_STAGED_PLANS_V3: u32 = 64;
-/// Default provider-write statement budget for a staged V3 transaction.
-pub const DEFAULT_STAGED_WRITE_STATEMENTS_V3: u32 = 256;
+/// Maximum plans in one staged transaction; callers may tighten this ceiling.
+pub const MAX_STAGED_PLANS: u32 = 64;
+/// Default provider-write statement budget for a staged transaction.
+pub const DEFAULT_STAGED_WRITE_STATEMENTS: u32 = 256;
 /// Default read statement budget, allowing three statements per staged plan.
-pub const DEFAULT_STAGED_READ_STATEMENTS_V3: u32 = MAX_STAGED_PLANS_V3 * 3;
+pub const DEFAULT_STAGED_READ_STATEMENTS: u32 = MAX_STAGED_PLANS * 3;
 /// Independent hard ceiling for each staged provider statement budget.
-pub const MAX_STAGED_STATEMENTS_V3: u32 = 4_096;
+pub const MAX_STAGED_STATEMENTS: u32 = 4_096;
 
 /// Maximum canonical artifact size: 16 MiB.
 pub const MAX_CANONICAL_BYTES: usize = 16 * 1024 * 1024;
@@ -69,25 +69,11 @@ pub const REMOTE_ENVELOPE_CODEC_LIMITS: CodecLimits = CodecLimits {
     max_string_bytes: MAX_CANONICAL_STRING_BYTES,
 };
 
-/// V3 opaque plan-byte strings may use the envelope budget. Embedded plans
+/// staged opaque plan-byte strings may use the envelope budget. Embedded plans
 /// and canonical scalar values still enforce their independent codec ceilings.
-/// Frozen V1/V2 envelopes retain their original per-string ceiling.
-pub const STAGED_REMOTE_CODEC_LIMITS_V3: CodecLimits = CodecLimits {
+pub const STAGED_REMOTE_CODEC_LIMITS: CodecLimits = CodecLimits {
     max_string_bytes: MAX_REMOTE_ENVELOPE_BYTES,
     ..REMOTE_ENVELOPE_CODEC_LIMITS
-};
-
-/// Owning-format limits for V1 remote query request envelopes.
-///
-/// A request embeds an independently canonical plan beneath exactly one
-/// framing object. The extra level admits a standalone plan at the canonical
-/// depth boundary without relaxing that plan's own revalidation or the limits
-/// for replies and capability advertisements.
-pub const REMOTE_REQUEST_CODEC_LIMITS: CodecLimits = CodecLimits {
-    max_bytes: MAX_REMOTE_ENVELOPE_BYTES,
-    max_depth: MAX_CANONICAL_DEPTH + 1,
-    max_collection_len: MAX_CANONICAL_COLLECTION_LEN,
-    max_string_bytes: MAX_CANONICAL_STRING_BYTES,
 };
 
 /// Maximum number of selected output slots in one typed plan.
@@ -234,7 +220,7 @@ impl Default for StructuralLimits {
     }
 }
 
-/// Canonical structural limits shared by V1 and V2 typed plans.
+/// Canonical structural limits shared by typed plans and model requests.
 pub const CANONICAL_STRUCTURAL_LIMITS: StructuralLimits = StructuralLimits::CANONICAL;
 
 /// Deepest canonical JSON nesting the codec can decode.
@@ -249,7 +235,7 @@ pub const MAX_SUPPORTED_CANONICAL_DEPTH: usize = 126;
 ///
 /// Generated query, grouping, and aggregate typing is sealed at sixteen
 /// positions, so this limit can be lowered but not raised.
-pub const MAX_SUPPORTED_SELECTED_SLOTS: usize = MAX_SELECTED_SLOTS;
+pub const MAX_SUPPORTED_SELECTED_SLOTS: usize = MAX_SUPPORTED_BINDINGS;
 
 /// Largest binding count addressable by a 16-bit binding identity.
 pub const MAX_SUPPORTED_BINDINGS: usize = 1 << 16;
@@ -425,6 +411,30 @@ impl QueryLimits {
         remote_request_bytes: MAX_REMOTE_ENVELOPE_BYTES,
     };
 
+    /// Native staged columns may expose every bounded binding as identity evidence.
+    /// Typed model output slots retain `CANONICAL`.
+    pub const PLAN: Self = Self {
+        structural: StructuralLimits {
+            selected_slots: MAX_BINDINGS,
+            ..StructuralLimits::CANONICAL
+        },
+        ..Self::CANONICAL
+    };
+
+    /// Admit staged limits, where every output column consumes a binding.
+    pub fn validate_plan(self) -> Result<Self, QueryLimitsError> {
+        let limits = self.validate()?;
+        if limits.structural.selected_slots > limits.structural.bindings {
+            return Err(QueryLimitsError::OutOfRange {
+                limit: "selected_slots",
+                value: limits.structural.selected_slots as u64,
+                minimum: 1,
+                maximum: limits.structural.bindings as u64,
+            });
+        }
+        Ok(limits)
+    }
+
     /// Admit one untrusted limits value.
     ///
     /// Every limit must be at least one and no larger than the
@@ -491,19 +501,6 @@ impl QueryLimits {
         self
     }
 
-    /// Codec limits for one remote request envelope.
-    ///
-    /// A request embeds an independently canonical plan beneath exactly one
-    /// framing object, hence the extra level.
-    #[must_use]
-    pub const fn remote_request_codec(self) -> CodecLimits {
-        CodecLimits {
-            max_bytes: self.remote_request_bytes,
-            max_depth: self.codec.max_depth + 1,
-            ..self.codec
-        }
-    }
-
     /// Maximum canonical bytes in one complete plan-bound invocation.
     ///
     /// The owning wire object adds 234 fixed bytes around the input-row
@@ -538,15 +535,14 @@ pub struct AnswerLimitField {
 /// This table is the one statement of their names, defaults, and supported
 /// maxima. A direct session keeps the 2.2 in-process defaults; a proxy
 /// connection defaults to the wire ceilings, which bound what one remote
-/// envelope carries. Only the timeout and the statement count have a maximum
-/// below the type's: a day keeps deadline arithmetic exact, and no terminal
-/// issues more than three provider statements.
+/// envelope carries. Only the statement count has a maximum below the type's;
+/// its budget is independent of the adapter's static stack size.
 pub const ANSWER_LIMIT_FIELDS: [AnswerLimitField; 8] = [
     AnswerLimitField {
         name: "timeout_milliseconds",
-        direct_default: 30_000,
-        proxy_default: 30_000,
-        maximum: 24 * 60 * 60 * 1000,
+        direct_default: 60_000,
+        proxy_default: 60_000,
+        maximum: u64::MAX,
     },
     AnswerLimitField {
         name: "items",
@@ -588,7 +584,7 @@ pub const ANSWER_LIMIT_FIELDS: [AnswerLimitField; 8] = [
         name: "statements",
         direct_default: 3,
         proxy_default: 3,
-        maximum: 3,
+        maximum: 4096,
     },
 ];
 
@@ -618,6 +614,7 @@ const LIMIT_BY_DIAGNOSTIC_CODE: &[(&str, &str)] = &[
     ("canonical_json_too_large", "canonical_bytes"),
     ("canonical_collection_too_large", "canonical_collection_len"),
     ("canonical_string_too_large", "canonical_string_bytes"),
+    ("canonical_string_limit_exceeded", "canonical_string_bytes"),
     ("query_builder_authored_binding_limit", "bindings"),
     ("query_invocation_input_byte_limit", "input_bytes"),
     ("query_invocation_row_limit", "input_rows"),
@@ -638,21 +635,8 @@ const LIMIT_BY_DIAGNOSTIC_CODE: &[(&str, &str)] = &[
     ("query_plan_role_player_limit", "boolean_terms"),
     ("query_plan_sort_term_limit", "order_terms"),
     ("query_plan_try_term_limit", "boolean_terms"),
-    ("query_plan_v2_boolean_term_limit", "boolean_terms"),
-    ("query_plan_v2_compatibility_value_limit", "canonical_bytes"),
-    ("query_plan_v2_cross_join_limit", "allowed_cross_joins"),
-    ("query_plan_v2_order_limit", "order_terms"),
-    ("query_plan_v2_output_limit", "selected_slots"),
-    ("query_plan_v2_pattern_depth_limit", "predicate_depth"),
-    ("query_plan_v2_pattern_node_limit", "predicate_nodes"),
-    ("query_plan_v2_reachable_depth", "predicate_depth"),
-    ("query_plan_v2_reachable_expansion_limit", "predicate_nodes"),
-    ("query_plan_v2_reducer_limit", "selected_slots"),
-    ("query_plan_v2_reduction_group_limit", "selected_slots"),
-    ("query_remote_v2_envelope_too_large", "remote_request_bytes"),
-    ("query_v2_adapter_literal_byte_limit", "canonical_bytes"),
-    ("query_v2_lowered_typeql_byte_limit", "canonical_bytes"),
-    ("query_v2_reachable_expansion_limit", "predicate_nodes"),
+    ("query_plan_compatibility_value_limit", "canonical_bytes"),
+    ("query_adapter_literal_byte_limit", "canonical_bytes"),
 ];
 
 impl QueryLimits {
@@ -771,7 +755,6 @@ mod query_limits_tests {
     #[test]
     fn canonical_limits_are_the_released_constants_and_validate() {
         let limits = QueryLimits::CANONICAL.validate().expect("canonical limits");
-        assert_eq!(limits.remote_request_codec(), REMOTE_REQUEST_CODEC_LIMITS);
         assert_eq!(limits.invocation_bytes(), MAX_QUERY_INVOCATION_BYTES);
         assert_eq!(QueryLimits::default(), limits);
     }
@@ -851,7 +834,7 @@ mod query_limits_tests {
         limits.structural.boolean_terms = 8;
 
         let configured = limits.annotate(raise(
-            "query_plan_v2_boolean_term_limit",
+            "query_plan_pattern_limit",
             DiagnosticCategory::ResourceLimit,
         ));
         assert_eq!(
@@ -959,10 +942,12 @@ mod query_limits_tests {
     fn the_supported_depth_is_what_the_parser_decodes_inside_a_request_frame() {
         let mut limits = QueryLimits::CANONICAL;
         limits.codec.max_depth = MAX_SUPPORTED_CANONICAL_DEPTH;
-        let request = limits
-            .validate()
-            .expect("supported depth")
-            .remote_request_codec();
+        let validated = limits.validate().expect("supported depth");
+        // A framing object embeds the plan one level deeper.
+        let request = CodecLimits {
+            max_depth: validated.codec.max_depth + 1,
+            ..validated.codec
+        };
         let deepest = nested(MAX_SUPPORTED_CANONICAL_DEPTH + 1);
         let bytes = to_canonical_json_with_limits(&deepest, request).expect("encodes");
         from_canonical_json_with_limits::<serde_json::Value>(&bytes, request)
@@ -976,5 +961,125 @@ mod query_limits_tests {
         };
         let beyond = to_canonical_json_with_limits(&nested(128), unbounded).expect("encodes");
         assert!(from_canonical_json_with_limits::<serde_json::Value>(&beyond, unbounded).is_err());
+    }
+}
+
+/// A call's execution timeout: unbounded, or a positive millisecond duration.
+///
+/// The wire representation is `null` for no deadline and a positive integer
+/// otherwise. Binding inputs of zero or less map to [`Self::NONE`]; the wire
+/// refuses them so there is only one encoding of an unbounded timeout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct QueryTimeout(Option<std::num::NonZeroU64>);
+
+impl QueryTimeout {
+    /// No execution deadline.
+    pub const NONE: Self = Self(None);
+
+    /// A positive execution duration in milliseconds.
+    #[must_use]
+    pub const fn after(milliseconds: std::num::NonZeroU64) -> Self {
+        Self(Some(milliseconds))
+    }
+
+    /// Map an unsigned configuration value, with zero denoting no deadline.
+    #[must_use]
+    pub const fn from_milliseconds(milliseconds: u64) -> Self {
+        Self(std::num::NonZeroU64::new(milliseconds))
+    }
+
+    /// Map a language binding's signed input: zero and negatives are unbounded.
+    #[must_use]
+    pub const fn from_signed_milliseconds(milliseconds: i64) -> Self {
+        if milliseconds <= 0 {
+            Self::NONE
+        } else {
+            Self(std::num::NonZeroU64::new(milliseconds as u64))
+        }
+    }
+
+    /// The positive duration, or `None` when execution is unbounded.
+    #[must_use]
+    pub const fn milliseconds(self) -> Option<u64> {
+        match self.0 {
+            Some(value) => Some(value.get()),
+            None => None,
+        }
+    }
+
+    /// Tighten by another timeout, treating no deadline as unbounded.
+    #[must_use]
+    pub const fn constrained_by(self, ceiling: Self) -> Self {
+        match (self.0, ceiling.0) {
+            (Some(left), Some(right)) if left.get() > right.get() => ceiling,
+            (Some(_), _) => self,
+            (None, _) => ceiling,
+        }
+    }
+}
+
+impl Default for QueryTimeout {
+    fn default() -> Self {
+        Self::from_signed_milliseconds(60_000)
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::QueryTimeout;
+    use std::num::NonZeroU64;
+
+    #[test]
+    fn timeout_is_positive_or_unbounded_without_a_duration_cap() {
+        assert_eq!(QueryTimeout::default().milliseconds(), Some(60_000));
+        for input in [i64::MIN, -1, 0] {
+            assert_eq!(
+                QueryTimeout::from_signed_milliseconds(input),
+                QueryTimeout::NONE
+            );
+        }
+        for input in [1, 86_400_001, i64::MAX] {
+            assert_eq!(
+                QueryTimeout::from_signed_milliseconds(input).milliseconds(),
+                Some(input as u64)
+            );
+        }
+        assert_eq!(
+            QueryTimeout::after(NonZeroU64::MAX).milliseconds(),
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn intersection_is_tighten_only_including_an_unbounded_ceiling() {
+        let short = QueryTimeout::from_signed_milliseconds(7);
+        let long = QueryTimeout::default();
+        for (left, right, expected) in [
+            (short, long, short),
+            (long, short, short),
+            (QueryTimeout::NONE, short, short),
+            (short, QueryTimeout::NONE, short),
+            (QueryTimeout::NONE, QueryTimeout::NONE, QueryTimeout::NONE),
+        ] {
+            assert_eq!(left.constrained_by(right), expected);
+        }
+    }
+
+    #[test]
+    fn wire_none_is_null_and_bounded_timeouts_are_positive_integers() {
+        for (timeout, wire) in [
+            (QueryTimeout::NONE, "null"),
+            (QueryTimeout::default(), "60000"),
+        ] {
+            assert_eq!(serde_json::to_string(&timeout).unwrap(), wire);
+            assert_eq!(serde_json::from_str::<QueryTimeout>(wire).unwrap(), timeout);
+        }
+        for wire in ["0", "-1", "1.0", "1.5", "true", "\"none\"", "{}", "[]"] {
+            assert!(
+                serde_json::from_str::<QueryTimeout>(wire).is_err(),
+                "{wire}"
+            );
+        }
     }
 }

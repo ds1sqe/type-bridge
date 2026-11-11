@@ -22,5 +22,5 @@ def test_integers_beyond_two_to_the_53_round_trip_exactly(clean_db: Database) ->
     rows = clean_db.execute_query("match $p isa p, has n $n; select $n;", "read")
     documents = clean_db.execute_query("match $p isa p; fetch { 'n': $p.n };", "read")
 
-    assert [row["n"]["value"] for row in rows] == [BEYOND_F64]
-    assert documents == [{"n": BEYOND_F64}]
+    assert [row["data"]["n"]["value"] for row in rows["answers"]] == [BEYOND_F64]
+    assert documents["answers"] == [{"n": BEYOND_F64}]

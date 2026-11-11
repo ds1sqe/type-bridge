@@ -4,9 +4,10 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import assert_type
 
-from generated_v2 import (
+from generated_package import (
     Actor,
     Aliases,
+    BatchWriteResult,
     BoundVar,
     Container,
     Counter,
@@ -27,6 +28,7 @@ from generated_v2 import (
     Interaction,
     Membership,
     Nickname,
+    Page,
     Party,
     Person,
     PersonRef,
@@ -53,16 +55,23 @@ from generated_v2 import (
     ValDecimal,
     ValDouble,
     ValDuration,
+    WriteResult,
     aggregate,
     connect_proxy,
     find_events,
     integer_input,
     qualifying_score,
 )
+from type_bridge_core import DynamicExpr, Pending
+from type_bridge_core import Transaction as StagedTransaction
 
-from type_bridge.query import Query as RawQuery
-from type_bridge.query import QueryBuilder
+from type_bridge import Iid
 from type_bridge.session import Database
+
+
+def proxy_managers(proxy: ProxyConnection) -> None:
+    assert_type(Person.manager(proxy), ProjectedModelManager[Person])
+    assert_type(Employment.manager(proxy), ProjectedModelManager[Employment])
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,9 +100,17 @@ assert_type(
     Membership.member,
     RoleToken[Membership, Person | Robot, MembershipRoleBinding],
 )
-assert_type(Person.identifier, FieldToken[Person, Identifier])
-assert_type(Person.nickname, FieldToken[Person, Nickname])
-assert_type(Person.aliases, FieldToken[Person, Aliases])
+
+
+def person_field[AttributeT: Identifier | Nickname | Aliases](
+    field: FieldToken[Person, AttributeT],
+) -> FieldToken[Person, AttributeT]:
+    return field
+
+
+assert_type(person_field(Person.identifier), FieldToken[Person, Identifier])
+assert_type(person_field(Person.nickname), FieldToken[Person, Nickname])
+assert_type(person_field(Person.aliases), FieldToken[Person, Aliases])
 
 person = Person(
     identifier=Identifier("person-1"),
@@ -115,28 +132,24 @@ assert_type(counter.counter_value, CounterValue)
 assert_type(person.identifier, Identifier)
 assert_type(person.nickname, Nickname | None)
 assert_type(person.aliases, tuple[Aliases, ...])
-assert_type(QueryBuilder.match_entity(Person, identifier=Identifier("person-1")), RawQuery)
-assert_type(QueryBuilder.insert_entity(person), RawQuery)
-assert_type(
-    QueryBuilder.match_relation(Membership, role_players={"member": "$person"}),
-    RawQuery,
-)
 
 person_manager = Person.manager(Database(address="localhost:1729", database="generated-manager"))
-assert_type(person_manager.put(person), Person)
-assert_type(person_manager.insert_many([person]), list[Person])
-assert_type(person_manager.put_many([person]), list[Person])
-assert_type(person_manager.update(person), Person)
-assert_type(person_manager.update_many([person]), list[Person])
+assert_type(person_manager.insert(person), WriteResult[Person])
+assert_type(person_manager.put(person), WriteResult[Person])
+assert_type(person_manager.insert_many([person]), BatchWriteResult[Person])
+assert_type(person_manager.put_many([person]), BatchWriteResult[Person])
+assert_type(person_manager.update(person), WriteResult[Person])
+assert_type(person_manager.delete_returning(person), WriteResult[Person])
+assert_type(person_manager.update_many([person]), BatchWriteResult[Person])
 assert_type(person_manager.delete(person), Person)
-assert_type(person_manager.delete("0x1"), None)
+assert_type(person_manager.delete(Iid("0x1")), None)
 assert_type(person_manager.delete_many([person]), list[Person])
 plain_activity = PlainActivity(participant=person)
 assert_type(
     PlainActivity.manager(Database(address="localhost:1729", database="generated-manager")).put(
         plain_activity
     ),
-    PlainActivity,
+    WriteResult[PlainActivity],
 )
 
 
@@ -155,7 +168,7 @@ def generated_owner_lookup_types(database: Database) -> None:
         lookup="in",
     )
     for owner in (*entity_owners, *narrowed_owners, *relation_owners):
-        assert_type(owner.iid, str | None)
+        assert_type(owner.iid, Iid | None)
 
 
 filtered_person_manager = person_manager.filter(score__gte=Score(3))
@@ -180,19 +193,15 @@ assert_type(canonical_person_filter.count(), int)
 assert_type(canonical_person_filter.exists(), bool)
 assert_type(person_manager.filter(score__in=[Score(3), Score(4)]), ProjectedModelManager[Person])
 assert_type(person_manager.filter(aliases__isnull=True), ProjectedModelManager[Person])
-assert_type(person_manager.filter(iid__in=["0x1", "0x2"]), ProjectedModelManager[Person])
+assert_type(person_manager.filter(iid__in=[Iid("0x1"), Iid("0x2")]), ProjectedModelManager[Person])
 assert_type(filtered_person_manager.all(), list[Person])
 assert_type(filtered_person_manager.first(), Person | None)
 assert_type(filtered_person_manager.count(), int)
 assert_type(filtered_person_manager.exists(), bool)
-assert_type(filtered_person_manager.delete(), int)
-
-
-def update_person(value: Person) -> None:
-    value.nickname = Nickname("updated")
-
-
-assert_type(filtered_person_manager.update_with(update_person), list[Person])
+assert_type(filtered_person_manager.delete(), None)
+assert_type(filtered_person_manager.update(person), WriteResult[Person])
+assert_type(person_manager.filter(iid=Iid("0xa1")).first(), Person | None)
+assert_type(person_manager.filter(iid__in=(Iid(text) for text in ["0xa1"])).all(), list[Person])
 
 
 class PersonHook(CrudHook[Person]):
@@ -228,16 +237,16 @@ async def check_direct() -> None:
     assert_type(minimum_score, IntegerInput)
     qualifying_call = qualifying_score(query_session, person_var, minimum_score)
     assert_type(qualifying_call, IntegerCall)
-    qualifying_predicate = qualifying_call.gte_field(score_field)
+    qualifying_predicate = qualifying_call.ge_field(score_field)
     nested_call = qualifying_score(query_session, person_var, qualifying_call)
-    nested_predicate = qualifying_call.gte_call(nested_call)
+    nested_predicate = qualifying_call.ge_call(nested_call)
     bool_field = person_var.field(Person.val_bool)
-    adult = score_field.gte(Score(18))
+    adult = score_field.ge(Score(18))
     assert_type(adult, Predicate)
     assert_type(score_field.is_present(), Predicate)
     assert_type(score_field.is_missing(), Predicate)
-    assert_type(person_var.iid("0x1"), Predicate)
-    assert_type(person_var.iid_in(("0x1", "0x2")), Predicate)
+    assert_type(person_var.iid(Iid("0x1")), Predicate)
+    assert_type(person_var.iid_in((Iid("0x1"), Iid("0x2"))), Predicate)
     people_query = query_session.query(person_var).where(
         adult,
         qualifying_predicate,
@@ -255,7 +264,7 @@ async def check_direct() -> None:
     assert_type(await people_query.count_by(person_var), int)
     assert_type(await people_query.exists_by(person_var), bool)
     assert_type(
-        await people_query.aggregate(
+        await people_query.reduce(
             person_var,
             aggregate.count(),
             aggregate.sum(score_field),
@@ -264,19 +273,17 @@ async def check_direct() -> None:
         tuple[int, int, float | None],
     )
     assert_type(
-        await people_query.group_by(person_var, bool_field).aggregate(aggregate.count()),
+        await people_query.group_by(person_var, bool_field).reduce(aggregate.count()),
         tuple[tuple[ValBool, tuple[int]], ...],
     )
     assert_type(
-        await people_query.group_by(person_var, bool_field, score_field).aggregate(
-            aggregate.count()
-        ),
+        await people_query.group_by(person_var, bool_field, score_field).reduce(aggregate.count()),
         tuple[tuple[tuple[ValBool, Score], tuple[int]], ...],
     )
 
-    employee = employment_var.role(Employment.employee).connects(person_var)
-    membership_member = membership_var.role(Membership.member).connects(person_var)
-    interaction_actor = interaction_var.role(Interaction.actor).connects(actor_var)
+    employee = employment_var.role(Employment.employee).links(person_var)
+    membership_member = membership_var.role(Membership.member).links(person_var)
+    interaction_actor = interaction_var.role(Interaction.actor).links(actor_var)
     assert_type(
         query_session.query(interaction_var).match(actor_var).where(interaction_actor),
         Query[Interaction],
@@ -301,7 +308,7 @@ async def check_direct() -> None:
     )
     assert_type(await joined.one(), tuple[Person, Employment])
     assert_type(
-        await joined.group_by(person_var, employment_var).aggregate(
+        await joined.group_by(person_var, employment_var).reduce(
             aggregate.count(),
             aggregate.max(score_field),
         ),
@@ -320,7 +327,7 @@ async def check_direct() -> None:
     page = await collected.page_by(
         person_var,
         limit=10,
-        order_by=(person_var.field(Person.identifier).asc(),),
+        sort=(person_var.field(Person.identifier).asc(),),
         include_total=True,
     )
     assert_type(page.items, tuple[tuple[Person, tuple[Employment, ...]], ...])
@@ -385,10 +392,10 @@ async def check_proxy(session: QuerySession) -> None:
     assert_type(remote_qualifying_call, IntegerCall)
     remote_nested_call = qualifying_score(session, remote_person, remote_qualifying_call)
     assert_type(remote_nested_call, IntegerCall)
-    remote_employee = remote_employment.role(Employment.employee).connects(remote_person)
+    remote_employee = remote_employment.role(Employment.employee).links(remote_person)
     remote = session.query(remote_person, remote_employment).where(
         remote_employee,
-        remote_qualifying_call.gte_call(remote_nested_call),
+        remote_qualifying_call.ge_call(remote_nested_call),
     )
     assert_type(remote, Query[Person, Employment])
     assert_type(remote.is_closed, bool)
@@ -402,7 +409,7 @@ async def check_proxy(session: QuerySession) -> None:
     assert_type(await session.query(remote_party).rows(limit=10), list[Party])
     remote_score = remote_person.field(Person.score)
     assert_type(
-        await remote.aggregate(
+        await remote.reduce(
             remote_person,
             aggregate.count(),
             aggregate.sum(remote_score),
@@ -410,7 +417,7 @@ async def check_proxy(session: QuerySession) -> None:
         tuple[int, int],
     )
     assert_type(
-        await remote.group_by(remote_person, remote_employment).aggregate(
+        await remote.group_by(remote_person, remote_employment).reduce(
             aggregate.mean(remote_score),
         ),
         tuple[tuple[Employment, tuple[float | None]], ...],
@@ -430,7 +437,7 @@ async def check_proxy(session: QuerySession) -> None:
             await remote_page.page_by(
                 remote_person,
                 limit=10,
-                order_by=(remote_person.field(Person.identifier).asc(),),
+                sort=(remote_person.field(Person.identifier).asc(),),
             )
         ).items,
         tuple[tuple[Person, tuple[Employment, ...]], ...],
@@ -458,10 +465,10 @@ assert_type(event.subject, Person)
 employment = Employment(employee=person)
 assert_type(employment.employee, Person)
 
-container = Container(item=[EventRef("event-iid")])
+container = Container(item=[EventRef(Iid("0xe1"))])
 assert_type(container.item, tuple[EventRef, ...])
 
-person_reference = PersonRef("person-iid", identifier=Identifier("person-1"))
+person_reference = PersonRef(Iid("0xa1"), identifier=Identifier("person-1"))
 assert_type(person_reference, PersonRef)
 
 stats = PlayerStats(wins=3, nickname=None)
@@ -471,3 +478,42 @@ assert_type(
     find_events,
     FunctionRef[[Event], Iterator[Event]],
 )
+
+
+async def staged_query_outputs(tx: StagedTransaction) -> None:
+    session = Person.query(tx)
+    person = session.exact(Person)
+    query = session.query(person)
+    one = await query.one()
+    assert_type(one, Pending[Person])
+    assert_type(one.result(), Person)
+    first = await query.first()
+    assert_type(first, Pending[Person | None])
+    assert_type(first.result(), Person | None)
+    rows = await query.rows(limit=10)
+    assert_type(rows, Pending[list[Person]])
+    assert_type(rows.result(), list[Person])
+    page = await query.page_by(person, limit=10)
+    assert_type(page, Pending[Page[Person]])
+    assert_type(page.result(), Page[Person])
+    count = await query.count_by(person)
+    assert_type(count, Pending[int])
+    assert_type(count.result(), int)
+    exists = await query.exists_by(person)
+    assert_type(exists, Pending[bool])
+    assert_type(exists.result(), bool)
+    reduced = await query.reduce(person, aggregate.count())
+    assert_type(reduced, Pending[tuple[int]])
+    assert_type(reduced.result(), tuple[int])
+    groups = await query.group_by(person, person.field(Person.score)).reduce(aggregate.count())
+    assert_type(groups, Pending[tuple[tuple[Score, tuple[int]], ...]])
+    assert_type(groups.result(), tuple[tuple[Score, tuple[int]], ...])
+    explicit_session = QuerySession(tx)
+    explicit_person = explicit_session.exact(Person)
+    assert_type(await explicit_session.query(explicit_person).one(), Pending[Person])
+
+
+canonical_person_filter.delete()
+assert_type(canonical_person_filter.update(person), WriteResult[Person])
+
+assert_type(DynamicExpr.iid(Iid("0xa1")), DynamicExpr)

@@ -1,7 +1,8 @@
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from generated_v2 import (
+from generated_package import (
     Actor,
     BoundVar,
     Container,
@@ -32,7 +33,10 @@ from generated_v2 import (
     aggregate,
     qualifying_score,
 )
+from type_bridge_core import DynamicExpr
+from type_bridge_core import Transaction as StagedTransaction
 
+from type_bridge import Iid
 from type_bridge.session import Database
 
 
@@ -65,7 +69,7 @@ Event()  # E: missing_event_subject:reportCallIssue
 Employment()  # E: missing_required:reportCallIssue
 Employment(
     employee=PersonRef(  # E: reference_as_complete:reportArgumentType
-        "person-iid", identifier=Identifier("person-1")
+        Iid("0xa1"), identifier=Identifier("person-1")
     )
 )
 Employment(
@@ -73,7 +77,7 @@ Employment(
     member=person(Identifier("person-2")),  # E: specialized_keyword:reportCallIssue
 )
 accepts_employment_role(Membership.member)  # E: wrong_owner:reportArgumentType
-Container(item=EventRef("event-iid"))  # E: scalar_for_sequence:reportArgumentType
+Container(item=EventRef(Iid("0xe1")))  # E: scalar_for_sequence:reportArgumentType
 Employment(
     employee=[  # E: sequence_for_scalar:reportArgumentType
         person(Identifier("person-1"))
@@ -82,6 +86,7 @@ Employment(
 person(7)  # E: wrong_scalar:reportArgumentType
 
 person_manager = Person.manager(Database(address="localhost:1729", database="generated-manager"))
+person_manager.update_with = None  # E: removed_update_with:reportAttributeAccessIssue
 person_manager.where(
     Robot.robot_id,  # E: wrong_manager_field_owner:reportArgumentType
     ProjectedManagerComparison.EQ,
@@ -109,17 +114,17 @@ exact_actor_var = query_session.exact(Actor)
 exact_robot_var = query_session.exact(Robot)
 subtype_robot_var = query_session.subtypes(Robot)
 person_var.field(Employment.employee)  # E: wrong_query_owner:reportArgumentType
-person_var.field(Person.score).gte(Identifier("wrong"))  # E: wrong_query_value:reportArgumentType
-employment_var.role(Employment.employee).connects(
+person_var.field(Person.score).ge(Identifier("wrong"))  # E: wrong_query_value:reportArgumentType
+employment_var.role(Employment.employee).links(
     query_session.exact(Event)  # E: wrong_query_player:reportArgumentType
 )
-query_session.exact(Event).role(Event.subject).connects(
+query_session.exact(Event).role(Event.subject).links(
     exact_actor_var  # E: exact_abstract_query_player:reportArgumentType
 )
-query_session.exact(Event).role(Event.subject).connects(
+query_session.exact(Event).role(Event.subject).links(
     exact_robot_var  # E: unrelated_exact_query_player:reportArgumentType
 )
-query_session.exact(Event).role(Event.subject).connects(
+query_session.exact(Event).role(Event.subject).links(
     subtype_robot_var  # E: unrelated_subtype_root:reportArgumentType
 )
 query_session.query(  # E: too_many_query_slots:reportCallIssue
@@ -152,10 +157,10 @@ def wrong_function_call_domain(call: FunctionCall[bool]) -> None:
     )
 
 
-query_session.query(person_var).aggregate(  # E: empty_aggregate:reportCallIssue
+query_session.query(person_var).reduce(  # E: empty_aggregate:reportCallIssue
     person_var,
 )
-query_session.query(person_var).aggregate(  # E: too_many_aggregate_terms:reportCallIssue
+query_session.query(person_var).reduce(  # E: too_many_aggregate_terms:reportCallIssue
     person_var,
     aggregate.count(),
     aggregate.count(),
@@ -175,3 +180,38 @@ query_session.query(person_var).aggregate(  # E: too_many_aggregate_terms:report
     aggregate.count(),
     aggregate.count(),
 )
+
+
+async def staged_pending_requires_resolution(tx: StagedTransaction) -> None:
+    session = Person.query(tx)
+    root = session.exact(Person)
+    pending = await session.query(root).one()
+    direct: Person = pending  # E: staged_pending_is_not_model:reportAssignmentType
+    _ = direct
+    session.query(root).where(
+        root.field(Person.score).eq(pending)  # E: staged_pending_is_not_scalar:reportArgumentType
+    )
+
+
+person_var.iid("0x1")  # E: string_iid:reportArgumentType
+person_var.iid_in(["0x1"])  # E: string_iid_list:reportArgumentType
+
+PersonRef("0xa1", identifier=Identifier("person-1"))  # E: reference_string_iid:reportArgumentType
+person_manager.get_by_iid("0xa1")  # E: manager_string_iid:reportArgumentType
+
+
+def accepts_string_delete(delete: Callable[[str], None]) -> None:
+    del delete
+
+
+accepts_string_delete(person_manager.delete)  # E: delete_string_iid:reportArgumentType
+person(Identifier("person-1")).attach_runtime_iid("0xa1")  # E: attach_string_iid:reportArgumentType
+
+person_manager.filter(iid="0xa1")  # E: keyword_string_iid:reportArgumentType
+person_manager.filter(iid__in=["0xa1"])  # E: keyword_string_iids:reportArgumentType
+person_manager.filter(_iid="0xa1")  # E: keyword_alias_string_iid:reportArgumentType
+person_manager.filter(iid__eq="0xa1")  # E: keyword_eq_string_iid:reportArgumentType
+person_manager.filter(_iid__eq="0xa1")  # E: keyword_alias_eq_string_iid:reportArgumentType
+person_manager.filter(_iid__in=["0xa1"])  # E: keyword_alias_string_iids:reportArgumentType
+
+DynamicExpr.iid("0xa1")  # E: dynamic_string_iid:reportArgumentType

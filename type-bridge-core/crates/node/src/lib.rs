@@ -1,7 +1,7 @@
 //! Generated-projection and query runtime for the Node binding.
 //!
-//! The addon exposes connection, transaction, verified projection, and Query
-//! V2 handles. Arbitrary descriptor registration, handwritten dynamic managers,
+//! The addon exposes connection, transaction, verified projection, and staged
+//! plan handles. Arbitrary descriptor registration, handwritten dynamic managers,
 //! parser/generator entry points, and descriptor-marshalling functions are not
 //! part of this boundary.
 
@@ -9,6 +9,10 @@
 
 #[cfg(feature = "contract-test-adapter")]
 mod contract_test_adapter;
+mod debug;
+pub use debug::set_debug_listener;
+mod iid;
+pub use iid::validate_iid;
 pub mod limits;
 mod match_runtime;
 mod migration_catalog_runtime;
@@ -16,14 +20,14 @@ mod perf_stages;
 #[cfg(feature = "perf-stages")]
 pub use perf_stages::perf_stages;
 mod plan_builder_runtime;
+mod plan_model_remote_runtime;
+pub mod plan_runtime;
 mod proxy_connection_runtime;
 #[cfg(test)]
 #[path = "../../rust/tests/support/purchase_plan.rs"]
 mod purchase_plan;
-mod query_plan_v3_codec;
-mod query_v2_builder_runtime;
-mod query_v2_model_remote_runtime;
-pub mod query_v2_runtime;
+mod query_plan_codec;
+mod raw_runtime;
 mod runtime_projection;
 #[cfg(test)]
 #[path = "../../../../tests/support/sdk_profile_matrix.rs"]
@@ -52,16 +56,19 @@ pub use migration_catalog_runtime::{
     NodeMigrationVerificationFinding, NodeMigrationVerificationReport, open_migration_catalog,
 };
 pub use plan_builder_runtime::{NodePlan, NodePlanBuilder, NodePlanOperand};
-pub use proxy_connection_runtime::NodeProxyConnection;
-pub use query_plan_v3_codec::{_query_plan_v3_round_trip, QueryPlanV3Encoding};
-pub use query_v2_model_remote_runtime::{
-    NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,
-    query_v2_prepare_remote_model_exists, query_v2_prepare_remote_model_page,
-    query_v2_prepare_remote_model_reduce, query_v2_prepare_remote_model_reduce_by_field,
-    query_v2_prepare_remote_model_reduce_by_fields, query_v2_prepare_remote_model_rows,
-    query_v2_remote_model_context_with_resources,
+pub use plan_model_remote_runtime::{
+    NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, plan_prepare_remote_model_count,
+    plan_prepare_remote_model_exists, plan_prepare_remote_model_page,
+    plan_prepare_remote_model_reduce, plan_prepare_remote_model_reduce_by_field,
+    plan_prepare_remote_model_reduce_by_fields, plan_prepare_remote_model_rows,
+    plan_remote_model_context_with_resources,
 };
-pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
+pub use proxy_connection_runtime::NodeProxyConnection;
+pub use query_plan_codec::{_query_plan_round_trip, QueryPlanEncoding};
+pub use runtime_projection::{
+    NodeProjectedModelManager, NodeRuntimeProjection, install_plan_runtime_projection,
+    projected_batch_deleted,
+};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -77,6 +84,7 @@ use type_bridge_core_lib::version as core_version;
 use type_bridge_orm::_descriptor::{EntityDescriptor, RelationDescriptor};
 #[cfg(test)]
 use type_bridge_orm::_registry::DescriptorRegistry;
+#[cfg(test)]
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, OrmError, ProviderRuntimeOwner, TransactionContext, TxType, ValueType,
@@ -157,13 +165,13 @@ impl NodeDescriptorRegistry {
 
 /// JavaScript-facing Rust database handle backed by the shared ORM runtime.
 #[napi]
-pub struct NodeRustDatabase {
+pub struct NodeDatabase {
     db: Arc<type_bridge_orm::Database>,
     runtime: Arc<ProviderRuntimeOwner>,
     managed_scope_id: Option<type_bridge_contract::managed_scope::ManagedScopeId>,
 }
 
-impl NodeRustDatabase {
+impl NodeDatabase {
     pub(crate) fn from_handles(
         db: Arc<type_bridge_orm::Database>,
         runtime: Arc<ProviderRuntimeOwner>,
@@ -255,6 +263,9 @@ fn node_pair_state(
 ) -> &'static str {
     match state {
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::Absent => "absent",
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::ImportPending => {
+            "import_pending"
+        }
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::StandaloneManaged => {
             "standalone_managed"
         }
@@ -288,7 +299,7 @@ fn napi_administration_error(error: type_bridge_contract::diagnostic::Diagnostic
 }
 
 #[napi]
-impl NodeRustDatabase {
+impl NodeDatabase {
     #[napi(js_name = "isConnected")]
     pub fn is_connected(&self) -> bool {
         self.db.is_connected()
@@ -508,19 +519,29 @@ impl NodeRustDatabase {
 }
 
 #[napi]
-impl NodeRustDatabase {
+impl NodeDatabase {
     /// Create a deferred staged transaction; nothing opens until commit.
-    /// An omitted kind is inferred from the staged writes.
+    /// An omitted kind is inferred from the staged writes. Timeout defaults to
+    /// 60000 ms; zero or negative disables it. Phase collection defaults off.
     #[napi(js_name = "stagedTransaction")]
     pub fn staged_transaction(
         &self,
         kind: Option<String>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
+        collect_phase_timestamps: Option<bool>,
     ) -> Result<staged_transaction_runtime::NodeStagedTransaction> {
-        let options = staged_transaction_runtime::staged_options(kind.as_deref())?;
+        let options = staged_transaction_runtime::staged_options(
+            kind.as_deref(),
+            timeout_milliseconds,
+            collect_phase_timestamps,
+        )?;
         Ok(staged_transaction_runtime::NodeStagedTransaction::new(
             self.db.transaction(options),
             Arc::clone(&self.runtime),
-        ))
+        )
+        .with_origin(type_bridge_orm::ProjectedQueryOrigin::for_database(
+            &self.db,
+        )))
     }
 }
 
@@ -533,6 +554,17 @@ pub struct NodeRustTransactionContext {
 }
 
 impl NodeRustTransactionContext {
+    pub(crate) fn from_borrowed(
+        context: TransactionContext,
+        runtime: Arc<ProviderRuntimeOwner>,
+    ) -> Self {
+        Self {
+            context,
+            runtime,
+            successor_batch_invoked: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
     }
@@ -544,13 +576,22 @@ impl NodeRustTransactionContext {
 
 #[napi]
 impl NodeRustTransactionContext {
-    #[napi(js_name = "queryJson")]
-    pub fn query_json(&self, query: String) -> Result<String> {
-        let result = self
-            .runtime
-            .block_on(self.context.query(&query))
-            .map_err(napi_orm_error)?;
-        query_result_to_json(result)
+    #[napi(js_name = "executeQuery", ts_return_type = "Promise<unknown>")]
+    pub fn execute_query(
+        &self,
+        env: Env,
+        query: String,
+    ) -> napi::Result<napi::bindgen_prelude::Object<'static>> {
+        let tx = self.context.clone();
+        crate::proxy_connection_runtime::settle(&env, &self.runtime, async move {
+            let bytes = tx
+                .execute_query(&query)
+                .await
+                .map_err(crate::raw_runtime::raw_error)?;
+            serde_json::from_slice(&bytes)
+                .map(crate::raw_runtime::RawJson)
+                .map_err(|_| napi::Error::from_reason("raw_answer_encoding"))
+        })
     }
 
     #[napi(js_name = "commit")]
@@ -637,7 +678,12 @@ pub fn connect_rust_database(
     server_version: Option<String>,
     tls_enabled: Option<bool>,
     tls_root_ca: Option<String>,
-) -> Result<NodeRustDatabase> {
+    query_limits: Option<&match_runtime::NodeQueryLimits>,
+) -> Result<NodeDatabase> {
+    let query_limits = query_limits
+        .map(|limits| limits.inner().validate_plan())
+        .transpose()
+        .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?;
     let options = napi_secure_connect_options(http_port, server_version, tls_enabled, tls_root_ca)?;
     let prepared = options
         .prepare_transport()
@@ -658,7 +704,14 @@ pub fn connect_rust_database(
         )
         .map_err(napi_secure_connect_error)?;
 
-    Ok(NodeRustDatabase {
+    let db = match query_limits {
+        Some(limits) => db
+            .with_query_limits(limits)
+            .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?,
+        None => db,
+    };
+
+    Ok(NodeDatabase {
         db: Arc::new(db),
         runtime,
         managed_scope_id: None,
@@ -762,16 +815,9 @@ fn invalid_json_error(kind: &'static str) -> impl Fn(serde_json::Error) -> napi:
     move |error| Error::from_reason(format!("Invalid {kind} descriptor JSON: {error}"))
 }
 
+#[cfg(test)]
 fn json_serialize_error(error: serde_json::Error) -> napi::Error {
     Error::from_reason(format!("Failed to serialize Node runtime JSON: {error}"))
-}
-
-fn query_result_to_json(result: QueryResult) -> Result<String> {
-    let values = match result {
-        QueryResult::Ok => Vec::new(),
-        QueryResult::Documents(values) | QueryResult::Rows(values) => values,
-    };
-    serde_json::to_string(&values).map_err(json_serialize_error)
 }
 
 fn napi_secure_connect_options(
@@ -844,6 +890,9 @@ pub(crate) fn napi_orm_error(error: OrmError) -> napi::Error {
         ));
     }
     match error {
+        OrmError::ExecutionDiagnostic(diagnostic) => {
+            match_runtime::napi_sdk_diagnostic(*diagnostic)
+        }
         OrmError::Match(error) => match_runtime::napi_match_error(error),
         OrmError::DescriptorValidation { .. }
         | OrmError::DescriptorConflict { .. }
@@ -906,7 +955,7 @@ mod tests {
     #[test]
     fn node_transaction_queries_and_commits_after_rollback_on_the_same_provider() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let database = NodeRustDatabase {
+        let database = NodeDatabase {
             db: Arc::new(type_bridge_orm::Database::with_backend(
                 Box::new(ReusableBackend(Arc::clone(&events))),
                 "test",
@@ -915,9 +964,15 @@ mod tests {
             managed_scope_id: None,
         };
         let transaction = database.transaction(Some("write".into())).unwrap();
-        transaction.query_json("before".into()).unwrap();
+        transaction
+            .runtime
+            .block_on(transaction.context.query("before"))
+            .unwrap();
         transaction.rollback().unwrap();
-        transaction.query_json("after".into()).unwrap();
+        transaction
+            .runtime
+            .block_on(transaction.context.query("after"))
+            .unwrap();
         transaction.commit().unwrap();
         assert_eq!(
             *events.lock().unwrap(),
@@ -928,7 +983,7 @@ mod tests {
     #[test]
     fn node_double_commit_keeps_the_released_lifecycle_error() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let database = NodeRustDatabase {
+        let database = NodeDatabase {
             db: Arc::new(type_bridge_orm::Database::with_backend(
                 Box::new(ReusableBackend(Arc::clone(&events))),
                 "test",
@@ -1011,7 +1066,7 @@ mod tests {
     #[test]
     fn node_generated_administration_is_pair_aware_and_plan_owned() {
         let databases = Arc::new(Mutex::new(BTreeSet::new()));
-        let database = NodeRustDatabase {
+        let database = NodeDatabase {
             db: Arc::new(type_bridge_orm::Database::with_backend(
                 Box::new(AdministrationBackend {
                     databases: Arc::clone(&databases),

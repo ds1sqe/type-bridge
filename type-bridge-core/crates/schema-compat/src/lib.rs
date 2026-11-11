@@ -22,15 +22,15 @@ pub use adopted_genesis::{
 pub use function_references::{FunctionBodyReferences, SchemaReference, TypeqlDeclaredSchema};
 pub use live_authority::{
     LiveLegacyLedgerPresence, LiveQueryAuthorityState, LiveQueryControlPresence,
-    MANAGED_FENCE_SCHEMA_TYPEQL, legacy_ledger_schema_presence, managed_fence_schema_presence,
-    rebuild_live_query_authority, rebuild_live_query_authority_state,
+    MANAGED_FENCE_SCHEMA_TYPEQL, import_legacy_fence_schema_presence,
+    legacy_ledger_schema_presence, managed_fence_schema_presence, rebuild_live_query_authority,
+    rebuild_live_query_authority_state, without_import_control,
 };
 
 pub use descriptor::{
     GENERATED_DECLARED_DESCRIPTOR_PATH, GENERATED_DECLARED_DESCRIPTOR_V1,
     GENERATED_DECLARED_DESCRIPTOR_V2, GeneratedDeclaredDescriptorSetV1,
-    attach_declared_descriptors, empty_generated_declared_descriptors_json,
-    generate_package_with_declared_descriptors, generated_declared_descriptors_json,
+    empty_generated_declared_descriptors_json, generated_declared_descriptors_json,
     generated_descriptors_to_declared, released_typeql_to_declared_lossless_projection,
     released_typeql_to_declared_lossless_projection_with_references,
     released_typeql_to_declared_projection, released_typeql_to_declared_projection_with_references,
@@ -184,7 +184,6 @@ pub(crate) fn released_typeql_to_declared_with_references_omitting_capabilities(
 pub(crate) struct ReleasedReferenceProjection {
     pub(crate) omitted_declarations: BTreeMap<usize, usize>,
     pub(crate) omitted: BTreeMap<usize, usize>,
-    pub(crate) omitted_from_render: BTreeMap<usize, usize>,
     pub(crate) played_role_declarations: BTreeMap<usize, String>,
 }
 
@@ -428,14 +427,6 @@ pub(crate) fn released_unresolved_capability_ranges(
         }
     }
 
-    let mut omitted_from_render = BTreeMap::new();
-    for (key, validity) in &role_resolution.direct {
-        if *validity == ReleasedRoleValidity::Invalid {
-            let indexed = &effective[roles[key].capability_index];
-            omitted_from_render.insert(indexed.start, indexed.end);
-        }
-    }
-
     let mut played_role_declarations = BTreeMap::new();
     let mut first_portable_plays = BTreeSet::new();
     for indexed in &effective {
@@ -488,7 +479,6 @@ pub(crate) fn released_unresolved_capability_ranges(
     Ok(ReleasedReferenceProjection {
         omitted_declarations,
         omitted,
-        omitted_from_render,
         played_role_declarations,
     })
 }
@@ -1074,42 +1064,6 @@ pub fn typeql_to_facts(
     source: &str,
 ) -> Result<Vec<SchemaFact>, SchemaDiagnostics> {
     let declared = typeql_to_declared(document, source)?;
-    Ok(declared.facts().cloned().collect())
-}
-
-/// Transpile one legacy TOML schema and adapt its rendered TypeQL into the
-/// canonical declared schema graph.
-///
-/// `rendered_typeql_document` identifies the generated TypeQL, not the input
-/// TOML. Diagnostics from TypeQL parsing and adaptation therefore contain
-/// offsets into the rendered source and never claim to locate original TOML
-/// text. TOML decoding and validation diagnostics have no source span because
-/// the legacy transpiler does not expose structured TOML locations.
-pub fn toml_to_declared(
-    rendered_typeql_document: DocumentId,
-    toml_source: &str,
-) -> Result<DeclaredSchema, SchemaDiagnostics> {
-    let rendered_typeql =
-        type_bridge_toml_transpiler::toml_to_typeql(toml_source).map_err(|transpile_error| {
-            error(
-                DiagnosticCategory::InvalidContract,
-                "invalid_toml_schema",
-                format!("TOML schema transpilation failed: {transpile_error}"),
-                None,
-            )
-        })?;
-    typeql_to_declared(rendered_typeql_document, &rendered_typeql)
-}
-
-/// Transpile legacy TOML and return canonical direct facts in identity order.
-///
-/// See [`toml_to_declared`] for the provenance contract of
-/// `rendered_typeql_document`.
-pub fn toml_to_facts(
-    rendered_typeql_document: DocumentId,
-    toml_source: &str,
-) -> Result<Vec<SchemaFact>, SchemaDiagnostics> {
-    let declared = toml_to_declared(rendered_typeql_document, toml_source)?;
     Ok(declared.facts().cloned().collect())
 }
 

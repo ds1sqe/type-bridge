@@ -1,5 +1,5 @@
 use std::any::TypeId as RustTypeId;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::future::Future;
@@ -17,14 +17,13 @@ use type_bridge::{
 };
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
-use type_bridge_contract::query_plan::{CompatibilityValueV2, query_plan_v2_capability_vocabulary};
-use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-use type_bridge_contract::query_remote_v2::{
-    HydratedRowV2, HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2,
-    HydrationNodeKindV2, HydrationNodeV2, HydrationReferenceV2, HydrationRoleEvidenceV2,
-    HydrationSlotV2, RemoteLimitsV2, RemoteOutcomeV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
-    query_remote_v2_required_capabilities,
-};
+use type_bridge_contract::query_plan::ModelValue;
+use type_bridge_contract::query_plan::query_plan_capability_vocabulary;
+use type_bridge_contract::query_remote::{StagedRequest,StagedReply,StagedOutcome,StagedAnswer};
+use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding, RemoteFieldValue};
+
+use type_bridge_contract::query_model_evidence::{HydrationAttributeEvidence, HydrationGraph, HydrationNodeId, HydrationNodeKind, HydrationNode, HydrationReference, HydrationRoleEvidence};
+use type_bridge_contract::query_model_limits::{RemoteModelLimits};
 use type_bridge_contract::schema::{DocumentId, OwnsFactId, encode_declared_schema};
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_contract::temporal::{
@@ -34,13 +33,13 @@ use type_bridge_contract::temporal::{
 use type_bridge_contract::value::{
     CanonicalDouble as ContractDouble, CanonicalString, CanonicalValue, DecimalValue,
 };
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
-use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+use type_bridge_orm::plan_authority::QueryAuthority;
+use type_bridge_orm::remote_signing::RemoteReplySigningKey;
 use type_bridge_orm::{
     AnswerCancellation, BindingId, FetchShape, FetchSlot, InstalledRuntimeProjection, MatchBinding,
     MatchMode, MatchOperation, MatchPlan, MatchRequest, ProjectedAttributeValue, ProjectedCreate,
     ProjectedQueryMaterializationLimits, ProjectedQueryOrigin, ProjectedQuerySlotValue,
-    ProjectedQueryValue, RowCardinality, ThingKind, Window, prepare_remote_model_query_v2,
+    ProjectedQueryValue, RowCardinality, ThingKind, Window, prepare_remote_model_query,
     validate_match_request,
 };
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
@@ -58,8 +57,8 @@ const MAX_AUTHORITY_BYTES: u64 = 1024 * 1024;
 #[derive(Clone)]
 struct GraphReply {
     declared: TypeId,
-    graph: HydrationGraphV2,
-    root: HydrationNodeIdV2,
+    graph: HydrationGraph,
+    root: HydrationNodeId,
 }
 
 struct HydrationTransport {
@@ -68,6 +67,7 @@ struct HydrationTransport {
     exchanges: Arc<Mutex<usize>>,
     replies: Mutex<VecDeque<GraphReply>>,
     signer: RemoteReplySigningKey,
+    schema: type_bridge_contract::schema::DeclaredSchema,
 }
 
 impl ProxyExchange for HydrationTransport {
@@ -84,12 +84,8 @@ impl ProxyExchange for HydrationTransport {
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
         let response = (|| {
             *self.exchanges.lock().expect("exchange counter locks") += 1;
-            let request = RemoteQueryRequestV2::decode(request)
-                .expect("generated request has the V2 remote wire");
-            request
-                .validate_advertisement(&self.advertisement_contract)
-                .expect("generated request matches its fetched advertisement");
-            let plan = request.plan().expect("generated request carries its plan");
+            let request = StagedRequest::decode(request,&self.schema,&self.advertisement_contract).expect("generated request has the native staged wire");
+            assert_eq!(request.plans().len(),1);
             let reply = self
                 .replies
                 .lock()
@@ -101,44 +97,39 @@ impl ProxyExchange for HydrationTransport {
                 reply.declared.kind(),
                 reply.declared.label().as_str()
             );
-            let outcome = RemoteOutcomeV2::HydratedRows {
-                graph: reply.graph,
-                rows: vec![HydratedRowV2::new(vec![HydrationSlotV2::Singular {
-                    value: HydrationReferenceV2::new(reply.declared, reply.root),
-                }])],
-            };
-            RemoteQueryResponseV2::new(
-                request.nonce(),
-                &plan,
-                &request
-                    .fingerprint()
-                    .expect("generated request fingerprints canonically"),
-                request.result_kind(),
-                outcome,
-            )
-            .and_then(|response| {
-                response.encode_signed(
-                    &self
-                        .advertisement_contract
-                        .fingerprint()
-                        .expect("advertisement fingerprints canonically"),
-                    &self.signer,
-                )
-            })
-            .unwrap_or_else(|error| {
-                panic!("provider-free {reply_label} response signs canonically: {error:?}")
-            })
+            let documents = native_graph_documents(&reply, request.plans()[0].plan());
+            StagedReply::new(&request,StagedOutcome::Committed,vec![StagedAnswer::Documents {documents}]).and_then(|response| response.encode_signed(&request,&self.advertisement_contract,&self.signer)).unwrap_or_else(|error|panic!("provider-free {reply_label} response signs canonically: {error:?}"))
         })();
         Box::pin(async move { Ok(response) })
     }
 }
 
+fn native_graph_documents(reply:&GraphReply, plan:&type_bridge_contract::query_plan::QueryPlan)->Vec<BTreeMap<String,RemoteFieldValue>> {
+    let root=reply.graph.nodes().iter().find(|node|node.id()==reply.root).unwrap();
+    let scalar=|value|RemoteFieldValue::Scalar {value};
+    let text=|value:&str|scalar(CanonicalValue::String(CanonicalString::new(value).unwrap()));
+    let attributes=|node:&HydrationNode|RemoteFieldValue::Document {fields:node.attributes().iter().map(|attribute|(attribute.attribute().label().as_str().to_owned(),if attribute.attribute().label().as_str() == "aliases" {RemoteFieldValue::List {values:attribute.values().iter().map(|value|value.canonical_value().unwrap().clone()).collect()}} else if let Some(value)=attribute.values().first() {scalar(value.canonical_value().unwrap().clone())} else {RemoteFieldValue::Absent})).collect()};
+    let mut documents=vec![BTreeMap::from([("_iid".into(),text(root.iid())),("_type".into(),text(root.concrete().label().as_str())),("attributes".into(),attributes(root))])];
+    let fetch=plan.pipeline().iter().find_map(|stage| if let type_bridge_contract::query_plan::Stage::Fetch(fetch)=stage {Some(fetch)} else {None}).unwrap();
+    for (index,listed) in fetch.roles.iter().enumerate() {
+        let Some(role)=root.roles().iter().find(|role|role.role().label()==listed.role.label()) else {continue;};
+        if role.players().is_empty() {continue;}
+        documents=documents.into_iter().flat_map(|document|role.players().iter().map(|reference| {
+            let player=reply.graph.nodes().iter().find(|node|node.id()==reference.node()).unwrap();
+            let mut document=document.clone();
+            document.insert(format!("_role_{index}_iid"),text(player.iid()));
+            document.insert(format!("_role_{index}_type"),text(player.concrete().label().as_str()));
+            document.insert(format!("_role_{index}_attributes"),attributes(player));
+            document
+        }).collect::<Vec<_>>()).collect();
+    }
+    documents
+}
+
 fn hydration_transport(replies: Vec<GraphReply>) -> (HydrationTransport, Arc<Mutex<usize>>) {
     let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
-    let mut capabilities = query_plan_v2_capability_vocabulary();
-    for capability in query_remote_v2_required_capabilities(true) {
-        capabilities.insert(capability);
-    }
+    let mut capabilities = query_plan_capability_vocabulary();
+    for capability in [type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {capabilities.insert(type_bridge_contract::capability::CapabilityId::new(capability).unwrap());}
     let advertisement_contract = RemoteCapabilities::new(
         capabilities,
         RemoteExecutorBinding::new("rust-projected-parity", "epoch-00000000001")
@@ -149,8 +140,12 @@ fn hydration_transport(replies: Vec<GraphReply>) -> (HydrationTransport, Arc<Mut
         .encode()
         .expect("advertisement encodes canonically");
     let exchanges = Arc::new(Mutex::new(0));
+    let source=String::from_utf8(bounded_regular_bytes(&PathBuf::from(env::var(ROOT_ENV).unwrap()).join(SCHEMA_RELATIVE),"Projected schema").unwrap()).unwrap();
+    let documents=SchemaDocumentSet::parse([(DocumentId::new(SCHEMA_RELATIVE).unwrap(),source.as_str())]).unwrap();
+    let schema=normalize_documents(&documents).unwrap();
     (
         HydrationTransport {
+            schema,
             advertisement_contract,
             advertisement,
             exchanges: Arc::clone(&exchanges),
@@ -173,43 +168,43 @@ fn relation(label: &str) -> TypeId {
     type_id(TypeKind::Relation, label)
 }
 
-fn attribute(label: &str, values: Vec<CompatibilityValueV2>) -> HydrationAttributeEvidenceV2 {
-    HydrationAttributeEvidenceV2::new(
+fn attribute(label: &str, values: Vec<ModelValue>) -> HydrationAttributeEvidence {
+    HydrationAttributeEvidence::new(
         AttributeId::new(label).expect("static Projected attribute is canonical"),
         values,
     )
 }
 
-fn reference(kind: TypeKind, label: &str, node: u32) -> HydrationReferenceV2 {
-    HydrationReferenceV2::new(type_id(kind, label), HydrationNodeIdV2::new(node))
+fn reference(kind: TypeKind, label: &str, node: u32) -> HydrationReference {
+    HydrationReference::new(type_id(kind, label), HydrationNodeId::new(node))
 }
 
 fn role(
     relation_label: &str,
     role_label: &str,
-    players: Vec<HydrationReferenceV2>,
-) -> HydrationRoleEvidenceV2 {
-    HydrationRoleEvidenceV2::new(
+    players: Vec<HydrationReference>,
+) -> HydrationRoleEvidence {
+    HydrationRoleEvidence::new(
         RoleId::new(relation_label, role_label).expect("static Projected role is canonical"),
         players,
     )
 }
 
-fn scalar(value: CanonicalValue) -> CompatibilityValueV2 {
-    CompatibilityValueV2::canonical(value)
+fn scalar(value: CanonicalValue) -> ModelValue {
+    ModelValue::canonical(value)
 }
 
-fn string(value: &str) -> CompatibilityValueV2 {
+fn string(value: &str) -> ModelValue {
     scalar(CanonicalValue::String(
         CanonicalString::new(value).expect("fixture string is canonical"),
     ))
 }
 
-fn long(value: i64) -> CompatibilityValueV2 {
+fn long(value: i64) -> ModelValue {
     scalar(CanonicalValue::Long(value))
 }
 
-fn boolean(value: bool) -> CompatibilityValueV2 {
+fn boolean(value: bool) -> ModelValue {
     scalar(CanonicalValue::Boolean(value))
 }
 
@@ -233,12 +228,12 @@ fn person_node(
     score: i64,
     foo_bar: Option<i64>,
     score_gte: Option<i64>,
-) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         entity("person"),
-        HydrationNodeKindV2::Entity,
+        HydrationNodeKind::Entity,
         vec![
             attribute(
                 "aliases",
@@ -290,12 +285,12 @@ fn person_node(
     )
 }
 
-fn robot_node(id: u32, iid: &str, key: i64) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+fn robot_node(id: u32, iid: &str, key: i64) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         entity("robot"),
-        HydrationNodeKindV2::Entity,
+        HydrationNodeKind::Entity,
         vec![
             attribute("nickname", vec![]),
             attribute("robot_id", vec![long(key)]),
@@ -309,28 +304,28 @@ fn relation_node(
     id: u32,
     iid: &str,
     label: &str,
-    attributes: Vec<HydrationAttributeEvidenceV2>,
-    roles: Vec<HydrationRoleEvidenceV2>,
-) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
+    attributes: Vec<HydrationAttributeEvidence>,
+    roles: Vec<HydrationRoleEvidence>,
+) -> HydrationNode {
+    HydrationNode::new(
+        HydrationNodeId::new(id),
         iid.to_owned(),
         relation(label),
-        HydrationNodeKindV2::Relation,
+        HydrationNodeKind::Relation,
         attributes,
         roles,
     )
 }
 
-fn graph_reply(declared: TypeId, nodes: Vec<HydrationNodeV2>, root: u32) -> GraphReply {
+fn graph_reply(declared: TypeId, nodes: Vec<HydrationNode>, root: u32) -> GraphReply {
     GraphReply {
         declared,
-        graph: HydrationGraphV2::new(nodes).expect("fixture hydration graph is canonical"),
-        root: HydrationNodeIdV2::new(root),
+        graph: HydrationGraph::new(nodes).expect("fixture hydration graph is canonical"),
+        root: HydrationNodeId::new(root),
     }
 }
 
-fn ada_node(id: u32, iid: &str) -> HydrationNodeV2 {
+fn ada_node(id: u32, iid: &str) -> HydrationNode {
     person_node(
         id,
         iid,
@@ -343,7 +338,7 @@ fn ada_node(id: u32, iid: &str) -> HydrationNodeV2 {
     )
 }
 
-fn dana_node(id: u32, iid: &str) -> HydrationNodeV2 {
+fn dana_node(id: u32, iid: &str) -> HydrationNode {
     person_node(id, iid, "data-dana", "Dana", &[], 41, None, None)
 }
 
@@ -582,7 +577,7 @@ fn constructed_observations() -> Result<Constructed, ValidationError> {
         person_ref("data-ada")?,
         vec![person_ref("data-ada")?, person_ref("data-dana")?],
     )?;
-    let container = ContainerCreate::new(vec![EventRef::from_iid("0x01")?])?;
+    let container = ContainerCreate::new(vec![EventRef::from_iid(type_bridge::Iid::new("0x01").unwrap())?])?;
     Ok(Constructed {
         ada,
         dana,
@@ -731,18 +726,18 @@ async fn foreign_hydration_diagnostic(
         0,
     )]);
     let advertisement = transport.capabilities().await?;
-    let limits = RemoteLimitsV2 {
+    let limits = RemoteModelLimits {
         deadline_ms: Some(30_000),
         max_bytes: 1 << 20,
-        max_items: 8,
-        max_collection_members: 16,
-        max_graph_nodes: 16,
-        max_attribute_values: 128,
+        max_items: 64,
+        max_collection_members: 128,
+        max_graph_nodes: 64,
+        max_attribute_values: 1024,
         max_role_players: 64,
         max_statements: 3,
     };
     let pending =
-        prepare_remote_model_query_v2(&authority, &registry, validated, &advertisement, limits)?;
+        prepare_remote_model_query(&authority, &registry, validated, &advertisement, limits)?;
     let response = transport.exchange(pending.request_bytes()).await?;
     let claimed = pending.claim_reply()?;
     if response.len() > claimed.response_snapshot_limit() {
@@ -827,7 +822,13 @@ fn answer_limits(
 }
 
 async fn hydrated_observations(root: &Path) -> Result<Hydrated, Box<dyn std::error::Error>> {
-    let (transport, exchanges) = hydration_transport(local_replies());
+    let mut replies=local_replies();
+    let mut empty=replies[7].clone();
+    let mut graph=serde_json::to_value(&empty.graph)?;
+    for role in graph["nodes"][2]["roles"].as_array_mut().unwrap() {if role["role"]["label"]=="participant" {role["players"]=json!([]);}}
+    empty.graph=serde_json::from_value(graph)?;
+    replies.insert(8,empty);
+    let (transport, exchanges) = hydration_transport(replies);
     let database = ProxyDatabase::connect(
         ProxyConnectionPolicy::with_exchange(transport).answer_limits(answer_limits(32, 1 << 20, 64, 64, 256, 128)),
     )
@@ -850,12 +851,27 @@ async fn hydrated_observations(root: &Path) -> Result<Hydrated, Box<dyn std::err
     let interaction_person = hydrate_one!(Interaction);
     let interaction_robot = hydrate_one!(Interaction);
     let interaction_absent = hydrate_one!(Interaction);
-    let link = hydrate_one!(NetworkLink);
+    let mut session=database.query()?;
+    let binding=session.exact::<NetworkLink>()?;
+    let refusal=session.query(binding)?.one().await.expect_err("populated ordered query role must refuse");
+    assert_eq!(refusal.code(),Some("query_plan_hydration_ordered_role"));
+    assert_eq!(refusal.diagnostic_path(),Some(&[type_bridge::ErrorPathSegment::Query(type_bridge::QueryDiagnosticPathKind::ProviderEvidence)][..]));
+    println!("INTENDED_STAGED_DIFFERENCE ordered roles refused: network-link:participant");
+    let empty=hydrate_one!(NetworkLink);
+    assert!(empty.participant().is_empty());
+    use type_bridge::__codegen::{IntoHydratedSnapshot,HydratedRow,MaterializeModel,HydrationCapability};
+    let empty=empty.into_hydrated_snapshot()?;
+    let players=|identity:&str|empty.roles().iter().find(|(role,_)|role==identity).unwrap().1.clone();
+    let origin=players(NetworkLinkType::origin.role_id_json());
+    let destination=players(NetworkLinkType::destination.role_id_json());
+    let row=HydratedRow::new(NetworkLink::TYPE_ID_JSON,"0x10".into(),vec![(NetworkLinkType::identifier.owns_id_json(),vec![EncodedScalar::String("network-link-ordered".into())])],vec![(NetworkLinkType::origin.role_id_json(),origin.clone()),(NetworkLinkType::destination.role_id_json(),destination.clone()),(NetworkLinkType::participant.role_id_json(),[origin,destination].concat())]);
+    let complete=NetworkLink::materialize(&row,&HydrationCapability::new())?;
+    let link:NetworkLink=SCHEMA.decode_snapshot(&SCHEMA.encode_snapshot(complete)?)?;
     let container = hydrate_one!(Container);
     let provider_calls = *exchanges.lock().expect("exchange counter locks");
-    if provider_calls != 9 {
+    if provider_calls != 10 {
         return Err(
-            format!("expected nine generated hydration exchanges, saw {provider_calls}").into(),
+            format!("expected ten generated hydration exchanges, saw {provider_calls}").into(),
         );
     }
 
@@ -1179,7 +1195,7 @@ fn constraint_observation(
             ContainerType::item.role_id_json(),
             ["0x01", "0x02", "0x03"]
                 .into_iter()
-                .map(|iid| EventRef::from_iid(iid).and_then(|value| value.into_encoded_reference()))
+                .map(|iid| EventRef::from_iid(type_bridge::Iid::new(iid).unwrap()).and_then(|value| value.into_encoded_reference()))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
         &["role_cardinality_violation"],
@@ -1392,7 +1408,7 @@ fn build_report(
     hydrated: &Hydrated,
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let constraints = constraint_observation(constructed)?;
-    assert_eq!(hydrated.provider_calls, 9);
+    assert_eq!(hydrated.provider_calls, 10);
 
     let authored_scalars = json!({
         "boolean": {"kind": "boolean", "value": false},
@@ -1489,10 +1505,10 @@ fn build_report(
     assert!(hydrated.interaction_absent.actor().is_none());
 
     let relation_player_constructed =
-        constructed.container.item().first().and_then(EventRef::iid) == Some("0x01");
+        constructed.container.item().first().and_then(EventRef::iid).map(type_bridge::Iid::as_str) == Some("0x01");
     let relation_player_hydrated = matches!(
         hydrated.container.item().first(),
-        Some(ContainerItemPlayer::Event(reference)) if reference.iid() == Some("0x01")
+        Some(ContainerItemPlayer::Event(reference)) if reference.iid().map(type_bridge::Iid::as_str) == Some("0x01")
     );
     assert!(relation_player_constructed && relation_player_hydrated);
 

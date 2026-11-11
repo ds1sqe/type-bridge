@@ -511,6 +511,8 @@ impl SdkCommitFailureOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum SdkDiagnosticDetailValue {
+    /// One process clock and its bounded execution phase records.
+    ExecutionTimeline(crate::execution_timeline::ExecutionTimeline),
     /// A boolean contract fact.
     Boolean(bool),
     /// A non-negative item or occurrence count.
@@ -1362,6 +1364,9 @@ struct DetailJson<'a>(&'a SdkDiagnosticDetailValue);
 impl Serialize for DetailJson<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self.0 {
+            SdkDiagnosticDetailValue::ExecutionTimeline(value) => {
+                tagged(serializer, "execution_timeline", value)
+            }
             SdkDiagnosticDetailValue::Boolean(value) => tagged(serializer, "boolean", value),
             SdkDiagnosticDetailValue::Count(value) => {
                 tagged(serializer, "count", &value.to_string())

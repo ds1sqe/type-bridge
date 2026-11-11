@@ -2,9 +2,9 @@
 //!
 //! This module is only compiled when the `typedb` feature is enabled.
 
-#[cfg(not(any(feature = "band8", feature = "band9")))]
+#[cfg(not(feature = "band9"))]
 compile_error!(
-    "type-bridge-orm: the `typedb` machinery requires at least one band feature; enable `band8` and/or `band9` (both are default)"
+    "type-bridge-orm: the `typedb` machinery requires the `band9` feature (enabled by default)"
 );
 
 use std::sync::Arc;
@@ -18,11 +18,10 @@ pub use runtime::{
 };
 
 use super::backend::{
-    AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerStats, BoxFuture,
-    DriverBackend, GivenRowsSpec, GivenValue, MAX_ERROR_DRAIN_BYTES, MAX_ERROR_DRAIN_ITEMS,
-    QueryResult, QueryV2AnswerLimits, SchemaFencedReadTransaction, TransactionOps, TxType,
-    execute_typed_provider_statement, typed_fetch_provider_statement,
-    typed_root_provider_statement, typed_tuple_provider_statement,
+    AnswerConsumer, AnswerControl, AnswerItem, AnswerLimits, BoundedAnswerLimits,
+    BoundedAnswerStats, BoxFuture, DriverBackend, GivenRowsSpec, GivenValue, MAX_ERROR_DRAIN_BYTES,
+    MAX_ERROR_DRAIN_ITEMS, QueryResult, TransactionOps, TxType, execute_typed_provider_statement,
+    typed_fetch_provider_statement, typed_root_provider_statement, typed_tuple_provider_statement,
 };
 use crate::error::{ClassifiedCommitError, CommitFailureCertainty, OrmError};
 use crate::match_request::{
@@ -182,6 +181,21 @@ pub async fn delete_database_prepared_secure(
 }
 
 impl DriverBackend for RealBackend {
+    fn open_raw_transaction(
+        &self,
+        database: &str,
+        kind: TxType,
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, super::raw::RawQueryError>> {
+        let database = database.to_owned();
+        let runtime = Arc::clone(&self.inner);
+        Box::pin(async move {
+            let inner = runtime
+                .open_raw_transaction(&database, runtime_tx_type(kind))
+                .await?;
+            Ok(Box::new(RealTransaction { inner }) as Box<dyn TransactionOps>)
+        })
+    }
+
     fn match_capabilities(&self) -> CapabilitySet {
         real_match_capabilities(self.inner.supports_given_rows())
     }
@@ -223,35 +237,7 @@ impl DriverBackend for RealBackend {
                 )
                 .await
                 .map_err(OrmError::from)?;
-            Ok(Box::new(RealTransaction {
-                inner,
-                runtime,
-                database,
-            }) as Box<dyn TransactionOps>)
-        })
-    }
-
-    fn open_schema_fenced_read_transaction(
-        &self,
-        database: &str,
-        timeout: std::time::Duration,
-    ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-        let database = database.to_owned();
-        Box::pin(async move {
-            let options = super::staged::TransactionOptions::default()
-                .with_deadline(timeout)
-                .with_never_commit(true);
-            let mut transaction = self
-                .open_with_options(&database, TxType::Write, &options)
-                .await?;
-            let schema_text = match self.schema_text(&database).await {
-                Ok(schema) => schema,
-                Err(error) => {
-                    let _ = transaction.close().await;
-                    return Err(error);
-                }
-            };
-            Ok(SchemaFencedReadTransaction::new(transaction, schema_text))
+            Ok(Box::new(RealTransaction { inner }) as Box<dyn TransactionOps>)
         })
     }
 
@@ -343,30 +329,42 @@ fn real_match_capabilities(supports_given_rows: bool) -> CapabilitySet {
 
 struct RealTransaction {
     inner: runtime::RuntimeTransaction,
-    runtime: Arc<runtime::TypeDBRuntime>,
-    database: String,
+}
+
+impl RealTransaction {
+    fn observe_dispatch(&mut self) {
+        self.inner.set_statement_dispatch_observer(
+            crate::execution_phases::collecting()
+                .then_some(crate::execution_phases::dispatched as fn()),
+        );
+        crate::execution_phases::dispatching();
+    }
 }
 
 impl TransactionOps for RealTransaction {
-    fn supports_given_rows(&self) -> bool {
-        self.inner.supports_given_rows()
+    fn query_raw<'a>(
+        &'a mut self,
+        query: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<u8>, super::raw::RawQueryError>> {
+        Box::pin(async move { self.inner.query_raw(query).await.map_err(Into::into) })
     }
 
-    fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
-        let runtime = Arc::clone(&self.runtime);
-        let database = self.database.clone();
-        Box::pin(async move {
-            runtime
-                .schema_text(&database)
-                .await
-                .map(Some)
-                .map_err(OrmError::from)
-        })
+    fn commit_raw(&mut self) -> BoxFuture<'_, Result<(), super::raw::RawQueryError>> {
+        Box::pin(async move { self.inner.commit_raw().await.map_err(Into::into) })
+    }
+
+    fn close_raw(&mut self) -> BoxFuture<'_, Result<(), super::raw::RawQueryError>> {
+        Box::pin(async move { self.inner.close_raw().await.map_err(Into::into) })
+    }
+
+    fn supports_given_rows(&self) -> bool {
+        self.inner.supports_given_rows()
     }
 
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
         let typeql = typeql.to_string();
         Box::pin(async move {
+            self.observe_dispatch();
             self.inner
                 .query(&typeql)
                 .await
@@ -383,6 +381,7 @@ impl TransactionOps for RealTransaction {
         let typeql = typeql.to_string();
         let rows = runtime_given_rows(rows);
         Box::pin(async move {
+            self.observe_dispatch();
             self.inner
                 .query_with_rows(&typeql, rows)
                 .await
@@ -395,20 +394,31 @@ impl TransactionOps for RealTransaction {
         &'a mut self,
         typeql: &'a str,
         rows: Option<GivenRowsSpec>,
-        limits: BoundedAnswerLimits,
+        limits: AnswerLimits,
         canonical: bool,
+        statement_display: Option<&'a str>,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         Box::pin(async move {
-            let limits = runtime::RuntimeAnswerLimits {
-                max_items: limits.max_items,
-                max_bytes: limits.max_bytes,
-                deadline: limits.deadline,
-                cancellation: runtime::RuntimeAnswerCancellation::from_shared(
-                    limits.cancellation.shared(),
-                ),
+            self.observe_dispatch();
+            let limits = runtime::QueryRuntimeAnswerLimits {
+                max_collection_members: limits.max_collection_members,
+                answer: runtime::RuntimeAnswerLimits {
+                    max_items: limits.answer.max_items,
+                    max_bytes: limits.answer.max_bytes,
+                    deadline: limits.answer.deadline,
+                    cancellation: runtime::RuntimeAnswerCancellation::from_shared(
+                        limits.answer.cancellation.shared(),
+                    ),
+                },
             };
             self.inner
-                .query_materialized_bounded(typeql, rows.map(runtime_given_rows), limits, canonical)
+                .query_materialized_bounded(
+                    typeql,
+                    rows.map(runtime_given_rows),
+                    limits,
+                    canonical,
+                    statement_display,
+                )
                 .await
                 .map(query_result)
                 .map_err(OrmError::from)
@@ -424,6 +434,7 @@ impl TransactionOps for RealTransaction {
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         let rows = runtime_given_rows(rows);
         Box::pin(async move {
+            self.observe_dispatch();
             let runtime_limits = runtime::RuntimeAnswerLimits {
                 max_items: limits.max_items,
                 max_bytes: limits.max_bytes,
@@ -465,20 +476,22 @@ impl TransactionOps for RealTransaction {
         })
     }
 
-    fn query_v2_with_rows_bounded<'a>(
+    fn query_plan_with_rows_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        let QueryV2AnswerLimits {
+        let AnswerLimits {
             answer: limits,
             max_collection_members,
+            ..
         } = limits;
         let rows = runtime_given_rows(rows);
         Box::pin(async move {
-            let runtime_limits = runtime::QueryV2RuntimeAnswerLimits {
+            self.observe_dispatch();
+            let runtime_limits = runtime::QueryRuntimeAnswerLimits {
                 answer: runtime::RuntimeAnswerLimits {
                     max_items: limits.max_items,
                     max_bytes: limits.max_bytes,
@@ -506,7 +519,7 @@ impl TransactionOps for RealTransaction {
             };
             let result = self
                 .inner
-                .query_v2_with_rows_bounded(typeql, rows, runtime_limits, &mut adapter)
+                .query_plan_with_rows_bounded(typeql, rows, runtime_limits, &mut adapter)
                 .await;
             if matches!(&result, Err(runtime::RuntimeError::AnswerConsumer))
                 && let Some(error) = consumer_error
@@ -529,6 +542,7 @@ impl TransactionOps for RealTransaction {
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         Box::pin(async move {
+            self.observe_dispatch();
             let runtime_limits = runtime::RuntimeAnswerLimits {
                 max_items: limits.max_items,
                 max_bytes: limits.max_bytes,
@@ -570,18 +584,20 @@ impl TransactionOps for RealTransaction {
         })
     }
 
-    fn query_v2_bounded<'a>(
+    fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        let QueryV2AnswerLimits {
+        let AnswerLimits {
             answer: limits,
             max_collection_members,
+            ..
         } = limits;
         Box::pin(async move {
-            let runtime_limits = runtime::QueryV2RuntimeAnswerLimits {
+            self.observe_dispatch();
+            let runtime_limits = runtime::QueryRuntimeAnswerLimits {
                 answer: runtime::RuntimeAnswerLimits {
                     max_items: limits.max_items,
                     max_bytes: limits.max_bytes,
@@ -609,7 +625,7 @@ impl TransactionOps for RealTransaction {
             };
             let result = self
                 .inner
-                .query_v2_bounded(typeql, runtime_limits, &mut adapter)
+                .query_plan_bounded(typeql, runtime_limits, &mut adapter)
                 .await;
             if matches!(&result, Err(runtime::RuntimeError::AnswerConsumer))
                 && let Some(error) = consumer_error
@@ -631,7 +647,8 @@ impl TransactionOps for RealTransaction {
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         let typeql = typeql.to_owned();
         Box::pin(async move {
-            let limits = runtime::QueryV2RuntimeAnswerLimits {
+            self.observe_dispatch();
+            let limits = runtime::QueryRuntimeAnswerLimits {
                 answer: runtime::RuntimeAnswerLimits {
                     max_items: u64::MAX,
                     max_bytes: u64::MAX,
@@ -641,7 +658,7 @@ impl TransactionOps for RealTransaction {
                 max_collection_members: u64::MAX,
             };
             self.inner
-                .query_v2_materialized(&typeql, limits)
+                .query_plan_materialized(&typeql, limits)
                 .await
                 .map(query_result)
                 .map_err(OrmError::from)
@@ -1064,6 +1081,16 @@ impl From<runtime::RuntimeError> for OrmError {
                     .at(MatchErrorPathSegment::ProviderEvidence)
                     .into()
             }
+            runtime::RuntimeError::AnswerLimit {
+                code,
+                message,
+                actual,
+                maximum,
+            } => MatchError::new(MatchErrorCategory::ResourceLimit, code, message)
+                .at(MatchErrorPathSegment::ProviderEvidence)
+                .with_detail("actual", actual)
+                .with_detail("maximum", maximum)
+                .into(),
             runtime::RuntimeError::AnswerConsumer => {
                 Self::QueryExecution("answer consumer rejected provider data".into())
             }

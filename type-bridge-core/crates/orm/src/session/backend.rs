@@ -24,8 +24,8 @@ use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment
 pub(crate) const MAX_ERROR_DRAIN_ITEMS: u64 = 16;
 /// Maximum encoded provider bytes consumed after the first sticky decode failure.
 pub(crate) const MAX_ERROR_DRAIN_BYTES: u64 = 64 * 1024;
-/// Maximum server-side lifetime of a V2 schema-excluding query transaction.
-pub const MAX_QUERY_V2_SCHEMA_FENCE_DURATION: Duration = Duration::from_secs(5 * 60);
+/// Maximum server-side lifetime of a schema-excluding plan transaction.
+pub const MAX_SCHEMA_FENCE_DURATION: Duration = Duration::from_secs(5 * 60);
 
 /// Result of a query execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,24 +157,38 @@ impl Default for BoundedAnswerLimits {
     }
 }
 
-/// V2-only answer limits layered over the released bounded-answer shape.
-///
-/// Keeping the collection ceiling in this additive wrapper preserves source
-/// compatibility for 1.5.x callers that construct or destructure
-/// [`BoundedAnswerLimits`] exhaustively.
+/// Shared answer policy for plans and typed queries.
 #[derive(Debug, Clone)]
-pub struct QueryV2AnswerLimits {
+pub struct AnswerLimits {
     /// Released row/document, byte, deadline, and cancellation limits.
     pub answer: BoundedAnswerLimits,
+    /// Maximum graph nodes in plan documents.
+    pub max_graph_nodes: u64,
+    /// Maximum attribute values in plan documents.
+    pub max_attribute_values: u64,
+    /// Maximum role players in plan documents.
+    pub max_role_players: u64,
     /// Maximum aggregate list members decoded across fetched documents.
     pub max_collection_members: u64,
 }
 
-impl Default for QueryV2AnswerLimits {
+impl Default for AnswerLimits {
     fn default() -> Self {
         Self {
             answer: BoundedAnswerLimits::default(),
             max_collection_members: 65_536,
+            max_graph_nodes: 65_536,
+            max_attribute_values: 65_536,
+            max_role_players: 65_536,
+        }
+    }
+}
+
+impl From<BoundedAnswerLimits> for AnswerLimits {
+    fn from(answer: BoundedAnswerLimits) -> Self {
+        Self {
+            answer,
+            ..Self::default()
         }
     }
 }
@@ -194,12 +208,14 @@ pub struct BoundedAnswerStats {
 pub struct BoundedAnswerReader {
     limits: BoundedAnswerLimits,
     stats: BoundedAnswerStats,
+    meter: crate::answer_meter::AnswerMeter,
 }
 
 impl BoundedAnswerReader {
     /// Create a reader with executor/session hard limits.
     pub fn new(limits: BoundedAnswerLimits) -> Self {
         Self {
+            meter: crate::answer_meter::AnswerMeter::new(&limits),
             limits,
             stats: BoundedAnswerStats::default(),
         }
@@ -231,36 +247,9 @@ impl BoundedAnswerReader {
         consumer: &mut dyn AnswerConsumer,
     ) -> Result<AnswerControl, OrmError> {
         self.check_before_read()?;
-        let next_items = self.stats.processed_items.checked_add(1).ok_or_else(|| {
-            resource_error(
-                "processed_item_counter_overflow",
-                "processed provider item counter overflowed",
-            )
-        })?;
-        if next_items > self.limits.max_items {
-            return Err(resource_error(
-                "processed_item_limit",
-                "provider answer exceeded the processed-item ceiling",
-            ));
-        }
-        let next_bytes = self
-            .stats
-            .response_bytes
-            .checked_add(item.encoded_bytes()?)
-            .ok_or_else(|| {
-                resource_error(
-                    "answer_byte_counter_overflow",
-                    "provider answer byte counter overflowed",
-                )
-            })?;
-        if next_bytes > self.limits.max_bytes {
-            return Err(resource_error(
-                "response_byte_limit",
-                "provider answer exceeded the response-byte ceiling",
-            ));
-        }
-        self.stats.processed_items = next_items;
-        self.stats.response_bytes = next_bytes;
+        self.meter.accept(&item)?;
+        self.stats.processed_items = self.meter.items();
+        self.stats.response_bytes = self.meter.bytes();
         let control = consumer.accept(item);
         self.check_before_read()?;
         let control = control?;
@@ -299,7 +288,7 @@ type_bridge_contract::enum_spellings!(TxType, "transaction_type", folded, canoni
 /// A single value bound to a `given` variable.
 ///
 /// Released temporal variants retain their ISO-8601 text representation.
-/// Additive V2 variants carry exact components when text alone would erase
+/// Additive exact variants carry components when text alone would erase
 /// provider semantics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GivenValue {
@@ -319,7 +308,7 @@ pub enum GivenValue {
     Datetime(String),
     /// TypeQL `datetime-tz`, RFC 3339 with offset.
     DatetimeTz(String),
-    /// Exact V2 TypeQL `datetime-tz`, retaining an optional authored IANA zone
+    /// Exact TypeQL `datetime-tz`, retaining an optional authored IANA zone
     /// and the already-validated effective offset.
     DatetimeTzExact {
         /// Canonical local datetime.
@@ -584,6 +573,24 @@ pub(crate) async fn execute_typed_provider_statement<T: TransactionOps + ?Sized>
 /// The `RealBackend` (behind the `typedb` feature) provides the real
 /// TypeDB implementation; tests use mock implementations.
 pub trait TransactionOps: Send {
+    /// Execute unchecked TypeQL and retain the provider's HTTP-answer bytes.
+    fn query_raw<'a>(
+        &'a mut self,
+        _query: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<u8>, super::raw::RawQueryError>> {
+        Box::pin(async { Err(super::raw::RawQueryError::unsupported()) })
+    }
+
+    /// Commit an unchecked transaction while retaining durability certainty.
+    fn commit_raw(&mut self) -> BoxFuture<'_, Result<(), super::raw::RawQueryError>> {
+        Box::pin(async { Err(super::raw::RawQueryError::unsupported()) })
+    }
+
+    /// Close an unchecked transaction without committing.
+    fn close_raw(&mut self) -> BoxFuture<'_, Result<(), super::raw::RawQueryError>> {
+        Box::pin(async { Err(super::raw::RawQueryError::unsupported()) })
+    }
+
     /// Whether this transaction's active provider can transport `given` rows.
     ///
     /// Implementations opt in explicitly. The default keeps mocks and legacy
@@ -592,23 +599,13 @@ pub trait TransactionOps: Send {
         false
     }
 
-    /// Export the schema while this already-open transaction retains its
-    /// provider-side schema exclusion, when the backend can prove that
-    /// relationship.
-    ///
-    /// The compatibility default returns no authority. Callers must not infer
-    /// managed ownership from a separately observed export or from labels.
-    fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
-        Box::pin(async { Ok(None) })
-    }
-
     /// Execute a TypeQL query string.
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>>;
 
     /// Execute using canonical provider temporal encoding while preserving answer kind.
     ///
     /// This hidden compatibility hook delegates to legacy [`Self::query`] by
-    /// default; the real provider overrides it with the ExactV2 path.
+    /// default; the real provider overrides it with canonical scalar encoding.
     #[doc(hidden)]
     fn query_canonical<'a>(
         &'a mut self,
@@ -651,6 +648,7 @@ pub trait TransactionOps: Send {
         Box::pin(async move {
             let mut reader = BoundedAnswerReader::new(limits);
             reader.check_before_read()?;
+            crate::execution_phases::dispatched();
             match self.query_with_rows(typeql, rows).await? {
                 QueryResult::Ok => {}
                 QueryResult::Rows(rows) => {
@@ -676,16 +674,19 @@ pub trait TransactionOps: Send {
 
     /// Materialize a bounded answer while preserving empty answer kinds.
     /// Real providers enforce these limits while polling their streams.
+    /// `statement_display` replaces input-derived literals in provider traces.
     fn query_materialized_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: Option<GivenRowsSpec>,
-        limits: BoundedAnswerLimits,
+        limits: AnswerLimits,
         canonical: bool,
+        _statement_display: Option<&'a str>,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         Box::pin(async move {
-            let mut reader = BoundedAnswerReader::new(limits);
+            let mut reader = BoundedAnswerReader::new(limits.answer);
             reader.check_before_read()?;
+            crate::execution_phases::dispatched();
             let result = match rows {
                 Some(rows) => self.query_with_rows(typeql, rows).await?,
                 None if canonical => self.query_canonical(typeql).await?,
@@ -725,6 +726,7 @@ pub trait TransactionOps: Send {
         Box::pin(async move {
             let mut reader = BoundedAnswerReader::new(limits);
             reader.check_before_read()?;
+            crate::execution_phases::dispatched();
             let result = self.query(typeql).await?;
             let items = match result {
                 QueryResult::Ok => Vec::new(),
@@ -742,28 +744,28 @@ pub trait TransactionOps: Send {
         })
     }
 
-    /// Execute a V2 query with its additive collection-member budget.
+    /// Execute a plan query with its collection-member budget.
     ///
     /// The default preserves third-party backend implementations by routing
-    /// through their released bounded seam. The V2 TypeQL lowering already
+    /// through their released bounded seam. The plan lowering already
     /// caps every fetched list before provider materialization; real drivers
     /// override this method to repeat the aggregate check while converting
     /// provider documents.
-    fn query_v2_bounded<'a>(
+    fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.query_bounded(typeql, limits.answer, consumer)
     }
 
-    /// Execute a V2 `given` query with its additive collection-member budget.
-    fn query_v2_with_rows_bounded<'a>(
+    /// Execute a plan `given` query with its collection-member budget.
+    fn query_plan_with_rows_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.query_with_rows_bounded(typeql, rows, limits.answer, consumer)
@@ -889,6 +891,15 @@ pub(super) fn cancelled_error(code: &'static str, message: &'static str) -> OrmE
 /// Opens transactions against a named database. Implementations must be
 /// thread-safe (`Send + Sync`) for use across async tasks.
 pub trait DriverBackend: Send + Sync {
+    /// Open an eager unchecked transaction, preserving raw provider errors.
+    fn open_raw_transaction(
+        &self,
+        _database: &str,
+        _kind: TxType,
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, super::raw::RawQueryError>> {
+        Box::pin(async { Err(super::raw::RawQueryError::unsupported()) })
+    }
+
     /// Canonical selected-match capabilities supported by this backend.
     ///
     /// The default is deliberately empty: legacy/materializing backends must
@@ -904,7 +915,12 @@ pub trait DriverBackend: Send + Sync {
         tx_type: TxType,
     ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>>;
 
-    /// Open with transaction-level options. Legacy providers reject unsupported deadlines.
+    /// Open with transaction-level options. Providers reject unsupported deadlines.
+    ///
+    /// Write transactions must exclude schema commits until they close. A deadline
+    /// bounds both acquiring that exclusion and the transaction lifetime. Internal
+    /// schema-fenced reads export the schema after this method returns, while the
+    /// write transaction retains the guard.
     fn open_with_options(
         &self,
         database: &str,
@@ -919,34 +935,6 @@ pub trait DriverBackend: Send + Sync {
             });
         }
         self.open_transaction(database, tx_type)
-    }
-
-    /// Open a read-capable V2 transaction that excludes schema commits until
-    /// the transaction reaches a terminal state.
-    ///
-    /// The explicit seam is fail-closed: an ordinary read transaction does
-    /// not prove that its schema snapshot matches an export observed before
-    /// or after it. The returned export must be captured after acquiring the
-    /// guard and before releasing it, and must describe the exact schema
-    /// snapshot used by the returned transaction. Implementations must also
-    /// enforce `timeout` both while acquiring the schema lock and over the
-    /// transaction lifetime, so a lost client cannot retain or later acquire
-    /// schema exclusion indefinitely.
-    #[deprecated(
-        since = "2.3.0",
-        note = "Use the core transaction options; retained until 3.0"
-    )]
-    fn open_schema_fenced_read_transaction(
-        &self,
-        database: &str,
-        timeout: Duration,
-    ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-        let _ = (database, timeout);
-        Box::pin(async {
-            Err(OrmError::QueryExecution(
-                "V2 schema-fenced read transactions are not supported by this backend".into(),
-            ))
-        })
     }
 
     /// Check if the underlying connection is still alive.
@@ -973,9 +961,8 @@ pub trait DriverBackend: Send + Sync {
 
     /// Whether the active negotiated provider can transport `given` rows.
     ///
-    /// Server syntax support and provider transport support are separate: a
-    /// 3.12 server reached through a band-8 fallback still cannot accept the
-    /// band-9 `GivenRows` driver payload. Backends must opt in explicitly.
+    /// Server syntax support and custom-provider transport support are separate.
+    /// Backends must opt in explicitly before receiving a `GivenRows` payload.
     fn supports_given_rows(&self) -> bool {
         false
     }
@@ -1021,31 +1008,6 @@ pub trait DriverBackend: Send + Sync {
                 "Schema export is not supported by this backend for database '{database}'"
             )))
         })
-    }
-}
-
-/// One V2 read-capable transaction and the exact schema export captured under
-/// its retained schema-exclusion guard.
-pub struct SchemaFencedReadTransaction {
-    transaction: Box<dyn TransactionOps>,
-    schema_text: String,
-}
-
-impl SchemaFencedReadTransaction {
-    /// Bind one transaction to the schema export its backend captured after
-    /// acquiring schema exclusion and before releasing that guard.
-    #[must_use]
-    pub fn new(transaction: Box<dyn TransactionOps>, schema_text: String) -> Self {
-        Self {
-            transaction,
-            schema_text,
-        }
-    }
-
-    /// Consume the proof and return its transaction and fenced schema export.
-    #[must_use]
-    pub fn into_parts(self) -> (Box<dyn TransactionOps>, String) {
-        (self.transaction, self.schema_text)
     }
 }
 

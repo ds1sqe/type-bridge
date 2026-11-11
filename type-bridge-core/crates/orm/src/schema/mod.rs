@@ -1,4 +1,4 @@
-//! Schema management: registration, generation, diffing, and synchronization.
+//! Schema IR, generation, diffing, and read-only introspection.
 
 pub mod annotations;
 pub mod diff;

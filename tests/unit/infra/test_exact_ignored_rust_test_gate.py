@@ -92,10 +92,9 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     gate_call = "scripts/ci/run_exact_ignored_rust_test.sh"
     positive_tests = {
         "empty_workspace_to_replayed_history_live",
+        "completed_legacy_history_then_evolve_live",
         "documented_examples_initial_constraints_apply_and_verify_live",
         "verify_never_creates_databases_live",
-        "adopt_legacy_history_then_evolve_live",
-        "shipped_python_converter_to_native_adoption_live",
     }
 
     migration_recovery_tests = {
@@ -107,45 +106,46 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     lane_3_13_6_tests = {
         "concurrency_guide_snippets_run_on_3_13_6",
         "staged_plans_race_like_the_concurrency_guide_on_3_13_6",
-        "live_c17_consumer_stages_and_commits_contract_v3_plans",
+        "live_c17_consumer_stages_and_commits_contract_plans",
         "live_c17_consumer_builds_stages_and_races_the_purchase",
         "lowering::tests::native_ordered_formatter_exports_and_removes_schema_live",
         "racing_lease_acquirers_serialize_on_the_control_row",
+        "raw_answers_match_typedb_http_and_host_refusal_writes_nothing",
     }
 
-    # In addition to the CLI/recovery selectors, CI gates the production V2
-    # server, generated Rust, generated C, C runtime and TLS live probes, and
+    # Two V1 commit probes are replaced by exact staged binary and raw gates.
+    # CI also gates generated Rust, generated C, C runtime, TLS probes, and
     # the 3.13.6 lane's selectors exactly.
-    assert workflow.count(gate_call) == len(positive_tests) + 10 + len(lane_3_13_6_tests)
+    # The standalone CLI artifact and C live journey jobs each write the
+    # format-2 administration workspace their connected smoke applies.
+    format2_writer = "write_format2_administration_workspace"
+    assert workflow.count(gate_call) == len(positive_tests) + 9 + len(lane_3_13_6_tests) + 2
+    assert workflow.count(f"          {format2_writer}\n") == 2
     for selector in (
-        "fetch_write_commit_failure_reaches_driver_and_v1_query",
-        "typedb::client::tests::integration_classified_commit_isolation_conflict",
+        "production_binary_serves_staged_and_removed_routes",
+        "raw_answers_match_typedb_http_and_host_refusal_writes_nothing",
     ):
         assert workflow.count(selector) == 1
-    assert local.count(gate_call) == 20
+    # The retired-server migration probe left with its local server branch.
+    assert local.count(gate_call) == 19
     for selector in lane_3_13_6_tests:
         assert workflow.count(selector) == 1, selector
         assert local.count(selector) == 1, selector
-    assert local.count("fetch_write_commit_failure_reaches_driver_and_v1_query") == 1
+    assert local.count("fetch_write_commit_failure_reaches_driver_and_v1_query") == 0
     assert (
-        local.count("typedb::client::tests::integration_classified_commit_isolation_conflict") == 1
+        local.count("typedb::client::tests::integration_classified_commit_isolation_conflict") == 0
     )
     upgrade_tests = {
         "runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge_and_replays_it",
         "upgrade_profile_moves_a_3_12_history_to_3_13_live",
     }
 
-    # The local harness also gates the 3.11 refusal probe and the two-server
-    # upgrade lane.
-    assert local.count("unsupported_server_apply_creates_neither_database_live") == 1
+    # The local harness retains the two-server profile-upgrade lane.
+    assert "unsupported_server_apply_creates_neither_database_live" not in local
     for test_name in upgrade_tests:
         assert local.count(test_name) == 1
     assert "-- --ignored --exact --nocapture" not in local
-    for test_name in (
-        positive_tests
-        | migration_recovery_tests
-        | {"unsupported_server_apply_creates_neither_database_live"}
-    ):
+    for test_name in positive_tests | migration_recovery_tests:
         assert workflow.count(test_name) == 1
     for test_name in positive_tests | migration_recovery_tests:
         # Documented examples also name their profile gate in the local loop.
@@ -155,29 +155,20 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
         assert local.count(test_name) == expected
 
 
-def test_commit_failure_regressions_use_exact_selection_on_the_supported_server() -> None:
+def test_raw_parity_uses_exact_selection_on_both_profile_servers() -> None:
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
-    steps = {step["name"]: step for step in workflow["jobs"]["rust-integration"]["steps"]}
-    for name, selector, target in (
-        (
-            "Run fetch write commit failure regression",
-            "fetch_write_commit_failure_reaches_driver_and_v1_query",
-            "--test v2_query_integration_tests",
-        ),
-        (
-            "Run classified commit isolation conflict regression",
-            "typedb::client::tests::integration_classified_commit_isolation_conflict",
-            "--lib",
-        ),
-    ):
-        step = steps[name]
-        assert step["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.3'"
-        assert step["env"]["TYPEDB_ADDRESS"] == "localhost:1729"
-        assert step["env"]["TYPEDB_HTTP_PORT"] == "8000"
-        assert step["run"].count("scripts/ci/run_exact_ignored_rust_test.sh") == 1
-        assert step["run"].count(selector) == 1
-        assert "-p type-bridge-server --features v2-query" in step["run"]
-        assert target in step["run"]
+    job = workflow["jobs"]["live-3-13-6"]
+    assert job["strategy"]["matrix"] == {"typedb": ["3.13.6", "3.14.0"]}
+    steps = {step["name"]: step for step in job["steps"]}
+    step = steps["Run raw TypeQL HTTP parity and host policy"]
+    assert "if" not in step
+    assert step["env"] == {"TYPEDB_ADDRESS": "localhost:1729", "TYPEDB_HTTP_PORT": "8000"}
+    assert " ".join(step["run"].split()) == (
+        "bash scripts/ci/run_exact_ignored_rust_test.sh "
+        "raw_answers_match_typedb_http_and_host_refusal_writes_nothing "
+        "--manifest-path type-bridge-core/Cargo.toml --locked "
+        "-p type-bridge-server --test raw_integration_tests"
+    )
 
 
 def test_release_named_ignored_rust_tests_use_the_exact_selection_gate() -> None:
@@ -190,8 +181,8 @@ def test_release_named_ignored_rust_tests_use_the_exact_selection_gate() -> None
     gate_call = "scripts/ci/run_exact_ignored_rust_test.sh"
 
     for name, test_name in {
-        "Run exact-image V1 compatibility and authenticated V2 query": (
-            "production_binary_serves_v1_health_and_v2_query"
+        "Run exact-image staged server smoke": (
+            "production_binary_serves_staged_and_removed_routes"
         ),
         "Run external generated Rust application through the exact image": (
             "generated_rust_projection_round_trips_exact_live_models"
@@ -213,9 +204,7 @@ def test_migration_live_lanes_are_bound_to_the_exact_server_leg() -> None:
         step["name"]: step for step in workflow["jobs"]["rust-integration"]["steps"]
     }
 
-    unsupported = steps["Prove unsupported migration apply creates no databases"]
-    assert unsupported["if"] == "matrix.typedb-server == 'typedb/typedb:3.11.5'"
-    assert "unsupported_server_apply_creates_neither_database_live" in unsupported["run"]
+    assert "Prove unsupported migration apply creates no databases" not in steps
 
     for name, test_name in {
         "Run CLI empty-workspace replay lifecycle": "empty_workspace_to_replayed_history_live",
@@ -262,8 +251,8 @@ def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
         for name in (
             "Run concurrency guide TypeQL snippets",
             "Run concurrency guide races as staged plans",
-            "Run C ABI 1.7 staged contract plans",
-            "Run C ABI 1.7 builder purchase race",
+            "Run C ABI 2.0 staged contract plans",
+            "Run C ABI 2.0 builder purchase race",
             "Run SDK writes in four languages",
             "Upload SDK writes reports",
         )
@@ -280,11 +269,11 @@ def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
             "staged_plans_race_like_the_concurrency_guide_on_3_13_6",
             "-p type-bridge-orm --test plan_race_live",
         ),
-        "Run C ABI 1.7 staged contract plans": (
-            "live_c17_consumer_stages_and_commits_contract_v3_plans",
+        "Run C ABI 2.0 staged contract plans": (
+            "live_c17_consumer_stages_and_commits_contract_plans",
             "-p type-bridge-c --test schema_package_abi",
         ),
-        "Run C ABI 1.7 builder purchase race": (
+        "Run C ABI 2.0 builder purchase race": (
             "live_c17_consumer_builds_stages_and_races_the_purchase",
             "-p type-bridge-c --test schema_package_abi",
         ),
@@ -308,8 +297,8 @@ def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
         assert target in command
         assert steps[name]["env"]["TYPEDB_HTTP_PORT"] == "8000"
     for name in (
-        "Run C ABI 1.7 staged contract plans",
-        "Run C ABI 1.7 builder purchase race",
+        "Run C ABI 2.0 staged contract plans",
+        "Run C ABI 2.0 builder purchase race",
     ):
         assert steps[name]["env"]["TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER"] == "1"
     for name in (
@@ -325,10 +314,10 @@ def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
     # Plain --ignored runs: every ignored test in the target, no exact gate.
     for name, target in {
         "Run staged query-plan/v3 programs at commit": "-p type-bridge-orm --test plan_execute_live",
-        "Run V3 staged server live acceptance": (
-            "-p type-bridge-server --features v2-query --test v3_staged_integration_tests -- --ignored"
+        "Run staged server live acceptance": (
+            "-p type-bridge-server --test staged_integration_tests -- --ignored"
         ),
-        "Run Rust SDK plan builder over the V3 staged proxy": (
+        "Run Rust SDK plan builder over the staged proxy": (
             "-p type-bridge --test plan_builder_live -- --ignored"
         ),
     }.items():
@@ -382,7 +371,7 @@ def test_fresh_replay_and_documented_constraint_probes_cannot_regress_to_offline
     documented = source.split(
         "async fn documented_examples_initial_constraints_apply_and_verify_live()",
         maxsplit=1,
-    )[1].split("async fn unsupported_server_apply_creates_neither_database_live()", maxsplit=1)[0]
+    )[1].split("async fn verify_never_creates_databases_live()", maxsplit=1)[0]
 
     assert "ensure_database_exists" not in fresh
     assert fresh.count('&["migration", "apply", "--environment"') == 3
@@ -392,3 +381,24 @@ def test_fresh_replay_and_documented_constraint_probes_cannot_regress_to_offline
     assert "fs::read(source.join(relative))" in documented
     assert documented.count('&["migration", "apply", "--environment", "development"]') == 2
     assert '&["migration", "verify", "--environment", "development"]' in documented
+
+
+def test_specialized_manager_roles_run_through_the_exact_live_gate() -> None:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    step = next(
+        step
+        for step in workflow["jobs"]["rust-integration"]["steps"]
+        if step["name"] == "Run specialized relation manager role matching regression"
+    )
+    selector = (
+        "plan_builders::manager::tests::"
+        "specialized_role_manager_callers_preserve_exact_and_inclusive_mutations"
+    )
+    assert step["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.3'"
+    assert step["env"]["TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS"] == "localhost:1729"
+    assert step["env"]["TYPEDB_HTTP_PORT"] == "8000"
+    assert "scripts/ci/run_exact_ignored_rust_test.sh" in step["run"]
+    assert selector in step["run"]
+    assert "-p type-bridge-orm --lib" in step["run"]
+    source = (REPO_ROOT / "test.sh").read_text()
+    assert selector in source

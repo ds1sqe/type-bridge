@@ -43,6 +43,7 @@ entities:
       zoned-at: { card: { min: 0 } }
       amount: { card: { min: 0 } }
       elapsed: { card: { min: 0 } }
+  employee: { sub: person }
   membership:
     owns:
       tenant: { key: true }
@@ -530,4 +531,476 @@ fn manager_query_validation_flattens_the_full_boolean_term_ceiling() {
         .validate_count_by(&root)
         .unwrap_err();
     assert!(over_limit.to_string().contains("structural_limit_exceeded"));
+}
+
+#[tokio::test]
+async fn filtered_delete_dispatches_once_and_keeps_borrowed_failures_rollback_only() {
+    use type_bridge_orm::session::backend::QueryResult;
+    use type_bridge_orm::{ProjectedManagerFilterInvocationControl, QueryTarget, TxType};
+    let installed = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+    let filter = ProjectedManagerFilter::try_new(&installed, person.clone())
+        .unwrap()
+        .try_and(
+            &installed,
+            &token(&person, "age"),
+            ProjectedManagerComparison::Gte,
+            &long_value(&installed, "age", 18),
+        )
+        .unwrap();
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    for borrowed in [false, true] {
+        let backend = MockBackend::new(vec![QueryResult::Rows(vec![
+            serde_json::json!({}),
+            serde_json::json!({}),
+        ])]);
+        let queries = backend.queries.clone();
+        let db = Database::with_backend(Box::new(backend), "filtered-delete");
+        let transaction = db.transaction_context(TxType::Write).await.unwrap();
+        let target = if borrowed {
+            QueryTarget::Transaction(&transaction)
+        } else {
+            QueryTarget::Database(&db)
+        };
+        ProjectedManagerFilterExecutor::new(&installed)
+            .delete_on_target(target, &filter, control())
+            .await
+            .unwrap();
+        {
+            let recorded = queries.lock().unwrap();
+            assert_eq!(recorded.len(), 1);
+            assert!(recorded[0].contains("delete"));
+            assert!(recorded[0].contains("18"));
+            assert!(!recorded[0].contains("limit"));
+        }
+        if borrowed {
+            transaction.commit_sdk().await.unwrap();
+        } else {
+            transaction.rollback().await.unwrap();
+        }
+    }
+    let backend = MockBackend::new(vec![]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "filtered-delete-refusal");
+    let read = db.transaction_context(TxType::Read).await.unwrap();
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .delete_on_target(QueryTarget::Transaction(&read), &filter, control())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .code()
+            .as_str(),
+        "transaction_type_mismatch"
+    );
+    read.close().await.unwrap();
+    let cancellation = AnswerCancellation::default();
+    cancellation.cancel();
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .delete_on_target(
+            QueryTarget::Database(&db),
+            &filter,
+            ProjectedManagerFilterInvocationControl::capture(Default::default(), cancellation),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .code()
+            .as_str(),
+        "provider_cancelled"
+    );
+    assert!(queries.lock().unwrap().is_empty());
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![serde_json::json!({})])]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "filtered-delete-failure");
+    let transaction = db.transaction_context(TxType::Write).await.unwrap();
+    assert!(
+        ProjectedManagerFilterExecutor::new(&installed)
+            .delete_on_target(QueryTarget::Transaction(&transaction), &filter, control())
+            .await
+            .is_err()
+    );
+    assert_eq!(queries.lock().unwrap().len(), 1);
+    let error = transaction.commit_sdk().await.unwrap_err();
+    assert_eq!(error.code().as_str(), "transaction_rollback_only");
+    transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn filtered_update_hydrates_all_matches_and_refuses_input_limits_before_io() {
+    use type_bridge_orm::session::backend::QueryResult;
+    use type_bridge_orm::{
+        ProjectedCreate, ProjectedManagerFilterInvocationControl, QueryTarget, TxType,
+    };
+    let installed = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+    let filter = ProjectedManagerFilter::try_new(&installed, person.clone())
+        .unwrap()
+        .try_and(
+            &installed,
+            &token(&person, "age"),
+            ProjectedManagerComparison::Gte,
+            &long_value(&installed, "age", 18),
+        )
+        .unwrap();
+    let replacement = ProjectedCreate::try_new(
+        &installed,
+        person.clone(),
+        vec![
+            (
+                field(&person, "identifier"),
+                vec![string_value(&installed, "identifier", "unused-key")],
+            ),
+            (
+                field(&person, "age"),
+                vec![long_value(&installed, "age", 40)],
+            ),
+        ],
+        vec![],
+    )
+    .unwrap();
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    let documents = vec![
+        serde_json::json!({"_iid":"0x10", "_type":"person", "attributes":{"identifier":"Ada", "age":[40]}}),
+        serde_json::json!({"_iid":"0x20", "_type":"person", "attributes":{"identifier":"Bob", "age":[40]}}),
+    ];
+    let backend = MockBackend::new(vec![QueryResult::Documents(documents.clone())]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "filtered-update");
+    let result = ProjectedManagerFilterExecutor::new(&installed)
+        .update_on_target(
+            QueryTarget::Database(&db),
+            &filter,
+            replacement.clone(),
+            control(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.count(), 2);
+    assert_eq!(queries.lock().unwrap().len(), 1);
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .update_on_target(
+            QueryTarget::Database(&db),
+            &filter,
+            replacement.clone(),
+            ProjectedManagerFilterInvocationControl::capture(
+                QueryExecutionResourceLimits {
+                    attribute_values: 1,
+                    ..Default::default()
+                },
+                Default::default(),
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .category(),
+        SdkDiagnosticCategory::ResourceLimit
+    );
+    assert_eq!(queries.lock().unwrap().len(), 1);
+    let backend = MockBackend::new(vec![QueryResult::Documents(documents)]);
+    let db = Database::with_backend(Box::new(backend), "filtered-update-identity");
+    let transaction = db.transaction_context(TxType::Write).await.unwrap();
+    let iid_filter = ProjectedManagerFilter::try_new(&installed, person)
+        .unwrap()
+        .try_and_iids(
+            &installed,
+            &[type_bridge_contract::id::Iid::new("0x10").unwrap()],
+        )
+        .unwrap();
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .update_on_target(
+            QueryTarget::Transaction(&transaction),
+            &iid_filter,
+            replacement.clone(),
+            control(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .code()
+            .as_str(),
+        "projected_batch_update_identity_changed"
+    );
+    assert_eq!(
+        transaction.commit_sdk().await.unwrap_err().code().as_str(),
+        "transaction_rollback_only"
+    );
+    transaction.rollback().await.unwrap();
+    let backend = MockBackend::new(vec![QueryResult::Documents(vec![
+        serde_json::json!({"_iid":"0x10", "_type":"person", "attributes":{"identifier":"Ada", "age":[40]}}),
+    ])]);
+    let db = Database::with_backend(Box::new(backend), "filtered-update-mapper");
+    let transaction = db.transaction_context(TxType::Write).await.unwrap();
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .update_on_target_mapped(
+            QueryTarget::Transaction(&transaction),
+            &filter,
+            replacement.clone(),
+            control(),
+            |_| {
+                Err::<(), _>(
+                    type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure(
+                    ),
+                )
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .code()
+            .as_str(),
+        "internal_failure"
+    );
+    assert_eq!(
+        transaction.commit_sdk().await.unwrap_err().code().as_str(),
+        "transaction_rollback_only"
+    );
+    transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn empty_iid_sets_are_match_none_without_opening_a_provider_transaction() {
+    use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps};
+    use type_bridge_orm::{
+        OrmError, ProjectedCreate, ProjectedManagerFilterInvocationControl, QueryTarget, TxType,
+    };
+    struct NeverOpen;
+    impl DriverBackend for NeverOpen {
+        fn open_transaction(
+            &self,
+            _: &str,
+            _: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            panic!("empty IID filters must not open a provider transaction");
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+    let installed = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+    let empty = ProjectedManagerFilter::try_new(&installed, person.clone())
+        .unwrap()
+        .try_and_iids(&installed, &[])
+        .unwrap();
+    let mixed = empty
+        .try_and(
+            &installed,
+            &token(&person, "age"),
+            ProjectedManagerComparison::Gte,
+            &long_value(&installed, "age", 18),
+        )
+        .unwrap();
+    let replacement = ProjectedCreate::try_new(
+        &installed,
+        person.clone(),
+        vec![(
+            field(&person, "identifier"),
+            vec![string_value(&installed, "identifier", "unused")],
+        )],
+        vec![],
+    )
+    .unwrap();
+    let db = Database::with_backend(Box::new(NeverOpen), "match-none");
+    let target = QueryTarget::Database(&db);
+    let executor = ProjectedManagerFilterExecutor::new(&installed);
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    for filter in [&empty, &mixed] {
+        assert!(
+            executor
+                .all_on_target(target, filter, control())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            executor
+                .first_on_target(target, filter, control())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            executor
+                .count_on_target(target, filter, control())
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(
+            !executor
+                .exists_on_target(target, filter, control())
+                .await
+                .unwrap()
+        );
+        executor
+            .delete_on_target(target, filter, control())
+            .await
+            .unwrap();
+        assert_eq!(
+            executor
+                .update_on_target(target, filter, replacement.clone(), control())
+                .await
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+}
+
+#[tokio::test]
+async fn subtype_iid_filter_preserves_lookup_bytes_and_concrete_identity() {
+    use type_bridge_contract::id::Iid;
+    use type_bridge_orm::session::backend::QueryResult;
+    use type_bridge_orm::{ProjectedManagerFilterInvocationControl, QueryTarget};
+    let installed = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+    let document =
+        serde_json::json!({"_iid":"0x10", "_type":"employee", "attributes":{"identifier":"Ada"}});
+    let backend = MockBackend::new(vec![
+        QueryResult::Documents(vec![document.clone()]),
+        QueryResult::Documents(vec![document]),
+    ]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "subtype-filter");
+    let target = QueryTarget::Database(&db);
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    let executor = ProjectedManagerFilterExecutor::new(&installed);
+    let original = executor
+        .get_by_iid_including_subtypes_on_target(target, &person, "0x10", control())
+        .await
+        .unwrap()
+        .unwrap();
+    let filter = ProjectedManagerFilter::try_new(&installed, person)
+        .unwrap()
+        .including_subtypes()
+        .try_and_iid(&installed, &Iid::new("0x10").unwrap())
+        .unwrap();
+    let filtered = executor
+        .first_on_target(target, &filter, control())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(filtered.type_id(), &type_id(TypeKind::Entity, "employee"));
+    assert_eq!(original.type_id(), filtered.type_id());
+    assert_eq!(original.iid(), filtered.iid());
+    let observed = queries.lock().unwrap();
+    assert_eq!(observed.len(), 2);
+    assert_eq!(observed[0], observed[1]);
+    assert!(observed[0].contains(" isa person"));
+    assert!(!observed[0].contains(" isa! person"));
+}
+
+#[tokio::test]
+async fn subtype_filters_refuse_mutations_without_provider_calls() {
+    use type_bridge_orm::{ProjectedCreate, ProjectedManagerFilterInvocationControl, QueryTarget};
+    let installed = installed(BindingTarget::Rust);
+    let person = type_id(TypeKind::Entity, "person");
+    let filter = ProjectedManagerFilter::try_new(&installed, person.clone())
+        .unwrap()
+        .including_subtypes();
+    let backend = MockBackend::new(vec![]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "subtype-filter-refusal");
+    let target = QueryTarget::Database(&db);
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    let executor = ProjectedManagerFilterExecutor::new(&installed);
+    let replacement = ProjectedCreate::try_new(
+        &installed,
+        person.clone(),
+        vec![(
+            field(&person, "identifier"),
+            vec![string_value(&installed, "identifier", "unused")],
+        )],
+        vec![],
+    )
+    .unwrap();
+    let errors = [
+        executor
+            .delete_on_target(target, &filter, control())
+            .await
+            .unwrap_err(),
+        executor
+            .update_on_target(target, &filter, replacement, control())
+            .await
+            .unwrap_err(),
+    ];
+    for error in errors {
+        assert_eq!(
+            error
+                .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+                .code()
+                .as_str(),
+            "manager_filter_write_requires_exact_model"
+        );
+    }
+    assert!(queries.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn canonical_reads_refuse_schema_targets_even_for_empty_iid_filters() {
+    use type_bridge_contract::id::Iid;
+    use type_bridge_contract::sdk_diagnostic::SdkProviderOperation;
+    use type_bridge_orm::{ProjectedManagerFilterInvocationControl, QueryTarget, TxType};
+    let installed = installed(BindingTarget::Rust);
+    let base =
+        ProjectedManagerFilter::try_new(&installed, type_id(TypeKind::Entity, "person")).unwrap();
+    let backend = MockBackend::new(vec![]);
+    let queries = backend.queries.clone();
+    let db = Database::with_backend(Box::new(backend), "schema-filter-refusal");
+    let transaction = db.transaction_context(TxType::Schema).await.unwrap();
+    let target = QueryTarget::Transaction(&transaction);
+    let executor = ProjectedManagerFilterExecutor::new(&installed);
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default());
+    for filter in [
+        base.try_and_iid(&installed, &Iid::new("0xa1").unwrap())
+            .unwrap(),
+        base.try_and_iids(&installed, &[]).unwrap(),
+    ] {
+        for result in [
+            executor
+                .all_on_target(target, &filter, control())
+                .await
+                .map(|_| ()),
+            executor
+                .first_on_target(target, &filter, control())
+                .await
+                .map(|_| ()),
+            executor
+                .count_on_target(target, &filter, control())
+                .await
+                .map(|_| ()),
+            executor
+                .exists_on_target(target, &filter, control())
+                .await
+                .map(|_| ()),
+        ] {
+            assert_eq!(
+                result
+                    .unwrap_err()
+                    .into_diagnostic(SdkProviderOperation::Read)
+                    .code()
+                    .as_str(),
+                "borrowed_target_not_read_only"
+            );
+        }
+    }
+    assert!(queries.lock().unwrap().is_empty());
+    transaction.close().await.unwrap();
 }

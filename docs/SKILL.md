@@ -19,7 +19,7 @@ generated Rust applications and the query server consume the same contracts.
 | Build a Rust application | generated schema crate + `type-bridge` | `guide/rust.md` |
 | Own a canonical schema | Split-YAML workspace and CLI | `guide/schema-workflows.md`, `guide/split-yaml-v1.md` |
 | Run remote queries | TypeBridge server | `guide/server-container.md`, `guide/typed-queries.md` |
-| Upgrade an existing app | compatibility guides | `guide/upgrade-v2.md`, `guide/v2-deprecations.md` |
+| Upgrade an existing app | compatibility guides | `guide/upgrade-3.0.md`, `guide/migrations.md` |
 
 Resolve these paths relative to this file when the repository documentation is
 available. Otherwise use <https://ds1sqe.github.io/type-bridge/>.
@@ -33,7 +33,7 @@ available. Otherwise use <https://ds1sqe.github.io/type-bridge/>.
    documentation branch matches the installed version.
 3. Identify the language surface, TypeBridge version, TypeDB server version,
    and whether execution is direct or remote.
-4. Identify the canonical V2 Split-YAML workspace. Treat existing TypeQL or
+4. Identify the canonical Split-YAML workspace. Treat existing TypeQL or
    released Python/Node declarations as migration input, never as a second
    active writer for the same scope.
 5. Read only the relevant guide pages from the routing table before changing
@@ -56,17 +56,16 @@ behavior in these ownership areas:
 
 ## Preserve the contracts
 
-- Keep Rust as the only V2 semantic engine. Do not implement schema, query,
+- Keep Rust as the only semantic engine. Do not implement schema, query,
   migration, validation, or ORM rules independently in Python or TypeScript.
-- Use Split-YAML as the sole active desired-schema authority. Read-only archive
-  conversion and released query compatibility are not authoring paths.
-- Treat generated Python, TypeScript, and Rust files as projections. Regenerate
+- Use Split-YAML as the sole active desired-schema authority. Applications
+  consume generated packages, immutable queries, and staged plans.
+- Treat generated Python, TypeScript, Rust, and C files as projections. Regenerate
   them after schema changes; do not edit them by hand.
-- Sync or migrate the schema before inserting application data.
+- Apply the schema migration before inserting application data.
 - Use attribute instances at typed model boundaries.
 - Use JavaScript `bigint` for TypeDB integer values.
-- Resolve Rust releases starting with 2.0.1 from crates.io. Resolve historical
-  2.0.0 consumers from the exact release Git revision.
+- Resolve the Rust SDK from crates.io.
 - Preserve exact compatibility, deprecation, remote-trust, and resource-limit
   behavior from the relevant guide.
 
@@ -143,10 +142,11 @@ Use keyword arguments for generated entity and relation constructors. Change
 labels, abstractness, ownership, roles, or cardinalities in Split-YAML and
 regenerate; do not hand-edit emitted packages.
 
-Use generated model managers for ordinary CRUD, filtering, ordering, grouping,
-and transactions. Import the generated package's `QuerySession` for connected
-multi-model selection, owner-aware fields and roles, named pages, counts,
-existence checks, bounded reachability, or one-exchange remote execution.
+Use generated model managers for ordinary CRUD, single-model filters, counts,
+existence checks, and transactions. Import the generated package's
+`QuerySession` for connected multi-model selection, owner-aware fields and
+roles, ordering, named pages, aggregation, bounded reachability, or
+one-exchange remote execution.
 
 ## Choose the data operation
 
@@ -155,14 +155,15 @@ existence checks, bounded reachability, or one-exchange remote execution.
 | Create and reject duplicates | `insert()` / `insert_many()` |
 | Idempotently create by key | `put()` / `put_many()` |
 | Persist a known keyed model | `update()` / `update_many()` |
-| Read one model type | manager `get`, `filter`, `all`, `first`, `count` |
+| Read one model type | manager `get_by_iid`, `filter`, `where`, `all`, `first`, `count`, `exists` |
 | Match connected model types | immutable `QuerySession` |
-| Author binding-neutral V2 plans | `type_bridge.query_v2` or Node `query-v2` |
+| Author native plans | `type_bridge.plan` or the Node package root |
 | Execute handcrafted TypeQL | raw query API, only when typed surfaces do not fit |
 
-Require a key for `put()` and `update()`. For relation writes, prefer hydrated
-role players carrying IIDs; otherwise provide key-complete stubs. Reject role
-players that have neither identity form.
+A keyed `put()` matches by the declared key; a keyless `put()` is TypeQL `put`
+of the given values. `update()` requires an attached IID. For relation writes,
+prefer hydrated role players carrying IIDs; otherwise provide key-complete
+stubs. Reject role players that have neither identity form.
 
 Reuse a caller-owned transaction for atomic multi-model work:
 
@@ -175,24 +176,25 @@ with db.transaction(TransactionType.WRITE) as tx:
     Employment.manager(tx).put(employment)
 ```
 
-Do not use `sync_schema(force=True)` as conflict recovery without explicit
-authorization for database recreation and data loss.
+Change schema only through Split-YAML and a reviewed migration; never
+recreate a database to resolve a conflict without explicit authorization for
+data loss.
 
 ## Choose the query surface
 
-- Use manager filters for a single root model, Django-style lookups,
-  aggregation, ordering, pagination, and ordinary CRUD.
+- Use manager filters for a single root model, Django-style lookups, counts,
+  existence checks, and ordinary CRUD.
 - Use the generated Python or TypeScript package's `QuerySession` for
   owner-aware, connected, multi-model matches. Create variables from one
   session and never mix handles or tokens between generated packages.
-- Use `type_bridge.query_v2` or `@type-bridge/node/query-v2` for complete
+- Use `type_bridge.plan` or `@type-bridge/node` for complete
   binding-neutral plan authoring. Let Rust create canonical bytes and
   fingerprints; never assemble mutable plan JSON in a facade.
 - Use raw TypeQL only when the higher-level surfaces cannot express the
-  operation, and retain parameterization and version gates.
+  operation. Raw execution provides no TypeBridge checks, hooks, or limits.
 
 Treat query construction as local and synchronous. Direct terminals perform
-provider work. A proxy terminal performs exactly one `/v2/query` exchange,
+provider work. A proxy terminal performs exactly one `/v3/staged` exchange,
 over the built-in HTTP route or a caller-owned exchange; with the latter the
 client owns transport, authentication, retry policy, and capability trust.
 Generated Python and TypeScript sessions take the connection: a direct
@@ -200,7 +202,7 @@ database or transaction, `connect_proxy(url)` (`await connectProxy(url)` in
 TypeScript), or `ExchangeConnection(advertisement, exchange)`; every terminal
 is awaited, and the program is the same on each. Both proxy connections derive
 authority from private package evidence; never read an authority file or
-construct a low-level `QueryV2Authority` for this normal path.
+construct a low-level `PlanAuthority` for this normal path.
 
 Write over the proxy with a staged transaction: `transaction(kind)` on a
 proxy connection returns the core staged transaction, and `commit()` sends the
@@ -210,8 +212,8 @@ unknown outcome (`commit_outcome_unknown`, a dropped reply or a cancelled
 commit) the writes may have applied, so read the database by the operation's
 key before running the work again. Every other signed refusal applied nothing.
 Raw TypeQL and typed match reads are not staged over the proxy. Writes need a
-caller the server's interceptor vouches for (`on_v3_write_authority`), or a
-server with `[v2] allow_unauthenticated_staged_writes`.
+caller the server's interceptor vouches for (`on_write_authority`), or a
+server with `[staged] allow_unauthenticated_staged_writes`.
 
 ## TypeScript and Node workflow
 
@@ -221,24 +223,24 @@ npm install @type-bridge/node
 
 ```ts
 import { Age, Name, Person, QuerySession } from "./generated/app-models/index.js";
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "example");
+const db = Database.connect("localhost:1729", "example");
 const ada = Person.create({ name: Name.create("ada"), age: Age.create(36n) });
 Person.manager(db).put(ada);
 const adults = Person.manager(db).filter({ age__gte: Age.create(18n) }).all();
 const session = new QuerySession(db);
 ```
 
-Import immutable model queries from the generated package and low-level V2 plan
-authoring from `@type-bridge/node/query-v2`. Consult `guide/typescript.md` for
+Import immutable model queries from the generated package and staged plan
+authoring (`Plan`) from `@type-bridge/node`. Consult `guide/typescript.md` for
 database lifecycle, integer `bigint` values, managers, and generation.
 
 Use scheme-free `host:port` addresses by default. Keep URI scheme and
 `tlsEnabled` consistent. Require `tlsEnabled: true` when supplying
-`tlsRootCa`. Close `RustDatabase` handles when finished, but do not treat
+`tlsRootCa`. Close `Database` handles when finished, but do not treat
 synchronous `close()` as an out-of-band cancellation mechanism for a native
-call occupying the event-loop thread. Use V2 deadlines for cancellable work.
+call occupying the event-loop thread. Use deadlines for cancellable work.
 
 ## Canonical schema and generation workflow
 
@@ -269,8 +271,8 @@ Use this lifecycle:
 
 Treat `schema check`, migration planning, and generation as read-only with
 respect to TypeDB. Only the explicit connected migration commands mutate the
-managed schema. Split-YAML is the sole active authoring authority; historical
-TOML is a read-only conversion input.
+managed schema. Split-YAML is the sole schema authoring authority. Historical
+TOML conversion requires TypeBridge 2.3.x before upgrading to 3.0.
 
 Configure every projection target in `typebridge.yaml`, then generate them from
 the same checked workspace. No standalone JSON is required for generated
@@ -299,9 +301,8 @@ user-maintained schema input.
 ## Rust and server boundaries
 
 Use Rust 1.88 or newer. Bind the generated schema package to the database
-before using generated models. Follow `guide/rust.md` for the exact release
-revision, dependency patch, connection, transaction, CRUD, and remote-query
-forms.
+before using generated models. Follow `guide/rust.md` for the dependency,
+connection, transaction, CRUD, and remote-query forms.
 
 Classify Rust SDK failures through `Error::category()`, `code()`, `path()`,
 and `model_validation_phase()`; do not parse display messages. Preserve those
@@ -321,9 +322,9 @@ capability-advertisement trust.
 | Symptom | Check |
 | --- | --- |
 | Connect or protocol failure | TypeDB version, accepted driver band, address, credentials, TLS scheme/options |
-| Feature rejected before I/O | Feature gate; `@doc`, `@meta`, ordered ownership, and given rows can require TypeDB 3.12 |
+| Feature rejected before I/O | Feature gate and the workspace semantic profile's TypeDB patch floor |
 | Schema conflict | Existing types and migration history; do not jump to force recreation |
-| Missing type during CRUD | Ensure the schema was synchronized or migrated before data operations |
+| Missing type during CRUD | Ensure the schema migration was applied before data operations |
 | Relation player cannot be matched | Supply a hydrated IID or every key attribute |
 | Node integer rejected | Use `bigint`, not JavaScript `number` |
 | Generated model mismatch | Regenerate from the canonical schema and compare schema identity/fingerprint |
@@ -345,7 +346,7 @@ Select checks by changed surface:
 | Python facade or models | focused `uv run pytest …`, then `./scripts/check.sh python` |
 | Node facade or declarations | focused npm test/typecheck, then `./scripts/check.sh node` |
 | Rust engine or SDK | focused Cargo test, then `./scripts/check.sh rust` |
-| Schema generation | target acceptance test plus Python/TypeScript/Rust projection checks |
+| Schema generation | target acceptance test plus Python/TypeScript/Rust/C projection checks |
 | Documentation or skill | `uv run --extra docs mkdocs build --strict` and skill validation |
 | Cross-surface semantics | parity/contract tests plus `./test.sh` when live TypeDB behavior changes |
 

@@ -1,13 +1,13 @@
 # Rust Client
 
-TypeBridge 2.1 ships a public, generated-schema Rust application surface with
+TypeBridge 3.0 ships a public, generated-schema Rust application surface with
 the same model, CRUD, immutable-query, transaction, and one-exchange remote
 contracts as the Python and TypeScript bindings. Rust 1.88 or newer is
 required.
 
 ## Distribution
 
-Starting with 2.0.1, the Rust SDK is distributed from crates.io as a complete,
+The Rust SDK is distributed from crates.io as a complete,
 version-locked package graph. Generated application crates depend only on the
 public `type-bridge` package; they do not expose the supporting engine crates.
 
@@ -15,29 +15,10 @@ public `type-bridge` package; they do not expose the supporting engine crates.
 [dependencies]
 models = { package = "type-bridge-generated-schema", path = "generated/rust" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-type-bridge = "2"
+type-bridge = "3"
 ```
 
 Commit `Cargo.lock` after resolving the SDK and generated schema crate.
-
-### Historical 2.0.0 source dependency
-
-TypeBridge 2.0.0 was released before the complete package graph became
-publishable. Use the 40-character commit recorded in its GitHub release:
-
-```toml
-[dependencies]
-models = { package = "type-bridge-generated-schema", path = "generated/rust" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-type-bridge = { version = "=2.0.0" }
-
-[patch.crates-io]
-# Replace this value with the exact release commit. Do not use a branch.
-type-bridge = { git = "https://github.com/ds1sqe/type-bridge", rev = "<40-character-v2.0.0-commit>" }
-```
-
-The patch satisfies both the application's dependency and the generated
-crate's exact `type-bridge` requirement from one immutable source revision.
 
 ## Generate the schema crate
 
@@ -115,8 +96,9 @@ let create = PersonCreate::try_new(
     EmployeeId::new("EMP-001".to_owned())?,
 )?;
 
-// put is idempotent by the generated key and returns a complete model.
-let ada = db.entities::<Person>().put(create).await?;
+// put is idempotent by the generated key; retain its complete result.
+let result = db.entities::<Person>().put(create).await?;
+let ada = result.item().expect("expected exactly one person");
 let iid = ada.iid().to_owned();
 
 let same = db
@@ -139,6 +121,15 @@ optional or empty multivalue deletes its prior ownership. Relation managers
 provide the corresponding keyed lifecycle, role replacement, repeated
 players, and IID/key-fallback references.
 
+Batch methods use the shared native plan executor for both current and older
+generated packages. Repeated Put keys fail with `duplicate_batch_key`;
+repeated Update or Delete IIDs fail with `duplicate_batch_target` before
+provider work. For keyless models, `put` and `put_many` are TypeQL `put` of
+each row's given values on the exact model type: identical rows return the same
+instance, and a row matching several instances refuses the call with
+`put_ambiguous_match`. Distinct rows of one shape share one put statement. See
+[Keyless put](upgrade-3.0.md#keyless-put).
+
 For several operations that must commit together, borrow managers from one
 write transaction:
 
@@ -148,6 +139,10 @@ let person = write.entities::<Person>().put(create).await?;
 // Other entity/relation operations borrow the same open context.
 write.commit().await?;
 ```
+
+Single writes materialize their generated models while the mutation lease is
+held. A materialization failure leaves a borrowed write transaction rollback-only;
+roll it back before continuing.
 
 Dropping an open write transaction never commits it; `commit` and `rollback`
 consume the transaction. Use `rollback_keep(&mut self)` to discard writes and
@@ -175,11 +170,53 @@ let ada = db.entities::<Person>().where_(
 )?.first().await?;
 ```
 
-`where_` returns a sibling and accepts only the six canonical scalar
-comparisons. `first` requires equality evidence for every effective
-reference-key field and proves that at most one exact IID matched. Use an
-explicit read transaction when several manager terminals and typed queries
-must share one snapshot:
+`where_`, `iid`, and `iids` return sibling filters. `where_` accepts the six
+canonical scalar comparisons. By-IID reads take `&Iid` and permanently redirect to
+`filter()?.iid(iid)?.first()`, including subtype and transaction managers.
+Generated model `iid()` accessors return `&Iid`
+(and reference accessors return `Option<&Iid>`); use `.as_str()` for text. IID predicates accept validated `Iid` values;
+`iids` can be combined with field comparisons. An empty IID set matches nothing
+and completes without a provider request.
+
+```rust
+use type_bridge::Iid;
+
+let iid = Iid::new("0x1234")?;
+let person = db.entities::<Person>().filter()?.iid(&iid)?.first().await?;
+let people = db.entities::<Person>().filter()?.iids(&[
+    iid,
+    Iid::new("0x5678")?,
+])?.all().await?;
+```
+
+Filter `delete()` and `update(replacement)` act on every exact match. Updates
+return freshly hydrated models in a `WriteResult`; the replacement is the same
+complete create input accepted by the manager's update method. Both terminals
+require a writable target. Empty IID selections perform input admission but
+emit no hooks or provider requests. A pure IID-list delete keeps the existing
+batch input limits. Reads and updates that compile the list as an OR predicate
+retain the 256-term Boolean limit and refuse oversized lists before I/O.
+
+`delete_many(&[Iid])` permanently redirects to `filter()?.iids(iids)?.delete()`.
+For different replacements per row, `update_many` takes `Vec<(Iid, Create)>` and
+preserves ordinal batch results. `delete_many_returning(&[Iid])` returns ordinal
+snapshots; `delete_returning(&Iid)` wraps a single returning batch row.
+
+Filters inherit the manager's registered lifecycle hooks. Pure IID filters emit
+one event per supplied IID. Field and mixed filters emit one invocation event
+with no IID; update events carry the authored replacement. Use an IID filter or
+a prior read when a hook needs individual row identity. Post-hooks run only after
+success, after commit for owned transactions.
+
+Use `manager.subtypes().filter()` to read a root and its concrete descendants.
+It accepts the same `where_`, `iid`, and `iids` predicates and exposes `all`,
+`first`, `count`, and `exists`. Results retain the generated concrete leaf or
+family type. Subtype filters are read-only; use an exact manager for mutations.
+
+`first` requires a singleton IID predicate or equality evidence for every
+effective reference-key field and proves that at most one exact IID matched.
+Use an explicit read transaction when several manager terminals and typed
+queries must share one snapshot:
 
 ```rust
 let read = db.read().await?;
@@ -218,7 +255,7 @@ let query = session
     .where_(employee_id.starts_with(Text::new("EMP-")?))?;
 
 let people: Vec<Person> = query
-    .rows(RowsOptions::new(50).order_by(employee_id.asc()))
+    .rows(RowsOptions::new(50).sort(employee_id.asc()))
     .await?;
 let exists = query.exists().await?;
 let count = query.count().await?;
@@ -267,12 +304,11 @@ the price, and records the purchase:
 
 <!-- rust-plan-example:begin -->
 ```rust
-use models::{Account, AccountType, AppSchema, Item, ItemType, Purchase, PurchaseType};
-use type_bridge::plan::Plan;
+use models::{Account, AccountType, AppSchema, Item, ItemType, Plan, Purchase, PurchaseType};
 use type_bridge::staged::{PlanAnswer, TransactionOptions};
 use type_bridge::Database;
 
-fn purchase(order: &str, item_id: &str, account_id: &str) -> type_bridge::Result<Plan<AppSchema>> {
+fn purchase(order: &str, item_id: &str, account_id: &str) -> type_bridge::Result<Plan<PlanAnswer>> {
     let mut plan = Plan::builder();
     let item = plan.exact::<Item>();
     let buyer = plan.exact::<Account>();
@@ -314,6 +350,25 @@ async fn buy(db: &Database<AppSchema>) -> type_bridge::Result<bool> {
 ```
 <!-- rust-plan-example:end -->
 
+Generated models also expose a closure recorder. Class conditions use the
+existing token namespace (`ItemType::stock.gt(0)`), while a matched handle's
+`stock()` returns a typed plan value. A named match finishes explicitly:
+
+```rust
+let count: models::Plan<i64> = models::Plan::build(|p| {
+    models::Item::matching_by(p)
+        .item_id("I1")
+        .stock(2_i64)
+        .handle();
+    p.count()
+})?;
+```
+
+Supplying the same named field twice refuses the build with
+`plan_duplicate_match_field`. The raw builder remains available; its value,
+expression, and condition types are `PlanValue`, `PlanExpr`, and
+`PlanCondition`. Generated helpers use `Value<T>`, `Expr<T>`, and `Condition`.
+
 The builder's handles (`item`, `stock`, `order_input`) come from generated
 model and field tokens, so a field another model owns does not compile.
 `build` validates the plan against the generated schema and returns the
@@ -346,8 +401,11 @@ has the same canonical plan bytes (`Plan::canonical_bytes`).
 
 ## Direct or proxy
 
-A program that queries through a `Connection` runs unchanged against TypeDB
-or a TypeBridge server; only the policy passed to `SCHEMA.connect` differs:
+Generated managers and typed queries on a `Connection` use the configured
+TypeDB or TypeBridge server target. For example,
+`connection.entities::<Person>().count().await?` works with either policy.
+`ProxyDatabase` also exposes `entities()` and `relations()` directly. Only
+the policy passed to `SCHEMA.connect` differs:
 
 ```rust
 use models::{AppSchema, Person, SCHEMA};
@@ -388,23 +446,48 @@ Both policies take `answer_limits(..)`, the ceiling every session of the
 connection is constrained by, and `connection_limits(..)`, the deadline for
 connecting. A session's resources are the stricter of its own and the
 ceiling, on either transport. With nothing configured, a session runs under
-its transport's defaults: the 2.2 executor defaults direct, the wire limits
+its transport's defaults: the executor defaults direct, the wire limits
 (65,536 items, 32 MiB) through a proxy.
 
-A proxy connection fetches the server's signed `/v2/capabilities`
+Direct manager connections also accept the full `QueryLimits` through
+`DirectConnectionPolicy::query_limits`. Transactions inherit that policy.
+Each dimension is independent: a 300-value full-match put needs both the
+binding and Boolean-term ceilings raised to keep one statement. Leaving a
+needed dimension at its default uses bounded pieces in the same transaction.
+
+```rust
+let mut limits = type_bridge::QueryLimits::PLAN;
+limits.structural.bindings = 1024;
+limits.structural.boolean_terms = 512;
+let policy = type_bridge::DirectConnectionPolicy::new(
+    "localhost:1729", "app", "admin", "password",
+).query_limits(limits)?;
+```
+
+The binding default is 256 and the supported ceiling is 65,536. Raising
+bindings preserves the other dimensions' defaults. Custom direct backends
+can capture the same policy with `Database::with_query_limits`.
+
+`ProxyConnectionPolicy::query_limits` accepts the same full policy. Each
+dimension is tightened by the staged server advertisement; requesting a higher
+ceiling retains the server's value. Unconfigured proxy transactions keep the
+default policy path.
+
+A proxy connection fetches the server's `/v3/capabilities`
 advertisement when it connects, or uses the exact bytes pinned with
 `.advertisement(bytes)`. Fetch it only over TLS you trust, or pin it: the
 advertisement carries the key every reply is verified with. Each terminal
-then performs exactly one `POST /v2/query`. The SDK binds the scope and
+then performs exactly one `POST /v3/staged`. The SDK binds the scope and
 semantic profile embedded in `SCHEMA`, the nonce, request fingerprint,
 deadline, limits, and reply identity before it materializes the same model
 types as a direct connection.
 
 A host that routes or authenticates requests itself implements
-`ProxyExchange` (`capabilities()` and `exchange()`) and passes it to
-`ProxyConnectionPolicy::with_exchange`. `Connection::Direct` also gives the
-`Database` with CRUD managers and transactions, which a proxy connection
-does not offer.
+`ProxyExchange` and passes it to `ProxyConnectionPolicy::with_exchange`.
+`capabilities()` returns the `GET /v3/capabilities` bytes and `exchange()`
+performs one `POST /v3/staged`. Native terminals and transactions both use
+them, with the connection's advertisement cache.
+A staged transaction sends its complete plan stack in one exchange at commit.
 
 ## Classified errors
 
@@ -452,3 +535,36 @@ transaction on a fresh snapshot. An indeterminate outcome requires
 reconciliation before retry. Rejection diagnostics keep their released codes
 and add a `rejection` detail naming the reason. Staged errors additionally
 retain operation indexes and schema identities supplied by plan metadata.
+
+## Raw TypeQL
+
+Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+to TypeDB as written, and TypeDB's output comes back as it
+answered, in this SDK's native data types. TypeBridge adds no
+validation, rewriting, hydration, hooks, limits or extra
+queries. It runs in read, write and schema transactions and
+accepts any TypeQL, schema-breaking changes included. The caller
+owns its correctness; TypeBridge makes no promise about its
+effects. On a proxy connection it posts to the server's opt-in
+`/v3/raw` endpoint, which is off by default.
+
+`Database`, `ProxyDatabase` and `Connection` expose `execute_query(text, kind)`.
+The answer is the complete TypeDB HTTP query-answer object as `serde_json::Value`.
+Use `raw_transaction(kind)` for explicit completion:
+
+```rust,ignore
+use type_bridge::raw::TransactionKind;
+
+let mut tx = db.raw_transaction(TransactionKind::Write).await?;
+tx.execute_query("insert $x isa person, has name \"Ada\";").await?;
+tx.rollback().await?;
+```
+
+Direct raw contexts share one real transaction across calls. On a proxy
+connection a raw transaction holds one query, because `/v3/raw` runs each
+request as its own transaction. A second query returns
+`raw_transaction_single_query` before I/O. After a proxy write or schema call,
+`commit()` succeeds without another request; `rollback()` returns
+`raw_transaction_already_committed`. A disabled endpoint returns `raw_disabled`.
+`RawQueryError` retains provider details and commit certainty; an uncertain
+commit has code `commit_outcome_unknown` and requires checking database state.

@@ -3,6 +3,12 @@
 [TypeBridge 2.1.0](https://github.com/ds1sqe/type-bridge/releases/tag/v2.1.0)
 was released on September 8, 2026.
 
+This page describes the historical 2.1 upgrade. Archive adoption must be
+completed with TypeBridge 2.3.x before upgrading to 3.0; 3.0 removes that
+command. See the current [migration guide](migrations.md). The development
+guide formerly at `development/rust-backend.md` now lives at
+[Core engine](../development/core-engine.md).
+
 TypeBridge 2.1 makes Split YAML and generated bindings the only active schema
 and model authoring path. It preserves application operations through generated
 Python, TypeScript/Node, and Rust packages, removes the handwritten declaration
@@ -64,10 +70,9 @@ See [Schema generation](generator.md), [CRUD](crud.md), and
 
 ### TOML
 
-Use `type_bridge_core.toml_to_typeql` to render an existing TOML schema for
-review, then translate the reviewed meaning into Split YAML. The converter and
-its frozen parser are read-only. Direct `.toml` generation routing and
-`generate_models(..., format="toml")` are absent in 2.1.
+The 2.x releases provided read-only TOML conversion. Complete that conversion
+with TypeBridge 2.3.x before upgrading to 3.0, then express the reviewed schema
+in Split-YAML. TypeBridge 3.0 has no TOML schema input.
 
 ### Handwritten declarations
 
@@ -81,24 +86,15 @@ which generated acceptance proves each retained operation. Handwritten tests
 that were replaced are accounted for by
 `tests/fixtures/handwritten-operation-removal-map.json`.
 
-## Adopt archived migration history
+## Retained adopted migration history
 
-Archived root Python/JSON migrations remain readable but cannot be authored or
-used as new active authority. Materialize the old history as bounded regular
-files, generate its trusted sidecar under the old environment if required, and
-adopt it once:
-
-```bash
-type-bridge --manifest typebridge.yaml migration adopt \
-  --environment production \
-  --archive-directory path/to/archived-history
-```
-
-Treat adoption as a writer cutover. Quiesce the old migrator and revoke its
-writer credential before adoption. The native adopter verifies dependencies,
-original checksums, snapshots, metadata, and the applied ledger, then records
-the one-way frontier. It never re-executes archived callbacks such as
-`RunPython`.
+TypeBridge 3.0 does not expose `migration adopt`. Complete any required archive
+adoption with the compatible 2.x tooling before upgrading, then stop the 2.x
+migration runners. Keep the adopted genesis, canonical manifests, managed
+database and old companion journal together. The first 3.0 migration apply
+imports their verified evidence once; it does not replay archived callbacks.
+See [the migration upgrade procedure](migrations.md) for import diagnostics,
+backup requirements and the history-directory move.
 
 Continue only with canonical migration commands:
 
@@ -109,20 +105,15 @@ type-bridge --manifest typebridge.yaml migration apply --environment production
 type-bridge --manifest typebridge.yaml migration verify --environment production
 ```
 
-Read-only recovery, ledger import, and replay remain available after the
-cutover; they cannot reopen the archived write path.
+Read-only verification and canonical replay remain available after the cutover.
+Import runs under the canonical migration lease and cannot reopen the archived
+write path.
 
-## Retained query facades
+## Query facades in 3.0
 
-The Python `Query`/`QueryBuilder`, Node `TypedQuery`/`TypedGroupByQuery`, and
-Rust `MatchRequest` facades have no removal schedule. They remain available for
-raw or compatibility queries and are not schema authoring authority.
-
-New generated code can use model-owned direct queries or prepare complete
-Query V2 plans through `type_bridge.query_v2`,
-`@type-bridge/node/query-v2`, or the Rust SDK. Local and one-exchange remote
-paths share canonical plans, validation, result ordering, structured
-diagnostics, and concrete-subtype hydration.
+The V1/V2 plan and prepared-execution facades described by earlier 2.x
+releases are removed in 3.0. Use generated model queries or native `PlanBuilder`
+programs with staged transactions. See the [3.0 replacements](upgrade-3.0.md#native-plan-execution-replaces-v1v2).
 
 ## TLS and exact server identity
 
@@ -155,12 +146,12 @@ retry over plaintext.
 - No application imports `type_bridge.models`, handwritten Node descriptors,
   or Rust ORM derive/schema-authoring APIs.
 - Generated application operations pass on TypeDB 3.11 and/or 3.12; connected
-  migration apply/verify/adopt pass on the workspace profile's admitted patch
+  migration apply/verify pass on the workspace profile's admitted patch
   floors and reject unsupported profile/server pairs before database mutation.
-- Archived migration adoption and a subsequent canonical V2 migration replay
+- Previously adopted history imports once, and canonical migrations replay
   from empty.
 - Wheel, npm package, generated Rust crate, CLI, and server candidates contain
   no removed authoring or provider payload.
 
 The exact removed and retained surfaces are listed in
-[V2.1 cutover inventory](v2-deprecations.md).
+[V2.1 cutover inventory](migrations.md).

@@ -1,7 +1,7 @@
 """Type stubs for the ``type_bridge_core`` Rust extension module.
 
 Hand-maintained to mirror the PyO3 bindings in
-``crates/python/src/lib.rs`` (and ``transpiler.rs``). Shipped with the package
+``crates/python/src/lib.rs``. Shipped with the package
 (``py.typed``) so downstream consumers and this repo share one source of type
 truth for the extension. Only the symbols imported directly by Python source
 carry precise signatures; the remaining extension classes and functions are
@@ -14,9 +14,12 @@ fallback rather than being enumerated here.
 ``schema.attributes[...]`` and ``"x" in schema.attributes``.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from os import PathLike
-from typing import Any, Final, Literal, Never, Protocol, Self, TypedDict, final, overload
+from typing import Any, Final, Literal, Never, Self, TypedDict, final, overload
+
+from .write_result import BatchWriteResult as BatchWriteResult
+from .write_result import WriteResult as WriteResult
 
 class ValueCoercer:
     def __init__(self) -> None: ...
@@ -24,28 +27,7 @@ class ValueCoercer:
     def coerce_batch(self, pairs: list[tuple[Any, str]]) -> Any: ...
     def format_typeql(self, value: Any, value_type: str) -> str: ...
 
-class QueryCompiler:
-    def __init__(self) -> None: ...
-    def compile(self, clauses: list[Any]) -> str: ...
-    def compile_dicts(self, clauses: list[Any]) -> str: ...
-    def compile_node(self, node: dict[str, Any]) -> str: ...
-    def compile_clause_body(self, clause: dict[str, Any]) -> str: ...
-    def _compile_node(self, node: dict[str, Any]) -> str: ...
-    def _compile_clause_body(self, clause: dict[str, Any]) -> str: ...
-    def _compile_query(
-        self,
-        clauses: list[Any],
-        sort: list[tuple[str, str]],
-        offset: int | None = ...,
-        limit: int | None = ...,
-    ) -> str: ...
-    def _compile_batch(self, nodes: list[dict[str, Any]], operation: str) -> str: ...
-    def _compile_fetch_items(self, items: list[dict[str, Any]]) -> list[str]: ...
-    def parse(self, input: str) -> Any: ...
-
 class _ArchivedTypeSchema:
-    @staticmethod
-    def from_typeql(input: str) -> _ArchivedTypeSchema: ...
     @staticmethod
     def from_json(json: str) -> _ArchivedTypeSchema: ...
     def to_json(self) -> str: ...
@@ -53,7 +35,6 @@ class _ArchivedTypeSchema:
     def get_all_owned_attributes(self, name: str) -> list[Any]: ...
     def get_all_plays_roles(self, name: str) -> list[Any]: ...
     def get_all_relates(self, name: str) -> list[Any]: ...
-    def validate_query(self, clauses: list[Any]) -> Any: ...
     @property
     def entities(self) -> Mapping[str, Any]: ...
     @property
@@ -69,9 +50,6 @@ class ValidationEngine:
     def __init__(self) -> None: ...
     def validate_type_name(self, name: str, context: str) -> bool: ...
     def validate_variable_name(self, name: str, context: str) -> bool: ...
-    def validate_pattern(self, pattern: Any) -> bool: ...
-    def validate_statement(self, statement: Any) -> bool: ...
-    def validate_query(self, clauses: list[Any], schema: _ArchivedTypeSchema) -> Any: ...
     def add_rule(self, rule_dict: Any) -> None: ...
     def load_rules(self, json_str: str) -> list[str]: ...
     def export_rules(self) -> str: ...
@@ -83,356 +61,41 @@ class ValidationEngine:
 
 def coerce_value(value: Any, target_type: str) -> Any: ...
 def format_value(value: Any) -> str: ...
-def parse_typeql_query(input: str) -> Any: ...
 def _typeql_queries_equivalent(left: str, right: str) -> bool: ...
-def _render_models_json(input: str, target: str, options_json: str | None = ...) -> str: ...
-def toml_to_typeql(toml_text: str) -> str: ...
-def run_v2_cli(arguments: list[str]) -> int: ...
+def run_cli(arguments: list[str]) -> int: ...
 
-class PyAdoptionRevision: ...
-
-class PyAdoptionDirectoryEntry:
-    @property
-    def name(self) -> str: ...
-    def name_bytes(self) -> bytes: ...
-    def is_file(self) -> bool: ...
-    def is_directory(self) -> bool: ...
-    def is_symlink(self) -> bool: ...
-
-class PyAdoptionDirectoryAuthority:
-    @staticmethod
-    def open(path: str) -> PyAdoptionDirectoryAuthority: ...
-    def directory_revision(self) -> PyAdoptionRevision: ...
-    def require_directory_revision(self, revision: PyAdoptionRevision) -> None: ...
-    def entries(
-        self,
-        relative: str,
-        maximum_entries: int,
-        expected_directory: PyAdoptionDirectoryEntry | None = ...,
-    ) -> list[PyAdoptionDirectoryEntry]: ...
-    def inspect(
-        self,
-        relative: str,
-        expected_parent: PyAdoptionDirectoryEntry | None = ...,
-    ) -> PyAdoptionDirectoryEntry | None: ...
-    def read_bounded(
-        self,
-        relative: str,
-        limit: int,
-        expected: PyAdoptionDirectoryEntry | None = ...,
-    ) -> bytes: ...
-    def write_atomic_no_replace(self, name: str, contents: bytes) -> None: ...
-    def validate_publication_name(self, name: str) -> None: ...
-    def remove_if_matches(
-        self,
-        name: str,
-        expected: PyAdoptionDirectoryEntry,
-        expected_bytes: bytes,
-    ) -> bool: ...
-
-# Prepared V2 query facade — opaque authority handle plus canonical
+# Native plan facade — opaque authority handle plus canonical
 # plan/envelope bytes; limits accept any int and are range-checked
 # against the unsigned 64-bit wire contract.
-class QueryV2Authority:
+class PlanAuthority:
     def __init__(self, declared_schema: bytes, scope: str, profile: str) -> None: ...
-    def with_query_limits(self, query_limits: QueryLimits) -> QueryV2Authority: ...
-    @staticmethod
-    def query_only(
-        database: PyRustDatabase,
-        declared_schema: bytes,
-        scope: str,
-        profile: str,
-    ) -> QueryV2Authority: ...
+    def with_query_limits(self, query_limits: QueryLimits) -> PlanAuthority: ...
 
-type QueryV2ValueType = Literal[
-    "string",
-    "long",
-    "double",
-    "boolean",
-    "date",
-    "datetime",
-    "datetime_tz",
-    "decimal",
-    "duration",
-]
-type QueryV2TypeKind = Literal["entity", "relation", "attribute"]
-type QueryV2Comparator = Literal[
-    "equal",
-    "not_equal",
-    "less",
-    "less_or_equal",
-    "greater",
-    "greater_or_equal",
-]
-type QueryV2OrderDirection = Literal["ascending", "descending"]
-type QueryV2Reducer = Literal["count", "max", "mean", "median", "min", "std", "sum"]
-type QueryV2Scalar = str | int | float | bool
-
-class _QueryV2ExactFloat(Protocol):
-    """Static marker accepted by ordinary ``float`` values but not ``int``."""
-
-    def hex(self) -> str: ...
-
-@final
-class _QueryV2AuthorityIdentity:
-    def __new__(cls) -> Never: ...
-    def same_authority(self, other: _QueryV2AuthorityIdentity) -> bool: ...
-
-@final
-class _QueryV2BindingHandle:
-    def __new__(cls) -> Never: ...
-
-@final
-class _QueryV2InputHandle:
-    def __new__(cls) -> Never: ...
-
-@final
-class _QueryV2OperandHandle:
-    def __new__(cls) -> Never: ...
-
-@final
-class _QueryV2PatternHandle:
-    def __new__(cls) -> Never: ...
-
-@final
-class _QueryV2OrderHandle:
-    def __new__(cls) -> Never: ...
-
-@final
-class _QueryV2ReduceAssignmentHandle:
-    def __new__(cls) -> Never: ...
-
-@final
-class _QueryV2LocalReturnHandle:
-    def __new__(cls) -> Never: ...
-
-@final
-class _QueryV2LocalFunctionHandle:
-    def __new__(cls) -> Never: ...
-
-@final
-class _QueryV2DocumentFieldHandle:
-    def __new__(cls) -> Never: ...
-
-@final
-class AuthoredQueryInvocation:
-    def __new__(cls) -> Never: ...
-    @property
-    def canonical_bytes(self) -> bytes: ...
-    @property
-    def operation(self) -> Literal["rows", "count", "exists"]: ...
-    @property
-    def plan_fingerprint(self) -> str: ...
-    @property
-    def authority_identity(self) -> _QueryV2AuthorityIdentity: ...
-    @property
-    def required_transport_capabilities(self) -> tuple[str, ...]: ...
-
-@final
-class AuthoredQueryPlan:
-    def __new__(cls) -> Never: ...
-    @property
-    def canonical_bytes(self) -> bytes: ...
-    @property
-    def format(self) -> Literal["typebridge.query-plan/v2"]: ...
-    @property
-    def fingerprint(self) -> str: ...
-    @property
-    def required_capabilities(self) -> tuple[str, ...]: ...
-    @property
-    def authority_identity(self) -> _QueryV2AuthorityIdentity: ...
-    def rows(self, rows: Sequence[Sequence[QueryV2Scalar | None]]) -> AuthoredQueryInvocation: ...
-    def documents(
-        self, rows: Sequence[Sequence[QueryV2Scalar | None]]
-    ) -> AuthoredQueryInvocation: ...
-    def count(self, rows: Sequence[Sequence[QueryV2Scalar | None]]) -> AuthoredQueryInvocation: ...
-    def exists(self, rows: Sequence[Sequence[QueryV2Scalar | None]]) -> AuthoredQueryInvocation: ...
-
-@final
-class QueryPlanBuilder:
-    def __init__(self, authority: QueryV2Authority) -> None: ...
-    def binding(self, variable: str) -> _QueryV2BindingHandle: ...
-    def input(
-        self, public_name: str, value_type: QueryV2ValueType, optional: bool
-    ) -> _QueryV2InputHandle: ...
-    def binding_operand(self, binding: _QueryV2BindingHandle) -> _QueryV2OperandHandle: ...
-    @overload
-    def literal_operand(
-        self,
-        value_type: Literal[
-            "string",
-            "date",
-            "datetime",
-            "datetime_tz",
-            "decimal",
-            "duration",
-        ],
-        value: str,
-    ) -> _QueryV2OperandHandle: ...
-    @overload
-    def literal_operand(self, value_type: Literal["long"], value: int) -> _QueryV2OperandHandle: ...
-    @overload
-    def literal_operand(
-        self, value_type: Literal["double"], value: _QueryV2ExactFloat
-    ) -> _QueryV2OperandHandle: ...
-    @overload
-    def literal_operand(
-        self, value_type: Literal["boolean"], value: bool
-    ) -> _QueryV2OperandHandle: ...
-    def input_operand(self, input: _QueryV2InputHandle) -> _QueryV2OperandHandle: ...
-    def isa(
-        self,
-        binding: _QueryV2BindingHandle,
-        type_kind: QueryV2TypeKind,
-        type_label: str,
-        include_subtypes: bool,
-    ) -> _QueryV2PatternHandle: ...
-    def has(
-        self,
-        owner: _QueryV2BindingHandle,
-        attribute: _QueryV2BindingHandle,
-        attribute_label: str,
-    ) -> _QueryV2PatternHandle: ...
-    def links(
-        self,
-        relation: _QueryV2BindingHandle,
-        relation_label: str,
-        roles: Sequence[str],
-        players: Sequence[_QueryV2BindingHandle],
-    ) -> _QueryV2PatternHandle: ...
-    def value(
-        self,
-        comparator: QueryV2Comparator,
-        left: _QueryV2OperandHandle,
-        right: _QueryV2OperandHandle,
-    ) -> _QueryV2PatternHandle: ...
-    def not_(self, patterns: Sequence[_QueryV2PatternHandle]) -> _QueryV2PatternHandle: ...
-    def or_(self, branches: Sequence[Sequence[_QueryV2PatternHandle]]) -> _QueryV2PatternHandle: ...
-    def try_(self, patterns: Sequence[_QueryV2PatternHandle]) -> _QueryV2PatternHandle: ...
-    def reachable(
-        self,
-        source: _QueryV2BindingHandle,
-        target: _QueryV2BindingHandle,
-        relation_label: str,
-        role_from: str,
-        role_to: str,
-        min_depth: int,
-        max_depth: int,
-    ) -> _QueryV2PatternHandle: ...
-    @overload
-    def function_call(
-        self,
-        assigned: _QueryV2BindingHandle,
-        arguments: Sequence[_QueryV2OperandHandle],
-        function_name: str,
-        local_function: None = ...,
-    ) -> _QueryV2PatternHandle: ...
-    @overload
-    def function_call(
-        self,
-        assigned: _QueryV2BindingHandle,
-        arguments: Sequence[_QueryV2OperandHandle],
-        function_name: None,
-        local_function: _QueryV2LocalFunctionHandle,
-    ) -> _QueryV2PatternHandle: ...
-    @overload
-    def function_call(
-        self,
-        assigned: _QueryV2BindingHandle,
-        arguments: Sequence[_QueryV2OperandHandle],
-        *,
-        local_function: _QueryV2LocalFunctionHandle,
-    ) -> _QueryV2PatternHandle: ...
-    def order(
-        self, binding: _QueryV2BindingHandle, direction: QueryV2OrderDirection
-    ) -> _QueryV2OrderHandle: ...
-    @overload
-    def reduce_assignment(
-        self,
-        assigned: _QueryV2BindingHandle,
-        reducer: Literal["count"],
-        input: None = ...,
-    ) -> _QueryV2ReduceAssignmentHandle: ...
-    @overload
-    def reduce_assignment(
-        self,
-        assigned: _QueryV2BindingHandle,
-        reducer: Literal["max", "mean", "median", "min", "std", "sum"],
-        input: _QueryV2BindingHandle,
-    ) -> _QueryV2ReduceAssignmentHandle: ...
-    @overload
-    def local_return(
-        self,
-        reducer: Literal["count"],
-        input: _QueryV2BindingHandle,
-        value_type: Literal["long"],
-    ) -> _QueryV2LocalReturnHandle: ...
-    @overload
-    def local_return(
-        self,
-        reducer: Literal["sum"],
-        input: _QueryV2BindingHandle,
-        value_type: Literal["long", "double"],
-    ) -> _QueryV2LocalReturnHandle: ...
-    def local_function(
-        self,
-        name: str,
-        bindings: Sequence[_QueryV2BindingHandle],
-        parameter_bindings: Sequence[_QueryV2BindingHandle],
-        parameter_labels: Sequence[str],
-        body: Sequence[_QueryV2PatternHandle],
-        returns: _QueryV2LocalReturnHandle,
-    ) -> _QueryV2LocalFunctionHandle: ...
-    def match(self, patterns: Sequence[_QueryV2PatternHandle]) -> None: ...
-    def select(self, bindings: Sequence[_QueryV2BindingHandle]) -> None: ...
-    def require(self, bindings: Sequence[_QueryV2BindingHandle]) -> None: ...
-    def distinct(self) -> None: ...
-    def reduce(
-        self,
-        assignments: Sequence[_QueryV2ReduceAssignmentHandle],
-        groups: Sequence[_QueryV2BindingHandle],
-    ) -> None: ...
-    def sort(self, terms: Sequence[_QueryV2OrderHandle]) -> None: ...
-    def offset(self, rows: int) -> None: ...
-    def limit(self, rows: int) -> None: ...
-    def document_binding(
-        self, key: str, binding: _QueryV2BindingHandle
-    ) -> _QueryV2DocumentFieldHandle: ...
-    def document_attribute_list(
-        self, key: str, owner: _QueryV2BindingHandle, attribute_label: str
-    ) -> _QueryV2DocumentFieldHandle: ...
-    def finalize_rows(self, columns: Sequence[_QueryV2BindingHandle]) -> AuthoredQueryPlan: ...
-    def finalize_documents(
-        self, fields: Sequence[_QueryV2DocumentFieldHandle]
-    ) -> AuthoredQueryPlan: ...
-
-class _QueryV2ErrorTextPathSegment(TypedDict):
+class _PlanErrorTextPathSegment(TypedDict):
     kind: Literal["field", "identifier"]
     value: str
 
-class _QueryV2ErrorIndexPathSegment(TypedDict):
+class _PlanErrorIndexPathSegment(TypedDict):
     kind: Literal["index"]
     value: int
 
-type _QueryV2ErrorPathSegment = _QueryV2ErrorTextPathSegment | _QueryV2ErrorIndexPathSegment
+type _PlanErrorPathSegment = _PlanErrorTextPathSegment | _PlanErrorIndexPathSegment
 
-class _QueryV2ErrorTextDetail(TypedDict):
+class _PlanErrorTextDetail(TypedDict):
     kind: Literal["text", "long"]
     value: str
 
-class _QueryV2ErrorBooleanDetail(TypedDict):
+class _PlanErrorBooleanDetail(TypedDict):
     kind: Literal["boolean"]
     value: bool
 
-class _QueryV2ErrorTextListDetail(TypedDict):
+class _PlanErrorTextListDetail(TypedDict):
     kind: Literal["text_list"]
     value: list[str]
 
-type _QueryV2ErrorDetail = (
-    _QueryV2ErrorTextDetail | _QueryV2ErrorBooleanDetail | _QueryV2ErrorTextListDetail
-)
+type _PlanErrorDetail = _PlanErrorTextDetail | _PlanErrorBooleanDetail | _PlanErrorTextListDetail
 
-class QueryV2Error(ValueError):
+class PlanError(ValueError):
     category: Literal[
         "invalid_contract",
         "unsupported_capability",
@@ -441,55 +104,14 @@ class QueryV2Error(ValueError):
     ]
     code: str
     message: str
-    path: list[_QueryV2ErrorPathSegment]
-    details: Mapping[str, _QueryV2ErrorDetail]
+    path: list[_PlanErrorPathSegment]
+    details: Mapping[str, _PlanErrorDetail]
 
-class PendingQueryV2Remote:
-    def request_bytes(self) -> bytes: ...
-    def decode_reply(self, response: bytes | bytearray) -> str:
-        """Claim once, snapshot a bounded reply, and verify its request binding."""
-        ...
-
-def query_v2_authority(declared_schema: bytes, scope: str, profile: str) -> QueryV2Authority: ...
-def query_v2_authority_from_schema_authority(
+def plan_authority(declared_schema: bytes, scope: str, profile: str) -> PlanAuthority: ...
+def plan_authority_from_schema_authority(
     schema_authority: bytes,
     semantic_fingerprint: bytes,
-) -> QueryV2Authority: ...
-def query_v2_query_only_authority(
-    database: PyRustDatabase,
-    declared_schema: bytes,
-    scope: str,
-    profile: str,
-) -> QueryV2Authority:
-    """Bind a local-only authority to one exact database with no migration controls."""
-    ...
-
-def query_v2_execute_local(
-    database: PyRustDatabase,
-    authority: QueryV2Authority,
-    plan: bytes,
-    invocation_json: str,
-    deadline_ms: int | None = ...,
-) -> str:
-    """Runs with the GIL released; the optional deadline bounds the round trip."""
-    ...
-
-def query_v2_remote_capabilities(advertisement: bytes) -> list[str]:
-    """Inspect an advertisement already trusted through TLS or out-of-band pinning."""
-    ...
-
-def query_v2_prepare_remote(
-    authority: QueryV2Authority,
-    plan: bytes,
-    invocation_json: str,
-    advertisement: bytes,
-    max_items: int,
-    max_bytes: int,
-    max_collection_members: int,
-    deadline_ms: int | None = ...,
-) -> PendingQueryV2Remote:
-    """Bind a trusted executor advertisement and absolute expiry into one request."""
-    ...
+) -> PlanAuthority: ...
 
 # Version gate — SSOT in crates/core/src/version.rs, re-exported here.
 class VersionError(Exception):
@@ -498,7 +120,7 @@ class VersionError(Exception):
     ...
 
 def min_supported_version() -> str:
-    """Return the minimum supported TypeDB version as ``"3.11.0"``."""
+    """Return the minimum supported TypeDB version as ``"3.12.0"``."""
     ...
 
 def max_supported_line() -> str:
@@ -522,7 +144,7 @@ def check_supported(driver: str, server: str) -> None:
 def embedded_driver_version() -> str:
     """Return the typedb-driver version compiled into the Rust runtime.
 
-    Returns the band-8 (3.11.x) pin for back-compat. Use
+    Returns the retained band-9 pin. Use
     ``embedded_driver_versions()`` to get all compiled-in bands.
     """
     ...
@@ -532,7 +154,7 @@ def embedded_driver_versions() -> dict[int, str]:
 
     Returns a dict mapping ``int`` band → ``str`` version for every band
     feature compiled into this build.  The default build returns
-    ``{8: "3.11.5", 9: "3.14.0"}``.
+    ``{9: "3.14.0"}``.
     """
     ...
 
@@ -570,9 +192,12 @@ class _CustomRootCaSnapshot:
     def path(self) -> PathLike[str]: ...
     def cleanup(self) -> None: ...
 
-class PyRustDatabase:
+class PyDatabase:
     """Rust-backed TypeDB database connection."""
-
+    def raw_transaction(
+        self, kind: Literal["read", "write", "schema"] = "read", *, commit_on_exit: bool = True
+    ) -> RawTransaction: ...
+    def execute_query(self, query: str, kind: str = "read") -> dict[str, Any]: ...
     @staticmethod
     def connect(
         address: str,
@@ -583,7 +208,8 @@ class PyRustDatabase:
         server_version: str | None = ...,
         tls: bool | None = ...,
         tls_root_ca: str | PathLike[str] | None = ...,
-    ) -> PyRustDatabase: ...
+        query_limits: QueryLimits | None = ...,
+    ) -> PyDatabase: ...
     def close(self) -> None: ...
     def database_exists(self) -> bool: ...
     def database_exists_controlled(
@@ -625,12 +251,14 @@ class PyRustDatabase:
         cancellation: MigrationCancellation | None = ...,
     ) -> PyManagedDatabaseDeletionPlan: ...
     def server_version(self) -> str | None: ...
-    def transaction(self, transaction_type: str = "read") -> PyRustTransactionContext: ...
+    def transaction(self, transaction_type: str = "read") -> PyTransactionContext: ...
     def staged_transaction(
         self,
         kind: Literal["read", "write", "schema"] | None = None,
         *,
         commit_on_exit: bool = True,
+        timeout_milliseconds: int | None = None,
+        collect_phase_timestamps: bool = False,
     ) -> Transaction: ...
     def __getattr__(self, name: str) -> Any: ...
 
@@ -661,9 +289,9 @@ class PyManagedDatabaseDeletionPlan:
     ]: ...
     def close(self) -> None: ...
 
-class PyRustTransactionContext:
+class PyTransactionContext:
     """Rust-backed TypeDB transaction context."""
-
+    def execute_query(self, query: str) -> Any: ...
     def __getattr__(self, name: str) -> Any: ...
 
 # Internal native typed-match seam. Public authoring types live in the
@@ -737,7 +365,10 @@ class QueryExecutionResourceLimits:
         collection_members: int | None = ...,
         role_players: int | None = ...,
         statements: int | None = ...,
+        collect_phase_timestamps: bool = False,
     ) -> None: ...
+    @property
+    def collect_phase_timestamps(self) -> bool: ...
     @property
     def timeout_milliseconds(self) -> int: ...
     @property
@@ -753,7 +384,7 @@ class QueryExecutionResourceLimits:
     @property
     def role_players(self) -> int: ...
     @property
-    def statements(self) -> int: ...
+    def statements(self) -> int | None: ...
 
 @final
 class QueryCancellation:
@@ -781,8 +412,8 @@ class MatchFunctionCallHandle:
     ) -> MatchPredicateHandle: ...
 
 class MatchBindingHandle:
-    def iid(self, iid: str) -> MatchPredicateHandle: ...
-    def iid_in(self, iids: list[str]) -> MatchPredicateHandle: ...
+    def iid(self, iid: Iid) -> MatchPredicateHandle: ...
+    def iid_in(self, iids: list[Iid]) -> MatchPredicateHandle: ...
     def function_argument(self) -> MatchFunctionArgumentHandle: ...
     def field(self, field_name: str) -> MatchFieldHandle: ...
     def field_owned_by(self, owner_type: str, field_name: str) -> MatchFieldHandle: ...
@@ -897,7 +528,7 @@ class MatchQueryHandle:
     ) -> str: ...
     def execute_fetch_rows_owned(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         order: list[MatchOrderHandle],
         offset: int,
         limit: int,
@@ -905,7 +536,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_fetch_rows_borrowed(
         self,
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
         order: list[MatchOrderHandle],
         offset: int,
         limit: int,
@@ -921,7 +552,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_page_by_owned(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         root: MatchBindingHandle,
         order: list[MatchOrderHandle],
         offset: int,
@@ -930,7 +561,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_page_by_borrowed(
         self,
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
         root: MatchBindingHandle,
         order: list[MatchOrderHandle],
         offset: int,
@@ -947,19 +578,19 @@ class MatchQueryHandle:
         include_total: bool,
     ) -> ValidatedMatchResultHandle: ...
     def execute_count_by_owned(
-        self, database: PyRustDatabase, root: MatchBindingHandle
+        self, database: PyDatabase, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_count_by_borrowed(
-        self, transaction: PyRustTransactionContext, root: MatchBindingHandle
+        self, transaction: PyTransactionContext, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_count_by_proxy(
         self, connection: ProxyConnection, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_exists_by_owned(
-        self, database: PyRustDatabase, root: MatchBindingHandle
+        self, database: PyDatabase, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_exists_by_borrowed(
-        self, transaction: PyRustTransactionContext, root: MatchBindingHandle
+        self, transaction: PyTransactionContext, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_exists_by_proxy(
         self, connection: ProxyConnection, root: MatchBindingHandle
@@ -983,7 +614,7 @@ class MatchQueryHandle:
     ) -> str: ...
     def execute_reduce_by_owned(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         root: MatchBindingHandle,
         group: MatchBindingHandle | None,
         reducers: Sequence[str],
@@ -991,7 +622,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_reduce_by_borrowed(
         self,
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
         root: MatchBindingHandle,
         group: MatchBindingHandle | None,
         reducers: Sequence[str],
@@ -1014,7 +645,7 @@ class MatchQueryHandle:
     ) -> str: ...
     def execute_reduce_by_field_owned(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         root: MatchBindingHandle,
         group: MatchFieldHandle,
         reducers: Sequence[str],
@@ -1022,7 +653,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_reduce_by_field_borrowed(
         self,
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
         root: MatchBindingHandle,
         group: MatchFieldHandle,
         reducers: Sequence[str],
@@ -1045,7 +676,7 @@ class MatchQueryHandle:
     ) -> str: ...
     def execute_reduce_by_fields_owned(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         root: MatchBindingHandle,
         groups: Sequence[MatchFieldHandle],
         reducers: Sequence[str],
@@ -1053,7 +684,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_reduce_by_fields_borrowed(
         self,
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
         root: MatchBindingHandle,
         groups: Sequence[MatchFieldHandle],
         reducers: Sequence[str],
@@ -1067,6 +698,64 @@ class MatchQueryHandle:
         reducers: Sequence[str],
         inputs: Sequence[MatchFieldHandle | None],
     ) -> ValidatedMatchResultHandle: ...
+    def stage_fetch_rows[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        order: list[MatchOrderHandle],
+        offset: int,
+        limit: int,
+        cardinality: str,
+    ) -> Pending[OutputT]: ...
+    def stage_page_by[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+        order: list[MatchOrderHandle],
+        offset: int,
+        limit: int,
+        include_total: bool,
+    ) -> Pending[OutputT]: ...
+    def stage_count_by[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+    ) -> Pending[OutputT]: ...
+    def stage_exists_by[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+    ) -> Pending[OutputT]: ...
+    def stage_reduce_by[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+        group: MatchBindingHandle | None,
+        reducers: Sequence[str],
+        inputs: Sequence[MatchFieldHandle | None],
+    ) -> Pending[OutputT]: ...
+    def stage_reduce_by_field[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+        group: MatchFieldHandle,
+        reducers: Sequence[str],
+        inputs: Sequence[MatchFieldHandle | None],
+    ) -> Pending[OutputT]: ...
+    def stage_reduce_by_fields[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+        groups: Sequence[MatchFieldHandle],
+        reducers: Sequence[str],
+        inputs: Sequence[MatchFieldHandle | None],
+    ) -> Pending[OutputT]: ...
 
 class MatchSessionHandle:
     def __init__(self, registry: _QueryDescriptorRegistry) -> None: ...
@@ -1104,15 +793,16 @@ class MatchSessionHandle:
 @final
 class PyProjectedModelManager:
     def __new__(cls) -> Never: ...
-    def insert[T](self, instance: T) -> T: ...
-    def insert_many[T](self, instances: Sequence[T]) -> list[T]: ...
-    def put[T](self, instance: T) -> T: ...
-    def put_many[T](self, instances: Sequence[T]) -> list[T]: ...
-    def update[T](self, instance: T) -> T: ...
-    def update_many[T](self, instances: Sequence[T]) -> list[T]: ...
-    def resolve_iid[T](self, instance: T) -> str | None: ...
+    def insert[T](self, instance: T) -> WriteResult[T]: ...
+    def insert_many[T](self, instances: Sequence[T]) -> BatchWriteResult[T]: ...
+    def put[T](self, instance: T) -> WriteResult[T]: ...
+    def put_many[T](self, instances: Sequence[T]) -> BatchWriteResult[T]: ...
+    def update[T](self, instance: T) -> WriteResult[T]: ...
+    def update_many[T](self, instances: Sequence[T]) -> BatchWriteResult[T]: ...
     def delete(self, instance_or_iid: object) -> None: ...
-    def delete_many(self, iids: Sequence[str]) -> None: ...
+    def delete_many(self, iids: Sequence[Iid]) -> None: ...
+    def delete_by_iid_returning(self, iid: Iid) -> WriteResult[object]: ...
+    def delete_many_returning(self, iids: Sequence[Iid]) -> BatchWriteResult[object]: ...
     def filter(self, **filters: object) -> PyProjectedModelManager: ...
     def canonical_filter(self) -> PyProjectedManagerFilter: ...
     def all(self) -> list[object]: ...
@@ -1120,7 +810,7 @@ class PyProjectedModelManager:
     def first(self) -> object | None: ...
     def count(self) -> int: ...
     def exists(self) -> bool: ...
-    def get_by_iid(self, iid: str) -> object | None: ...
+    def get_by_iid(self, iid: Iid) -> object | None: ...
 
 @final
 class PyProjectedManagerFilter:
@@ -1134,6 +824,8 @@ class PyProjectedManagerFilter:
         value: object,
     ) -> PyProjectedManagerFilter: ...
     def reject_unissued_field(self) -> PyProjectedManagerFilter: ...
+    def update[T](self, instance: T) -> WriteResult[T]: ...
+    def delete(self) -> None: ...
     def all(self) -> list[object]: ...
     def first(self) -> object | None: ...
     def count(self) -> int: ...
@@ -1141,6 +833,7 @@ class PyProjectedManagerFilter:
 
 @final
 class PyRuntimeProjection:
+    def instance_deleted(self, instance: object) -> bool: ...
     def __init__(
         self,
         projection_json: str,
@@ -1162,16 +855,22 @@ class PyRuntimeProjection:
         connection_limits: QueryExecutionResourceLimits | None = ...,
         answer_limits: QueryExecutionResourceLimits | None = ...,
         cancellation: QueryCancellation | None = ...,
-    ) -> PyRustDatabase: ...
+        query_limits: QueryLimits | None = ...,
+    ) -> PyDatabase: ...
+    def manager_for_proxy(
+        self,
+        model: type[object],
+        connection: ProxyConnection,
+    ) -> PyProjectedModelManager: ...
     def manager_for_database(
         self,
         model: type[object],
-        database: PyRustDatabase,
+        database: PyDatabase,
     ) -> PyProjectedModelManager: ...
     def manager_for_transaction(
         self,
         model: type[object],
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
     ) -> PyProjectedModelManager: ...
     def validate_attribute_value(
         self,
@@ -1253,28 +952,6 @@ class PyRuntimeProjection:
         max_records: int | None = ...,
         max_members: int | None = ...,
     ) -> list[bytes]: ...
-    def _query_builder_match_entity_clause(
-        self, model: type[object], variable: str, filters: Mapping[str, object]
-    ) -> dict[str, Any]: ...
-    def _query_builder_insert_entity_clause(
-        self, instance: object, variable: str
-    ) -> dict[str, Any]: ...
-    def _query_builder_match_relation_clause(
-        self, model: type[object], variable: str, role_players: Mapping[str, str] | None = ...
-    ) -> dict[str, Any]: ...
-    def query_builder_match_entity(
-        self,
-        model: type[object],
-        variable: str,
-        filters: Mapping[str, object],
-    ) -> str: ...
-    def query_builder_insert_entity(self, instance: object, variable: str) -> str: ...
-    def query_builder_match_relation(
-        self,
-        model: type[object],
-        variable: str,
-        role_players: Mapping[str, str] | None = ...,
-    ) -> str: ...
     def match_session_with_resources(
         self,
         resources: QueryExecutionResourceLimits,
@@ -1285,10 +962,16 @@ class PyRuntimeProjection:
 
 @final
 class ProxyConnection:
+    def raw_transaction(
+        self, kind: Literal["read", "write", "schema"] = "read", *, commit_on_exit: bool = True
+    ) -> RawTransaction: ...
+    def execute_query(
+        self, query: str, kind: Literal["read", "write", "schema"] = "read"
+    ) -> dict[str, Any]: ...
     def __new__(cls) -> Never: ...
     @staticmethod
     def connect(
-        authority: QueryV2Authority,
+        authority: PlanAuthority,
         endpoint: str,
         *,
         tls_mode: Literal["disabled", "native_roots", "custom_root"] = ...,
@@ -1299,9 +982,15 @@ class ProxyConnection:
         answer_limits: QueryExecutionResourceLimits | None = ...,
         cancellation: QueryCancellation | None = ...,
         staged_advertisement: bytes | bytearray | None = ...,
+        admission_window_milliseconds: int = ...,
+        query_limits: QueryLimits | None = ...,
     ) -> ProxyConnection: ...
     @property
+    def admission_window_milliseconds(self) -> int: ...
+    @property
     def answer_limits(self) -> QueryExecutionResourceLimits: ...
+    @property
+    def query_limits(self) -> QueryLimits: ...
     def transaction(
         self,
         kind: Literal["read", "write", "schema"] | None = None,
@@ -1314,13 +1003,19 @@ class ProxyConnection:
 class Transaction:
     """Staged transaction: stage plans, then commit them as one transaction.
 
-    Opened by ``RustDatabase.staged_transaction`` (direct) or
+    Opened by ``PyDatabase.staged_transaction`` (direct) or
     ``ProxyConnection.transaction`` (one signed v3 exchange per commit).
     """
 
     def __new__(cls) -> Never: ...
-    def stage(self, plan: _Plan | bytes | bytearray) -> Pending:
+    @overload
+    def stage[R](self, plan: _Plan[R]) -> Pending[R]: ...
+    @overload
+    def stage(
+        self, plan: bytes | bytearray
+    ) -> Pending[Rows | Documents | Count | Exists | Matched]:
         """Stage a built plan, or canonical plan bytes over a proxy."""
+    def stage_stack(self, plans: Sequence[StagedPlan]) -> list[Pending[PlanAnswer]]: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
     def close(self) -> None: ...
@@ -1333,9 +1028,12 @@ class Transaction:
     ) -> Literal[False]: ...
 
 @final
-class Pending:
+class Pending[R]:
     def __new__(cls) -> Never: ...
-    def result(self) -> Rows | Count | Exists | Matched: ...
+    def result(self) -> R: ...
+    def documents(self) -> list[dict[str, Any]]:
+        """Raw documents of this execution after commit; no query or hydration."""
+        ...
 
 class PlanAnswer:
     """The answer of one staged plan."""
@@ -1348,6 +1046,13 @@ class Rows(PlanAnswer):
     @property
     def rows(self) -> list[dict[str, Any]]: ...
     def __new__(cls, rows: list[dict[str, Any]]) -> Rows: ...
+
+@final
+class Documents(PlanAnswer):
+    __match_args__ = ("documents",)
+    @property
+    def documents(self) -> list[dict[str, object]]: ...
+    def __new__(cls, documents: list[dict[str, object]]) -> Documents: ...
 
 @final
 class Count(PlanAnswer):
@@ -1373,21 +1078,41 @@ class Matched(PlanAnswer):
 _PlanOperand = tuple[Literal["binding", "input", "literal"], int]
 
 @final
+class StagedPlan:
+    """One validated staged invocation with future IID references."""
+
+    def __new__(cls) -> Never: ...
+    def result_refs_json(self) -> str: ...
+
+@final
 class _PlanBuilderCore:
-    def __new__(cls) -> _PlanBuilderCore: ...
+    def __new__(cls, query_limits: QueryLimits | None = None) -> _PlanBuilderCore: ...
     def exact(self, type_json: str) -> int: ...
     def subtypes(self, type_json: str) -> int: ...
+    def by_iid(self, owner: int, iid: Iid) -> None: ...
+    def by_iid_input(self, owner: int, column: int) -> None: ...
     def field(self, owner: int, owns_json: str) -> int: ...
+    def field_value(self, owner: int, owns_json: str) -> int: ...
     def links(self, relation: int, role_json: str, player: int) -> None: ...
     def compare(self, left: _PlanOperand, comparator: str, right: _PlanOperand) -> None: ...
     def input(self, name: str, value_type: str, optional: bool) -> int: ...
+    def copy(self) -> _PlanBuilderCore: ...
+    def bind_value(self, owner: int, field: str, value_type: str, value: object) -> int: ...
+    def bind_rows(
+        self, columns: list[tuple[int, str, str]], rows: list[list[object]]
+    ) -> list[int]: ...
+    def model_rows(
+        self, thing: int, columns: list[str], rows: list[list[tuple[str, object] | None]]
+    ) -> None: ...
     def literal(self, value_type: str, value: object) -> int: ...
     def expr_operand(self, operand: _PlanOperand) -> int: ...
     def expr_arith(self, op: str, lhs: int, rhs: int) -> int: ...
     def expr_call(self, func: str, args: list[int]) -> int: ...
     def let_(self, name: str, expr: int) -> int: ...
+    def let_value(self, owner: int, field: str, expr: int) -> int: ...
     def update(self, owner: int, owns_json: str, value: _PlanOperand) -> None: ...
     def update_player(self, relation: int, role_json: str, player: int) -> None: ...
+    def link(self, relation: int, role_json: str, player: int) -> None: ...
     def insert(self, type_json: str) -> int: ...
     def put(self, type_json: str) -> int: ...
     def thing_field(self, thing: int, owns_json: str, value: _PlanOperand) -> None: ...
@@ -1397,14 +1122,45 @@ class _PlanBuilderCore:
     def delete_player(self, relation: int, role_json: str, player: int) -> None: ...
     def row(self, cells: list[tuple[int, int | None]]) -> None: ...
     def returning(self, columns: list[int]) -> None: ...
+    def fetch(self, thing: int, roles: list[tuple[str, bool]]) -> None: ...
+    def fetch_held(self, thing: int, roles: list[tuple[str, bool]]) -> None: ...
     def count(self) -> None: ...
     def exists(self) -> None: ...
-    def build(self, authority: QueryV2Authority) -> _Plan: ...
+    def build(
+        self, authority: PlanAuthority, matched: bool = False, models: bool = False
+    ) -> _Plan[Rows | Documents | Count | Exists | Matched]: ...
+    def build_staged(
+        self,
+        authority: PlanAuthority,
+        rows: list[list[tuple[int, object | None]]],
+        references: str,
+    ) -> StagedPlan: ...
+    def build_selected(
+        self,
+        authority: PlanAuthority,
+        kind: str,
+        thing: int | None,
+        roles: Sequence[tuple[str, bool]],
+        columns: Sequence[int],
+        projection: PyRuntimeProjection | None = None,
+        declared: str | None = None,
+        model_slots: Sequence[tuple[int, str]] | None = None,
+    ) -> _Plan[Rows | Documents | Count | Exists | Matched]: ...
 
-class _Plan:
+class _Plan[R]:
     """One validated query-plan/v3 program."""
 
-    def __new__(cls, plan: _Plan) -> Self: ...
+    def __new__(cls, plan: _Plan[R] | None = None) -> Self: ...
+    def _complete(self, plan: _Plan[Any], decoder: Callable[[PlanAnswer], R] | None) -> None: ...
+    def bind_rows(
+        self,
+        authority: PlanAuthority,
+        rows: list[list[tuple[int, object | None]]],
+        decoder_factory: Callable[[_Plan[Any]], Callable[[PlanAnswer], object] | None]
+        | None = None,
+    ) -> _Plan[R]: ...
+    def _scalar_rows(self, rows: Rows) -> list[tuple[Any, ...]]: ...
+    def explain_json(self) -> str: ...
     def canonical_bytes(self) -> bytes: ...
     def fingerprint(self) -> str: ...
     def writes(self) -> bool: ...
@@ -1422,15 +1178,15 @@ class PendingRemoteModelQuery:
     def request_bytes(self) -> bytes: ...
     def decode_reply(self, response: bytes | bytearray) -> ValidatedMatchResultHandle: ...
 
-def query_v2_remote_model_context_with_resources(
-    authority: QueryV2Authority,
+def plan_remote_model_context_with_resources(
+    authority: PlanAuthority,
     advertisement: bytes | bytearray,
     resources: QueryExecutionResourceLimits,
     cancellation: QueryCancellation,
     *,
     answer_limits: QueryExecutionResourceLimits | None = ...,
 ) -> RemoteModelQueryContext: ...
-def query_v2_prepare_remote_model_rows(
+def plan_prepare_remote_model_rows(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     order: list[MatchOrderHandle],
@@ -1438,7 +1194,7 @@ def query_v2_prepare_remote_model_rows(
     limit: int,
     cardinality: Literal["exactly_one", "bounded_many"],
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_page(
+def plan_prepare_remote_model_page(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
@@ -1447,17 +1203,17 @@ def query_v2_prepare_remote_model_page(
     limit: int,
     include_total: bool,
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_count(
+def plan_prepare_remote_model_count(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_exists(
+def plan_prepare_remote_model_exists(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_reduce(
+def plan_prepare_remote_model_reduce(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
@@ -1465,7 +1221,7 @@ def query_v2_prepare_remote_model_reduce(
     reducers: Sequence[Literal["count", "sum", "min", "max", "mean", "median", "std"]],
     inputs: Sequence[MatchFieldHandle | None],
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_reduce_by_field(
+def plan_prepare_remote_model_reduce_by_field(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
@@ -1473,7 +1229,7 @@ def query_v2_prepare_remote_model_reduce_by_field(
     reducers: Sequence[Literal["count", "sum", "min", "max", "mean", "median", "std"]],
     inputs: Sequence[MatchFieldHandle | None],
 ) -> PendingRemoteModelQuery: ...
-def query_v2_prepare_remote_model_reduce_by_fields(
+def plan_prepare_remote_model_reduce_by_fields(
     query: MatchQueryHandle,
     context: RemoteModelQueryContext,
     root: MatchBindingHandle,
@@ -1588,10 +1344,10 @@ class MigrationExecutionResources:
 class MigrationPlan:
     @property
     def execution_authorized(self) -> bool: ...
-    def execute(self, database: PyRustDatabase, holder: str) -> MigrationExecutionReport: ...
+    def execute(self, database: PyDatabase, holder: str) -> MigrationExecutionReport: ...
     def execute_controlled(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         holder: str,
         *,
         timeout_milliseconds: int | None = ...,
@@ -1658,13 +1414,19 @@ class MigrationPreview:
 
 @final
 class MigrationCatalog:
+    def register(
+        self,
+        step_id: str,
+        forward: Callable[[Any], None],
+        reverse: Callable[[Any], None] | None = ...,
+    ) -> None: ...
     def fingerprint_json(self) -> str: ...
     def __len__(self) -> int: ...
     def is_empty(self) -> bool: ...
     def heads(self) -> list[MigrationIdentity]: ...
     def entry(self, index: int) -> MigrationHistoryEntry | None: ...
-    def verify(self, database: PyRustDatabase) -> MigrationVerificationReport: ...
-    def applied_migrations(self, database: PyRustDatabase) -> list[MigrationIdentity]: ...
+    def verify(self, database: PyDatabase) -> MigrationVerificationReport: ...
+    def applied_migrations(self, database: PyDatabase) -> list[MigrationIdentity]: ...
     def preview_apply(
         self,
         applied: list[MigrationIdentity],
@@ -1680,24 +1442,87 @@ def open_migration_catalog(
     schema_authority: bytes,
     history_bundle: bytes,
 ) -> MigrationCatalog: ...
-
-@final
-class PyMigrationStateReader:
-    def __new__(cls) -> Never: ...
-    def load_applied(self) -> list[dict[str, object]]: ...
-    def load_runs(self) -> list[dict[str, object]]: ...
-
-def migration_state_reader(db: PyRustDatabase) -> PyMigrationStateReader: ...
 def blocking(target: object) -> Any: ...
 def __getattr__(name: str) -> Any: ...
-def _query_plan_v3_round_trip(plan_bytes: bytes, schema_bytes: bytes) -> tuple[bytes, str]:
-    """Validate and re-encode a canonical V3 plan through Rust, returning its digest."""
+def _query_plan_round_trip(plan_bytes: bytes, schema_bytes: bytes) -> tuple[bytes, str]:
+    """Validate and re-encode a canonical query plan through Rust, returning its digest."""
     ...
 
 def _render_schema_annotations(options: dict[str, Any]) -> list[str]: ...
 def _render_schema_definition(kind: str, entry: dict[str, Any]) -> str: ...
 def _render_schema_owns(entries: list[dict[str, Any]]) -> list[str]: ...
-def _render_migration_operation(operation: dict[str, Any]) -> dict[str, Any]: ...
 def _clear_attribute_query(
     type_name: str, iid: str, variable: str, attributes: list[str]
 ) -> str: ...
+
+class Iid:
+    """Validated, immutable provider Thing IID; distinct from str."""
+    def __init__(self, value: str) -> None: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+class DynamicExpr:
+    def __new__(cls) -> Never: ...
+    @staticmethod
+    def eq(attr_name: str, value: DynamicValue) -> DynamicExpr: ...
+    @staticmethod
+    def neq(attr_name: str, value: DynamicValue) -> DynamicExpr: ...
+    @staticmethod
+    def gt(attr_name: str, value: DynamicValue) -> DynamicExpr: ...
+    @staticmethod
+    def gte(attr_name: str, value: DynamicValue) -> DynamicExpr: ...
+    @staticmethod
+    def lt(attr_name: str, value: DynamicValue) -> DynamicExpr: ...
+    @staticmethod
+    def lte(attr_name: str, value: DynamicValue) -> DynamicExpr: ...
+    @staticmethod
+    def contains(attr_name: str, substring: str) -> DynamicExpr: ...
+    @staticmethod
+    def like(attr_name: str, pattern: str) -> DynamicExpr: ...
+    @staticmethod
+    def iid(iid: Iid) -> DynamicExpr: ...
+    @staticmethod
+    def is_null(attr_name: str) -> DynamicExpr: ...
+    @staticmethod
+    def is_not_null(attr_name: str) -> DynamicExpr: ...
+    @staticmethod
+    def and_(expressions: list[DynamicExpr]) -> DynamicExpr: ...
+    @staticmethod
+    def or_(expressions: list[DynamicExpr]) -> DynamicExpr: ...
+    @staticmethod
+    def not_(expression: DynamicExpr) -> DynamicExpr: ...
+    @staticmethod
+    def role_player(role_name: str, expression: DynamicExpr) -> DynamicExpr: ...
+
+class RawQueryError(RuntimeError):
+    code: str
+    message: str
+    status: int
+    provider_code: str | None
+    commit_outcome: Literal["definitely_aborted", "unknown"] | None
+
+@final
+class RawTransaction:
+    """Unchecked direct transaction or single-query proxy context."""
+    def __new__(cls) -> Never: ...
+    def execute_query(self, query: str) -> dict[str, Any]:
+        """Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+        to TypeDB as written, and TypeDB's output comes back as it
+        answered, in this SDK's native data types. TypeBridge adds no
+        validation, rewriting, hydration, hooks, limits or extra
+        queries. It runs in read, write and schema transactions and
+        accepts any TypeQL, schema-breaking changes included. The caller
+        owns its correctness; TypeBridge makes no promise about its
+        effects. On a proxy connection it posts to the server's opt-in
+        `/v3/raw` endpoint, which is off by default.
+
+        On a proxy connection a raw transaction holds one query, because
+        `/v3/raw` runs each request as its own transaction.
+        """
+    def commit(self) -> None: ...
+    def rollback(self) -> None: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> RawTransaction: ...
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool: ...

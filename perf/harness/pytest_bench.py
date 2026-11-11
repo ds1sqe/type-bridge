@@ -3,7 +3,7 @@
 The input is the file ``pytest benchmarks --benchmark-only --benchmark-json
 FILE`` writes. A bench ``test_<name>`` in ``test_<group>_bench.py`` becomes
 ``binding.python.<group>.<name>``, for example
-``binding.python.compilation.compile_simple_match``.
+``binding.python.validation.validate_single_name``.
 
 Each metric has unit ``ns``, the mean round time as ``value``, the median as
 ``p50`` and the round count as ``n``, matching the Criterion converter

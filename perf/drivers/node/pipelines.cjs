@@ -55,7 +55,7 @@ const packageRoot = process.env.TYPE_BRIDGE_NODE_PACKAGE_ROOT;
 if (!packageRoot) {
   throw new Error("set TYPE_BRIDGE_NODE_PACKAGE_ROOT to the built @type-bridge/node package");
 }
-const { Plan, QueryV2Authority, RustDatabase } = require(packageRoot);
+const { Plan, PlanAuthority, Database } = require(packageRoot);
 const native = require(process.env.TYPE_BRIDGE_NODE_NATIVE_PATH);
 if (typeof native._perfStages !== "function") {
   throw new Error("the native module has no _perfStages(); build it with --features perf-stages");
@@ -211,7 +211,7 @@ async function commit(db, kind, plans) {
   try {
     const pending = plans.map((plan) => tx.stage(plan));
     await tx.commit();
-    return pending.map((answer) => answer.get());
+    return pending.map((answer) => answer.result());
   } finally {
     await tx[Symbol.asyncDispose]();
   }
@@ -304,7 +304,7 @@ function setup(action, database) {
 }
 
 function connect(database) {
-  return RustDatabase.connect(process.env.TYPEDB_ADDRESS ?? "localhost:1729", database, {
+  return Database.connect(process.env.TYPEDB_ADDRESS ?? "localhost:1729", database, {
     username: process.env.TYPEDB_USERNAME,
     password: process.env.TYPEDB_PASSWORD,
     httpPort: Number(process.env.TYPEDB_HTTP_PORT ?? "8000"),
@@ -321,7 +321,7 @@ async function runPipeline(name, config, declared) {
     setup("apply", database);
     const db = connect(database);
     try {
-      const authority = QueryV2Authority.queryOnly(db, declared, SCOPE, PROFILE);
+      const authority = new PlanAuthority(declared, SCOPE, PROFILE);
       await seed(name, db, authority, config.warmup + config.iterations);
       const samples = [];
       for (let number = 0; number < config.warmup + config.iterations; number += 1) {
@@ -346,7 +346,7 @@ async function runPipeline(name, config, declared) {
 
 /** Time the offline ops: no database opens, since staging needs a connected one. */
 function binding(config, declared) {
-  const authority = new QueryV2Authority(declared, SCOPE, PROFILE);
+  const authority = new PlanAuthority(declared, SCOPE, PROFILE);
   const rows = insertItems(authority, "batch-", 0, BATCH_ROWS);
   const calls = {
     build_purchase: () => purchase(authority, "O0"),

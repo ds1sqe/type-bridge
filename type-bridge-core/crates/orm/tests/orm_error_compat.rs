@@ -1,4 +1,4 @@
-//! Downstream-style compile fixture for the released exhaustive ORM error enum.
+//! Downstream-style compile fixture for exhaustive ORM errors and retained transaction APIs.
 
 use type_bridge_orm::OrmError;
 use type_bridge_orm::session::backend::{
@@ -29,6 +29,7 @@ fn accepts_released_transaction_impl<T: TransactionOps>() {}
 
 fn classify_released_error(error: OrmError) -> &'static str {
     match error {
+        OrmError::ExecutionDiagnostic(_) => "execution-diagnostic",
         OrmError::Match(_) => "match",
         OrmError::UnsupportedVersion(_) => "unsupported-version",
         OrmError::Connection(_) => "connection",
@@ -48,7 +49,7 @@ fn classify_released_error(error: OrmError) -> &'static str {
 }
 
 #[test]
-fn released_orm_error_remains_exhaustively_matchable_without_commit_variant() {
+fn orm_error_remains_exhaustively_matchable_with_execution_diagnostic() {
     assert_eq!(
         classify_released_error(OrmError::Transaction(
             "Commit failed: constraint violated".to_owned(),

@@ -62,8 +62,13 @@ def _compare(label: str, actual: Any, expected: Any, code: str) -> None:
         raise ContractError(code, f"{label} is {actual!r}, expected {expected!r}")
 
 
-def _validate(report: LoadedJson, expected: Any, *, live: bool) -> str:
-    value = _exact_object(report.value, REPORT_KEYS, f"{report.path.name}")
+def _validate(report: LoadedJson, expected: Any, *, live: bool, root: Path = ROOT) -> str:
+    keys = (
+        REPORT_KEYS
+        | ({"read_back"} if "read_back" in expected else set())
+        | ({"explanation"} if expected["program"] == "purchase" else set())
+    )
+    value = _exact_object(report.value, keys, f"{report.path.name}")
     binding = value["binding"]
     if binding not in BINDINGS:
         raise ContractError("unknown_binding", f"{report.path.name} names binding {binding!r}")
@@ -75,6 +80,13 @@ def _validate(report: LoadedJson, expected: Any, *, live: bool) -> str:
         expected["semantic_profile"],
         "semantic_profile_mismatch",
     )
+    if expected["program"] == "purchase":
+        profile = value["semantic_profile"].replace("/", "-")
+        fixture = root / f"tests/contracts/plan/explain/purchase-sdk.{profile}.json"
+        explanation = _load_json(fixture, "purchase explanation").value
+        _compare(
+            f"{binding} explanation", value["explanation"], explanation, "explanation_mismatch"
+        )
     plans = _exact_object(value["plans"], set(expected["plans"]), f"{binding} plans")
     for name, encoded in expected["plans"].items():
         _compare(f"{binding} plan {name} bytes", plans[name], encoded, "plan_bytes_mismatch")
@@ -87,6 +99,17 @@ def _validate(report: LoadedJson, expected: Any, *, live: bool) -> str:
         )
         for step, answers in expected["results"].items():
             _compare(f"{binding} {transport} {step}", steps[step], answers, "answer_mismatch")
+    if "read_back" in expected:
+        snapshots = _exact_object(
+            value["read_back"], set(TRANSPORTS) if live else set(), f"{binding} read_back"
+        )
+        for transport, snapshot in snapshots.items():
+            _compare(
+                f"{binding} {transport} read_back",
+                snapshot,
+                expected["read_back"],
+                "read_back_mismatch",
+            )
     if not live:
         _compare(f"{binding} observed", value["observed"], None, "unexpected_observation")
         return binding
@@ -120,7 +143,7 @@ def compare_reports(paths: list[Path], *, live: bool, root: Path = ROOT) -> dict
     if not (root / SUITE / name).is_dir():
         raise ContractError("program_mismatch", f"no writes suite named {name!r}")
     _, expected = load_program(name, root=root)
-    bindings = [_validate(report, expected, live=live) for report in reports]
+    bindings = [_validate(report, expected, live=live, root=root) for report in reports]
     if sorted(bindings) != sorted(BINDINGS):
         raise ContractError("incomplete_binding_set", f"reports cover {sorted(bindings)}")
     return {

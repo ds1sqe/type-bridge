@@ -65,9 +65,6 @@ pub fn prepare_administration_workspace_for(destination: &Path, requested: &str)
         config.contains(committed),
         "the committed administration workspace is on typedb-3.12.1/v1"
     );
-    if requested == "typedb-3.12.1/v1" {
-        return;
-    }
     fs::write(
         &manifest,
         config.replacen(committed, &format!("  semantic-profile: {requested}\n"), 1),
@@ -172,9 +169,6 @@ pub fn prepare_administration_native_workspace_for(destination: &Path, requested
     };
 
     copy_tree(&administration_fixture(), destination);
-    if requested == "typedb-3.12.1/v1" {
-        return;
-    }
     let config_path = destination.join("typebridge.yaml");
     let config = fs::read_to_string(&config_path).expect("workspace config reads");
     fs::write(&config_path, config.replace("typedb-3.12.1/v1", requested))
@@ -221,6 +215,7 @@ pub fn prepare_administration_native_workspace_for(destination: &Path, requested
                 plan.owner().clone(),
                 plan.source().clone(),
                 plan.destination().clone(),
+                plan.mode(),
                 plan.partition().clone(),
                 state.managed_semantic_schema().clone(),
                 plan.reverse(),
@@ -259,4 +254,21 @@ pub fn prepare_administration_native_workspace_for(destination: &Path, requested
         rebuilt.push(generated.manifest().clone());
         source = committed.target_schema().clone();
     }
+}
+
+/// Exact new-authoring format-2 histories; historical profile pins stay unchanged.
+pub fn format2_history_fingerprint(profile: &str) -> String {
+    let inventory: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../tests/contracts/sdk_conformance/administration/new-authoring-format2-history.json"
+    )).expect("format-2 inventory");
+    inventory[profile]
+        .as_str()
+        .expect("format-2 profile")
+        .to_owned()
+}
+
+/// Keep live fixtures within an operator-assigned database namespace.
+pub fn live_database_name(stem: &str) -> String {
+    let prefix = std::env::var("TYPE_BRIDGE_TEST_DATABASE_PREFIX").unwrap_or_default();
+    format!("{prefix}{stem}_{}", std::process::id())
 }

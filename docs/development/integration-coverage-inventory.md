@@ -34,7 +34,7 @@ path.
 | Python | `crates/schema-codegen/tests/acceptance/check.py`, emitter tests, Pyright positive/negative fixtures | `tests/integration/schema/test_generated_projection_live.py` |
 | TypeScript/Node | `crates/schema-codegen/tests/typescript_acceptance/check.mjs`, emitter tests, TypeScript compile fixtures | `crates/node/tests/projection-integration/generated-package-live.test.ts` via `npm run test:projection-integration` |
 | Rust | schema-codegen Rust acceptance and an external generated consumer crate | `crates/schema-codegen/tests/rust_projection_live.rs` and its external consumer |
-| Internal C foundation | `crates/schema-codegen/tests/c_emitter.rs`, C ABI suites, and installed C17/C++17 consumers via `./scripts/check.sh c` | Generated CRUD and typed-query consumers on the 3.12.3 and 3.13.6 lanes of `./test.sh` |
+| C SDK and runtime | `crates/schema-codegen/tests/c_emitter.rs`, C ABI suites, and installed C17/C++17 consumers via `./scripts/check.sh c` | Generated CRUD and typed-query consumers on the 3.12.3 and 3.13.6 lanes of `./test.sh` |
 
 The three current public SDK live applications cover model construction, scalar
 and multivalue ownership, references, entity/relation CRUD, batch operations
@@ -66,26 +66,23 @@ those jobs, so a binding cannot pass cross-language parity by being skipped.
 Generated application tests are separate from retained compatibility contracts.
 The following remain independently exercised:
 
-- Python root `Query` / `QueryBuilder` and private execution dependencies;
-- Node root `TypedQuery` / `TypedGroupByQuery`;
 - Rust match/entity/relation/group-by query facades;
-- low-level Query V2 request, validation, local execution, remote envelopes,
+- native staged-plan validation, local execution, remote envelopes,
   hydration, and diagnostics;
 - raw database/session/transaction lifecycle needed by generated packages; and
-- read-only archive conversion, migration history, checksum, adoption, and
-  recovery paths.
+- canonical migration history, checksum, and existing adoption ledger guards.
 
 These retained tests may use private test-only model identities. They are not
 schema-authoring examples and are not imported by generated packages.
 
 ## Provider and TLS Coverage
 
-Ordinary live lanes exercise the TypeDB 3.11–3.14 provider window on 3.11.5,
+Ordinary live lanes exercise the TypeDB 3.12–3.14 provider window on
 3.12.3, 3.13.6 and 3.14.0. The 3.12.3 and 3.13.6 lanes run the full
 generated-projection conformance sets; 3.13.6 is the baseline, and 3.14.0
 shares its profile and runs the ordinary live tiers. Dedicated
 TLS lanes run generated Python, Node, and Rust applications with a verified
-custom root, alongside the retained low-level Query V2 transport probe.
+custom root, alongside the server TLS transport probes.
 
 Unsupported older providers are covered only by fail-closed version-window
 tests. They are not active compatibility lanes.

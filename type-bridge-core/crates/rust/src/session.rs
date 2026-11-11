@@ -34,6 +34,8 @@ pub enum ManagedDatabasePairState {
     Absent,
     /// Only a standalone managed database without TypeBridge control state exists.
     StandaloneManaged,
+    /// The valid old pair remains usable until migration execution imports it.
+    ImportPending,
     /// Both members exist and the journal owns this exact database and scope.
     OwnedPair,
     /// Only the exact owner-verified journal remains.
@@ -192,6 +194,19 @@ pub struct Database<S: Schema = Unbound> {
     marker: std::marker::PhantomData<fn() -> S>,
 }
 
+impl<S: Schema> Database<S> {
+    #[cfg(feature = "typedb")]
+    pub(crate) fn clone_for_migration(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            installed_schema: self.installed_schema.clone(),
+            match_registry: self.match_registry.clone(),
+            managed_scope_id: self.managed_scope_id.clone(),
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
 pub(crate) fn build_match_registry(
     installed: &type_bridge_orm::InstalledRuntimeProjection,
 ) -> Result<Arc<DescriptorRegistry>> {
@@ -259,6 +274,34 @@ impl Database<Unbound> {
 }
 
 impl<S: Schema> Database<S> {
+    /// Open an eager unchecked transaction of the requested kind.
+    pub async fn raw_transaction(
+        &self,
+        kind: crate::raw::TransactionKind,
+    ) -> std::result::Result<crate::RawTransaction, crate::RawQueryError> {
+        self.inner
+            .raw_transaction(kind.into())
+            .await
+            .map(crate::RawTransaction::new)
+    }
+
+    /// Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+    /// to TypeDB as written, and TypeDB's output comes back as it
+    /// answered, in this SDK's native data types. TypeBridge adds no
+    /// validation, rewriting, hydration, hooks, limits or extra
+    /// queries. It runs in read, write and schema transactions and
+    /// accepts any TypeQL, schema-breaking changes included. The caller
+    /// owns its correctness; TypeBridge makes no promise about its
+    /// effects. On a proxy connection it posts to the server's opt-in
+    /// `/v3/raw` endpoint, which is off by default.
+    pub async fn execute_query(
+        &self,
+        query: &str,
+        kind: crate::raw::TransactionKind,
+    ) -> std::result::Result<serde_json::Value, crate::RawQueryError> {
+        self.raw_transaction(kind).await?.execute_one(query).await
+    }
+
     pub(crate) fn from_bound_parts(
         inner: type_bridge_orm::Database,
         installed: Arc<type_bridge_orm::InstalledRuntimeProjection>,
@@ -327,6 +370,10 @@ impl<S: Schema> Database<S> {
         options: crate::staged::TransactionOptions,
     ) -> crate::staged::Transaction<S> {
         crate::staged::Transaction::new(self.inner.transaction(options))
+            .with_query_schema(self.installed_schema.clone(), self.match_registry.clone())
+            .with_origin(type_bridge_orm::ProjectedQueryOrigin::for_database(
+                &self.inner,
+            ))
     }
     /// Open one client-owned write transaction over this schema-bound
     /// database. Operations on its borrowed managers never auto-commit;
@@ -583,6 +630,9 @@ fn map_pair_state(
     state: type_bridge_schema_migration_typedb::ManagedDatabasePairState,
 ) -> ManagedDatabasePairState {
     match state {
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::ImportPending => {
+            ManagedDatabasePairState::ImportPending
+        }
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::Absent => {
             ManagedDatabasePairState::Absent
         }

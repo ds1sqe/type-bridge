@@ -4,16 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import json
-import warnings
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from os import PathLike
-from typing import Literal, Protocol, TypeGuard, get_args, get_origin, get_type_hints, overload
+from typing import (
+    Generic,
+    Literal,
+    Protocol,
+    TypeGuard,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+    overload,
+)
 
 from type_bridge_core import (
     DynamicValue,
+    Iid,
     MatchBindingHandle,
     MatchFieldHandle,
     MatchFunctionArgumentHandle,
@@ -25,32 +35,38 @@ from type_bridge_core import (
     MatchRoleHandle,
     MatchSelectionHandle,
     MatchSessionHandle,
+    Pending,
     PendingRemoteModelQuery,
     ProxyConnection,
+    PyDatabase,
     PyRuntimeProjection,
-    PyRustDatabase,
-    PyRustTransactionContext,
+    PyTransactionContext,
     QueryCancellation,
     QueryExecutionResourceLimits,
     QueryLimits,
     RemoteModelQueryContext,
     ValidatedMatchResultHandle,
     ValidatedMatchRowHandle,
-    query_v2_authority_from_schema_authority,
-    query_v2_prepare_remote_model_count,
-    query_v2_prepare_remote_model_exists,
-    query_v2_prepare_remote_model_page,
-    query_v2_prepare_remote_model_reduce,
-    query_v2_prepare_remote_model_reduce_by_field,
-    query_v2_prepare_remote_model_reduce_by_fields,
-    query_v2_prepare_remote_model_rows,
-    query_v2_remote_model_context_with_resources,
+    plan_authority_from_schema_authority,
+    plan_prepare_remote_model_count,
+    plan_prepare_remote_model_exists,
+    plan_prepare_remote_model_page,
+    plan_prepare_remote_model_reduce,
+    plan_prepare_remote_model_reduce_by_field,
+    plan_prepare_remote_model_reduce_by_fields,
+    plan_prepare_remote_model_rows,
+    plan_remote_model_context_with_resources,
 )
 from type_bridge_core import (
-    QueryV2Authority as _QueryV2Authority,
+    PlanAuthority as _PlanAuthority,
 )
+from type_bridge_core import (
+    Transaction as StagedTransaction,
+)
+from typing_extensions import TypeVar
 
-from type_bridge._rust_runtime import rust_database_for, rust_transaction_for
+from type_bridge._native import core_database_for, core_transaction_for
+from type_bridge.migration import MigrationTransaction
 from type_bridge.session import Database, TransactionContext
 
 from ._authority import SCHEMA_AUTHORITY_BYTES
@@ -66,6 +82,8 @@ from ._runtime import (
     function_identity_for_query,
 )
 from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON
+
+_Mode = TypeVar("_Mode", bound=bool, covariant=True, default=Literal[False])
 
 
 def _model_label(model: type[ModelBase]) -> str:
@@ -86,7 +104,7 @@ def _exact_projection(model: type[ModelBase]) -> PyRuntimeProjection:
 
 
 _package_projection: PyRuntimeProjection | None = None
-_package_query_authority: _QueryV2Authority = query_v2_authority_from_schema_authority(
+_package_query_authority: _PlanAuthority = plan_authority_from_schema_authority(
     SCHEMA_AUTHORITY_BYTES,
     SEMANTIC_SCHEMA_FINGERPRINT_JSON.encode("utf-8"),
 )
@@ -105,7 +123,7 @@ def _installed_projection() -> PyRuntimeProjection:
     return _package_projection
 
 
-def _installed_query_authority() -> _QueryV2Authority:
+def _installed_query_authority() -> _PlanAuthority:
     return _package_query_authority
 
 
@@ -200,55 +218,55 @@ class FunctionCall[DomainT](_Frozen):
     def eq_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("equal", field)
 
-    def neq_field(self, field: BoundField) -> Predicate:
+    def ne_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("not_equal", field)
 
     def lt_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("less_than", field)
 
-    def lte_field(self, field: BoundField) -> Predicate:
+    def le_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("less_than_or_equal", field)
 
     def gt_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("greater_than", field)
 
-    def gte_field(self, field: BoundField) -> Predicate:
+    def ge_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("greater_than_or_equal", field)
 
     def eq_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("equal", value)
 
-    def neq_value(self, value: FunctionInput[DomainT]) -> Predicate:
+    def ne_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("not_equal", value)
 
     def lt_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("less_than", value)
 
-    def lte_value(self, value: FunctionInput[DomainT]) -> Predicate:
+    def le_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("less_than_or_equal", value)
 
     def gt_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("greater_than", value)
 
-    def gte_value(self, value: FunctionInput[DomainT]) -> Predicate:
+    def ge_value(self, value: FunctionInput[DomainT]) -> Predicate:
         return self.__compare_value("greater_than_or_equal", value)
 
     def eq_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("equal", other)
 
-    def neq_call(self, other: FunctionCall[DomainT]) -> Predicate:
+    def ne_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("not_equal", other)
 
     def lt_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("less_than", other)
 
-    def lte_call(self, other: FunctionCall[DomainT]) -> Predicate:
+    def le_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("less_than_or_equal", other)
 
     def gt_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("greater_than", other)
 
-    def gte_call(self, other: FunctionCall[DomainT]) -> Predicate:
+    def ge_call(self, other: FunctionCall[DomainT]) -> Predicate:
         return self.__compare_call("greater_than_or_equal", other)
 
     def native_argument(self) -> MatchFunctionArgumentHandle:
@@ -413,10 +431,10 @@ class BoundField(_Frozen):
     def eq_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("equal", field)
 
-    def neq(self, value: AttributeBase | BoundField) -> Predicate:
+    def ne(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("not_equal", value)
 
-    def neq_field(self, field: BoundField) -> Predicate:
+    def ne_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("not_equal", field)
 
     def lt(self, value: AttributeBase | BoundField) -> Predicate:
@@ -425,10 +443,10 @@ class BoundField(_Frozen):
     def lt_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("less_than", field)
 
-    def lte(self, value: AttributeBase | BoundField) -> Predicate:
+    def le(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("less_than_or_equal", value)
 
-    def lte_field(self, field: BoundField) -> Predicate:
+    def le_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("less_than_or_equal", field)
 
     def gt(self, value: AttributeBase | BoundField) -> Predicate:
@@ -437,10 +455,10 @@ class BoundField(_Frozen):
     def gt_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("greater_than", field)
 
-    def gte(self, value: AttributeBase | BoundField) -> Predicate:
+    def ge(self, value: AttributeBase | BoundField) -> Predicate:
         return self.__compare("greater_than_or_equal", value)
 
-    def gte_field(self, field: BoundField) -> Predicate:
+    def ge_field(self, field: BoundField) -> Predicate:
         return self.__compare_field("greater_than_or_equal", field)
 
     def contains(self, value: AttributeBase) -> Predicate:
@@ -452,7 +470,7 @@ class BoundField(_Frozen):
     def ends_with(self, value: AttributeBase) -> Predicate:
         return self.__compare("ends_with", value)
 
-    def regex(self, value: AttributeBase) -> Predicate:
+    def like(self, value: AttributeBase) -> Predicate:
         return self.__compare("regex", value)
 
     def is_present(self) -> Predicate:
@@ -559,14 +577,11 @@ class BoundRole(_Frozen):
         object.__setattr__(self, "_BoundRole__handle", handle)
         object.__setattr__(self, "_BoundRole__projection", projection)
 
-    def connects(self, player: BoundVar) -> Predicate:
+    def links(self, player: BoundVar) -> Predicate:
         _require_projection(player.projection_identity(), self.__projection, "role player")
         if self.__accepted.isdisjoint(player.model_domain_labels()):
             raise TypeError("generated role does not accept this projected player type")
         return Predicate(self.__handle.connects(player.native_handle()), self.__projection)
-
-    def is_(self, player: BoundVar) -> Predicate:
-        return self.connects(player)
 
 
 class BoundVar(_Frozen):
@@ -637,10 +652,10 @@ class BoundVar(_Frozen):
             accepted,
         )
 
-    def iid(self, iid: str) -> Predicate:
+    def iid(self, iid: Iid) -> Predicate:
         return Predicate(self.__handle.iid(iid), self.__projection)
 
-    def iid_in(self, iids: Iterable[str]) -> Predicate:
+    def iid_in(self, iids: Iterable[Iid]) -> Predicate:
         return Predicate(self.__handle.iid_in(list(iids)), self.__projection)
 
     def collect(self) -> Collected:
@@ -721,7 +736,7 @@ class Collected(_Frozen):
     def distinct(self, enabled: bool = True) -> Collected:
         return Collected(self.__handle.distinct(enabled), self.__model, self.__projection)
 
-    def order_by(self, order: QueryOrder) -> Collected:
+    def sort(self, order: QueryOrder) -> Collected:
         _require_projection(order.projection_identity(), self.__projection, "selection order")
         return Collected(
             self.__handle.order_by(order.native_handle()),
@@ -746,55 +761,76 @@ type _Cardinality = Literal["exactly_one", "bounded_many"]
 type _Group = BoundVar | BoundField | tuple[BoundField, ...]
 
 
+def _decode_count(result: ValidatedMatchResultHandle) -> int:
+    return result.count_value()
+
+
+def _decode_exists(result: ValidatedMatchResultHandle) -> bool:
+    return result.exists_value()
+
+
 class _Terminal[*ArgsT]:
     """One terminal kind's native entry point for each connection kind.
 
-    The arguments after the connection are the same for all four, so a
-    terminal is written once and `_execute` picks the entry point.
+    A terminal is written once and `_execute` picks the entry point.
     """
 
-    __slots__ = ("borrowed", "owned", "prepare", "proxy")
+    __slots__ = ("borrowed", "owned", "prepare", "proxy", "staged")
 
     def __init__(
         self,
-        owned: Callable[[MatchQueryHandle, PyRustDatabase, *ArgsT], ValidatedMatchResultHandle],
+        owned: Callable[[MatchQueryHandle, PyDatabase, *ArgsT], ValidatedMatchResultHandle],
         borrowed: Callable[
-            [MatchQueryHandle, PyRustTransactionContext, *ArgsT], ValidatedMatchResultHandle
+            [MatchQueryHandle, PyTransactionContext, *ArgsT], ValidatedMatchResultHandle
         ],
         proxy: Callable[[MatchQueryHandle, ProxyConnection, *ArgsT], ValidatedMatchResultHandle],
         prepare: Callable[
             [MatchQueryHandle, RemoteModelQueryContext, *ArgsT], PendingRemoteModelQuery
+        ],
+        staged: Callable[
+            [
+                MatchQueryHandle,
+                StagedTransaction,
+                Callable[[ValidatedMatchResultHandle], object],
+                *ArgsT,
+            ],
+            Pending[object],
         ],
     ) -> None:
         self.owned = owned
         self.borrowed = borrowed
         self.proxy = proxy
         self.prepare = prepare
+        self.staged = staged
 
 
 _FETCH_ROWS: _Terminal[list[MatchOrderHandle], int, int, _Cardinality] = _Terminal(
     MatchQueryHandle.execute_fetch_rows_owned,
     MatchQueryHandle.execute_fetch_rows_borrowed,
     MatchQueryHandle.execute_fetch_rows_proxy,
-    query_v2_prepare_remote_model_rows,
+    plan_prepare_remote_model_rows,
+    MatchQueryHandle.stage_fetch_rows,
 )
 _PAGE_BY: _Terminal[MatchBindingHandle, list[MatchOrderHandle], int, int, bool] = _Terminal(
     MatchQueryHandle.execute_page_by_owned,
     MatchQueryHandle.execute_page_by_borrowed,
     MatchQueryHandle.execute_page_by_proxy,
-    query_v2_prepare_remote_model_page,
+    plan_prepare_remote_model_page,
+    MatchQueryHandle.stage_page_by,
 )
 _COUNT_BY: _Terminal[MatchBindingHandle] = _Terminal(
     MatchQueryHandle.execute_count_by_owned,
     MatchQueryHandle.execute_count_by_borrowed,
     MatchQueryHandle.execute_count_by_proxy,
-    query_v2_prepare_remote_model_count,
+    plan_prepare_remote_model_count,
+    MatchQueryHandle.stage_count_by,
 )
 _EXISTS_BY: _Terminal[MatchBindingHandle] = _Terminal(
     MatchQueryHandle.execute_exists_by_owned,
     MatchQueryHandle.execute_exists_by_borrowed,
     MatchQueryHandle.execute_exists_by_proxy,
-    query_v2_prepare_remote_model_exists,
+    plan_prepare_remote_model_exists,
+    MatchQueryHandle.stage_exists_by,
 )
 _REDUCE_BY: _Terminal[
     MatchBindingHandle,
@@ -805,7 +841,8 @@ _REDUCE_BY: _Terminal[
     MatchQueryHandle.execute_reduce_by_owned,
     MatchQueryHandle.execute_reduce_by_borrowed,
     MatchQueryHandle.execute_reduce_by_proxy,
-    query_v2_prepare_remote_model_reduce,
+    plan_prepare_remote_model_reduce,
+    MatchQueryHandle.stage_reduce_by,
 )
 _REDUCE_BY_FIELD: _Terminal[
     MatchBindingHandle,
@@ -816,7 +853,8 @@ _REDUCE_BY_FIELD: _Terminal[
     MatchQueryHandle.execute_reduce_by_field_owned,
     MatchQueryHandle.execute_reduce_by_field_borrowed,
     MatchQueryHandle.execute_reduce_by_field_proxy,
-    query_v2_prepare_remote_model_reduce_by_field,
+    plan_prepare_remote_model_reduce_by_field,
+    MatchQueryHandle.stage_reduce_by_field,
 )
 _REDUCE_BY_FIELDS: _Terminal[
     MatchBindingHandle,
@@ -827,16 +865,17 @@ _REDUCE_BY_FIELDS: _Terminal[
     MatchQueryHandle.execute_reduce_by_fields_owned,
     MatchQueryHandle.execute_reduce_by_fields_borrowed,
     MatchQueryHandle.execute_reduce_by_fields_proxy,
-    query_v2_prepare_remote_model_reduce_by_fields,
+    plan_prepare_remote_model_reduce_by_fields,
+    MatchQueryHandle.stage_reduce_by_fields,
 )
 
 
 class ExchangeConnection(_Frozen):
     """A proxy connection whose transport the host performs.
 
-    `exchange` sends one request to the server's query route and returns its
+    `exchange` posts one request to `/v3/staged` and returns its
     reply; the host owns routing and authentication. `advertisement` is the
-    server's capability advertisement. `answer_limits`, when given, is the
+    exact `/v3/capabilities` advertisement. `answer_limits`, when given, is the
     ceiling every session on this connection runs under; left out, the proxy
     (wire) defaults are.
     """
@@ -876,7 +915,14 @@ class ExchangeConnection(_Frozen):
         return self.__answer_limits
 
 
-type QueryConnection = Database | TransactionContext | ProxyConnection | ExchangeConnection
+type QueryConnection = (
+    Database
+    | TransactionContext
+    | MigrationTransaction
+    | ProxyConnection
+    | ExchangeConnection
+    | StagedTransaction
+)
 
 
 def connect_proxy(
@@ -888,6 +934,7 @@ def connect_proxy(
     advertisement: bytes | None = None,
     connection_limits: QueryExecutionResourceLimits | None = None,
     answer_limits: QueryExecutionResourceLimits | None = None,
+    query_limits: QueryLimits | None = None,
     cancellation: QueryCancellation | None = None,
 ) -> ProxyConnection:
     """Open a connection to a TypeBridge server's HTTP routes for this package.
@@ -906,6 +953,7 @@ def connect_proxy(
         advertisement=advertisement,
         connection_limits=connection_limits,
         answer_limits=answer_limits,
+        query_limits=query_limits,
         cancellation=cancellation,
     )
 
@@ -924,7 +972,7 @@ class _ExchangeTarget(_Frozen):
         resources: QueryExecutionResourceLimits,
         cancellation: QueryCancellation,
     ) -> None:
-        context = query_v2_remote_model_context_with_resources(
+        context = plan_remote_model_context_with_resources(
             _installed_query_authority(),
             connection.advertisement,
             resources,
@@ -965,7 +1013,14 @@ class _ExchangeTarget(_Frozen):
         return await asyncio.to_thread(pending.decode_reply, response)
 
 
-type _Target = Database | TransactionContext | ProxyConnection | _ExchangeTarget
+type _Target = (
+    Database
+    | TransactionContext
+    | MigrationTransaction
+    | ProxyConnection
+    | _ExchangeTarget
+    | StagedTransaction
+)
 
 
 def _target(
@@ -975,11 +1030,14 @@ def _target(
 ) -> _Target:
     if isinstance(connection, ExchangeConnection):
         return _ExchangeTarget(connection, resources, cancellation)
-    if isinstance(connection, (Database, TransactionContext, ProxyConnection)):
+    if isinstance(
+        connection,
+        (Database, TransactionContext, MigrationTransaction, ProxyConnection, StagedTransaction),
+    ):
         return connection
     raise TypeError(
-        "generated QuerySession requires a Database, TransactionContext, "
-        "ProxyConnection, or ExchangeConnection"
+        "generated QuerySession requires a Database, TransactionContext, MigrationTransaction, "
+        "ProxyConnection, ExchangeConnection, or staged Transaction"
     )
 
 
@@ -987,27 +1045,30 @@ async def _execute[*ArgsT](
     target: _Target,
     query: MatchQueryHandle,
     terminal: _Terminal[*ArgsT],
+    decode: Callable[[ValidatedMatchResultHandle], object],
     *arguments: *ArgsT,
-) -> ValidatedMatchResultHandle:
+) -> object:
     """Run one terminal on the session's connection.
 
     This is the only place that branches on the connection kind. Native
     terminals detach the GIL, so a worker thread keeps the event loop free.
     """
+    if isinstance(target, StagedTransaction):
+        return terminal.staged(query, target, decode, *arguments)
     if isinstance(target, _ExchangeTarget):
-        return await target.exchange(terminal.prepare(query, target.context, *arguments))
-    if isinstance(target, ProxyConnection):
-        proxy = target
-        return await asyncio.to_thread(lambda: terminal.proxy(query, proxy, *arguments))
-    if isinstance(target, TransactionContext):
-        transaction = rust_transaction_for(target)
+        result = await target.exchange(terminal.prepare(query, target.context, *arguments))
+    elif isinstance(target, ProxyConnection):
+        result = await asyncio.to_thread(lambda: terminal.proxy(query, target, *arguments))
+    elif isinstance(target, (TransactionContext, MigrationTransaction)):
+        transaction = core_transaction_for(target)
         if transaction is None:
             raise RuntimeError("generated query transaction is not active")
-        return await asyncio.to_thread(lambda: terminal.borrowed(query, transaction, *arguments))
-    database = target
-    return await asyncio.to_thread(
-        lambda: terminal.owned(query, rust_database_for(database), *arguments)
-    )
+        result = await asyncio.to_thread(lambda: terminal.borrowed(query, transaction, *arguments))
+    else:
+        result = await asyncio.to_thread(
+            lambda: terminal.owned(query, core_database_for(target), *arguments)
+        )
+    return decode(result)
 
 
 class Query(_Frozen):
@@ -1088,13 +1149,17 @@ class Query(_Frozen):
         )
 
     async def one(self) -> object:
-        result = await self.__fetch(0, 1, "exactly_one", ())
+        return await self.__fetch(self.__one, 0, 1, "exactly_one", ())
+
+    def __one(self, result: ValidatedMatchResultHandle) -> object:
         if result.row_count() != 1:
             raise RuntimeError("validated exactly-one result did not contain one row")
         return self.materialize_row(result.row(0))
 
-    async def first(self, *, order_by: Iterable[QueryOrder] = ()) -> object | None:
-        result = await self.__fetch(0, 1, "bounded_many", order_by)
+    async def first(self, *, sort: Iterable[QueryOrder] = ()) -> object | None:
+        return await self.__fetch(self.__first, 0, 1, "bounded_many", sort)
+
+    def __first(self, result: ValidatedMatchResultHandle) -> object | None:
         if result.row_count() == 0:
             return None
         return self.materialize_row(result.row(0))
@@ -1104,10 +1169,17 @@ class Query(_Frozen):
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
-    ) -> list[object]:
-        result = await self.__fetch(offset, limit, "bounded_many", order_by)
-        return [self.materialize_row(result.row(index)) for index in range(result.row_count())]
+        sort: Iterable[QueryOrder] = (),
+    ) -> list[object] | Pending[list[object]]:
+        return await self.__fetch(
+            lambda result: [
+                self.materialize_row(result.row(index)) for index in range(result.row_count())
+            ],
+            offset,
+            limit,
+            "bounded_many",
+            sort,
+        )
 
     async def page_by(
         self,
@@ -1115,48 +1187,58 @@ class Query(_Frozen):
         *,
         limit: int,
         offset: int = 0,
-        order_by: Iterable[QueryOrder] = (),
+        sort: Iterable[QueryOrder] = (),
         include_total: bool = False,
-    ) -> Page:
+    ) -> Page | Pending[Page]:
         self.__require_root(root, "query root")
         if type(include_total) is not bool:
             raise TypeError("include_total must be an exact bool")
-        handles = self.order_handles(order_by)
-        result = await self.__run(
-            _PAGE_BY, root.native_handle(), handles, offset, limit, include_total
+        handles = self.order_handles(sort)
+        return await self.__run(
+            _PAGE_BY,
+            self.materialize_page,
+            root.native_handle(),
+            handles,
+            offset,
+            limit,
+            include_total,
         )
-        return self.materialize_page(result)
 
-    async def count_by(self, root: BoundVar) -> int:
+    async def count_by(self, root: BoundVar) -> int | Pending[int]:
         self.__require_root(root, "query root")
-        return (await self.__run(_COUNT_BY, root.native_handle())).count_value()
+        return await self.__run(_COUNT_BY, _decode_count, root.native_handle())
 
-    async def exists_by(self, root: BoundVar) -> bool:
+    async def exists_by(self, root: BoundVar) -> bool | Pending[bool]:
         self.__require_root(root, "query root")
-        return (await self.__run(_EXISTS_BY, root.native_handle())).exists_value()
+        return await self.__run(_EXISTS_BY, _decode_exists, root.native_handle())
 
-    async def aggregate(self, root: BoundVar, *terms: Aggregate) -> tuple[object, ...]:
-        result = await self.reduction_result(root, None, terms)
-        materialized = self.materialize_reduction(result, len(terms), group=None)
-        if not _is_object_tuple(materialized):
-            raise RuntimeError("validated aggregate returned an invalid result")
-        return materialized
+    async def reduce(
+        self, root: BoundVar, *terms: Aggregate
+    ) -> tuple[object, ...] | Pending[tuple[object, ...]]:
+        def decode(result: ValidatedMatchResultHandle) -> tuple[object, ...]:
+            materialized = self.materialize_reduction(result, len(terms), group=None)
+            if not _is_object_tuple(materialized):
+                raise RuntimeError("validated aggregate returned an invalid result")
+            return materialized
+
+        return await self.reduction_result(root, None, terms, decode)
 
     def group_by(self, root: BoundVar, *groups: BoundVar | BoundField) -> GroupedQuery:
         self.__require_root(root, "aggregate root")
         group = _require_aggregate_groups(groups, self.__projection, "aggregate group")
         fields = (group,) if isinstance(group, BoundField) else group
         if isinstance(fields, tuple):
-            # The core refuses too many group fields here, not at aggregate().
+            # The core refuses too many group fields here, not at reduce().
             self.__handle.check_group_fields([field.native_handle() for field in fields])
         return GroupedQuery(self.clone(), root, group)
 
-    async def reduction_result(
+    async def reduction_result[OutputT](
         self,
         root: BoundVar,
         group: _Group | None,
         terms: tuple[Aggregate, ...],
-    ) -> ValidatedMatchResultHandle:
+        decode: Callable[[ValidatedMatchResultHandle], OutputT],
+    ) -> OutputT | Pending[OutputT]:
         self.__require_root(root, "aggregate root")
         if isinstance(group, BoundVar):
             self.__require_root(group, "aggregate group")
@@ -1173,14 +1255,20 @@ class Query(_Frozen):
         if isinstance(group, tuple):
             handles = [field.native_handle() for field in group]
             return await self.__run(
-                _REDUCE_BY_FIELDS, root.native_handle(), handles, reducers, inputs
+                _REDUCE_BY_FIELDS, decode, root.native_handle(), handles, reducers, inputs
             )
         if isinstance(group, BoundField):
             return await self.__run(
-                _REDUCE_BY_FIELD, root.native_handle(), group.native_handle(), reducers, inputs
+                _REDUCE_BY_FIELD,
+                decode,
+                root.native_handle(),
+                group.native_handle(),
+                reducers,
+                inputs,
             )
         return await self.__run(
             _REDUCE_BY,
+            decode,
             root.native_handle(),
             None if group is None else group.native_handle(),
             reducers,
@@ -1241,22 +1329,27 @@ class Query(_Frozen):
     def __require_root(self, root: BoundVar, context: str) -> None:
         _require_projection(root.projection_identity(), self.__projection, context)
 
-    async def __fetch(
+    async def __fetch[OutputT](
         self,
+        decode: Callable[[ValidatedMatchResultHandle], OutputT],
         offset: int,
         limit: int,
         cardinality: _Cardinality,
-        order_by: Iterable[QueryOrder],
-    ) -> ValidatedMatchResultHandle:
-        handles = self.order_handles(order_by)
-        return await self.__run(_FETCH_ROWS, handles, offset, limit, cardinality)
+        sort: Iterable[QueryOrder],
+    ) -> OutputT | Pending[OutputT]:
+        handles = self.order_handles(sort)
+        return await self.__run(_FETCH_ROWS, decode, handles, offset, limit, cardinality)
 
-    async def __run[*ArgsT](
+    async def __run[OutputT, *ArgsT](
         self,
         terminal: _Terminal[*ArgsT],
+        decode: Callable[[ValidatedMatchResultHandle], OutputT],
         *arguments: *ArgsT,
-    ) -> ValidatedMatchResultHandle:
-        return await _execute(self.__connection, self.__handle, terminal, *arguments)
+    ) -> OutputT | Pending[OutputT]:
+        return cast(
+            OutputT | Pending[OutputT],
+            await _execute(self.__connection, self.__handle, terminal, decode, *arguments),
+        )
 
     def materialize_row(self, row: ValidatedMatchRowHandle) -> object:
         if row.slot_count() != len(self.__collected):
@@ -1309,11 +1402,11 @@ class Query(_Frozen):
             total=result.page_total(),
         )
 
-    def order_handles(self, order_by: Iterable[object]) -> list[MatchOrderHandle]:
+    def order_handles(self, sort: Iterable[object]) -> list[MatchOrderHandle]:
         handles: list[MatchOrderHandle] = []
-        for order in order_by:
+        for order in sort:
             if not isinstance(order, QueryOrder):
-                raise TypeError("order_by entries must be generated QueryOrder values")
+                raise TypeError("sort entries must be generated QueryOrder values")
             _require_projection(order.projection_identity(), self.__projection, "query order")
             handles.append(order.native_handle())
         return handles
@@ -1371,12 +1464,23 @@ class GroupedQuery(_Frozen):
             self.__group,
         )
 
-    async def aggregate(self, *terms: Aggregate) -> tuple[tuple[object, tuple[object, ...]], ...]:
-        result = await self.__query.reduction_result(self.__root, self.__group, terms)
-        materialized = self.__query.materialize_reduction(result, len(terms), group=self.__group)
-        if not _is_grouped_reduction(materialized):
-            raise RuntimeError("validated grouped aggregate returned an invalid result")
-        return materialized
+    async def reduce(
+        self, *terms: Aggregate
+    ) -> (
+        tuple[tuple[object, tuple[object, ...]], ...]
+        | Pending[tuple[tuple[object, tuple[object, ...]], ...]]
+    ):
+        def decode(
+            result: ValidatedMatchResultHandle,
+        ) -> tuple[tuple[object, tuple[object, ...]], ...]:
+            materialized = self.__query.materialize_reduction(
+                result, len(terms), group=self.__group
+            )
+            if not _is_grouped_reduction(materialized):
+                raise RuntimeError("validated grouped aggregate returned an invalid result")
+            return materialized
+
+        return await self.__query.reduction_result(self.__root, self.__group, terms, decode)
 
 
 class _Selection(Protocol):
@@ -1386,7 +1490,7 @@ class _Selection(Protocol):
     def is_collection(self) -> bool: ...
 
 
-class QuerySession(_Frozen):
+class QuerySession(_Frozen, Generic[_Mode]):
     """Author and run queries over one connection.
 
     The connection is a direct `Database` or `TransactionContext`, a
@@ -1610,87 +1714,6 @@ class QuerySession(_Frozen):
         handle = self.__handle.subtypes(label) if subtypes else self.__handle.exact(label)
         binding = SubtypeBoundVar if subtypes else BoundVar
         return binding(handle, model, self.__projection, subtypes=subtypes)
-
-
-# Deprecated 2.2 remote-session names, removed in 3.0. Each builds the 2.3
-# type it names; none adds behaviour.
-
-RemoteQuery = Query
-"""Deprecated: use `Query`; removed in 3.0."""
-
-RemoteGroupedQuery = GroupedQuery
-"""Deprecated: use `GroupedQuery`; removed in 3.0."""
-
-
-class _RemoteQueryLimitsType(type):
-    # `RemoteQueryLimits(...)` returns the native limits type, which cannot be
-    # subclassed; keep 2.2 `isinstance(limits, RemoteQueryLimits)` checks true.
-    def __instancecheck__(cls, instance: object) -> bool:
-        return type(instance) is QueryExecutionResourceLimits
-
-
-class RemoteQueryLimits(metaclass=_RemoteQueryLimitsType):
-    """Deprecated: use `QueryExecutionResourceLimits`; removed in 3.0.
-
-    Takes the 2.2 field names and returns a `QueryExecutionResourceLimits`.
-    `deadline_ms=None` takes the default timeout.
-    """
-
-    __slots__ = ()
-
-    def __new__(
-        cls,
-        *,
-        max_items: int,
-        max_bytes: int,
-        max_collection_members: int,
-        max_graph_nodes: int,
-        max_attribute_values: int,
-        max_role_players: int,
-        deadline_ms: int | None = None,
-    ) -> QueryExecutionResourceLimits:
-        warnings.warn(
-            "RemoteQueryLimits is deprecated and will be removed in 3.0; "
-            "use QueryExecutionResourceLimits",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return QueryExecutionResourceLimits(
-            timeout_milliseconds=deadline_ms,
-            items=max_items,
-            bytes=max_bytes,
-            graph_nodes=max_graph_nodes,
-            attribute_values=max_attribute_values,
-            collection_members=max_collection_members,
-            role_players=max_role_players,
-        )
-
-
-class RemoteQuerySession(QuerySession):
-    """Deprecated: use `QuerySession(ExchangeConnection(advertisement, exchange),
-    resources=limits)`; removed in 3.0."""
-
-    __slots__ = ()
-
-    def __init__(
-        self,
-        advertisement: bytes,
-        exchange: Callable[[bytes], Awaitable[bytes]],
-        limits: QueryExecutionResourceLimits,
-        *,
-        cancellation: QueryCancellation | None = None,
-    ) -> None:
-        warnings.warn(
-            "RemoteQuerySession is deprecated and will be removed in 3.0; use "
-            "QuerySession(ExchangeConnection(advertisement, exchange), resources=limits)",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        super().__init__(
-            ExchangeConnection(advertisement, exchange),
-            resources=limits,
-            cancellation=cancellation,
-        )
 
 
 def _require_projection(
@@ -1924,10 +1947,6 @@ __all__ = [
     "QueryLimits",
     "QueryOrder",
     "QuerySession",
-    "RemoteGroupedQuery",
-    "RemoteQuery",
-    "RemoteQueryLimits",
-    "RemoteQuerySession",
     "SubtypeBoundVar",
     "aggregate",
     "connect_proxy",

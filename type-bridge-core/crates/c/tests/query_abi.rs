@@ -24,8 +24,8 @@ fn public_query_abi_compiles_under_strict_c_and_cpp() {
 #define QUERY_STATIC_ASSERT(value, message) _Static_assert(value, message)
 #endif
 
-QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "query ABI major drifted");
-QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 7u, "query ABI minor drifted");
+QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 2u, "query ABI major drifted");
+QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 0u, "query ABI minor drifted");
 QUERY_STATIC_ASSERT(TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION == 1u,
                     "query descriptor version drifted");
 QUERY_STATIC_ASSERT(TYPE_BRIDGE_QUERY_TERMINAL_FIRST == 8u,
@@ -82,6 +82,14 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_execute_fn)(
     const type_bridge_query_execution_limits_v1_t *,
     const type_bridge_cancellation_t *, type_bridge_query_result_t **,
     type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *staged_query_fn)(
+    type_bridge_staged_transaction_t *, const type_bridge_query_terminal_t *,
+    type_bridge_query_terminal_kind_t, const type_bridge_query_execution_limits_v1_t *,
+    const type_bridge_cancellation_t *, type_bridge_pending_t **,
+    type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *pending_query_fn)(
+    const type_bridge_pending_t *, type_bridge_query_result_t **,
+    type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *remote_prepare_fn)(
     const type_bridge_query_remote_context_t *,
     const type_bridge_query_terminal_t *, type_bridge_query_terminal_kind_t,
@@ -104,17 +112,19 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *reduced_metadata_fn)(
 void query_abi_probe(void) {
   query_session_open_fn session_open = &type_bridge_query_session_open;
   query_session_open_with_limits_fn session_open_with_limits =
-      &type_bridge_query_session_open_with_limits_v1;
-  query_binding_open_fn binding_open = &type_bridge_query_binding_open_v1;
+      &type_bridge_query_session_open_with_limits;
+  query_binding_open_fn binding_open = &type_bridge_query_binding_open;
   query_function_call_open_fn function_call_open =
-      &type_bridge_query_function_call_open_v1;
-  query_open_fn query_open = &type_bridge_query_open_v1;
-  query_terminal_open_fn terminal_open = &type_bridge_query_terminal_open_v1;
-  database_execute_fn database_execute = &type_bridge_database_query_execute_v1;
-  remote_prepare_fn remote_prepare = &type_bridge_query_remote_prepare_v1;
+      &type_bridge_query_function_call_open;
+  query_open_fn query_open = &type_bridge_query_open;
+  query_terminal_open_fn terminal_open = &type_bridge_query_terminal_open;
+  database_execute_fn database_execute = &type_bridge_database_query_execute;
+  staged_query_fn staged_query = &type_bridge_staged_query_stage;
+  pending_query_fn pending_query = &type_bridge_pending_query_result;
+  remote_prepare_fn remote_prepare = &type_bridge_query_remote_prepare;
   row_thing_fn row_thing = &type_bridge_query_result_row_slot_thing_at;
   reduced_metadata_fn reduced_metadata =
-      &type_bridge_query_result_reduction_value_metadata_v1;
+      &type_bridge_query_result_reduction_value_metadata;
   type_bridge_query_order_descriptor_v1_t order;
   type_bridge_query_selection_descriptor_v1_t selection;
   type_bridge_query_shape_slot_v1_t shape;
@@ -135,6 +145,8 @@ void query_abi_probe(void) {
   (void)query_open;
   (void)terminal_open;
   (void)database_execute;
+  (void)staged_query;
+  (void)pending_query;
   (void)remote_prepare;
   (void)row_thing;
   (void)reduced_metadata;
@@ -153,18 +165,18 @@ void query_abi_probe(void) {
 
   QUERY_TAKE(type_bridge_query_field_compare_field);
   QUERY_TAKE(type_bridge_query_field_compare_function);
-  QUERY_TAKE(type_bridge_query_role_connects);
+  QUERY_TAKE(type_bridge_query_role_links);
   QUERY_TAKE(type_bridge_query_session_reachable);
   QUERY_TAKE(type_bridge_query_predicate_combine);
-  QUERY_TAKE(type_bridge_query_add_hidden);
+  QUERY_TAKE(type_bridge_query_match);
   QUERY_TAKE(type_bridge_query_where);
   QUERY_TAKE(type_bridge_query_allow_cross_join);
-  QUERY_TAKE(type_bridge_read_transaction_query_execute_v1);
+  QUERY_TAKE(type_bridge_read_transaction_query_execute);
   QUERY_TAKE(type_bridge_query_remote_pending_request_bytes);
   QUERY_TAKE(type_bridge_query_remote_pending_response_snapshot_limit);
   QUERY_TAKE(type_bridge_query_remote_pending_claim);
-  QUERY_TAKE(type_bridge_query_remote_claim_decode_v1);
-  QUERY_TAKE(type_bridge_query_result_page_metadata_v1);
+  QUERY_TAKE(type_bridge_query_remote_claim_decode);
+  QUERY_TAKE(type_bridge_query_result_page_metadata);
   QUERY_TAKE(type_bridge_query_result_reduction_group_thing);
   QUERY_TAKE(type_bridge_query_result_reduction_group_field_at);
   QUERY_TAKE(type_bridge_query_result_reduction_value_count);

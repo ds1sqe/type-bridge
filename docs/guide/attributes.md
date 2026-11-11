@@ -74,8 +74,8 @@ schema engine.
 === "Rust"
 
     ```rust
-    let age = Age::new(36);
-    let email = Email::new("ada@example.com".to_owned());
+    let age = Age::new(36)?;
+    let email = Email::new("ada@example.com".to_owned())?;
     ```
 
 Integer values use Python `int`, JavaScript `bigint`, and the generated Rust

@@ -120,7 +120,10 @@ impl<'a> HookContext<'a> {
         self.operation
     }
 
-    /// Canonical target IID when the operation has one.
+    /// Canonical target IID when known.
+    ///
+    /// After insert, put, or update, this is present only when that input
+    /// produced exactly one root; zero or multiple roots have no single IID.
     #[must_use]
     pub const fn iid(&self) -> Option<&str> {
         self.iid
@@ -248,6 +251,36 @@ impl HookRunner {
             metadata,
             timestamp,
         })
+    }
+
+    pub(crate) async fn run_post_batch<'input, M: crate::__codegen::CompleteModel>(
+        &self,
+        type_id_json: &'static str,
+        model_kind: ModelKind,
+        operation: CrudOperation,
+        input_at: impl Fn(usize) -> &'input EncodedCreate,
+        states: Vec<HookState>,
+        result: &crate::BatchWriteResult<M>,
+    ) {
+        let mut outputs = result.items().iter().zip(result.input_indexes()).peekable();
+        for (index, state) in states.into_iter().enumerate() {
+            let mut iid = None;
+            let mut count = 0;
+            while outputs.peek().is_some_and(|(_, source)| **source == index) {
+                let (item, _) = outputs.next().expect("peeked batch item");
+                iid = Some(item.iid());
+                count += 1;
+            }
+            self.run_post(
+                type_id_json,
+                model_kind,
+                operation,
+                if count == 1 { iid } else { None },
+                Some(input_at(index)),
+                state,
+            )
+            .await;
+        }
     }
 
     pub(crate) async fn run_post(

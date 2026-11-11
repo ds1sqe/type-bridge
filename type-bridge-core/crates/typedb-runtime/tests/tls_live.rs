@@ -654,9 +654,9 @@ async fn custom_root_close_after_early_stop_releases_database_live() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn https_failure_falls_back_to_secure_grpc_without_plaintext_live() {
+async fn https_failure_refuses_discovery_without_plaintext_live() {
     let Some(context) = live_tls_context() else {
-        eprintln!("skipping live TLS gRPC fallback test: TLS endpoint variables are not set");
+        eprintln!("skipping live TLS discovery refusal test: TLS endpoint variables are not set");
         return;
     };
     if !context.has_loopback_address() {
@@ -664,10 +664,12 @@ async fn https_failure_falls_back_to_secure_grpc_without_plaintext_live() {
         return;
     }
 
+    // Unknown versions require HTTP discovery (no gRPC fallback since band 8
+    // was removed); a failed HTTPS probe refuses and never retries plaintext.
     let trap = HttpProbeTrap::start();
     let mut options = context.custom_root_options();
     options.http_port = trap.port;
-    let runtime = tokio::time::timeout(
+    let error = tokio::time::timeout(
         Duration::from_secs(30),
         TypeDBRuntime::connect_secure(
             &context.address,
@@ -677,10 +679,17 @@ async fn https_failure_falls_back_to_secure_grpc_without_plaintext_live() {
         ),
     )
     .await
-    .expect("secure gRPC fallback must be bounded")
-    .expect("HTTPS failure falls back through TLS-enabled gRPC drivers");
+    .expect("failed HTTPS discovery must be bounded")
+    .err()
+    .expect("a failed HTTPS version probe refuses the connection");
     let (saw_tls_client_hello, saw_plaintext_get) = trap.finish();
 
+    let message = error.to_string();
+    assert!(
+        message.contains("TypeDB version discovery requires a reachable HTTP version endpoint"),
+        "{message}"
+    );
+    assert!(!message.contains(&context.password), "{message}");
     assert!(
         saw_tls_client_hello,
         "the failing HTTP discovery attempt must start with a TLS ClientHello"
@@ -688,14 +697,6 @@ async fn https_failure_falls_back_to_secure_grpc_without_plaintext_live() {
     assert!(
         !saw_plaintext_get,
         "an enabled HTTP discovery path must never retry a plaintext GET"
-    );
-    assert_expected_topology(&runtime, &context);
-    assert!(
-        !runtime
-            .database_exists(&unique_database("tb_tls_fallback_absent"))
-            .await
-            .expect("the fallback driver performs a live TLS round trip"),
-        "the fresh fallback probe database must not already exist"
     );
 }
 
@@ -811,11 +812,7 @@ async fn closed_port_reports_unavailable_live() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("reserve a closed test port");
     let address = listener.local_addr().unwrap().to_string();
     drop(listener);
-    let version = if cfg!(feature = "band9") {
-        "3.13.6"
-    } else {
-        "3.11.5"
-    };
+    let version = "3.13.6";
     let error = TypeDBRuntime::connect_secure(
         &address,
         "admin",
@@ -892,15 +889,10 @@ async fn wrong_tls_trust_reports_tls_kind_live() {
     .err()
     .expect("the unrelated CA must also fail direct gRPC admission");
     let message = error.to_string();
-    // The driver stringifies tonic transport errors; only the pinned band-9
-    // driver's exact templates classify as TLS, so a band-8 connection
-    // reports "other" even in builds that also carry band 9.
-    let expected_kind = if expected.driver_band == 9 {
-        "TypeDB transport failed: TLS/certificate failure"
-    } else {
-        "TypeDB transport failed: other transport"
-    };
-    assert!(message.contains(expected_kind), "{message}");
+    assert!(
+        message.contains("TypeDB transport failed: TLS/certificate failure"),
+        "{message}"
+    );
     assert!(!message.contains(&context.address), "{message}");
 }
 

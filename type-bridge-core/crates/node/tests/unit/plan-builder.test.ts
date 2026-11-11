@@ -1,19 +1,26 @@
 import assert = require("node:assert/strict");
+import { spawnSync } from "node:child_process";
 import fs = require("node:fs");
 import path = require("node:path");
 import test = require("node:test");
 
 import {
+  setDebugListener,
+  type DebugEvent,
+  Iid,
   Plan,
   PlanBuilder,
   PlanExpr,
-  QueryV2Authority,
-  QueryV2Error,
+  PlanAuthority,
+  PlanError,
   decimal,
   type PlanFieldToken,
   type PlanModelToken,
   type PlanRoleToken,
 } from "../../typescript/public.js";
+
+import { loadNative } from "../../typescript/native.js";
+import { planAuthorityHandle } from "../../typescript/plan-internals.js";
 
 // Written and checked by the Rust test
 // `typescript_purchase_fixture_is_the_rust_hand_built_purchase`: the Rust
@@ -24,14 +31,16 @@ interface Fixture {
   readonly declared_hex: string;
   readonly purchase: { readonly order: string; readonly item_id: string; readonly account_id: string };
   readonly purchase_hex: string;
+  readonly read_back_hex: string;
+  readonly read_back_optional_hex: string;
 }
 
 const fixture = JSON.parse(
   fs.readFileSync(path.resolve(process.cwd(), "tests/fixtures/plan-builder-purchase.json"), "utf8"),
 ) as Fixture;
 
-function authority(): QueryV2Authority {
-  return new QueryV2Authority(Buffer.from(fixture.declared_hex, "hex"), fixture.scope, fixture.profile);
+function authority(): PlanAuthority {
+  return new PlanAuthority(Buffer.from(fixture.declared_hex, "hex"), fixture.scope, fixture.profile);
 }
 
 // The shapes a generated package's tokens carry (`Item`, `Item.fields.stock`,
@@ -101,11 +110,11 @@ function purchase(order: string, itemId: string, accountId: string): Plan {
   return plan.build(authority());
 }
 
-function buildError(build: () => unknown): QueryV2Error {
+function buildError(build: () => unknown): PlanError {
   try {
     build();
   } catch (error) {
-    assert.ok(error instanceof QueryV2Error, `expected QueryV2Error, got ${String(error)}`);
+    assert.ok(error instanceof PlanError, `expected PlanError, got ${String(error)}`);
     return error;
   }
   assert.fail("build unexpectedly succeeded");
@@ -212,3 +221,127 @@ function typeChecks(plan: PlanBuilder): void {
   plan.field(item, ItemFields.stock).gt(1);
 }
 void typeChecks;
+
+for (const required of [false, true]) {
+  test(`fetch bytes equal the core builder (item required=${required})`, () => {
+    const plan = Plan.builder();
+    const purchase = plan.exact(Purchase);
+    const key = plan.field(purchase, PurchaseTokens.orderId);
+    const order = plan.input("order_id", "string");
+    plan.where(key.eq(order)).fetch(purchase, [PurchaseTokens.buyer, [PurchaseTokens.item, required]]);
+    plan.row([order.value("O1")]);
+    assert.equal(Buffer.from(plan.build(authority()).canonicalBytes()).toString("hex"),
+      required ? fixture.read_back_hex : fixture.read_back_optional_hex);
+  });
+}
+for (const fetchFirst of [false, true]) {
+  for (const terminal of ["fetch", "returning", "count", "exists"] as const) {
+    test(`fetch terminal conflict ${terminal}, fetch first=${fetchFirst}`, () => {
+      const plan = Plan.builder();
+      const thing = plan.exact(Purchase);
+      if (fetchFirst) plan.fetch(thing);
+      if (terminal === "fetch") plan.fetch(thing);
+      else if (terminal === "returning") plan.returning([]);
+      else plan[terminal]();
+      if (!fetchFirst) plan.fetch(thing);
+      assert.equal(buildError(() => plan.build(authority())).code,
+        `query_plan_builder_${terminal === "fetch" ? "fetch_once" : "terminal_conflict"}`);
+    });
+  }
+}
+
+
+
+test("plan build forwards debug metadata to the host listener", async () => {
+  const events: DebugEvent[] = [];
+  setDebugListener((event) => events.push(event));
+  try {
+    purchase("LOG_SECRET", "I1", "A1").canonicalBytes();
+    for (let attempt = 0; attempt < 100 && !events.some((event) => event.name === "type_bridge.plan.build"); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(events.some((event) => event.name === "type_bridge.plan.build"));
+    assert.ok(!JSON.stringify(events).includes("LOG_SECRET"));
+  } finally {
+    setDebugListener(null);
+  }
+});
+
+
+test("RUST_LOG fallback emits plan records on stderr", () => {
+  const script = `
+    const sdk = require('./dist/public.js');
+    const fixture = require('./tests/fixtures/plan-builder-purchase.json');
+    const authority = new sdk.PlanAuthority(Buffer.from(fixture.declared_hex, 'hex'), fixture.scope, fixture.profile);
+    const builder = sdk.Plan.builder();
+    builder.exact({typeKey: JSON.stringify({kind: 'entity', label: 'item'})});
+    builder.count();
+    builder.build(authority).canonicalBytes();
+  `;
+  const result = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, RUST_LOG: "type_bridge=debug" }, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stderr.includes("type_bridge.plan.build"));
+});
+
+test("explain returns the shared metadata without given values", () => {
+  const plan = purchase("EXPLAIN_SECRET", "I1", "A1");
+  const explanation = plan.explain();
+  assert.notEqual(explanation.fingerprint.digest, plan.fingerprint());
+  assert.equal(explanation.fingerprint.domain, "typebridge.query.plan-shape");
+  assert.deepEqual(explanation.fingerprint, purchase("OTHER_SECRET", "I2", "A2").explain().fingerprint);
+  assert.equal(explanation.given.row_count, 1);
+  assert.equal(explanation.write_statements, 1);
+  assert.equal(explanation.read_statements, 0);
+  assert.equal(explanation.statements.length, 1);
+  assert.ok(!JSON.stringify(explanation).includes("EXPLAIN_SECRET"));
+});
+
+test("staged builder keeps typed IID references and rejects authored reference values", () => {
+  const builder = new PlanBuilder();
+  const iid = builder.input("target_iid", "iid");
+  const item = builder.exact(Item);
+  builder.byIidInput(item, iid).returning([item]);
+  const reference = { input: iid, sourcePlan: 0, sourceColumn: 0, expectedTypes: [Item] };
+  const staged = builder.buildStaged(authority(), [[iid.absent()], [iid.absent()]], [reference]);
+  assert.deepEqual(JSON.parse(staged.nativeHandle().resultRefsJson()), [
+    { input: 0, source_plan: 0, source_column: 0, expected_types: [{ kind: "entity", label: "item" }] },
+  ]);
+  assert.throws(() => builder.buildStaged(authority(), [[iid.value(new Iid("0x10"))]], [reference]), (error: unknown) => error instanceof PlanError && error.code === "query_stage_result_ref_template");
+  const foreign = new PlanBuilder().input("foreign", "string");
+  assert.throws(() => builder.buildStaged(authority(), [[foreign.absent()]], [reference]), /does not belong|plan handle does not belong/);
+});
+
+
+test("nominal IID literal and input authoring keep native plan bytes", () => {
+  const schema = authority();
+  const nativeAuthority = planAuthorityHandle(schema);
+  assert.ok(nativeAuthority);
+  const identity = new Iid("0xAb12");
+  const typed = new PlanBuilder();
+  const item = typed.exact(Item);
+  typed.byIid(item, identity);
+  typed.returning([item]);
+  const native = new (loadNative().NodePlanBuilder)();
+  const nativeItem = native.exact(Item.typeKey);
+  native.byIid(nativeItem, "0xAb12");
+  native.returning([nativeItem]);
+  assert.deepEqual(typed.build(schema).canonicalBytes(), native.build(nativeAuthority).canonicalBytes());
+  assert.throws(() => Reflect.apply(typed.byIid, typed, [item, "0xAb12"]), TypeError);
+  for (const optional of [false, true]) {
+    const builder = new PlanBuilder();
+    const column = optional ? builder.optionalInput("target", "iid") : builder.input("target", "iid");
+    const root = builder.exact(Item);
+    builder.byIidInput(root, column).returning([root]);
+    builder.row([column.value(identity)]);
+    if (optional) builder.row([column.absent()]);
+    const wire = new (loadNative().NodePlanBuilder)();
+    const wireColumn = wire.input("target", "string", optional);
+    const wireRoot = wire.exact(Item.typeKey);
+    wire.byIidInput(wireRoot, wireColumn);
+    wire.returning([wireRoot]);
+    wire.row([wireColumn], [wire.literal("string", "0xAb12")]);
+    if (optional) wire.row([wireColumn], [null]);
+    assert.deepEqual(builder.build(schema).canonicalBytes(), wire.build(nativeAuthority).canonicalBytes());
+    assert.throws(() => builder.row([Reflect.apply(column.value, column, ["0xAb12"])]), TypeError);
+  }
+});

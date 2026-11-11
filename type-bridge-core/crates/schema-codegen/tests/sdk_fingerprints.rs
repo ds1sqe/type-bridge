@@ -21,13 +21,20 @@ const SOURCE: &str = include_str!("acceptance/schema.yaml");
 const OUTPUT_ENV: &str = "TYPE_BRIDGE_SDK_FINGERPRINTS_OUTPUT";
 
 fn projections() -> BTreeMap<&'static str, RuntimeProjection> {
+    projections_for(SOURCE, support::TEST_PROFILE)
+}
+
+fn projections_for(
+    source: &str,
+    semantic_profile: &str,
+) -> BTreeMap<&'static str, RuntimeProjection> {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("sdk-schema.yaml").expect("fixture document ID"),
-        SOURCE,
+        source,
     )])
     .expect("sdk schema parses");
     let declared = normalize_documents(&documents).expect("sdk schema normalizes");
-    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
+    let profile = SemanticProfileId::new(semantic_profile).expect("test profile is valid");
     let resolved = resolve(&declared, &profile).expect("sdk schema resolves");
 
     let python = PythonEmitter::new();
@@ -134,4 +141,56 @@ fn exact_sdk_fingerprint_inventory_is_reproducible() {
             .sync_all()
             .expect("fingerprint inventory flushes");
     }
+}
+
+#[test]
+fn sdk_plan_parity_profiles_use_current_emitter_resources() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let mut measured = serde_json::Map::new();
+    let mut expected = serde_json::Map::new();
+    for profile in ["typedb-3.12.1/v1", "typedb-3.13.6/v1"] {
+        let mut suites = serde_json::Map::new();
+        let mut pinned = serde_json::Map::new();
+        for (suite, source) in [
+            ("queries", SOURCE),
+            (
+                "models",
+                include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml"),
+            ),
+        ] {
+            let projections = projections_for(source, profile);
+            suites.insert(suite.to_owned(), json!({
+                "semantic": projections["rust"].semantic_fingerprint(),
+                "projections": projections.iter().map(|(binding, projection)|
+                    (*binding, projection.projection_fingerprint())).collect::<BTreeMap<_, _>>(),
+            }));
+            let matrix: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.join(format!(
+                    "tests/contracts/sdk_conformance/{suite}/profiles.json"
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+            pinned.insert(
+                suite.to_owned(),
+                matrix["profiles"][profile]["expected_fingerprints"].clone(),
+            );
+        }
+        measured.insert(profile.to_owned(), json!(suites));
+        expected.insert(profile.to_owned(), json!(pinned));
+    }
+    if let Some(path) = env::var_os("TYPE_BRIDGE_PLAN_PARITY_FINGERPRINTS_OUTPUT") {
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        output
+            .write_all(&to_canonical_json(&measured).unwrap())
+            .unwrap();
+    }
+    assert_eq!(
+        measured, expected,
+        "active SDK fingerprints must equal their measured profile inventory"
+    );
 }

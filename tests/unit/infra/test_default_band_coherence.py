@@ -16,8 +16,8 @@ RUNTIME_MANIFEST = REPO_ROOT / "type-bridge-core/crates/typedb-runtime/Cargo.tom
 WORKSPACE_MANIFEST = REPO_ROOT / "type-bridge-core/Cargo.toml"
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 
-EXPECTED_DRIVERS = {8: "3.11.5", 9: "3.14.0"}
-EXPECTED_SERVERS = {"typedb/typedb:3.11.5", "typedb/typedb:3.12.3"}
+EXPECTED_DRIVERS = {9: "3.14.0"}
+EXPECTED_SERVERS = {"typedb/typedb:3.12.3"}
 
 
 def _ci_jobs() -> dict[str, Any]:
@@ -27,57 +27,49 @@ def _ci_jobs() -> dict[str, Any]:
 
 def test_native_runtime_exposes_exactly_the_retained_driver_pins() -> None:
     assert type_bridge_core.embedded_driver_versions() == EXPECTED_DRIVERS
-    assert type_bridge_core.embedded_driver_version() == EXPECTED_DRIVERS[8]
+    assert type_bridge_core.embedded_driver_version() == EXPECTED_DRIVERS[9]
 
 
-@pytest.mark.parametrize("server", ["3.8.3", "3.10.4"])
+@pytest.mark.parametrize("server", ["3.8.3", "3.10.4", f"3.{12 - 1}.0", f"3.{12 - 1}.99"])
 def test_retired_server_lines_fail_the_native_gate(server: str) -> None:
     with pytest.raises(type_bridge_core.VersionError):
         type_bridge_core.check_server_supported(server)
 
 
-@pytest.mark.parametrize("server", ["3.11.5", "3.12.3", "3.13.6", "3.14.0"])
+@pytest.mark.parametrize("server", ["3.12.0", "3.12.3", "3.13.6", "3.14.0"])
 def test_retained_server_lines_pass_the_native_gate(server: str) -> None:
     type_bridge_core.check_server_supported(server)
 
 
-def test_runtime_manifest_has_only_band8_and_band9_features() -> None:
+def test_runtime_manifest_has_only_the_retained_band_feature() -> None:
     runtime = tomllib.loads(RUNTIME_MANIFEST.read_text(encoding="utf-8"))
     features = runtime["features"]
     dependencies = runtime["dependencies"]
 
-    assert features["default"] == ["band8", "band9"]
-    assert set(features) == {"default", "band8", "band9"}
-    assert dependencies["type-bridge-typedb-driver-b8"]["version"] == "=3.11.5"
+    assert features["default"] == ["band9"]
+    assert set(features) == {"default", "band9"}
     assert dependencies["typedb-driver"]["version"] == "=3.14.0"
-    assert all("b7" not in name and "band7" not in name for name in dependencies)
+    assert all(not name.startswith("type-bridge-typedb-") for name in dependencies)
 
 
-def test_workspace_contains_only_the_active_namespaced_vendor_band() -> None:
+def test_workspace_has_no_retired_namespaced_driver_members() -> None:
     workspace = tomllib.loads(WORKSPACE_MANIFEST.read_text(encoding="utf-8"))["workspace"]
-    members = set(workspace["members"])
-
-    assert "vendor/typedb-driver-b8" in members
-    assert "vendor/typedb-protocol-b8" in members
-    assert not any("b7" in member for member in members)
-    assert not (REPO_ROOT / "type-bridge-core/vendor/typedb-driver-b7").exists()
-    assert not (REPO_ROOT / "type-bridge-core/vendor/typedb-protocol-b7").exists()
+    assert not any(member.startswith("vendor/typedb-") for member in workspace["members"])
+    for component in ("driver", "protocol"):
+        retired_band = 8
+        assert not (
+            REPO_ROOT / f"type-bridge-core/vendor/typedb-{component}-b{retired_band}"
+        ).exists()
 
 
 def test_single_feature_ci_compiles_each_retained_band() -> None:
     include = _ci_jobs()["band-feature-check"]["strategy"]["matrix"]["include"]
     assert include == [
         {
-            "band": "band8",
-            "features": "band8,v2-query",
-            "required_driver": "type-bridge-typedb-driver-b8 v3.11.5",
-            "forbidden_driver": "typedb-driver v3.14.0",
-        },
-        {
             "band": "band9",
-            "features": "band9,v2-query",
+            "features": "band9,axum-transport",
             "required_driver": "typedb-driver v3.14.0",
-            "forbidden_driver": "type-bridge-typedb-driver-b8 v3.11.5",
+            "forbidden_driver": "type-bridge-typedb-driver-",
         },
     ]
 
@@ -96,11 +88,6 @@ def test_python_live_matrix_pairs_each_server_with_its_driver() -> None:
     include = job["strategy"]["matrix"]["include"]
     assert include == [
         {
-            "typedb-server": "typedb/typedb:3.11.5",
-            "python-driver": "3.11.5",
-            "semantic-profile": "typedb-3.11.5/v1",
-        },
-        {
             "typedb-server": "typedb/typedb:3.12.3",
             "python-driver": "3.12.3",
             "semantic-profile": "typedb-3.12.1/v1",
@@ -114,14 +101,6 @@ def test_python_live_matrix_pairs_each_server_with_its_driver() -> None:
 def test_tls_matrix_covers_exactly_the_retained_topologies() -> None:
     include = _ci_jobs()["tls-transport-matrix"]["strategy"]["matrix"]["include"]
     assert include == [
-        {
-            "lane": "band8-packaging",
-            "typedb-server": "typedb/typedb:3.11.5",
-            "server-version": "3.11.5",
-            "semantic-profile": "typedb-3.11.5/v1",
-            "driver-band": "8",
-            "driver-version": "3.11.5",
-        },
         {
             "lane": "band9-upstream",
             "typedb-server": "typedb/typedb:3.12.3",
@@ -172,9 +151,8 @@ def test_compose_and_local_harness_default_to_the_band9_server() -> None:
     # requested semantic profile picks another line; the TLS lane shares it.
     assert harness.count('default_lane="3.14.0"') == 1
     assert harness.count("${CALLER_TYPEDB_IMAGE:-typedb/typedb:${lane_server}}") == 1
-    assert "TYPEDB_LANES=(3.11.5 3.12.3 3.13.6 3.14.0)" in harness
+    assert "TYPEDB_LANES=(3.12.3 3.13.6 3.14.0)" in harness
     for server, profile in (
-        ("3.11.5", "typedb-3.11.5/v1"),
         ("3.12.3", "typedb-3.12.1/v1"),
         ("3.13.6", "typedb-3.13.6/v1"),
         ("3.14.0", "typedb-3.13.6/v1"),
@@ -189,14 +167,8 @@ def test_optional_python_driver_groups_exclude_retired_lines() -> None:
         "optional-dependencies"
     ]
     expected = {
-        "dev": {
-            "typedb-driver~=3.11.5; python_version < '3.14'",
-            "typedb-driver==3.14.0; python_version >= '3.14'",
-        },
-        "typedb-driver": {
-            "typedb-driver>=3.11,<3.15; python_version < '3.14'",
-            "typedb-driver>=3.12.3,<3.15; python_version >= '3.14'",
-        },
+        "dev": {"typedb-driver==3.14.0"},
+        "typedb-driver": {"typedb-driver>=3.12.3,<3.15"},
     }
     for group, requirements in expected.items():
         actual = {item for item in groups[group] if item.startswith("typedb-driver")}

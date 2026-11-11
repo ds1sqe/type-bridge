@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import make_dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -37,7 +37,7 @@ from type_bridge_core import (
     blocking,
 )
 
-from type_bridge import Database
+from type_bridge import Database, Iid
 
 pytestmark = pytest.mark.integration
 
@@ -45,9 +45,7 @@ ROOT = Path(__file__).resolve().parents[3]
 CORE = ROOT / "type-bridge-core"
 ACCEPTANCE_DIRECTORY = CORE / "crates/schema-codegen/tests/acceptance"
 ACCEPTANCE_SCHEMA = ACCEPTANCE_DIRECTORY / "schema.yaml"
-ACCEPTANCE_SCHEMA_3_11 = ACCEPTANCE_DIRECTORY / "schema-3.11.5.yaml"
 PROVIDER_SCHEMA = ACCEPTANCE_DIRECTORY / "provider-3.12.1.tql"
-PROVIDER_SCHEMA_3_11 = ACCEPTANCE_DIRECTORY / "provider-3.11.5.tql"
 SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json"
 SDK_QUERIES_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/queries/catalog.json"
 SDK_QUERIES_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/queries/journey.json"
@@ -72,11 +70,13 @@ class _IntegerValue(Protocol):
 class _GeneratedPerson(Protocol):
     """Static test view of the emitted person used before its package exists."""
 
-    iid: str | None
+    iid: Iid | None
     identifier: _StringValue
     nickname: _StringValue | None
     score: _IntegerValue
     aliases: list[_StringValue] | tuple[_StringValue, ...]
+
+    def attach_runtime_iid(self, iid: Iid) -> None: ...
 
 
 # The answer policy every caller-exchanged session in this module runs under.
@@ -89,6 +89,18 @@ _REMOTE_RESOURCES = QueryExecutionResourceLimits(
     collection_members=100,
     role_players=30,
 )
+
+# Historical-policy replay: 07.0 changed the default timeout from 30 s to 60 s.
+_HISTORICAL_QUERY_POLICY = {
+    "timeout_milliseconds": 30_000,
+    "items": 65_536,
+    "bytes": 33_554_432,
+    "graph_nodes": 65_536,
+    "attribute_values": 65_536,
+    "collection_members": 65_536,
+    "role_players": 65_536,
+    # Omitted statement ceilings admit the complete static typed-read stack.
+}
 
 
 _CORPUS_CODES = {
@@ -146,11 +158,9 @@ async def _core_rule_refusals(
         (
             "terms",
             "aggregate.seventeen-terms",
-            lambda: query.aggregate(
-                person, *(generated.aggregate.count() for _ in range(width + 1))
-            ),
+            lambda: query.reduce(person, *(generated.aggregate.count() for _ in range(width + 1))),
         ),
-        ("empty_terms", "aggregate.empty-terms", lambda: query.aggregate(person)),
+        ("empty_terms", "aggregate.empty-terms", lambda: query.reduce(person)),
         ("zero_limit", "bounds.public-invalid-limit", lambda: query.rows(limit=0)),
         ("zero_page", "bounds.public-invalid-limit", lambda: query.page_by(person, limit=0)),
         (
@@ -195,24 +205,24 @@ async def _one_program(generated: ModuleType, connection: object) -> dict[str, o
     ordered = (identifier.asc(),)
     people = session.query(person)
     one = await people.where(identifier.eq(generated.Identifier("person-1"))).one()
-    first = await people.first(order_by=ordered)
-    rows = await people.rows(limit=10, order_by=ordered)
-    page = await people.page_by(person, limit=2, order_by=ordered, include_total=True)
+    first = await people.first(sort=ordered)
+    rows = await people.rows(limit=10, sort=ordered)
+    page = await people.page_by(person, limit=2, sort=ordered, include_total=True)
     count = await people.count_by(person)
     exists = await people.exists_by(person)
-    totals = await people.aggregate(
+    totals = await people.reduce(
         person,
         generated.aggregate.count(),
         generated.aggregate.sum(score),
         generated.aggregate.max(score),
     )
-    grouped = await people.group_by(person, person.field(generated.Person.val_bool)).aggregate(
+    grouped = await people.group_by(person, person.field(generated.Person.val_bool)).reduce(
         generated.aggregate.count()
     )
     employment = session.exact(generated.Employment)
     pair_person, pair_employment = await (
         session.query(person, employment)
-        .where(employment.role(generated.Employment.employee).connects(person))
+        .where(employment.role(generated.Employment.employee).links(person))
         .one()
     )
     session.close()
@@ -280,20 +290,53 @@ def _profile_matrix() -> ModuleType:
     return _load_ci_module("_typebridge_sdk_profile_matrix", SDK_PROFILE_MATRIX_LOADER)
 
 
+def _resource_policy(resources: Any) -> dict[str, Any]:
+    return {
+        name: getattr(resources, name)
+        for name in (
+            "timeout_milliseconds",
+            "items",
+            "bytes",
+            "graph_nodes",
+            "attribute_values",
+            "collection_members",
+            "role_players",
+            "statements",
+        )
+    }
+
+
+def _query_plan_capture(advertisement: bytes, generated: ModuleType) -> Any:
+    if "TYPE_BRIDGE_SDK_PLAN_WITNESS" not in os.environ:
+        return None
+    sys.path.insert(0, str(ROOT / "scripts/ci"))
+    module = _load_ci_module("_typebridge_sdk_plan_parity", ROOT / "scripts/ci/sdk_plan_parity.py")
+    defaults = _resource_policy(QueryExecutionResourceLimits())
+    return module.WitnessRecorder.requested(
+        "queries",
+        "python",
+        _generated_profile(generated),
+        advertisement=advertisement,
+        caller=_resource_policy(_REMOTE_RESOURCES),
+        session=defaults,
+        proxy_defaults=defaults,
+    )
+
+
 def _matrix_error(code: str, message: str) -> AssertionError:
     return AssertionError(f"{code}: {message}")
 
 
 def _require_profile_server_version(
-    semantic_profile: str, detected: str | None, suite: str = "queries"
+    semantic_profile: str,
+    detected: str | None,
+    suite: str = "queries",
+    environment: Mapping[str, str] | None = None,
 ) -> Any:
-    """Return {suite}'s matrix entry for ``semantic_profile``.
-
-    The detected server must be exactly the entry's measured live server.
-    Generated packages also admit later patches on that minor line; this
-    acceptance matrix records only the measured releases.
-    """
-    identity = _profile_matrix().select(suite, semantic_profile, error=_matrix_error)
+    """Require the exact selected server for this suite and package profile."""
+    identity = _profile_matrix().requested(
+        suite, semantic_profile, environment, error=_matrix_error
+    )
     if detected != identity.live_server_version:
         raise AssertionError(
             f"{semantic_profile} packages require the actual detected TypeDB server "
@@ -319,7 +362,7 @@ def _requested_sdk_profile(
             f"{suite} reports target {identity.semantic_profile}; "
             f"the generated package uses {generated_profile}"
         )
-    return _require_profile_server_version(identity.semantic_profile, detected, suite)
+    return _require_profile_server_version(identity.semantic_profile, detected, suite, environment)
 
 
 def _generated_profile(generated: ModuleType) -> str:
@@ -641,7 +684,7 @@ def _normalize_sdk_role(
     assert type(relation.member) is generated.Person
     assert relation.member.identifier.value == expected_player["key"]
     assert player.identifier.value == expected_player["key"]
-    assert isinstance(player.iid, str) and player.iid
+    assert isinstance(player.iid, Iid) and player.iid
     reference = generated.PersonRef(player.iid, identifier=player.identifier)
     assert type(reference) is generated.PersonRef
     assert reference.__model_form__ == "reference"
@@ -699,9 +742,11 @@ def _sdk_queries_reducers(
     session: Any,
     query: Any,
     person: Any,
+    mark: Callable[[str], None] = lambda _: None,
 ) -> dict[str, object]:
     score = person.field(generated.Person.score)
-    values = query.aggregate(
+    mark("grouped_reducer.global")
+    values = query.reduce(
         person,
         generated.aggregate.count(),
         generated.aggregate.sum(score),
@@ -713,15 +758,18 @@ def _sdk_queries_reducers(
     )
     group_person = session.exact(generated.Person)
     group_identifier = group_person.field(generated.Person.identifier)
+    mark("grouped_reducer.binding")
     binding = (
         query.match(group_person)
         .where(person.field(generated.Person.identifier).eq_field(group_identifier))
         .group_by(person, group_person)
-        .aggregate(generated.aggregate.count())
+        .reduce(generated.aggregate.count())
     )
-    field = query.group_by(person, score).aggregate(generated.aggregate.count())
+    mark("grouped_reducer.field")
+    field = query.group_by(person, score).reduce(generated.aggregate.count())
     score_gte = person.field(generated.Person.score__gte)
-    field_tuple = query.group_by(person, score, score_gte).aggregate(generated.aggregate.count())
+    mark("grouped_reducer.field_tuple")
+    field_tuple = query.group_by(person, score, score_gte).reduce(generated.aggregate.count())
 
     def bits(value: object) -> str:
         assert type(value) is float
@@ -897,18 +945,12 @@ def _sdk_queries_resource_limits(
     clean_db: Database,
     remote_advertisement: bytes,
     remote_exchange: Any,
-    membership_iid: str,
+    membership_iid: Iid,
 ) -> dict[str, object]:
-    defaults = {
-        "timeout_milliseconds": 30_000,
-        "items": 65_536,
-        "bytes": 33_554_432,
-        "graph_nodes": 65_536,
-        "attribute_values": 65_536,
-        "collection_members": 65_536,
-        "role_players": 65_536,
-        "statements": 3,
-    }
+    assert generated.QueryExecutionResourceLimits().timeout_milliseconds == 60_000
+    historical = generated.QueryExecutionResourceLimits(**_HISTORICAL_QUERY_POLICY, statements=3)
+    defaults = _resource_policy(historical)
+    assert defaults == _HISTORICAL_QUERY_POLICY | {"statements": 3}
     # Every dimension but the statement count may be raised past its
     # default and is kept as given.
     raisable = {name: value + 1 for name, value in defaults.items() if name != "statements"}
@@ -916,21 +958,23 @@ def _sdk_queries_resource_limits(
     zero = generated.QueryExecutionResourceLimits(**dict.fromkeys(defaults, 0))
     plus_one_kept_all = (
         all(getattr(plus, name) == value for name, value in raisable.items())
-        and plus.statements == defaults["statements"]
+        and plus.statements is None
     )
     zero_tightening_all = all(getattr(zero, name) == 0 for name in defaults)
+    above_day = generated.QueryExecutionResourceLimits(timeout_milliseconds=86_400_001)
+    assert above_day.timeout_milliseconds == 86_400_001
     # Past a supported maximum a value is refused by name, never clamped.
-    past_maximum_refused = True
-    for arguments in ({"statements": 4}, {"timeout_milliseconds": 86_400_001}):
-        try:
-            generated.QueryExecutionResourceLimits(**arguments)
-        except ValueError as error:
-            past_maximum_refused = past_maximum_refused and next(iter(arguments)) in str(error)
-        else:
-            past_maximum_refused = False
+    try:
+        generated.QueryExecutionResourceLimits(statements=4097)
+    except ValueError as error:
+        past_maximum_refused = "statements" in str(error)
+    else:
+        past_maximum_refused = False
 
     def limited_session(*, remote: bool) -> Any:
-        limits = generated.QueryExecutionResourceLimits(role_players=0)
+        limits = generated.QueryExecutionResourceLimits(
+            **(_HISTORICAL_QUERY_POLICY | {"role_players": 0})
+        )
         connection = (
             generated.ExchangeConnection(remote_advertisement, remote_exchange)
             if remote
@@ -975,19 +1019,21 @@ def _sdk_queries_lifecycle(
     remote_requests: list[bytes],
 ) -> dict[str, object]:
     async def lane(connection: object) -> tuple[dict[str, bool | int], object]:
-        session = generated.Person.query(connection)
+        session = generated.Person.query(
+            connection, resources=generated.QueryExecutionResourceLimits(**_HISTORICAL_QUERY_POLICY)
+        )
         person = session.exact(generated.Person)
         identifier = person.field(generated.Person.identifier)
         scope = identifier.eq(generated.Identifier("query-ada"))
         ancestor = session.query(person).where(scope)
         sibling = ancestor.clone()
         closed_descendant = ancestor.where(
-            person.field(generated.Person.score).gte(generated.Score(1))
+            person.field(generated.Person.score).ge(generated.Score(1))
         )
         closed_descendant.close()
         closed_descendant.close()
         ancestor_usable = _sdk_queries_key(await ancestor.one()) == "query-ada"
-        descendant = ancestor.where(person.field(generated.Person.score).gte(generated.Score(1)))
+        descendant = ancestor.where(person.field(generated.Person.score).ge(generated.Score(1)))
         result = await descendant.one()
         ancestor.close()
         ancestor.close()
@@ -1093,27 +1139,46 @@ def _run_sdk_queries_journey(
     network_manager = generated.NetworkLink.manager(clean_db)
     inserted: list[tuple[Any, Any]] = []
     try:
-        assert person_manager.insert_many(people) == people
+        assert person_manager.insert_many(people).items == people
         inserted.extend((person_manager, value) for value in people)
-        assert employee_manager.insert(employee) is employee
+        assert employee_manager.insert(employee).item is employee
         inserted.append((employee_manager, employee))
-        assert manager_manager.insert(manager) is manager
+        assert manager_manager.insert(manager).item is manager
         inserted.append((manager_manager, manager))
-        assert membership_manager.insert(membership) is membership
+        assert membership_manager.insert(membership).item is membership
         inserted.append((membership_manager, membership))
-        assert network_manager.insert(network) is network
+        assert network_manager.insert(network).item is network
         inserted.append((network_manager, network))
 
-        assert all(isinstance(value.iid, str) and value.iid for _, value in inserted)
+        assert all(isinstance(value.iid, Iid) and value.iid for _, value in inserted)
         person_iids = [value.iid for value in people]
-        assert all(isinstance(iid, str) for iid in person_iids)
+        assert all(isinstance(iid, Iid) for iid in person_iids)
         membership_iid = membership.iid
         network_iid = network.iid
-        assert isinstance(membership_iid, str) and isinstance(network_iid, str)
+        assert isinstance(membership_iid, Iid) and isinstance(network_iid, Iid)
+        plan_capture = _query_plan_capture(remote_advertisement, generated)
+        if plan_capture is not None:
+            record_names = journey["create_order"]
+            assert isinstance(record_names, list)
+            for name, value in zip(
+                record_names, [*people, employee, manager, membership, network], strict=True
+            ):
+                plan_capture.record(name, str(value.iid))
+            setattr(remote_exchange, "_plan_witness", plan_capture)
+
+        def mark_plan(name: str) -> None:
+            if plan_capture is not None:
+                plan_capture.mark(name)
+
         entity_read_after_create = person_manager.get_by_iid(person_iids[0]) is not None
         relation_read_after_create = membership_manager.get_by_iid(membership_iid) is not None
 
-        direct_session = blocking(generated.Person.query(clean_db))
+        direct_session = blocking(
+            generated.Person.query(
+                clean_db,
+                resources=generated.QueryExecutionResourceLimits(**_HISTORICAL_QUERY_POLICY),
+            )
+        )
         direct_person = direct_session.exact(generated.Person)
         direct_identifier = direct_person.field(generated.Person.identifier)
         scoped = direct_identifier.eq(generated.Identifier("query-ada")) | direct_identifier.eq(
@@ -1122,7 +1187,7 @@ def _run_sdk_queries_journey(
         direct_query = direct_session.query(direct_person).where(scoped)
         direct_keys = [
             row.identifier.value
-            for row in direct_query.rows(limit=2, order_by=(direct_identifier.asc(),))
+            for row in direct_query.rows(limit=2, sort=(direct_identifier.asc(),))
         ]
         assert direct_keys == ["query-ada", "query-dana"]
         direct_ada = (
@@ -1138,7 +1203,7 @@ def _run_sdk_queries_journey(
             .match(direct_member)
             .where(
                 direct_membership_var.iid(membership_iid),
-                direct_membership_var.role(generated.Membership.member).connects(direct_member),
+                direct_membership_var.role(generated.Membership.member).links(direct_member),
                 direct_member.field(generated.Person.identifier).eq(
                     generated.Identifier("query-ada")
                 ),
@@ -1153,8 +1218,8 @@ def _run_sdk_queries_journey(
             .match(direct_origin, direct_destination)
             .where(
                 direct_network_var.iid(network_iid),
-                direct_network_var.role(generated.NetworkLink.origin).connects(direct_origin),
-                direct_network_var.role(generated.NetworkLink.destination).connects(
+                direct_network_var.role(generated.NetworkLink.origin).links(direct_origin),
+                direct_network_var.role(generated.NetworkLink.destination).links(
                     direct_destination
                 ),
                 direct_origin.field(generated.Person.identifier).eq(
@@ -1170,17 +1235,17 @@ def _run_sdk_queries_journey(
         direct_owner_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(direct_person.field(generated.Person.score).is_present(), scoped)
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_optional_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(direct_person.field(generated.Person.nickname).is_present(), scoped)
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_iid_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(direct_person.iid_in(person_iids))
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
 
         direct_employee_exact = direct_session.exact(generated.Employee)
@@ -1191,7 +1256,7 @@ def _run_sdk_queries_journey(
                 direct_employee_exact_id.eq(generated.Identifier("query-employee"))
                 | direct_employee_exact_id.eq(generated.Identifier("query-manager"))
             )
-            .rows(limit=2, order_by=(direct_employee_exact_id.asc(),))
+            .rows(limit=2, sort=(direct_employee_exact_id.asc(),))
         )
         direct_employee_subtypes = direct_session.subtypes(generated.Employee)
         direct_employee_subtypes_id = direct_employee_subtypes.field(generated.Employee.identifier)
@@ -1201,7 +1266,7 @@ def _run_sdk_queries_journey(
                 direct_employee_subtypes_id.eq(generated.Identifier("query-employee"))
                 | direct_employee_subtypes_id.eq(generated.Identifier("query-manager"))
             )
-            .rows(limit=2, order_by=(direct_employee_subtypes_id.asc(),))
+            .rows(limit=2, sort=(direct_employee_subtypes_id.asc(),))
         )
 
         direct_score = direct_person.field(generated.Person.score)
@@ -1211,24 +1276,24 @@ def _run_sdk_queries_journey(
             direct_session.query(direct_person)
             .where(
                 scoped,
-                direct_score.gte(generated.Score(40)) & direct_boolean.eq(generated.ValBool(True)),
+                direct_score.ge(generated.Score(40)) & direct_boolean.eq(generated.ValBool(True)),
             )
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_or_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(scoped)
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_not_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
             .where(scoped, ~direct_boolean.eq(generated.ValBool(True)))
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_field_comparison_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
-            .where(scoped, direct_score.gte_field(direct_score_gte))
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .where(scoped, direct_score.ge_field(direct_score_gte))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
 
         direct_source = direct_session.exact(generated.Person)
@@ -1274,7 +1339,7 @@ def _run_sdk_queries_journey(
                 .where(direct_cross_scope)
                 .rows(
                     limit=4,
-                    order_by=(direct_cross_left_id.asc(), direct_cross_right_id.asc()),
+                    sort=(direct_cross_left_id.asc(), direct_cross_right_id.asc()),
                 )
             )
         ]
@@ -1284,22 +1349,22 @@ def _run_sdk_queries_journey(
         selection_participant = direct_session.exact(generated.Person)
         selection_predicates = (
             selection_link.iid(network_iid),
-            selection_link.role(generated.NetworkLink.origin).connects(selection_origin),
-            selection_link.role(generated.NetworkLink.participant).connects(selection_participant),
+            selection_link.role(generated.NetworkLink.origin).links(selection_origin),
+            selection_link.role(generated.NetworkLink.participant).links(selection_participant),
         )
         direct_positional_page = (
             direct_session.query(
                 selection_origin,
                 selection_participant.collect()
                 .distinct()
-                .order_by(selection_participant.field(generated.Person.identifier).asc()),
+                .sort(selection_participant.field(generated.Person.identifier).asc()),
             )
             .match(selection_link)
             .where(*selection_predicates)
             .page_by(
                 selection_origin,
                 limit=1,
-                order_by=(selection_origin.field(generated.Person.identifier).asc(),),
+                sort=(selection_origin.field(generated.Person.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -1321,14 +1386,14 @@ def _run_sdk_queries_journey(
                 origin=selection_origin,
                 participants=selection_participant.collect()
                 .distinct()
-                .order_by(selection_participant.field(generated.Person.identifier).asc()),
+                .sort(selection_participant.field(generated.Person.identifier).asc()),
             )
             .match(selection_link)
             .where(*selection_predicates)
             .page_by(
                 selection_origin,
                 limit=1,
-                order_by=(selection_origin.field(generated.Person.identifier).asc(),),
+                sort=(selection_origin.field(generated.Person.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -1354,11 +1419,11 @@ def _run_sdk_queries_journey(
             .where(direct_identifier.eq(generated.Identifier("query-dana")))
             .one()
         )
-        direct_first = direct_query.first(order_by=(direct_identifier.asc(),))
+        direct_first = direct_query.first(sort=(direct_identifier.asc(),))
         direct_page = direct_query.page_by(
             direct_person,
             limit=1,
-            order_by=(direct_identifier.asc(),),
+            sort=(direct_identifier.asc(),),
             include_total=True,
         )
         direct_terminals = {
@@ -1383,8 +1448,8 @@ def _run_sdk_queries_journey(
 
         direct_scalar_domain_keys = _sdk_queries_keys(
             direct_session.query(direct_person)
-            .where(scoped, direct_score.gte(generated.Score(40)))
-            .rows(limit=2, order_by=(direct_identifier.asc(),))
+            .where(scoped, direct_score.ge(generated.Score(40)))
+            .rows(limit=2, sort=(direct_identifier.asc(),))
         )
         direct_reducers = _sdk_queries_reducers(
             generated,
@@ -1402,9 +1467,9 @@ def _run_sdk_queries_journey(
         )
         direct_function_values = [
             row.score.value
-            for row in direct_query.where(direct_call.gte_field(direct_score)).rows(
+            for row in direct_query.where(direct_call.ge_field(direct_score)).rows(
                 limit=2,
-                order_by=(direct_identifier.asc(),),
+                sort=(direct_identifier.asc(),),
             )
         ]
         direct_nested = generated.qualifying_score(
@@ -1414,9 +1479,9 @@ def _run_sdk_queries_journey(
         )
         direct_nested_function_values = [
             row.score.value
-            for row in direct_query.where(direct_nested.gte_field(direct_score)).rows(
+            for row in direct_query.where(direct_nested.ge_field(direct_score)).rows(
                 limit=2,
-                order_by=(direct_identifier.asc(),),
+                sort=(direct_identifier.asc(),),
             )
         ]
         assert direct_function_values == expected["schema_function"]["values"]
@@ -1427,11 +1492,13 @@ def _run_sdk_queries_journey(
             generated.Identifier("query-ada")
         ) | remote_identifier.eq(generated.Identifier("query-dana"))
         remote_query = remote_session.query(remote_person).where(remote_scoped)
+        mark_plan("terminals.rows")
         remote_keys = [
             row.identifier.value
-            for row in asyncio.run(remote_query.rows(limit=2, order_by=(remote_identifier.asc(),)))
+            for row in asyncio.run(remote_query.rows(limit=2, sort=(remote_identifier.asc(),)))
         ]
         assert remote_keys == direct_keys
+        mark_plan("model_values_and_references.person")
         remote_ada = asyncio.run(
             remote_session.query(remote_person)
             .where(remote_identifier.eq(generated.Identifier("query-ada")))
@@ -1440,12 +1507,13 @@ def _run_sdk_queries_journey(
 
         remote_membership_var = remote_session.exact(generated.Membership)
         remote_member = remote_session.exact(generated.Person)
+        mark_plan("roles.membership")
         remote_membership = asyncio.run(
             remote_session.query(remote_membership_var)
             .match(remote_member)
             .where(
                 remote_membership_var.iid(membership_iid),
-                remote_membership_var.role(generated.Membership.member).connects(remote_member),
+                remote_membership_var.role(generated.Membership.member).links(remote_member),
                 remote_member.field(generated.Person.identifier).eq(
                     generated.Identifier("query-ada")
                 ),
@@ -1455,13 +1523,14 @@ def _run_sdk_queries_journey(
         remote_network_var = remote_session.exact(generated.NetworkLink)
         remote_origin = remote_session.exact(generated.Person)
         remote_destination = remote_session.exact(generated.Person)
+        mark_plan("roles.network")
         remote_network = asyncio.run(
             remote_session.query(remote_network_var)
             .match(remote_origin, remote_destination)
             .where(
                 remote_network_var.iid(network_iid),
-                remote_network_var.role(generated.NetworkLink.origin).connects(remote_origin),
-                remote_network_var.role(generated.NetworkLink.destination).connects(
+                remote_network_var.role(generated.NetworkLink.origin).links(remote_origin),
+                remote_network_var.role(generated.NetworkLink.destination).links(
                     remote_destination
                 ),
                 remote_origin.field(generated.Person.identifier).eq(
@@ -1474,82 +1543,91 @@ def _run_sdk_queries_journey(
             .one()
         )
 
+        mark_plan("owner_iid_set.owner_keys")
         remote_owner_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.field(generated.Person.score).is_present(), remote_scoped)
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
+        mark_plan("owner_iid_set.optional_present_keys")
         remote_optional_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.field(generated.Person.nickname).is_present(), remote_scoped)
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
+        mark_plan("owner_iid_set.iid_set_keys")
         remote_iid_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_person.iid_in(person_iids))
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
 
         remote_employee_exact = remote_session.exact(generated.Employee)
         remote_employee_exact_id = remote_employee_exact.field(generated.Employee.identifier)
+        mark_plan("exact_subtypes.exact")
         remote_exact_values = asyncio.run(
             remote_session.query(remote_employee_exact)
             .where(
                 remote_employee_exact_id.eq(generated.Identifier("query-employee"))
                 | remote_employee_exact_id.eq(generated.Identifier("query-manager"))
             )
-            .rows(limit=2, order_by=(remote_employee_exact_id.asc(),))
+            .rows(limit=2, sort=(remote_employee_exact_id.asc(),))
         )
         remote_employee_subtypes = remote_session.subtypes(generated.Employee)
         remote_employee_subtypes_id = remote_employee_subtypes.field(generated.Employee.identifier)
+        mark_plan("exact_subtypes.subtypes")
         remote_subtype_values = asyncio.run(
             remote_session.query(remote_employee_subtypes)
             .where(
                 remote_employee_subtypes_id.eq(generated.Identifier("query-employee"))
                 | remote_employee_subtypes_id.eq(generated.Identifier("query-manager"))
             )
-            .rows(limit=2, order_by=(remote_employee_subtypes_id.asc(),))
+            .rows(limit=2, sort=(remote_employee_subtypes_id.asc(),))
         )
 
         remote_score = remote_person.field(generated.Person.score)
         remote_score_gte = remote_person.field(generated.Person.score__gte)
         remote_boolean = remote_person.field(generated.Person.val_bool)
+        mark_plan("scalar_boolean.and")
         remote_and_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(
                     remote_scoped,
-                    remote_score.gte(generated.Score(40))
+                    remote_score.ge(generated.Score(40))
                     & remote_boolean.eq(generated.ValBool(True)),
                 )
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
+        mark_plan("scalar_boolean.or")
         remote_or_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped)
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
+        mark_plan("scalar_boolean.not")
         remote_not_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
                 .where(remote_scoped, ~remote_boolean.eq(generated.ValBool(True)))
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
+        mark_plan("scalar_boolean.field_comparison")
         remote_field_comparison_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
-                .where(remote_scoped, remote_score.gte_field(remote_score_gte))
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .where(remote_scoped, remote_score.ge_field(remote_score_gte))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
 
@@ -1564,6 +1642,7 @@ def _run_sdk_queries_journey(
             min_depth=1,
             max_depth=1,
         )
+        mark_plan("topology.reachable")
         remote_reachable_pair = asyncio.run(
             remote_session.query(remote_source, remote_target)
             .where(
@@ -1588,6 +1667,7 @@ def _run_sdk_queries_journey(
             remote_cross_right_id.eq(generated.Identifier("query-ada"))
             | remote_cross_right_id.eq(generated.Identifier("query-dana"))
         )
+        mark_plan("topology.cross_join")
         remote_cross_pairs = [
             [_sdk_queries_key(left), _sdk_queries_key(right)]
             for left, right in asyncio.run(
@@ -1596,7 +1676,7 @@ def _run_sdk_queries_journey(
                 .where(remote_cross_scope)
                 .rows(
                     limit=4,
-                    order_by=(remote_cross_left_id.asc(), remote_cross_right_id.asc()),
+                    sort=(remote_cross_left_id.asc(), remote_cross_right_id.asc()),
                 )
             )
         ]
@@ -1606,46 +1686,46 @@ def _run_sdk_queries_journey(
         remote_selection_participant = remote_session.exact(generated.Person)
         remote_selection_predicates = (
             remote_selection_link.iid(network_iid),
-            remote_selection_link.role(generated.NetworkLink.origin).connects(
-                remote_selection_origin
-            ),
-            remote_selection_link.role(generated.NetworkLink.participant).connects(
+            remote_selection_link.role(generated.NetworkLink.origin).links(remote_selection_origin),
+            remote_selection_link.role(generated.NetworkLink.participant).links(
                 remote_selection_participant
             ),
         )
+        mark_plan("selection_shapes.positional")
         remote_positional_page = asyncio.run(
             remote_session.query(
                 remote_selection_origin,
                 remote_selection_participant.collect()
                 .distinct()
-                .order_by(remote_selection_participant.field(generated.Person.identifier).asc()),
+                .sort(remote_selection_participant.field(generated.Person.identifier).asc()),
             )
             .match(remote_selection_link)
             .where(*remote_selection_predicates)
             .page_by(
                 remote_selection_origin,
                 limit=1,
-                order_by=(remote_selection_origin.field(generated.Person.identifier).asc(),),
+                sort=(remote_selection_origin.field(generated.Person.identifier).asc(),),
                 include_total=True,
             )
         )
         assert remote_positional_page.total == 1
         assert len(remote_positional_page.items) == 1
         remote_positional_origin, remote_positional_participants = remote_positional_page.items[0]
+        mark_plan("selection_shapes.named")
         remote_named_page = asyncio.run(
             remote_session.query_as(
                 selection_row,
                 origin=remote_selection_origin,
                 participants=remote_selection_participant.collect()
                 .distinct()
-                .order_by(remote_selection_participant.field(generated.Person.identifier).asc()),
+                .sort(remote_selection_participant.field(generated.Person.identifier).asc()),
             )
             .match(remote_selection_link)
             .where(*remote_selection_predicates)
             .page_by(
                 remote_selection_origin,
                 limit=1,
-                order_by=(remote_selection_origin.field(generated.Person.identifier).asc(),),
+                sort=(remote_selection_origin.field(generated.Person.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -1667,21 +1747,28 @@ def _run_sdk_queries_journey(
         }
 
         requests_before_one = len(remote_requests)
+        mark_plan("terminals.one")
         remote_dana = asyncio.run(
             remote_session.query(remote_person)
             .where(remote_identifier.eq(generated.Identifier("query-dana")))
             .one()
         )
         remote_one_exchange = len(remote_requests) - requests_before_one
-        remote_first = asyncio.run(remote_query.first(order_by=(remote_identifier.asc(),)))
+        mark_plan("terminals.first")
+        remote_first = asyncio.run(remote_query.first(sort=(remote_identifier.asc(),)))
+        mark_plan("terminals.page")
         remote_page = asyncio.run(
             remote_query.page_by(
                 remote_person,
                 limit=1,
-                order_by=(remote_identifier.asc(),),
+                sort=(remote_identifier.asc(),),
                 include_total=True,
             )
         )
+        mark_plan("terminals.count")
+        remote_count = asyncio.run(remote_query.count_by(remote_person))
+        mark_plan("terminals.exists")
+        remote_exists = asyncio.run(remote_query.exists_by(remote_person))
         remote_terminals = {
             "one": _sdk_queries_key(remote_dana),
             "first": _sdk_queries_key(remote_first),
@@ -1692,22 +1779,26 @@ def _run_sdk_queries_journey(
                 "limit": remote_page.limit,
                 "total": remote_page.total,
             },
-            "count": asyncio.run(remote_query.count_by(remote_person)),
-            "exists": asyncio.run(remote_query.exists_by(remote_person)),
+            "count": remote_count,
+            "exists": remote_exists,
         }
 
+        mark_plan("scalar_domain.rows")
         remote_scalar_domain_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
-                .where(remote_scoped, remote_score.gte(generated.Score(40)))
-                .rows(limit=2, order_by=(remote_identifier.asc(),))
+                .where(remote_scoped, remote_score.ge(generated.Score(40)))
+                .rows(limit=2, sort=(remote_identifier.asc(),))
             )
         )
+        if plan_capture is not None:
+            plan_capture.stop()
         remote_reducers = _sdk_queries_reducers(
             generated,
             remote_session,
             blocking(remote_query),
             remote_person,
+            mark_plan,
         )
         assert remote_reducers == direct_reducers
 
@@ -1717,12 +1808,13 @@ def _run_sdk_queries_journey(
             remote_person,
             remote_minimum,
         )
+        mark_plan("schema_function.simple")
         remote_function_values = [
             row.score.value
             for row in asyncio.run(
-                remote_query.where(remote_call.gte_field(remote_score)).rows(
+                remote_query.where(remote_call.ge_field(remote_score)).rows(
                     limit=2,
-                    order_by=(remote_identifier.asc(),),
+                    sort=(remote_identifier.asc(),),
                 )
             )
         ]
@@ -1732,16 +1824,25 @@ def _run_sdk_queries_journey(
             remote_person,
             remote_call,
         )
+        mark_plan("schema_function.nested")
         remote_nested_function_values = [
             row.score.value
             for row in asyncio.run(
-                remote_query.where(remote_nested.gte_field(remote_score)).rows(
+                remote_query.where(remote_nested.ge_field(remote_score)).rows(
                     limit=2,
-                    order_by=(remote_identifier.asc(),),
+                    sort=(remote_identifier.asc(),),
                 )
             )
         ]
         assert remote_nested_function_values == direct_nested_function_values
+
+        mark_plan("structured_query_diagnostic.one")
+        try:
+            asyncio.run(remote_query.one())
+        except MatchRequestError as error:
+            assert _sdk_queries_cardinality_diagnostic(error) == structured_query_diagnostic
+        else:
+            raise AssertionError("queries remote exactly-one query accepted two selected rows")
 
         direct_model_values = _sdk_queries_person_values(generated, direct_ada, direct_membership)
         remote_model_values = _sdk_queries_person_values(generated, remote_ada, remote_membership)
@@ -1832,6 +1933,8 @@ def _run_sdk_queries_journey(
         }
         assert scalar_domain_remote == scalar_domain_direct
         assert remote_one_exchange == 1
+        if plan_capture is not None:
+            plan_capture.stop()
         resource_limits = _sdk_queries_resource_limits(
             generated,
             clean_db,
@@ -1894,6 +1997,9 @@ def _run_sdk_queries_journey(
         assert not overlap, f"queries proof fragments duplicate live lanes: {sorted(overlap)!r}"
         observed.update(proof_observations)
         assert len(observed) == 32
+        if plan_capture is not None:
+            plan_capture.finish()
+            setattr(remote_exchange, "_plan_witness", None)
     finally:
         cleanup_failures: list[BaseException] = []
         for owner, value in reversed(inserted):
@@ -1924,7 +2030,42 @@ def _run_sdk_queries_journey(
     return _sdk_results(catalog, journey, observed)
 
 
+def _capture_v2_exchange(request: bytes, reply: bytes, advertisement: bytes) -> None:
+    destination = os.environ.get("TYPE_BRIDGE_CAPTURE_DIRECTORY")
+    if destination is None:
+        return
+    wire = json.loads(request)
+    assert wire["format"] == "typebridge.query-remote-request/v2"
+    plan = wire["plan"]
+    terminal = plan.get("compatibility", {}).get("model_query", {})
+    if terminal.get("kind") == "page":
+        name = "page-with-total" if terminal["include_total"] else "page-without-total"
+    elif any(
+        pattern.get("kind") == "isa"
+        and pattern["type_id"]["label"] == "party"
+        and pattern["include_subtypes"]
+        for stage in plan["pipeline"]
+        if stage["kind"] == "match"
+        for pattern in stage["patterns"]
+    ):
+        name = "abstract-party"
+    else:
+        return
+    directory = Path(destination) / name
+    directory.mkdir(parents=True, exist_ok=True)
+    if (directory / "request.json").exists():
+        return
+    for filename, data in [
+        ("advertisement.json", advertisement),
+        ("request.json", request),
+        ("reply.json", reply),
+    ]:
+        (directory / filename).write_bytes(data)
+
+
 def _free_port() -> int:
+    if configured := os.environ.get("SMOKE_PORT"):
+        return int(configured)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
@@ -1943,16 +2084,28 @@ def _wait_for_port(port: int, process: subprocess.Popen[bytes], timeout: float) 
     raise AssertionError("generated remote server never became reachable")
 
 
-def test_generated_profile_server_gate_reads_the_matrix() -> None:
+def test_generated_profile_server_gate_reads_the_matrix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION", raising=False)
+    monkeypatch.delenv("TYPEDB_VERSION", raising=False)
     for profile, server in (("typedb-3.12.1/v1", "3.12.3"), ("typedb-3.13.6/v1", "3.13.6")):
         assert _require_profile_server_version(profile, server).semantic_profile == profile
-        for detected in (None, "3.11.5", "3.12.2", "3.13.5", "3.14.0"):
+        for detected in (None, f"3.{12 - 1}.5", "3.12.2", "3.13.5", "3.14.0"):
             with pytest.raises(
                 AssertionError, match=f"actual detected TypeDB server version {server}"
             ):
                 _require_profile_server_version(profile, detected)
     with pytest.raises(AssertionError, match="semantic_profile_mismatch"):
-        _require_profile_server_version("typedb-3.11.5/v1", "3.11.5")
+        _require_profile_server_version(f"typedb-3.{12 - 1}.5/v1", f"3.{12 - 1}.5")
+
+    monkeypatch.setenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION", "3.14.0")
+    assert (
+        _require_profile_server_version("typedb-3.13.6/v1", "3.14.0").live_server_version
+        == "3.14.0"
+    )
+    with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.14.0"):
+        _require_profile_server_version("typedb-3.13.6/v1", "3.13.6")
+    with pytest.raises(AssertionError, match="server_profile_mismatch"):
+        _require_profile_server_version("typedb-3.12.1/v1", "3.14.0")
 
 
 @pytest.mark.parametrize("suite", ["queries", "models", "serialization"])
@@ -1981,9 +2134,9 @@ def test_sdk_reports_declare_the_requested_matrix_profile(suite: str) -> None:
     with pytest.raises(AssertionError, match="semantic_profile_mismatch"):
         _requested_sdk_profile(
             suite,
-            "typedb-3.11.5/v1",
-            "3.11.5",
-            {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": "typedb-3.11.5/v1"},
+            f"typedb-3.{12 - 1}.5/v1",
+            f"3.{12 - 1}.5",
+            {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": f"typedb-3.{12 - 1}.5/v1"},
         )
 
 
@@ -2051,10 +2204,6 @@ def _make_generated_person(
 
 def _acceptance_contract(database: Database) -> tuple[Path, Path, str]:
     server_version = database.detected_server_version()
-    if server_version is not None:
-        major, minor = (int(part) for part in server_version.split(".")[:2])
-        if (major, minor) < (3, 12):
-            return ACCEPTANCE_SCHEMA_3_11, PROVIDER_SCHEMA_3_11, "typedb-3.11.5/v1"
     semantic_profile = os.environ.get(
         "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE", DEFAULT_ACCEPTANCE_PROFILE
     )
@@ -2089,21 +2238,21 @@ def generated_package(
     else:
         stage = Path(supplied_stage).resolve()
         for required in (
-            stage / "generated_v2" / "__init__.py",
+            stage / "generated_package" / "__init__.py",
             stage / "schema-authority.json",
         ):
             if not required.is_file() or required.is_symlink():
                 raise AssertionError(f"supplied generated Python fixture is incomplete: {required}")
     monkeypatch.syspath_prepend(str(stage))
     importlib.invalidate_caches()
-    generated = importlib.import_module("generated_v2")
+    generated = importlib.import_module("generated_package")
     generated_semantics = json.loads(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON)
     assert generated_semantics["semantic_profile"] == semantic_profile
     try:
         yield generated
     finally:
         for module_name in tuple(sys.modules):
-            if module_name == "generated_v2" or module_name.startswith("generated_v2."):
+            if module_name == "generated_package" or module_name.startswith("generated_package."):
                 del sys.modules[module_name]
 
 
@@ -2142,11 +2291,11 @@ def sdk_models_package(
             f"prepare_generated_live_fixture.sh emits no models package for {semantic_profile}"
         )
     if not package.is_file() or package.is_symlink():
-        raise AssertionError(f"supplied generated Python V3 fixture is incomplete: {package}")
+        raise AssertionError(f"supplied generated Python staged fixture is incomplete: {package}")
     ordered_authority = stage / "schema-authority-ordered.json"
     if not ordered_authority.is_file() or ordered_authority.is_symlink():
         raise AssertionError(
-            f"supplied generated Python V3 authority is incomplete: {ordered_authority}"
+            f"supplied generated Python staged authority is incomplete: {ordered_authority}"
         )
     monkeypatch.syspath_prepend(str(stage))
     importlib.invalidate_caches()
@@ -2161,6 +2310,230 @@ def sdk_models_package(
                 del sys.modules[module_name]
 
 
+def _model_plan_mark(name: str = "") -> None:
+    label = os.environ.get("TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL")
+    if label is not None:
+        Path(label).write_text(
+            name if "." in name else "unkeyed_entity_iid_lifecycle." + name if name else ""
+        )
+
+
+def _model_plan_identity(name: str, iid: Iid) -> None:
+    path = os.environ.get("TYPE_BRIDGE_TEST_PLAN_CAPTURE_RECORDS")
+    if path is not None:
+        with Path(path).open("a") as destination:
+            destination.write(json.dumps([name, str(iid)]) + "\n")
+
+
+def _sdk_models_counter_plan_lifecycle(generated: ModuleType, database: Database) -> None:
+    manager = generated.Counter.manager(database)
+    before = manager.count()
+    values = [generated.Counter(counter_value=generated.CounterValue(value)) for value in (1, 2)]
+    _model_plan_mark("insert")
+    assert manager.insert_many(values).items == values
+    _model_plan_mark()
+    for name, value in zip(("counter-left", "counter-right"), values, strict=True):
+        assert isinstance(value.iid, Iid)
+        _model_plan_identity(name, value.iid)
+    _model_plan_mark("unkeyed_entity_iid_lifecycle.count")
+    assert manager.count() == before + 2
+    _model_plan_mark()
+    transaction = database.staged_transaction("read", commit_on_exit=False)
+    session = generated.Counter.query(transaction)
+    root = session.exact(generated.Counter)
+    pending = asyncio.run(session.query(root).count_by(root))
+    with pytest.raises(RuntimeError):
+        pending.result()
+    session.close()
+    _model_plan_mark("borrowed_transaction_lifecycle.staged_count")
+    transaction.commit()
+    _model_plan_mark()
+    assert pending.result() == before + 2
+    transaction.close()
+    values[0].counter_value = generated.CounterValue(11)
+    _model_plan_mark("update")
+    manager.update(values[0])
+    _model_plan_mark()
+    _model_plan_mark("unkeyed_entity_iid_lifecycle.get_by_iid")
+    assert manager.get_by_iid(values[0].iid).counter_value.value == 11
+    _model_plan_mark()
+    _model_plan_mark("entity_batch_update_delete_atomic.update")
+    manager.update_many(values)
+    _model_plan_mark()
+    _model_plan_mark("delete")
+    assert manager.delete_many(values) == values
+    _model_plan_mark()
+    assert manager.count() == before
+
+    returned_inputs = [
+        generated.Counter(counter_value=generated.CounterValue(value)) for value in (1, 2)
+    ]
+    manager.insert_many(returned_inputs)
+    for name, value in zip(("counter-left", "counter-right"), returned_inputs, strict=True):
+        _model_plan_identity(name, value.iid)
+    _model_plan_mark("manager_returning_delete.entity")
+    snapshot = manager.delete_returning(returned_inputs[0]).item
+    _model_plan_mark()
+    assert snapshot.counter_value.value == 1
+    _model_plan_mark("manager_returning_delete.entity_many")
+    snapshots = manager.delete_many_returning(returned_inputs).items
+    _model_plan_mark()
+    assert [value.counter_value.value for value in snapshots] == [2]
+    assert manager.count() == before
+
+
+def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Database) -> None:
+    def person(*, nonempty: bool = False, identifier: str = "data-ada") -> Any:
+        return generated.Person(
+            identifier=generated.Identifier(identifier),
+            aliases=[generated.Aliases("unsupported")] if nonempty else [],
+            score=generated.Score(30),
+            val_bool=generated.ValBool(True),
+            val_constrained=generated.ValConstrained(30),
+            val_date=generated.ValDate(date(2026, 8, 14)),
+            val_datetime=generated.ValDatetime(datetime(2026, 8, 14, 9, 30)),
+            val_datetime_tz=generated.ValDatetimeTz(datetime(2026, 8, 14, 9, 30, tzinfo=UTC)),
+            val_decimal=generated.ValDecimal(Decimal("30.5")),
+            val_double=generated.ValDouble(30.5),
+            val_duration=generated.ValDuration(timedelta(seconds=30)),
+        )
+
+    people = generated.Person.manager(database)
+    _model_plan_mark("ordered_distinct_collections.entity_insert")
+    ada = people.insert(person()).item
+    _model_plan_mark()
+    _model_plan_identity("data-ada", ada.iid)
+    assert ada.aliases == ()
+    _model_plan_mark("ordered_distinct_collections.entity_put")
+    assert people.put(person()).item.iid == ada.iid
+    _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.entity_count")
+    assert people.count() == 1
+    _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.entity_update")
+    people.update(ada)
+    _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.entity_read")
+    assert people.get_by_iid(ada.iid).aliases == ()
+    _model_plan_mark()
+    links = generated.NetworkLink.manager(database)
+    _model_plan_mark("ordered_distinct_collections.role_insert")
+    link = links.insert(
+        generated.NetworkLink(
+            identifier=generated.Identifier("data-link-forward"),
+            origin=ada,
+            destination=ada,
+        )
+    ).item
+    _model_plan_mark()
+    _model_plan_identity("link-forward", link.iid)
+    assert link.participant == ()
+    _model_plan_mark("ordered_distinct_collections.role_put")
+    assert (
+        links.put(
+            generated.NetworkLink(
+                identifier=generated.Identifier("data-link-forward"), origin=ada, destination=ada
+            )
+        ).item.iid
+        == link.iid
+    )
+    _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.role_count")
+    assert links.count() == 1
+    _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.role_update")
+    links.update(link)
+    _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.role_read")
+    assert links.get_by_iid(link.iid).participant == ()
+    _model_plan_mark()
+    for manager, value in [
+        (people, person(nonempty=True)),
+        (
+            links,
+            generated.NetworkLink(
+                identifier=generated.Identifier("unsupported"),
+                origin=ada,
+                destination=ada,
+                participant=[ada],
+            ),
+        ),
+    ]:
+        _model_plan_mark("ordered_distinct_collections.refused_nonempty")
+        try:
+            manager.insert(value)
+        except Exception as error:
+            assert getattr(error, "code", None) == "query_plan_ordered_collection_unsupported"
+        else:
+            raise AssertionError("nonempty ordered write was accepted")
+        finally:
+            _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.role_delete")
+    links.delete(link)
+    _model_plan_mark()
+    assert links.count() == 0
+    _model_plan_mark("entity_batch_insert_put.put")
+    put_people = people.put_many([person(), person(identifier="data-dana")]).items
+    _model_plan_mark()
+    assert put_people[0].iid == ada.iid
+    _model_plan_identity("data-dana", put_people[1].iid)
+    people.delete(put_people[1])
+    inputs = [
+        generated.NetworkLink(
+            identifier=generated.Identifier(identifier), origin=ada, destination=ada
+        )
+        for identifier in ("data-link-forward", "data-link-return")
+    ]
+    _model_plan_mark("relation_batch_insert_put.put")
+    put_links = links.put_many(inputs).items
+    _model_plan_mark()
+    for name, value in zip(("link-forward", "link-return"), put_links, strict=True):
+        _model_plan_identity(name, value.iid)
+    links.delete_many(put_links)
+    inputs = [
+        generated.NetworkLink(
+            identifier=generated.Identifier(identifier), origin=ada, destination=ada
+        )
+        for identifier in ("data-link-forward", "data-link-return")
+    ]
+    _model_plan_mark("relation_batch_insert_put.insert")
+    batch_links = links.insert_many(inputs).items
+    _model_plan_mark()
+    for name, value in zip(("link-forward", "link-return"), batch_links, strict=True):
+        _model_plan_identity(name, value.iid)
+    _model_plan_mark("relation_batch_update_delete_atomic.update")
+    links.update_many(batch_links)
+    _model_plan_mark()
+    _model_plan_mark("relation_batch_update_delete_atomic.delete")
+    links.delete_many(batch_links)
+    _model_plan_mark()
+    returned_inputs = [
+        generated.NetworkLink(
+            identifier=generated.Identifier(identifier), origin=ada, destination=ada
+        )
+        for identifier in ("data-link-forward", "data-link-return")
+    ]
+    links.insert_many(returned_inputs)
+    for name, value in zip(("link-forward", "link-return"), returned_inputs, strict=True):
+        _model_plan_identity(name, value.iid)
+    _model_plan_mark("manager_returning_delete.relation")
+    snapshot = links.delete_returning(returned_inputs[0]).item
+    _model_plan_mark()
+    assert snapshot.identifier.value == "data-link-forward" and snapshot.origin.iid == ada.iid
+    _model_plan_mark("manager_returning_delete.relation_many")
+    snapshots = links.delete_many_returning(returned_inputs).items
+    _model_plan_mark()
+    assert (
+        len(snapshots) == 1
+        and snapshots[0].identifier.value == "data-link-return"
+        and snapshots[0].origin.iid == ada.iid
+    )
+    _model_plan_mark("ordered_distinct_collections.entity_delete")
+    people.delete(ada)
+    _model_plan_mark()
+    assert people.count() == 0
+
+
 def sdk_models_data_model_runtime_live(
     clean_db: Database,
     sdk_models_package: ModuleType,
@@ -2173,14 +2546,17 @@ def sdk_models_data_model_runtime_live(
         transaction_type="schema",
     )
 
+    _sdk_models_counter_plan_lifecycle(generated, clean_db)
+    _sdk_models_empty_ordered_lifecycle(generated, clean_db)
+
     def person(identifier: str, score: int) -> Any:
         return _make_generated_person(generated, identifier, score)
 
     person_manager = generated.Person.manager(clean_db)
-    assert person_manager.insert_many([]) == []
-    assert person_manager.put_many([]) == []
+    assert person_manager.insert_many([]).items == []
+    assert person_manager.put_many([]).items == []
     ada, dana = person("data-ada", 10), person("data-dana", 20)
-    inserted_people = person_manager.insert_many([ada, dana])
+    inserted_people = person_manager.insert_many([ada, dana]).items
     assert inserted_people == [ada, dana]
     assert all(value.iid for value in inserted_people)
     persisted_person_keys = [
@@ -2191,7 +2567,7 @@ def sdk_models_data_model_runtime_live(
     ]
     assert set(persisted_person_keys) == {"data-ada", "data-dana"}
     person_manager.delete(dana)
-    put_people = person_manager.put_many([person("data-ada", 11), person("data-dana", 21)])
+    put_people = person_manager.put_many([person("data-ada", 11), person("data-dana", 21)]).items
     assert [value.identifier.value for value in put_people] == ["data-ada", "data-dana"]
     ada = person_manager.filter(identifier=generated.Identifier("data-ada")).first()
     dana = person_manager.filter(identifier=generated.Identifier("data-dana")).first()
@@ -2205,15 +2581,15 @@ def sdk_models_data_model_runtime_live(
     assert person_manager.filter(identifier=generated.Identifier("duplicate-person")).count() == 0
 
     network_manager = generated.NetworkLink.manager(clean_db)
-    assert network_manager.insert_many([]) == []
-    assert network_manager.put_many([]) == []
+    assert network_manager.insert_many([]).items == []
+    assert network_manager.put_many([]).items == []
     forward = generated.NetworkLink(
         identifier=generated.Identifier("data-link-forward"), origin=ada, destination=dana
     )
     returning = generated.NetworkLink(
         identifier=generated.Identifier("data-link-return"), origin=dana, destination=ada
     )
-    inserted_links = network_manager.insert_many([forward, returning])
+    inserted_links = network_manager.insert_many([forward, returning]).items
     assert inserted_links == [forward, returning]
     network_manager.delete(returning)
     put_links = network_manager.put_many(
@@ -2229,7 +2605,7 @@ def sdk_models_data_model_runtime_live(
                 destination=ada,
             ),
         ]
-    )
+    ).items
     assert [value.identifier.value for value in put_links] == [
         "data-link-forward",
         "data-link-return",
@@ -2259,7 +2635,7 @@ def sdk_models_data_model_runtime_live(
         generated.Counter(counter_value=generated.CounterValue(1)),
         generated.Counter(counter_value=generated.CounterValue(2)),
     ]
-    assert counter_manager.insert_many(counters) == counters
+    assert counter_manager.insert_many(counters).items == counters
     counter_iids = [value.iid for value in counters]
     assert all(counter_iids) and len(set(counter_iids)) == 2
     counter_left = counter_manager.get_by_iid(counter_iids[0])
@@ -2284,7 +2660,7 @@ def sdk_models_data_model_runtime_live(
 
     membership_manager = generated.Membership.manager(clean_db)
     memberships = [generated.Membership(member=ada), generated.Membership(member=dana)]
-    assert membership_manager.insert_many(memberships) == memberships
+    assert membership_manager.insert_many(memberships).items == memberships
     membership_iids = [value.iid for value in memberships]
     assert all(membership_iids) and len(set(membership_iids)) == 2
     membership_ada = membership_manager.get_by_iid(membership_iids[0])
@@ -2323,7 +2699,7 @@ def sdk_models_data_model_runtime_live(
     assert person_manager.filter(identifier=generated.Identifier("data-commit")).exists()
 
     rolled_back = person("data-rollback", 31)
-    with pytest.raises(RuntimeError, match="V3 rollback sentinel"):
+    with pytest.raises(RuntimeError, match="staged rollback sentinel"):
         with clean_db.transaction("write") as transaction:
             transaction_manager = generated.Person.manager(transaction)
             transaction_manager.insert(rolled_back)
@@ -2331,7 +2707,7 @@ def sdk_models_data_model_runtime_live(
             assert not person_manager.filter(
                 identifier=generated.Identifier("data-rollback")
             ).exists()
-            raise RuntimeError("V3 rollback sentinel")
+            raise RuntimeError("staged rollback sentinel")
     assert not person_manager.filter(identifier=generated.Identifier("data-rollback")).exists()
 
     reused = person("data-rollback-reuse", 32)
@@ -2682,7 +3058,7 @@ def test_sdk_serialization_live(
     direct_employment, direct_person = (
         direct_session.query(direct_employment_var, direct_person_var)
         .where(
-            direct_employment_var.role(generated.Employment.employee).connects(direct_person_var),
+            direct_employment_var.role(generated.Employment.employee).links(direct_person_var),
             direct_person_var.field(generated.Person.identifier).eq(
                 generated.Identifier("v5-live-person")
             ),
@@ -2704,10 +3080,8 @@ def test_sdk_serialization_live(
             "--quiet",
             "-p",
             "type-bridge-server",
-            "--features",
-            "v2-query",
             "--example",
-            "v2_smoke_server",
+            "staged_smoke_server",
         ],
         cwd=CORE,
         env={
@@ -2719,6 +3093,7 @@ def test_sdk_serialization_live(
             "SMOKE_DATABASE": clean_db.database_name,
             "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
             "SMOKE_PORT": str(remote_port),
+            "SMOKE_ALLOW_STAGED_WRITES": "true",
         },
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -2727,7 +3102,7 @@ def test_sdk_serialization_live(
     try:
         _wait_for_port(remote_port, server, timeout=300)
         with urllib_request.urlopen(
-            f"http://127.0.0.1:{remote_port}/v2/capabilities", timeout=30
+            f"http://127.0.0.1:{remote_port}/v3/capabilities", timeout=30
         ) as response:
             advertisement = response.read()
 
@@ -2736,7 +3111,7 @@ def test_sdk_serialization_live(
 
             def post() -> bytes:
                 http_request = urllib_request.Request(
-                    f"http://127.0.0.1:{remote_port}/v2/query",
+                    f"http://127.0.0.1:{remote_port}/v3/staged",
                     data=request,
                     headers={"content-type": "application/json"},
                     method="POST",
@@ -2755,9 +3130,7 @@ def test_sdk_serialization_live(
         remote_employment, remote_person = asyncio.run(
             remote_session.query(remote_employment_var, remote_person_var)
             .where(
-                remote_employment_var.role(generated.Employment.employee).connects(
-                    remote_person_var
-                ),
+                remote_employment_var.role(generated.Employment.employee).links(remote_person_var),
                 remote_person_var.field(generated.Person.identifier).eq(
                     generated.Identifier("v5-live-person")
                 ),
@@ -2804,6 +3177,209 @@ def test_sdk_serialization_live(
     person_manager.delete(person)
 
 
+def test_generated_filter_reads_uncommitted_writes_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    with clean_db.transaction("write") as transaction:
+        pending = _make_generated_person(generated, "borrowed-filter-read", 17)
+        transaction_people = generated.Person.manager(transaction)
+        transaction_people.insert(pending)
+        keyword = transaction_people.filter(identifier=generated.Identifier("borrowed-filter-read"))
+        assert [value.iid for value in keyword.all()] == [pending.iid]
+        selection = keyword.where(
+            generated.Person.score,
+            generated.ProjectedManagerComparison.EQ,
+            generated.Score(17),
+        )
+        assert selection.count() == 1
+        assert selection.exists() is True
+        assert [value.iid for value in selection.all()] == [pending.iid]
+        assert selection.first().iid == pending.iid
+        assert (
+            people.filter(identifier=generated.Identifier("borrowed-filter-read")).exists() is False
+        )
+    assert people.get_by_iid(pending.iid) is not None
+    with clean_db.transaction("schema") as transaction:
+        with pytest.raises(MatchRequestError) as refused:
+            generated.Person.manager(transaction).where().all()
+        assert refused.value.code == "borrowed_target_not_read_only"
+
+
+def test_generated_iid_keyword_selection_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    selected = _make_generated_person(generated, "iid-selected", 10)
+    excluded = _make_generated_person(generated, "iid-excluded", 20)
+    people.insert_many([selected, excluded])
+    selection = people.filter(iid__in=(value.iid for value in [selected, excluded]))
+    assert {value.iid for value in selection.all()} == {selected.iid, excluded.iid}
+    assert selection.count() == 2
+    assert selection.exists() is True
+    assert selection.first().iid in {selected.iid, excluded.iid}
+    assert selection.filter(identifier__contains="selected").first().iid == selected.iid
+    assert people.filter(iid=selected.iid).first().iid == selected.iid
+    assert people.get_by_iid(selected.iid).iid == selected.iid
+    assert (
+        people.filter(identifier=generated.Identifier("iid-excluded")).get_by_iid(selected.iid)
+        is None
+    )
+    empty = people.filter(iid__in=[]).filter(identifier__contains="iid")
+    assert empty.all() == []
+    assert empty.first() is None
+    assert empty.count() == 0
+    assert empty.exists() is False
+    with clean_db.transaction("write") as transaction:
+        borrowed = generated.Person.manager(transaction)
+        replacement = _make_generated_person(generated, "iid-selected", 11)
+        result = borrowed.filter(iid=selected.iid).update(replacement)
+        assert result.count == 1
+        assert result.item.iid == selected.iid
+        assert borrowed.filter(iid=selected.iid).first().score.value == 11
+        assert people.filter(iid=selected.iid).first().score.value == 10
+        borrowed.filter(iid__in=[excluded.iid]).delete()
+    assert people.filter(iid=selected.iid).first().score.value == 11
+    assert people.filter(iid=excluded.iid).first() is None
+    events: list[str] = []
+
+    class UpdateHook(generated.CrudHook):
+        def pre_update(self, sender, instance) -> None:
+            events.append("pre_update")
+
+        def post_update(self, sender, instance) -> None:
+            events.append("post_update")
+
+    people.add_hook(UpdateHook())
+    selected.score = generated.Score(12)
+    updated = people.update(selected)
+    assert updated.item is selected
+    assert events == ["pre_update", "post_update"]
+    assert people.get_by_iid(selected.iid).score.value == 12
+    people.delete(selected.iid)
+    assert people.get_by_iid(selected.iid) is None
+
+
+def test_generated_keyword_then_canonical_filter_preserves_scope_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    matching = _make_generated_person(generated, "chain-matching", 10, nickname="selected")
+    keyword_excluded = _make_generated_person(
+        generated, "chain-keyword-excluded", 20, nickname="selected"
+    )
+    canonical_excluded = _make_generated_person(
+        generated, "chain-canonical-excluded", 10, nickname="other"
+    )
+    people.insert_many([matching, keyword_excluded, canonical_excluded])
+    selection = people.filter(score=generated.Score(10)).where(
+        generated.Person.nickname,
+        generated.ProjectedManagerComparison.EQ,
+        generated.Nickname("selected"),
+    )
+    assert selection.count() == 1
+    assert [value.iid for value in selection.all()] == [matching.iid]
+    replacement = _make_generated_person(generated, "chain-matching", 11, nickname="selected")
+    updated = selection.update(replacement)
+    assert updated.count == 1
+    assert updated.item is replacement
+    assert updated.item.iid == matching.iid
+    assert updated.item.score.value == 11
+    assert selection.count() == 0
+    assert people.get_by_iid(keyword_excluded.iid).score.value == 20
+    assert people.get_by_iid(canonical_excluded.iid).score.value == 10
+    selection = people.filter(score=generated.Score(11)).where(
+        generated.Person.nickname,
+        generated.ProjectedManagerComparison.EQ,
+        generated.Nickname("selected"),
+    )
+    assert selection.count() == 1
+    selection.delete()
+    assert selection.count() == 0
+    assert people.get_by_iid(matching.iid) is None
+    survivors = {value.identifier.value: value for value in people.all()}
+    assert set(survivors) == {"chain-keyword-excluded", "chain-canonical-excluded"}
+    assert survivors["chain-keyword-excluded"].score.value == 20
+    assert survivors["chain-keyword-excluded"].nickname.value == "selected"
+    assert survivors["chain-canonical-excluded"].score.value == 10
+    assert survivors["chain-canonical-excluded"].nickname.value == "other"
+
+
+def test_generated_delete_returning_preserves_stored_values_and_players_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    memberships = generated.Membership.manager(clean_db)
+    person = _make_generated_person(generated, "delete-snapshot", 17)
+    people.insert(person)
+    relation = generated.Membership(member=person)
+    memberships.insert(relation)
+
+    deleted_relation = memberships.delete_returning(relation).item
+    assert type(deleted_relation) is generated.Membership
+    assert deleted_relation is not relation
+    assert deleted_relation.deleted is True
+    assert deleted_relation.member.iid == person.iid
+    assert memberships.get_by_iid(relation.iid) is None
+    assert people.get_by_iid(person.iid) is not None
+    assert deleted_relation.member.deleted is False
+    assert memberships.delete(relation) is relation
+
+    person.score = generated.Score(99)
+    deleted_person = people.delete_returning(person).item
+    assert type(deleted_person) is generated.Person
+    assert deleted_person is not person
+    assert deleted_person.deleted is True
+    assert deleted_person.score.value == 17
+    assert people.get_by_iid(person.iid) is None
+    assert people.delete_many_returning([person]).items == []
+    with pytest.raises(ValueError, match="thing_deleted"):
+        deleted_person.score = generated.Score(30)
+    with pytest.raises(ValueError, match="thing_deleted"):
+        people.delete(deleted_person)
+    with pytest.raises(ValueError, match="thing_deleted"):
+        memberships.delete(deleted_relation)
+
+    batch_people = [
+        _make_generated_person(generated, "delete-snapshot-batch-a", 20),
+        _make_generated_person(generated, "delete-snapshot-batch-b", 21),
+    ]
+    people.insert_many(batch_people)
+    for batch_person in batch_people:
+        batch_person.score = generated.Score(99)
+    deleted_batch = people.delete_many_returning([batch_people[1], person, batch_people[0]]).items
+    assert [snapshot.iid for snapshot in deleted_batch] == [
+        batch_people[1].iid,
+        batch_people[0].iid,
+    ]
+    assert [snapshot.score.value for snapshot in deleted_batch] == [21, 20]
+    for snapshot, original in zip(deleted_batch, reversed(batch_people), strict=True):
+        assert type(snapshot) is generated.Person
+        assert snapshot is not original
+        assert snapshot.deleted is True
+        assert people.get_by_iid(snapshot.iid) is None
+        with pytest.raises(ValueError, match="thing_deleted"):
+            snapshot.score = generated.Score(30)
+        with pytest.raises(ValueError, match="thing_deleted"):
+            people.delete(snapshot)
+
+
 def test_generated_package_preserves_application_operation_outcomes_live(
     clean_db: Database,
     generated_package: ModuleType,
@@ -2831,7 +3407,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     second_hook = TraceHook("second")
     hooked_manager = generated.Person.manager(clean_db).add_hook(first_hook).add_hook(second_hook)
     hooked_person = _make_generated_person(generated, "parity-hooked", 10)
-    assert hooked_manager.put(hooked_person) is hooked_person
+    assert hooked_manager.put(hooked_person).item is hooked_person
     assert hook_events == [
         ("first", "pre_put", "parity-hooked"),
         ("second", "pre_put", "parity-hooked"),
@@ -2857,9 +3433,9 @@ def test_generated_package_preserves_application_operation_outcomes_live(
             filtered_hook_events.append("unexpected_pre_update")
 
     put_only_manager = generated.Person.manager(clean_db).add_hook(PutOnlyTraceHook())
-    assert put_only_manager.put(hooked_person) is hooked_person
+    assert put_only_manager.put(hooked_person).item is hooked_person
     assert filtered_hook_events == ["pre_put", "post_put"]
-    assert put_only_manager.update(hooked_person) is hooked_person
+    assert put_only_manager.update(hooked_person).item is hooked_person
     assert filtered_hook_events == ["pre_put", "post_put"]
 
     class FailingPostHook(generated.CrudHook):
@@ -2867,11 +3443,12 @@ def test_generated_package_preserves_application_operation_outcomes_live(
             raise RuntimeError("post hook sentinel")
 
     post_failure_person = _make_generated_person(generated, "parity-post-failure", 11)
-    with caplog.at_level(logging.ERROR, logger="generated_v2._runtime"):
+    with caplog.at_level(logging.ERROR, logger="generated_package._runtime"):
         assert (
             generated.Person.manager(clean_db)
             .add_hook(FailingPostHook())
             .insert(post_failure_person)
+            .item
             is post_failure_person
         )
     assert "generated CRUD post-hook failed for post_insert" in caplog.text
@@ -2911,12 +3488,12 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         _make_generated_person(generated, "parity-batch-b", 21),
     ]
     batch_manager = generated.Person.manager(clean_db).add_hook(BatchTraceHook())
-    assert batch_manager.insert_many([]) == []
-    assert batch_manager.put_many([]) == []
-    assert batch_manager.update_many([]) == []
+    assert batch_manager.insert_many([]).items == []
+    assert batch_manager.put_many([]).items == []
+    assert batch_manager.update_many([]).items == []
     assert batch_manager.delete_many([]) == []
     assert batch_events == []
-    assert batch_manager.insert_many(batch_people) == batch_people
+    assert batch_manager.insert_many(batch_people).items == batch_people
     assert batch_events == [
         ("pre_insert", "parity-batch-a"),
         ("pre_insert", "parity-batch-b"),
@@ -2926,7 +3503,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     batch_events.clear()
     batch_people[0].score = generated.Score(30)
     batch_people[1].score = generated.Score(31)
-    assert batch_manager.update_many(batch_people) == batch_people
+    assert batch_manager.update_many(batch_people).items == batch_people
     assert batch_events == [
         ("pre_update", "parity-batch-a"),
         ("pre_update", "parity-batch-b"),
@@ -2937,7 +3514,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     key_mutation = _make_generated_person(generated, "parity-key-preserved", 32)
     person_manager.insert(key_mutation)
     key_mutation.identifier = generated.Identifier("parity-key-mutated")
-    assert person_manager.update(key_mutation) is key_mutation
+    assert person_manager.update(key_mutation).item is key_mutation
     assert key_mutation.identifier.value == "parity-key-preserved"
     assert person_manager.get_by_iid(key_mutation.iid).identifier.value == "parity-key-preserved"
 
@@ -2945,8 +3522,10 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     person_manager.insert(stale_update)
     person_manager.delete(stale_update)
     stale_update.score = generated.Score(34)
-    with pytest.raises(RuntimeError, match="not found after update"):
-        person_manager.update(stale_update)
+    stale_result = person_manager.update(stale_update)
+    assert stale_result.count == 0
+    assert stale_result.items == []
+    assert stale_result.item is None
 
     detached_update = _make_generated_person(
         generated,
@@ -2954,14 +3533,20 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         40,
         nickname="detached-update",
     )
-    assert person_manager.update(detached_update) is detached_update
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        person_manager.update(detached_update)
+    assert detached_update.iid is None
+    assert batch_people[0].iid is not None
+    detached_update.attach_runtime_iid(batch_people[0].iid)
+    assert person_manager.update(detached_update).item is detached_update
     assert detached_update.iid == batch_people[0].iid
     detached_stored = person_manager.get_by_iid(batch_people[0].iid)
     assert detached_stored.score.value == 40
     assert detached_stored.nickname.value == "detached-update"
 
     missing_update = _make_generated_person(generated, "parity-missing-update", 99)
-    assert person_manager.update(missing_update) is missing_update
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        person_manager.update(missing_update)
     assert missing_update.iid is None
     assert (
         person_manager.filter(identifier=generated.Identifier("parity-missing-update")).exists()
@@ -2969,9 +3554,12 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     )
 
     missing_delete = _make_generated_person(generated, "parity-missing-delete", 99)
-    assert person_manager.delete(missing_delete) is missing_delete
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        person_manager.delete(missing_delete)
     assert missing_delete.iid is None
-    assert person_manager.delete_many([missing_delete]) == []
+    with pytest.raises(MatchRequestError) as missing_batch:
+        person_manager.delete_many([missing_delete])
+    assert missing_batch.value.code == "batch_iid_type_mismatch"
 
     mutation_edge = _make_generated_person(
         generated,
@@ -2980,32 +3568,36 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         nickname="remove-me",
     )
     mutation_edge.aliases = [generated.Aliases("initial-a"), generated.Aliases("initial-b")]
-    assert person_manager.insert(mutation_edge) is mutation_edge
+    assert person_manager.insert(mutation_edge).item is mutation_edge
     mutation_edge.nickname = None
     special_alias = "quote'\"\\line\nunicode-λ"
     mutation_edge.aliases = [generated.Aliases(special_alias)]
-    assert person_manager.update(mutation_edge) is mutation_edge
+    assert person_manager.update(mutation_edge).item is mutation_edge
     replaced_ownerships = person_manager.get_by_iid(mutation_edge.iid)
     assert replaced_ownerships.nickname is None
     assert [alias.value for alias in replaced_ownerships.aliases] == [special_alias]
     mutation_edge.aliases = []
-    assert person_manager.update(mutation_edge) is mutation_edge
+    assert person_manager.update(mutation_edge).item is mutation_edge
     cleared_ownerships = person_manager.get_by_iid(mutation_edge.iid)
     assert cleared_ownerships.nickname is None
     assert cleared_ownerships.aliases == ()
 
     strict_missing = _make_generated_person(generated, "parity-strict-missing", 99)
-    with pytest.raises(generated.ProjectedModelNotFoundError, match="not found"):
+    with pytest.raises(MatchRequestError) as strict_batch:
         person_manager.delete_many([batch_people[0], strict_missing], strict=True)
+    assert strict_batch.value.code == "batch_iid_type_mismatch"
+    assert strict_batch.value.path[1] == {"kind": "index", "value": 1}
     assert person_manager.get_by_iid(batch_people[0].iid) is not None
 
-    with pytest.warns(DeprecationWarning, match="let_\\(\\) in an update plan"):
-        updated = person_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-batch-a"),
-                generated.Identifier("parity-batch-b"),
-            ]
-        ).update_with(lambda value: setattr(value, "nickname", generated.Nickname("filtered")))
+    updated = person_manager.filter(
+        identifier__in=[
+            generated.Identifier("parity-batch-a"),
+            generated.Identifier("parity-batch-b"),
+        ]
+    ).all()
+    for value in updated:
+        value.nickname = generated.Nickname("filtered")
+    updated = person_manager.update_many(updated).items
     assert {value.iid for value in updated} == {value.iid for value in batch_people}
     assert {
         value.nickname.value
@@ -3016,41 +3608,6 @@ def test_generated_package_preserves_application_operation_outcomes_live(
             ]
         ).all()
     } == {"filtered"}
-
-    scores_before_callback_failure = {
-        value.identifier.value: value.score.value
-        for value in person_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-batch-a"),
-                generated.Identifier("parity-batch-b"),
-            ]
-        ).all()
-    }
-
-    def fail_callback(value) -> None:
-        value.score = generated.Score(value.score.value + 100)
-        if value.identifier.value == "parity-batch-b":
-            raise RuntimeError("callback failure sentinel")
-
-    with (
-        pytest.raises(RuntimeError, match="callback failure sentinel"),
-        pytest.warns(DeprecationWarning, match="let_\\(\\) in an update plan"),
-    ):
-        person_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-batch-a"),
-                generated.Identifier("parity-batch-b"),
-            ]
-        ).update_with(fail_callback)
-    assert {
-        value.identifier.value: value.score.value
-        for value in person_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-batch-a"),
-                generated.Identifier("parity-batch-b"),
-            ]
-        ).all()
-    } == scores_before_callback_failure
 
     transaction_people = [
         _make_generated_person(generated, "parity-transaction-a", 50),
@@ -3092,9 +3649,11 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     person_manager.delete(atomic_people[1])
     atomic_people[0].score = generated.Score(62)
     atomic_people[1].score = generated.Score(63)
-    with pytest.raises(RuntimeError, match="not found after update"):
-        person_manager.update_many(atomic_people)
-    assert person_manager.get_by_iid(atomic_people[0].iid).score.value == 52
+    matched = person_manager.update_many(atomic_people)
+    assert matched.count == 1
+    assert matched.input_indexes == [0]
+    assert matched.items == [atomic_people[0]]
+    assert person_manager.get_by_iid(atomic_people[0].iid).score.value == 62
     assert person_manager.get_by_iid(stale_atomic_iid) is None
     person_manager.delete(atomic_people[0])
 
@@ -3108,12 +3667,9 @@ def test_generated_package_preserves_application_operation_outcomes_live(
                 raise generated.HookCancelled("second delete cancelled")
 
     with pytest.raises(generated.HookCancelled, match="second delete cancelled"):
-        generated.Person.manager(clean_db).add_hook(CancelSecondDelete()).filter(
-            identifier__in=[
-                generated.Identifier("parity-transaction-a"),
-                generated.Identifier("parity-transaction-b"),
-            ]
-        ).delete()
+        generated.Person.manager(clean_db).add_hook(CancelSecondDelete()).delete_many(
+            transaction_people
+        )
     assert (
         person_manager.filter(
             identifier__in=[
@@ -3123,19 +3679,16 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         ).count()
         == 2
     )
-    assert (
-        person_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-transaction-a"),
-                generated.Identifier("parity-transaction-b"),
-            ]
-        ).delete()
-        == 2
-    )
+    assert person_manager.delete_many(transaction_people) == transaction_people
 
     detached_delete_source = _make_generated_person(generated, "parity-detached-delete", 70)
     person_manager.insert(detached_delete_source)
     detached_delete = _make_generated_person(generated, "parity-detached-delete", 70)
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        person_manager.delete(detached_delete)
+    assert detached_delete.iid is None
+    assert detached_delete_source.iid is not None
+    detached_delete.attach_runtime_iid(detached_delete_source.iid)
     assert person_manager.delete(detached_delete) is detached_delete
     assert detached_delete.iid == detached_delete_source.iid
     assert person_manager.get_by_iid(detached_delete_source.iid) is None
@@ -3145,18 +3698,27 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     membership = generated.Membership(member=role_player)
     membership_manager.insert(membership)
     detached_membership_update = generated.Membership(member=role_player)
-    assert membership_manager.update(detached_membership_update) is detached_membership_update
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        membership_manager.update(detached_membership_update)
+    assert detached_membership_update.iid is None
+    detached_membership_update.attach_runtime_iid(membership.iid)
+    assert membership_manager.update(detached_membership_update).item is detached_membership_update
     assert detached_membership_update.iid == membership.iid
     detached_membership_delete = generated.Membership(member=role_player)
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        membership_manager.delete(detached_membership_delete)
+    assert detached_membership_delete.iid is None
+    detached_membership_delete.attach_runtime_iid(membership.iid)
     assert membership_manager.delete(detached_membership_delete) is detached_membership_delete
     assert detached_membership_delete.iid == membership.iid
     assert membership_manager.get_by_iid(membership.iid) is None
     missing_membership = generated.Membership(member=role_player)
-    assert membership_manager.delete(missing_membership) is missing_membership
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        membership_manager.delete(missing_membership)
     assert missing_membership.iid is None
-    assert membership_manager.insert_many([]) == []
-    assert membership_manager.put_many([]) == []
-    assert membership_manager.update_many([]) == []
+    assert membership_manager.insert_many([]).items == []
+    assert membership_manager.put_many([]).items == []
+    assert membership_manager.update_many([]).items == []
     assert membership_manager.delete_many([]) == []
 
     relation_batch_events: list[tuple[str, str]] = []
@@ -3178,9 +3740,9 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     network_batch_manager = generated.NetworkLink.manager(clean_db).add_hook(
         RelationBatchTraceHook()
     )
-    assert network_batch_manager.insert_many([]) == []
-    assert network_batch_manager.put_many([]) == []
-    assert network_batch_manager.update_many([]) == []
+    assert network_batch_manager.insert_many([]).items == []
+    assert network_batch_manager.put_many([]).items == []
+    assert network_batch_manager.update_many([]).items == []
     assert network_batch_manager.delete_many([]) == []
     assert relation_batch_events == []
     networks = [
@@ -3198,7 +3760,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
     network_manager.insert_many(networks)
     networks[0].nickname = generated.Nickname("batch-updated-a")
     networks[1].nickname = generated.Nickname("batch-updated-b")
-    assert network_batch_manager.update_many(networks) == networks
+    assert network_batch_manager.update_many(networks).items == networks
     assert relation_batch_events == [
         ("pre_update", "parity-network-a"),
         ("pre_update", "parity-network-b"),
@@ -3211,19 +3773,23 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         origin=hooked_person,
         destination=batch_people[0],
     )
-    assert network_manager.update(detached_network) is detached_network
+    with pytest.raises(ValueError, match="require an attached TypeDB IID"):
+        network_manager.update(detached_network)
+    assert detached_network.iid is None
+    detached_network.attach_runtime_iid(networks[0].iid)
+    assert network_manager.update(detached_network).item is detached_network
     assert detached_network.iid == networks[0].iid
     assert network_manager.get_by_iid(networks[0].iid).nickname.value == "detached-relation"
 
-    with pytest.warns(DeprecationWarning, match="let_\\(\\) in an update plan"):
-        updated_networks = network_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-network-a"),
-                generated.Identifier("parity-network-b"),
-            ]
-        ).update_with(
-            lambda value: setattr(value, "nickname", generated.Nickname("filtered-relation"))
-        )
+    updated_networks = network_manager.filter(
+        identifier__in=[
+            generated.Identifier("parity-network-a"),
+            generated.Identifier("parity-network-b"),
+        ]
+    ).all()
+    for value in updated_networks:
+        value.nickname = generated.Nickname("filtered-relation")
+    updated_networks = network_manager.update_many(updated_networks).items
     assert {value.iid for value in updated_networks} == {value.iid for value in networks}
     assert {
         value.nickname.value
@@ -3234,15 +3800,7 @@ def test_generated_package_preserves_application_operation_outcomes_live(
             ]
         ).all()
     } == {"filtered-relation"}
-    assert (
-        network_manager.filter(
-            identifier__in=[
-                generated.Identifier("parity-network-a"),
-                generated.Identifier("parity-network-b"),
-            ]
-        ).delete()
-        == 2
-    )
+    assert network_manager.delete_many(networks) == networks
 
     relation_delete_batch = [
         generated.NetworkLink(
@@ -3326,6 +3884,228 @@ def test_generated_single_delete_by_iid_live(
     assert membership_manager.get_by_iid(staged_membership.iid) is None
 
 
+def test_generated_managers_share_direct_and_http_proxy_terminals(
+    clean_db: Database,
+    generated_package: ModuleType,
+    tmp_path: Path,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    workers = [
+        _make_generated_person(generated, f"manager-seed-{index}", index) for index in range(2)
+    ]
+    generated.Person.manager(clean_db).insert_many(workers)
+    players = [
+        _make_generated_person(generated, worker.identifier.value, index)
+        for index, worker in enumerate(workers)
+    ]
+    trace = tmp_path / "manager-events.jsonl"
+
+    def program(connection: Any, *, remote: bool) -> list[dict[str, int]]:
+        before_empty = trace.read_text() if remote else ""
+        empty = generated.Membership.manager(connection).put_many([])
+        assert empty.count == 0 and empty.items == [] and list(empty.input_indexes) == []
+        if remote:
+            assert trace.read_text() == before_empty
+
+        def exercise(model: Any, make: Callable[[str, str], Any]) -> dict[str, int]:
+            manager = model.manager(connection)
+            calls = 0
+
+            def terminal(call: Callable[[], Any], *, writes: bool = False) -> Any:
+                nonlocal calls
+                before = trace.read_text().splitlines() if remote else []
+                result = call()
+                calls += 1
+                if remote:
+                    events = [
+                        json.loads(line) for line in trace.read_text().splitlines()[len(before) :]
+                    ]
+                    assert [event["event"] for event in events] == ["request", "plan", "commit"]
+                    assert len({event["id"] for event in events}) == 1
+                    assert events[1]["index"] == 0
+                    assert events[1]["writes"] is writes
+                    assert events[1]["result_refs"] == 0
+                    assert events[2]["committed"] is True
+                    assert events[2]["kind"] == ("write" if writes else "read")
+                    assert events[2]["code"] == "ok"
+                return result
+
+            baseline = len(terminal(manager.all))
+            assert terminal(manager.count) == baseline
+            assert terminal(manager.exists) is (baseline != 0)
+            assert terminal(lambda: manager.get_by_iid(Iid("0xffff"))) is None
+            canonical = manager.where()
+            assert len(terminal(canonical.all)) == baseline
+            assert terminal(canonical.count) == baseline
+            assert terminal(canonical.exists) is (baseline != 0)
+            absent = generated.Identifier("manager-absent")
+            assert (
+                terminal(
+                    manager.where(
+                        model.identifier, generated.ProjectedManagerComparison.EQ, absent
+                    ).first
+                )
+                is None
+            )
+            compatibility = manager.filter()
+            assert len(terminal(compatibility.all)) == baseline
+            assert terminal(compatibility.count) == baseline
+            assert terminal(compatibility.exists) is (baseline != 0)
+            assert terminal(manager.filter(identifier=absent).first) is None
+
+            def single(result: Any, version: str) -> Any:
+                assert result.count == 1
+                assert len(result.items) == 1
+                assert result.item is result.items[0]
+                assert type(result.item) is model
+                assert result.item.nickname.value == version
+                return result.item
+
+            inserted = single(
+                terminal(lambda: manager.insert(make("a", "insert")), writes=True), "insert"
+            )
+            first_iid = inserted.iid
+            put = single(terminal(lambda: manager.put(make("a", "put")), writes=True), "put")
+            assert put.iid == first_iid
+            put.nickname = generated.Nickname("update")
+            updated = single(terminal(lambda: manager.update(put), writes=True), "update")
+            assert updated.iid == first_iid
+            assert terminal(lambda: manager.delete(updated), writes=True) is updated
+
+            many = terminal(
+                lambda: manager.insert_many([make(key, "many-insert") for key in ("b", "c", "d")]),
+                writes=True,
+            )
+            assert many.count == 3
+            assert sorted(many.input_indexes) == [0, 1, 2]
+            iids = {
+                index: item.iid for item, index in zip(many.items, many.input_indexes, strict=True)
+            }
+            assert all(item.nickname.value == "many-insert" for item in many.items)
+            put_many = terminal(
+                lambda: manager.put_many([make(key, "many-put") for key in ("b", "c", "d")]),
+                writes=True,
+            )
+            assert put_many.count == 3
+            assert sorted(put_many.input_indexes) == [0, 1, 2]
+            for item, index in zip(put_many.items, put_many.input_indexes, strict=True):
+                assert item.iid == iids[index]
+                assert item.nickname.value == "many-put"
+                item.nickname = generated.Nickname("many-update")
+            update_many = terminal(lambda: manager.update_many(put_many.items), writes=True)
+            assert update_many.count == 3
+            assert sorted(update_many.input_indexes) == [0, 1, 2]
+            by_index = dict(zip(update_many.input_indexes, update_many.items, strict=True))
+            for index, item in by_index.items():
+                assert item.iid == iids[index]
+                assert item.nickname.value == "many-update"
+            assert terminal(lambda: manager.delete_many([by_index[0]]), writes=True) == [
+                by_index[0]
+            ]
+            by_index[1].nickname = generated.Nickname("caller-only")
+            deleted = single(
+                terminal(lambda: manager.delete_returning(by_index[1]), writes=True), "many-update"
+            )
+            assert deleted.iid == iids[1]
+            assert deleted.deleted
+            by_index[2].nickname = generated.Nickname("caller-only")
+            deleted_many = terminal(
+                lambda: manager.delete_many_returning([by_index[2]]), writes=True
+            )
+            assert deleted_many.count == 1
+            assert list(deleted_many.input_indexes) == [0]
+            assert deleted_many.items[0].iid == iids[2]
+            assert deleted_many.items[0].nickname.value == "many-update"
+            assert deleted_many.items[0].deleted
+            assert calls == 22
+            return {"baseline": baseline, "terminals": calls, "batch_count": 3, "snapshots": 2}
+
+        return [
+            exercise(
+                generated.Person,
+                lambda key, version: _make_generated_person(
+                    generated, f"manager-person-{key}", 7, nickname=version
+                ),
+            ),
+            exercise(
+                generated.NetworkLink,
+                lambda key, version: generated.NetworkLink(
+                    identifier=generated.Identifier(f"manager-link-{key}"),
+                    nickname=generated.Nickname(version),
+                    origin=players[0],
+                    destination=players[1],
+                    participant=players,
+                ),
+            ),
+        ]
+
+    direct = program(clean_db, remote=False)
+    assert generated.__file__ is not None
+    authority = (
+        Path(generated.__file__)
+        .resolve()
+        .parent.parent.joinpath("schema-authority.json")
+        .read_bytes()
+    )
+    port = _free_port()
+    supplied_server = os.environ.get("TYPE_BRIDGE_SMOKE_SERVER")
+    command = (
+        [supplied_server]
+        if supplied_server
+        else [
+            "cargo",
+            "run",
+            "--quiet",
+            "-p",
+            "type-bridge-server",
+            "--example",
+            "staged_smoke_server",
+        ]
+    )
+    with (tmp_path / "manager-server.log").open("w+") as server_log:
+        server = subprocess.Popen(
+            command,
+            cwd=ROOT if supplied_server else CORE,
+            env={
+                **os.environ,
+                "SMOKE_TYPEDB_ADDRESS": clean_db.address,
+                "SMOKE_TYPEDB_USERNAME": clean_db.username or "admin",
+                "SMOKE_TYPEDB_PASSWORD": clean_db.password or "password",
+                "SMOKE_TYPEDB_HTTP_PORT": str(clean_db.http_port),
+                "SMOKE_DATABASE": clean_db.database_name,
+                "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
+                "SMOKE_PORT": str(port),
+                "SMOKE_ALLOW_STAGED_WRITES": "true",
+                "SMOKE_TRACE_FILE": str(trace),
+            },
+            stdout=server_log,
+            stderr=server_log,
+        )
+        try:
+            _wait_for_port(port, server, timeout=300)
+            proxy = generated.connect_proxy(f"http://127.0.0.1:{port}")
+            assert program(proxy, remote=True) == direct
+            events = [json.loads(line) for line in trace.read_text().splitlines()]
+            assert sum(event["event"] == "request" for event in events) == 44
+            assert (
+                sum(event["event"] == "commit" and event["kind"] == "write" for event in events)
+                == 20
+            )
+        except BaseException:
+            server_log.seek(0)
+            print(f"manager server status={server.poll()}: {server_log.read()}")
+            raise
+        finally:
+            server.terminate()
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=10)
+
+
 def test_generated_projection_round_trips_live_models(
     clean_db: Database,
     generated_package: ModuleType,
@@ -3389,8 +4169,9 @@ def test_generated_projection_round_trips_live_models(
         assert model.__runtime_projection__ is installed
 
     person_manager = generated.Person.manager(clean_db)
-    assert person_manager.get_by_iid("not-a-valid-iid") is None
-    assert person_manager.get_by_iid("0xdeadbeefdeadbeefdeadbeef") is None
+    with pytest.raises(TypeError):
+        person_manager.get_by_iid("not-a-valid-iid")
+    assert person_manager.get_by_iid(Iid("0xdeadbeefdeadbeefdeadbeef")) is None
 
     person = generated.Person(
         identifier=generated.Identifier("person-1"),
@@ -3408,7 +4189,7 @@ def test_generated_projection_round_trips_live_models(
         val_double=generated.ValDouble(3.5),
         val_duration=generated.ValDuration(timedelta(seconds=3)),
     )
-    assert person_manager.put(person) is person
+    assert person_manager.put(person).item is person
     # The core checks the member count at assignment, with its own code.
     with pytest.raises(ProjectedCardinalityError) as too_many_aliases:
         person.aliases = [generated.Aliases(name) for name in ("a", "b", "c", "d")]
@@ -3433,27 +4214,25 @@ def test_generated_projection_round_trips_live_models(
         ("boolean", person_var.field(generated.Person.val_bool).eq(generated.ValBool(True))),
         (
             "double",
-            person_var.field(generated.Person.val_double).gte(generated.ValDouble(3.5)),
+            person_var.field(generated.Person.val_double).ge(generated.ValDouble(3.5)),
         ),
         (
             "decimal",
-            person_var.field(generated.Person.val_decimal).gte(
-                generated.ValDecimal(Decimal("3.5"))
-            ),
+            person_var.field(generated.Person.val_decimal).ge(generated.ValDecimal(Decimal("3.5"))),
         ),
         (
             "date",
-            person_var.field(generated.Person.val_date).gte(generated.ValDate(date(2026, 7, 29))),
+            person_var.field(generated.Person.val_date).ge(generated.ValDate(date(2026, 7, 29))),
         ),
         (
             "datetime",
-            person_var.field(generated.Person.val_datetime).gte(
+            person_var.field(generated.Person.val_datetime).ge(
                 generated.ValDatetime(datetime(2026, 7, 29))
             ),
         ),
         (
             "datetime-tz",
-            person_var.field(generated.Person.val_datetime_tz).gte(
+            person_var.field(generated.Person.val_datetime_tz).ge(
                 generated.ValDatetimeTz(datetime(2026, 7, 29, tzinfo=UTC))
             ),
         ),
@@ -3465,9 +4244,13 @@ def test_generated_projection_round_trips_live_models(
         ),
     )
     for scalar_name, predicate in scalar_predicates:
-        assert query_session.query(person_var).where(predicate).count_by(person_var) == 1, (
-            scalar_name
-        )
+        try:
+            count = query_session.query(person_var).where(predicate).count_by(person_var)
+        except Exception as error:
+            raise AssertionError(
+                (scalar_name, getattr(error, "code", None), getattr(error, "details", None))
+            ) from error
+        assert count == 1, scalar_name
     scalar_domain_person = (
         query_session.query(person_var)
         .where(*(predicate for _, predicate in scalar_predicates))
@@ -3489,9 +4272,12 @@ def test_generated_projection_round_trips_live_models(
 
     counter_manager = generated.Counter.manager(clean_db)
     detached_counter = generated.Counter(counter_value=generated.CounterValue(42))
-    with pytest.raises(ValueError, match="attached IID or projected key"):
+    with pytest.raises(
+        ValueError,
+        match="^generated manager update and delete require an attached TypeDB IID$",
+    ):
         counter_manager.delete(detached_counter)
-    assert counter_manager.insert(detached_counter) is detached_counter
+    assert counter_manager.insert(detached_counter).item is detached_counter
     assert detached_counter.iid
     stored_counter = counter_manager.get_by_iid(detached_counter.iid)
     assert type(stored_counter) is generated.Counter
@@ -3517,7 +4303,7 @@ def test_generated_projection_round_trips_live_models(
 
     plain_activity_manager = generated.PlainActivity.manager(clean_db)
     plain_activity = generated.PlainActivity(participant=person)
-    assert plain_activity_manager.insert(plain_activity) is plain_activity
+    assert plain_activity_manager.insert(plain_activity).item is plain_activity
     assert plain_activity.iid
     stored_plain_activity = plain_activity_manager.get_by_iid(plain_activity.iid)
     assert type(stored_plain_activity) is generated.PlainActivity
@@ -3528,7 +4314,7 @@ def test_generated_projection_round_trips_live_models(
     queried_plain_activity, queried_plain_participant = (
         query_session.query(plain_activity_var, plain_participant_var)
         .where(
-            plain_activity_var.role(generated.PlainActivity.participant).connects(
+            plain_activity_var.role(generated.PlainActivity.participant).links(
                 plain_participant_var
             ),
             plain_participant_var.field(generated.Person.identifier).eq(
@@ -3543,7 +4329,7 @@ def test_generated_projection_round_trips_live_models(
     assert plain_activity_manager.get_by_iid(plain_activity.iid) is None
 
     matching_people = query_session.query(person_var).where(
-        person_var.field(generated.Person.score).gte(generated.Score(3))
+        person_var.field(generated.Person.score).ge(generated.Score(3))
     )
     assert matching_people.count_by(person_var) == 1
     assert matching_people.exists_by(person_var) is True
@@ -3629,7 +4415,7 @@ def test_generated_projection_round_trips_live_models(
     assert all(type(alias) is generated.Aliases for alias in stored_person.aliases)
 
     person.nickname = generated.Nickname("ada")
-    assert person_manager.update(person) is person
+    assert person_manager.update(person).item is person
     updated_person = person_manager.get_by_iid(person.iid)
     assert type(updated_person) is generated.Person
     assert updated_person.nickname.value == "ada"
@@ -3638,7 +4424,7 @@ def test_generated_projection_round_trips_live_models(
         _make_generated_person(generated, "person-2", 5),
         _make_generated_person(generated, "person-3", 7),
     ]
-    assert person_manager.insert_many(batch_people) == batch_people
+    assert person_manager.insert_many(batch_people).items == batch_people
     assert all(candidate.iid for candidate in batch_people)
     batch_iids = [candidate.iid for candidate in batch_people]
     assert {
@@ -3648,18 +4434,20 @@ def test_generated_projection_round_trips_live_models(
         person_var.field(generated.Person.aliases).is_missing()
     )
     assert {candidate.iid for candidate in missing_aliases.rows(limit=10)} == set(batch_iids)
-    assert [candidate.iid for candidate in person_manager.put_many(batch_people)] == batch_iids
+    assert [
+        candidate.iid for candidate in person_manager.put_many(batch_people).items
+    ] == batch_iids
 
     with clean_db.transaction("write") as transaction:
         transaction_person = _make_generated_person(generated, "person-4", 9)
         transaction_manager = generated.Person.manager(transaction)
-        assert transaction_manager.insert(transaction_person) is transaction_person
+        assert transaction_manager.insert(transaction_person).item is transaction_person
 
     rolled_back_person = _make_generated_person(generated, "person-rollback", 11)
     with pytest.raises(RuntimeError, match="generated rollback sentinel"):
         with clean_db.transaction("write") as transaction:
             rollback_manager = generated.Person.manager(transaction)
-            assert rollback_manager.insert(rolled_back_person) is rolled_back_person
+            assert rollback_manager.insert(rolled_back_person).item is rolled_back_person
             assert rollback_manager.get_by_iid(rolled_back_person.iid).iid == rolled_back_person.iid
             raise RuntimeError("generated rollback sentinel")
     assert (
@@ -3687,7 +4475,7 @@ def test_generated_projection_round_trips_live_models(
     assert person_manager.count() == 4
     all_people_query = query_session.query(person_var)
     assert (
-        all_people_query.first(order_by=(person_var.field(generated.Person.identifier).asc(),)).iid
+        all_people_query.first(sort=(person_var.field(generated.Person.identifier).asc(),)).iid
         == person.iid
     )
     assert [
@@ -3695,7 +4483,7 @@ def test_generated_projection_round_trips_live_models(
         for candidate in all_people_query.rows(
             limit=2,
             offset=1,
-            order_by=(person_var.field(generated.Person.identifier).asc(),),
+            sort=(person_var.field(generated.Person.identifier).asc(),),
         )
     ] == ["person-2", "person-3"]
     identifier_field = person_var.field(generated.Person.identifier)
@@ -3704,8 +4492,8 @@ def test_generated_projection_round_trips_live_models(
         identifier_field.starts_with(generated.Identifier("person-"))
         & identifier_field.contains(generated.Identifier("son-"))
         & identifier_field.ends_with(generated.Identifier("-1"))
-        & identifier_field.regex(generated.Identifier("^person-1$"))
-        & ~identifier_field.neq(identifier_value)
+        & identifier_field.like(generated.Identifier("^person-1$"))
+        & ~identifier_field.ne(identifier_value)
         & (
             identifier_field.eq(identifier_value)
             | identifier_field.eq(generated.Identifier("does-not-exist"))
@@ -3737,7 +4525,7 @@ def test_generated_projection_round_trips_live_models(
     )
     assert tuple(candidate.iid for candidate in cross_pair) == (person.iid, batch_people[0].iid)
     score_field = person_var.field(generated.Person.score)
-    direct_aggregate = all_people_query.aggregate(
+    direct_aggregate = all_people_query.reduce(
         person_var,
         generated.aggregate.count(),
         generated.aggregate.sum(score_field),
@@ -3752,7 +4540,7 @@ def test_generated_projection_round_trips_live_models(
     direct_field_grouped = all_people_query.group_by(
         person_var,
         person_var.field(generated.Person.val_bool),
-    ).aggregate(
+    ).reduce(
         generated.aggregate.count(),
         generated.aggregate.sum(score_field),
     )
@@ -3765,7 +4553,7 @@ def test_generated_projection_round_trips_live_models(
         person_var,
         person_var.field(generated.Person.val_bool),
         score_field,
-    ).aggregate(
+    ).reduce(
         generated.aggregate.count(),
         generated.aggregate.sum(score_field),
     )
@@ -3782,7 +4570,7 @@ def test_generated_projection_round_trips_live_models(
         MatchRequestError,
         match="The typed query plan does not satisfy the generated query contract",
     ) as non_numeric_reducer_error:
-        all_people_query.aggregate(
+        all_people_query.reduce(
             person_var,
             generated.aggregate.sum(person_var.field(generated.Person.identifier)),
         )
@@ -3805,7 +4593,7 @@ def test_generated_projection_round_trips_live_models(
     party_var = query_session.subtypes(generated.Party)
     party_rows = query_session.query(party_var).rows(
         limit=10,
-        order_by=(party_var.field(generated.Party.identifier).asc(),),
+        sort=(party_var.field(generated.Party.identifier).asc(),),
     )
     assert [type(candidate) for candidate in party_rows] == [
         generated.Employee,
@@ -3815,7 +4603,7 @@ def test_generated_projection_round_trips_live_models(
 
     membership_manager = generated.Membership.manager(clean_db)
     membership = generated.Membership(member=person)
-    assert membership_manager.insert(membership) is membership
+    assert membership_manager.insert(membership).item is membership
     assert membership.iid
 
     stored_membership = membership_manager.get_by_iid(membership.iid)
@@ -3826,7 +4614,7 @@ def test_generated_projection_round_trips_live_models(
 
     membership_session = blocking(generated.Membership.query(clean_db))
     membership_var = membership_session.exact(generated.Membership)
-    # Membership is intentionally keyless. The shared Query V2 contract permits
+    # Membership is intentionally keyless. The shared plan contract permits
     # singular execution but rejects bounded-many windows without a stable key.
     queried_membership = membership_session.query(membership_var).one()
     assert type(queried_membership) is generated.Membership
@@ -3844,7 +4632,7 @@ def test_generated_projection_round_trips_live_models(
         )
         for index, value in enumerate(integer_key_values)
     ]
-    assert robot_manager.insert_many(robots) == robots
+    assert robot_manager.insert_many(robots).items == robots
     assert robot_manager.count() == len(integer_key_values)
     for expected, value in zip(robots, integer_key_values, strict=True):
         integer_key_match = robot_manager.filter(robot_id=generated.RobotId(value))
@@ -3860,7 +4648,7 @@ def test_generated_projection_round_trips_live_models(
 
     robot = robots[0]
     robot_membership = generated.Membership(member=robot)
-    assert membership_manager.insert(robot_membership) is robot_membership
+    assert membership_manager.insert(robot_membership).item is robot_membership
     stored_robot_membership = membership_manager.get_by_iid(robot_membership.iid)
     assert type(stored_robot_membership) is generated.Membership
     assert type(stored_robot_membership.member) is generated.Robot
@@ -3880,7 +4668,7 @@ def test_generated_projection_round_trips_live_models(
         actor=person,
         target=batch_people[0],
     )
-    assert interaction_manager.insert_many([robot_interaction, person_interaction]) == [
+    assert interaction_manager.insert_many([robot_interaction, person_interaction]).items == [
         robot_interaction,
         person_interaction,
     ]
@@ -3891,12 +4679,12 @@ def test_generated_projection_round_trips_live_models(
         query_session.query(interaction_var)
         .match(actor_var)
         .where(
-            interaction_var.role(generated.Interaction.actor).connects(actor_var),
+            interaction_var.role(generated.Interaction.actor).links(actor_var),
             actor_var.field(generated.Actor.nickname).contains(generated.Nickname("a")),
         )
         .rows(
             limit=10,
-            order_by=(interaction_var.field(generated.Interaction.identifier).asc(),),
+            sort=(interaction_var.field(generated.Interaction.identifier).asc(),),
         )
     )
     assert {type(relation.actor) for relation in polymorphic_actor_rows} == {
@@ -3913,8 +4701,8 @@ def test_generated_projection_round_trips_live_models(
     queried_robot_interaction, queried_robot, queried_target = (
         query_session.query(interaction_var, robot_var, target_var)
         .where(
-            interaction_var.role(generated.Interaction.actor).connects(robot_var),
-            interaction_var.role(generated.Interaction.target).connects(target_var),
+            interaction_var.role(generated.Interaction.actor).links(robot_var),
+            interaction_var.role(generated.Interaction.target).links(target_var),
             interaction_var.field(generated.Interaction.nickname).eq(generated.Nickname("assist")),
             robot_var.field(generated.Robot.robot_id).eq(generated.RobotId(-42)),
             robot_var.field(generated.Robot.val_constrained).lt(generated.ValConstrained(10)),
@@ -3931,9 +4719,9 @@ def test_generated_projection_round_trips_live_models(
     queried_person_interaction, queried_person_actor = (
         query_session.query(interaction_var, person_actor_var)
         .where(
-            interaction_var.role(generated.Interaction.actor).connects(person_actor_var),
+            interaction_var.role(generated.Interaction.actor).links(person_actor_var),
             interaction_var.field(generated.Interaction.nickname).eq(generated.Nickname("read")),
-            person_actor_var.field(generated.Person.score).gte(generated.Score(3)),
+            person_actor_var.field(generated.Person.score).ge(generated.Score(3)),
         )
         .one()
     )
@@ -3959,7 +4747,7 @@ def test_generated_projection_round_trips_live_models(
 
     employment_manager = generated.Employment.manager(clean_db)
     employment = generated.Employment(employee=person)
-    assert employment_manager.insert(employment) is employment
+    assert employment_manager.insert(employment).item is employment
     assert employment.iid
 
     stored_employment = employment_manager.get_by_iid(employment.iid)
@@ -3996,9 +4784,9 @@ def test_generated_projection_round_trips_live_models(
     aggregate_employment_var = query_session.exact(generated.Employment)
     direct_grouped_aggregate = (
         query_session.query(person_var, aggregate_employment_var)
-        .where(aggregate_employment_var.role(generated.Employment.employee).connects(person_var))
+        .where(aggregate_employment_var.role(generated.Employment.employee).links(person_var))
         .group_by(person_var, aggregate_employment_var)
-        .aggregate(
+        .reduce(
             generated.aggregate.count(),
             generated.aggregate.sum(score_field),
         )
@@ -4017,13 +4805,13 @@ def test_generated_projection_round_trips_live_models(
         destination=batch_people[0],
         participant=[person, batch_people[0]],
     )
-    assert network_manager.insert(network) is network
+    assert network_manager.insert(network).item is network
     assert network.iid
     network_iid = network.iid
-    assert network_manager.put(network) is network
+    assert network_manager.put(network).item is network
     assert network.iid == network_iid
     network.nickname = generated.Nickname("updated")
-    assert network_manager.update(network) is network
+    assert network_manager.update(network).item is network
     stored_network = network_manager.get_by_iid(network_iid)
     assert type(stored_network) is generated.NetworkLink
     assert stored_network.nickname.value == "updated"
@@ -4096,10 +4884,10 @@ def test_generated_projection_round_trips_live_models(
     assert type(queried_network) is generated.NetworkLink
     assert queried_network.iid == network_iid
     participant_var = network_session.exact(generated.Person)
-    participant = network_var.role(generated.NetworkLink.participant).connects(participant_var)
+    participant = network_var.role(generated.NetworkLink.participant).links(participant_var)
     network_rows = network_session.query(network_var).rows(
         limit=10,
-        order_by=(network_var.field(generated.NetworkLink.identifier).asc(),),
+        sort=(network_var.field(generated.NetworkLink.identifier).asc(),),
     )
     assert [candidate.iid for candidate in network_rows] == [network.iid]
 
@@ -4147,13 +4935,13 @@ def test_generated_projection_round_trips_live_models(
             network=network_var,
             participants=participant_var.collect()
             .distinct()
-            .order_by(participant_var.field(generated.Person.identifier).asc()),
+            .sort(participant_var.field(generated.Person.identifier).asc()),
         )
         .where(participant)
         .page_by(
             network_var,
             limit=10,
-            order_by=(network_var.field(generated.NetworkLink.identifier).asc(),),
+            sort=(network_var.field(generated.NetworkLink.identifier).asc(),),
             include_total=True,
         )
     )
@@ -4172,13 +4960,13 @@ def test_generated_projection_round_trips_live_models(
 
     event_manager = generated.Event.manager(clean_db)
     event = generated.Event(subject=person)
-    assert event_manager.insert(event) is event
+    assert event_manager.insert(event).item is event
     assert event.iid
     assert type(event_manager.get_by_iid(event.iid)) is generated.Event
 
     container_manager = generated.Container.manager(clean_db)
     container = generated.Container(item=[generated.EventRef(event.iid)])
-    assert container_manager.insert(container) is container
+    assert container_manager.insert(container).item is container
     assert container.iid
 
     stored_container = container_manager.get_by_iid(container.iid)
@@ -4206,7 +4994,7 @@ def test_generated_projection_round_trips_live_models(
     generated_path = Path(generated_file).resolve()
     authority = generated_path.parent.parent.joinpath("schema-authority.json").read_bytes()
     remote_port = _free_port()
-    supplied_server = os.environ.get("TYPE_BRIDGE_V2_SMOKE_SERVER")
+    supplied_server = os.environ.get("TYPE_BRIDGE_SMOKE_SERVER")
     if supplied_server is None:
         server_command = [
             "cargo",
@@ -4214,10 +5002,8 @@ def test_generated_projection_round_trips_live_models(
             "--quiet",
             "-p",
             "type-bridge-server",
-            "--features",
-            "v2-query",
             "--example",
-            "v2_smoke_server",
+            "staged_smoke_server",
         ]
         server_cwd = CORE
     else:
@@ -4238,6 +5024,7 @@ def test_generated_projection_round_trips_live_models(
             "SMOKE_DATABASE": clean_db.database_name,
             "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
             "SMOKE_PORT": str(remote_port),
+            "SMOKE_ALLOW_STAGED_WRITES": "true",
         },
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -4245,7 +5032,7 @@ def test_generated_projection_round_trips_live_models(
     try:
         _wait_for_port(remote_port, server, timeout=300)
         with urllib_request.urlopen(
-            f"http://127.0.0.1:{remote_port}/v2/capabilities",
+            f"http://127.0.0.1:{remote_port}/v3/capabilities",
             timeout=30,
         ) as response:
             advertisement = response.read()
@@ -4254,10 +5041,13 @@ def test_generated_projection_round_trips_live_models(
 
         async def exchange(request: bytes) -> bytes:
             remote_requests.append(request)
+            capture = getattr(exchange, "_plan_witness", None)
+            if capture is not None:
+                capture.exchange(request)
 
             def post() -> bytes:
                 http_request = urllib_request.Request(
-                    f"http://127.0.0.1:{remote_port}/v2/query",
+                    f"http://127.0.0.1:{remote_port}/v3/staged",
                     data=request,
                     headers={"content-type": "application/json"},
                     method="POST",
@@ -4265,7 +5055,9 @@ def test_generated_projection_round_trips_live_models(
                 with urllib_request.urlopen(http_request, timeout=30) as response:
                     return response.read()
 
-            return await asyncio.to_thread(post)
+            reply = await asyncio.to_thread(post)
+            _capture_v2_exchange(request, reply, advertisement)
+            return reply
 
         remote_session = generated.QuerySession(
             generated.ExchangeConnection(advertisement, exchange),
@@ -4275,11 +5067,32 @@ def test_generated_projection_round_trips_live_models(
         remote_people = remote_session.query(remote_person).where(
             remote_person.field(generated.Person.identifier).eq(generated.Identifier("person-1"))
         )
+        if os.environ.get("TYPE_BRIDGE_CAPTURE_DIRECTORY") is not None:
+            capture_party = remote_session.subtypes(generated.Party)
+            capture_parties = asyncio.run(
+                remote_session.query(capture_party).rows(
+                    limit=10, sort=(capture_party.field(generated.Party.identifier).asc(),)
+                )
+            )
+            assert [type(value) for value in capture_parties] == [
+                generated.Employee,
+                generated.Manager,
+            ]
+            capture_page = asyncio.run(
+                remote_people.page_by(
+                    remote_person,
+                    limit=1,
+                    sort=(remote_person.field(generated.Person.identifier).asc(),),
+                    include_total=False,
+                )
+            )
+            assert capture_page.total is None
+            assert len(capture_page.items) == 1
         remote_person_one = asyncio.run(remote_people.one())
         assert type(remote_person_one) is generated.Person
         assert remote_person_one.iid == person.iid
         remote_person_first = asyncio.run(
-            remote_people.first(order_by=(remote_person.field(generated.Person.identifier).asc(),))
+            remote_people.first(sort=(remote_person.field(generated.Person.identifier).asc(),))
         )
         assert type(remote_person_first) is generated.Person
         assert remote_person_first.iid == person.iid
@@ -4288,7 +5101,7 @@ def test_generated_projection_round_trips_live_models(
             .where(remote_person.field(generated.Person.aliases).is_present())
             .rows(
                 limit=10,
-                order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                sort=(remote_person.field(generated.Person.identifier).asc(),),
             )
         )
         assert [candidate.iid for candidate in remote_present_aliases] == [person.iid]
@@ -4297,7 +5110,7 @@ def test_generated_projection_round_trips_live_models(
             .where(remote_person.field(generated.Person.aliases).is_missing())
             .rows(
                 limit=10,
-                order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                sort=(remote_person.field(generated.Person.identifier).asc(),),
             )
         )
         assert {candidate.iid for candidate in remote_missing_aliases} == {
@@ -4315,7 +5128,7 @@ def test_generated_projection_round_trips_live_models(
             .where(remote_person.iid_in((person.iid, batch_people[0].iid)))
             .rows(
                 limit=10,
-                order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                sort=(remote_person.field(generated.Person.identifier).asc(),),
             )
         )
         assert [candidate.iid for candidate in remote_iid_set] == [
@@ -4336,7 +5149,7 @@ def test_generated_projection_round_trips_live_models(
         remote_person_rows = asyncio.run(
             remote_people.rows(
                 limit=10,
-                order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                sort=(remote_person.field(generated.Person.identifier).asc(),),
             )
         )
         assert [candidate.iid for candidate in remote_person_rows] == [person.iid]
@@ -4344,7 +5157,7 @@ def test_generated_projection_round_trips_live_models(
             remote_people.page_by(
                 remote_person,
                 limit=10,
-                order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                sort=(remote_person.field(generated.Person.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -4357,7 +5170,7 @@ def test_generated_projection_round_trips_live_models(
         remote_party_rows = asyncio.run(
             remote_session.query(remote_party).rows(
                 limit=10,
-                order_by=(remote_party.field(generated.Party.identifier).asc(),),
+                sort=(remote_party.field(generated.Party.identifier).asc(),),
             )
         )
         assert [type(candidate) for candidate in remote_party_rows] == [
@@ -4370,7 +5183,7 @@ def test_generated_projection_round_trips_live_models(
         remote_score_field = remote_person.field(generated.Person.score)
         requests_before_reduction = len(remote_requests)
         remote_aggregate = asyncio.run(
-            remote_all_people.aggregate(
+            remote_all_people.reduce(
                 remote_person,
                 generated.aggregate.count(),
                 generated.aggregate.sum(remote_score_field),
@@ -4389,7 +5202,7 @@ def test_generated_projection_round_trips_live_models(
             remote_all_people.group_by(
                 remote_person,
                 remote_person.field(generated.Person.val_bool),
-            ).aggregate(
+            ).reduce(
                 generated.aggregate.count(),
                 generated.aggregate.sum(remote_score_field),
             )
@@ -4403,7 +5216,7 @@ def test_generated_projection_round_trips_live_models(
                 remote_person,
                 remote_person.field(generated.Person.val_bool),
                 remote_score_field,
-            ).aggregate(
+            ).reduce(
                 generated.aggregate.count(),
                 generated.aggregate.sum(remote_score_field),
             )
@@ -4420,7 +5233,7 @@ def test_generated_projection_round_trips_live_models(
         remote_person_employment = remote_session.query(
             remote_person,
             remote_employment,
-        ).where(remote_employment.role(generated.Employment.employee).connects(remote_person))
+        ).where(remote_employment.role(generated.Employment.employee).links(remote_person))
         remote_person_value, remote_employment_value = asyncio.run(remote_person_employment.one())
         assert type(remote_person_value) is generated.Person
         assert remote_person_value.iid == person.iid
@@ -4428,7 +5241,7 @@ def test_generated_projection_round_trips_live_models(
         assert remote_employment_value.iid == employment.iid
         requests_before_grouped_reduction = len(remote_requests)
         remote_grouped_aggregate = asyncio.run(
-            remote_person_employment.group_by(remote_person, remote_employment).aggregate(
+            remote_person_employment.group_by(remote_person, remote_employment).reduce(
                 generated.aggregate.count(),
                 generated.aggregate.sum(remote_score_field),
             )
@@ -4448,15 +5261,13 @@ def test_generated_projection_round_trips_live_models(
                 network=remote_network,
                 participants=remote_participant.collect()
                 .distinct()
-                .order_by(remote_participant.field(generated.Person.identifier).asc()),
+                .sort(remote_participant.field(generated.Person.identifier).asc()),
             )
-            .where(
-                remote_network.role(generated.NetworkLink.participant).connects(remote_participant)
-            )
+            .where(remote_network.role(generated.NetworkLink.participant).links(remote_participant))
             .page_by(
                 remote_network,
                 limit=10,
-                order_by=(remote_network.field(generated.NetworkLink.identifier).asc(),),
+                sort=(remote_network.field(generated.NetworkLink.identifier).asc(),),
                 include_total=True,
             )
         )
@@ -4536,6 +5347,68 @@ def test_generated_projection_round_trips_live_models(
         assert program_results[2] == program_results[0]
         assert len(remote_requests) - requests_before_program == 10
 
+        # Staged typed terminals share the write snapshot and survive their session.
+        from type_bridge_core import Pending
+
+        from type_bridge.plan import Plan
+
+        proxy = generated.connect_proxy(f"http://127.0.0.1:{remote_port}")
+        for key, transaction in (
+            (27004051, clean_db.staged_transaction(commit_on_exit=False)),
+            (27004052, proxy.transaction(commit_on_exit=False)),
+        ):
+            with Plan():
+                created = generated.Robot.insert(robot_id=key, val_constrained=7)
+            transaction.stage(created)
+            session = generated.Robot.query(transaction)
+            root = session.exact(generated.Robot)
+            query = session.query(root).where(
+                root.field(generated.Robot.robot_id).eq(generated.RobotId(key))
+            )
+            pending = asyncio.run(query.one())
+            rows = asyncio.run(
+                query.rows(limit=2, sort=[root.field(generated.Robot.robot_id).asc()])
+            )
+            first = asyncio.run(query.first(sort=[root.field(generated.Robot.robot_id).asc()]))
+            page = asyncio.run(
+                query.page_by(
+                    root,
+                    limit=2,
+                    sort=[root.field(generated.Robot.robot_id).asc()],
+                    include_total=True,
+                )
+            )
+            count = asyncio.run(query.count_by(root))
+            exists = asyncio.run(query.exists_by(root))
+            reduced = asyncio.run(query.reduce(root, generated.aggregate.count()))
+            grouped = asyncio.run(
+                query.group_by(root, root.field(generated.Robot.robot_id)).reduce(
+                    generated.aggregate.count()
+                )
+            )
+            assert isinstance(pending, Pending)
+            with pytest.raises(RuntimeError):
+                pending.result()
+            session.close()
+            del query, session
+            transaction.commit()
+            result = pending.result()
+            assert type(result) is generated.Robot
+            assert result.robot_id.value == key
+            assert rows.result()[0].iid == result.iid
+            assert first.result().iid == result.iid
+            assert page.result().total == 1
+            assert count.result() == 1
+            assert exists.result() is True
+            assert reduced.result() == (1,)
+            groups = grouped.result()
+            assert len(groups) == 1
+            assert type(groups[0][0]) is generated.RobotId
+            assert groups[0][0].value == key
+            assert groups[0][1] == (1,)
+            transaction.close()
+            generated.Robot.manager(clean_db).delete(result)
+
         # A proxy connection's answer ceiling binds a session that asks for
         # the defaults, and refuses as a session asking for the same budget.
         ceiling = QueryExecutionResourceLimits(role_players=0)
@@ -4568,6 +5441,9 @@ def test_generated_projection_round_trips_live_models(
                 sdk_queries_journey,
                 sdk_queries_proof_observations,
             )
+        if (capture_directory := os.environ.get("TYPE_BRIDGE_CAPTURE_DIRECTORY")) is not None:
+            for name in ["page-with-total", "page-without-total", "abstract-party"]:
+                assert (Path(capture_directory) / name / "reply.json").is_file()
     finally:
         server.terminate()
         try:
@@ -4590,10 +5466,10 @@ def test_generated_projection_round_trips_live_models(
             participant=[batch_people[1], person],
         ),
     ]
-    assert network_manager.insert_many(relation_batch) == relation_batch
+    assert network_manager.insert_many(relation_batch).items == relation_batch
     relation_batch_iids = [candidate.iid for candidate in relation_batch]
     assert all(relation_batch_iids)
-    assert [candidate.iid for candidate in network_manager.put_many(relation_batch)] == (
+    assert [candidate.iid for candidate in network_manager.put_many(relation_batch).items] == (
         relation_batch_iids
     )
     for relation in relation_batch:
@@ -4629,8 +5505,6 @@ def test_generated_direct_terminals_run_under_the_connection_answer_ceiling(
     clean_db: Database,
     generated_package: ModuleType,
 ) -> None:
-    if (clean_db.detected_server_version() or "").startswith("3.11."):
-        pytest.skip("TypeDB 3.11 has no direct-connection profile")
     generated = generated_package
     _, provider_schema, _ = _acceptance_contract(clean_db)
     clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
@@ -4664,18 +5538,18 @@ def test_generated_direct_terminals_run_under_the_connection_answer_ceiling(
     assert query.execute_count_by_owned(unbounded, counter).count_value() == 2
     unbounded.close()
 
-    expired = connect(QueryExecutionResourceLimits(timeout_milliseconds=0))
-    transaction = expired.transaction("read")
-    for terminal in (
-        lambda: query.execute_count_by_owned(expired, counter),
-        lambda: query.execute_count_by_borrowed(transaction, counter),
-    ):
-        with pytest.raises(MatchRequestError) as timed_out:
-            terminal()
-        assert timed_out.value.category == "resource_limit"
-        assert timed_out.value.code == "transaction_deadline_exceeded"
-    transaction.close()
-    expired.close()
+    # A zero timeout ceiling means no deadline, not an expired one.
+    no_deadline = connect(QueryExecutionResourceLimits(timeout_milliseconds=0))
+    transaction = no_deadline.transaction("read")
+    try:
+        for terminal in (
+            lambda: query.execute_count_by_owned(no_deadline, counter),
+            lambda: query.execute_count_by_borrowed(transaction, counter),
+        ):
+            assert terminal().count_value() == 2
+    finally:
+        transaction.close()
+        no_deadline.close()
 
     # A one-item ceiling refuses exactly as a session asking for one item.
     unbounded = connect(None)
@@ -4695,3 +5569,150 @@ def test_generated_direct_terminals_run_under_the_connection_answer_ceiling(
         session_refusal.value.category,
         session_refusal.value.code,
     )
+
+
+def test_generated_raw_pair_live(
+    clean_db: Database, generated_package: ModuleType, tmp_path: Path
+) -> None:
+    from typedb.driver import TransactionType as DriverTransactionType
+
+    from type_bridge import RawQueryError
+
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(), "schema")
+    answer = clean_db.execute_query("define entity raw-atomic; entity raw-oracle;", "schema")
+    assert answer["answerType"] == "ok"
+    assert answer["queryType"] == "schema"
+
+    def driver_documents(query: str, kind: DriverTransactionType) -> list[dict[str, Any]]:
+        tx = clean_db.driver.transaction(clean_db.database_name, kind)
+        try:
+            documents = list(tx.query(query).resolve().as_concept_documents())
+            if kind == DriverTransactionType.WRITE:
+                tx.commit()
+            return documents
+        finally:
+            tx.close()
+
+    insert = "insert $x isa raw-oracle; fetch { 'value': 7 };"
+    driver_insert = driver_documents(insert, DriverTransactionType.WRITE)
+    assert clean_db.execute_query(insert, "write")["answers"] == driver_insert
+    fetch = "match $x isa raw-oracle; fetch { 'value': 7 };"
+    driver_fetch = driver_documents(fetch, DriverTransactionType.READ)
+    assert clean_db.execute_query(fetch)["answers"] == driver_fetch
+    fetch_atomic = "match $x isa raw-atomic; fetch { 'value': 1 };"
+    with clean_db.raw_transaction("write") as tx:
+        tx.execute_query("insert $x isa raw-atomic;")
+        tx.execute_query("insert $x isa raw-atomic;")
+        assert len(tx.execute_query(fetch_atomic)["answers"]) == 2
+        tx.rollback()
+    assert clean_db.execute_query(fetch_atomic)["answers"] == []
+    with pytest.raises(RuntimeError, match="rollback context"):
+        with clean_db.raw_transaction("write") as tx:
+            tx.execute_query("insert $x isa raw-atomic;")
+            raise RuntimeError("rollback context")
+    assert clean_db.execute_query(fetch_atomic)["answers"] == []
+    with clean_db.raw_transaction("write", commit_on_exit=False) as tx:
+        tx.execute_query("insert $x isa raw-atomic;")
+    assert clean_db.execute_query(fetch_atomic)["answers"] == []
+
+    assert generated.__file__ is not None
+    authority = (
+        Path(generated.__file__)
+        .resolve()
+        .parent.parent.joinpath("schema-authority.json")
+        .read_bytes()
+    )
+    supplied_server = os.environ.get("TYPE_BRIDGE_SMOKE_SERVER")
+    command = (
+        [supplied_server]
+        if supplied_server
+        else [
+            "cargo",
+            "run",
+            "--quiet",
+            "-p",
+            "type-bridge-server",
+            "--example",
+            "staged_smoke_server",
+        ]
+    )
+    port = _free_port()
+    for enabled in (True, False):
+        trace = tmp_path / f"raw-{enabled}.jsonl"
+        with (tmp_path / f"raw-{enabled}.log").open("w+") as log:
+            server = subprocess.Popen(
+                command,
+                cwd=ROOT if supplied_server else CORE,
+                env={
+                    **os.environ,
+                    "SMOKE_TYPEDB_ADDRESS": clean_db.address,
+                    "SMOKE_TYPEDB_USERNAME": clean_db.username or "admin",
+                    "SMOKE_TYPEDB_PASSWORD": clean_db.password or "password",
+                    "SMOKE_TYPEDB_HTTP_PORT": str(clean_db.http_port),
+                    "SMOKE_DATABASE": clean_db.database_name,
+                    "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
+                    "SMOKE_PORT": str(port),
+                    "SMOKE_ALLOW_STAGED_WRITES": "true",
+                    "SMOKE_ALLOW_RAW": str(enabled).lower(),
+                    "SMOKE_TRACE_FILE": str(trace),
+                },
+                stdout=log,
+                stderr=log,
+            )
+            try:
+                _wait_for_port(port, server, 300)
+                proxy = generated.connect_proxy(f"http://127.0.0.1:{port}")
+                if not enabled:
+                    for kind in ("read", "write", "schema"):
+                        with pytest.raises(RawQueryError) as refused:
+                            proxy.execute_query("unchecked text", kind)
+                        assert refused.value.code == "raw_disabled"
+                        with proxy.raw_transaction(kind) as tx:
+                            with pytest.raises(RawQueryError) as refused:
+                                tx.execute_query("unchecked text")
+                            assert refused.value.code == "raw_disabled"
+                            tx.close()
+                    continue
+                assert proxy.execute_query(fetch)["answers"] == driver_fetch
+                assert proxy.execute_query(insert, "write")["answers"] == driver_insert
+                assert (
+                    proxy.execute_query("define entity raw-schema-proxy;", "schema")["queryType"]
+                    == "schema"
+                )
+
+                def requests() -> int:
+                    return sum(
+                        json.loads(line)["event"] == "raw_request"
+                        for line in trace.read_text().splitlines()
+                    )
+
+                before = requests()
+                with proxy.raw_transaction("write") as tx:
+                    tx.execute_query("insert $x isa raw-atomic;")
+                    assert requests() == before + 1
+                    with pytest.raises(RawQueryError) as refused:
+                        tx.execute_query("insert $x isa raw-atomic;")
+                    assert refused.value.code == "raw_transaction_single_query"
+                    tx.commit()
+                    with pytest.raises(RawQueryError) as refused:
+                        tx.rollback()
+                    assert refused.value.code == "raw_transaction_already_committed"
+                assert requests() == before + 1
+                assert len(clean_db.execute_query(fetch_atomic)["answers"]) == 1
+                with proxy.raw_transaction("read") as tx:
+                    tx.execute_query(fetch_atomic)
+                    tx.commit()
+                    tx.rollback()
+            except BaseException:
+                log.seek(0)
+                print(log.read())
+                raise
+            finally:
+                server.terminate()
+                try:
+                    server.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+                    server.wait(timeout=10)

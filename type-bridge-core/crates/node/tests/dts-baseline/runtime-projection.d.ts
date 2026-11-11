@@ -1,6 +1,7 @@
-import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type RustDatabase, type RustTransactionContext } from "./index.js";
+import { RawTransaction, type RawValue } from "./raw-query.js";
+import { PlanAuthority, type NativeDatabase, type NativeTransactionContext, type Database, type TransactionContext, type MigrationTransaction } from "./index.js";
 import { loadNative } from "./native.js";
-import type { NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
+import type { NativePlan, NativePendingPlanAnswer, NativeProxyConnection, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
@@ -19,7 +20,7 @@ export type RuntimeProjectionMatchQuery = ReturnType<RuntimeProjectionMatchSessi
 export type RuntimeProjectionMatchResult = Awaited<ReturnType<RuntimeProjectionMatchQuery["executeFetchRowsOwned"]>>;
 export type RuntimeProjectionMatchThing = ReturnType<RuntimeProjectionMatchResult["slotThing"]>;
 export type RuntimeProjectionReduction = "count" | "sum" | "min" | "max" | "mean" | "median" | "std";
-export type RuntimeProjectionConnection = RustDatabase | RustTransactionContext;
+export type RuntimeProjectionConnection = Database | TransactionContext | MigrationTransaction | ProxyConnection;
 export interface RuntimeProjectionBinding {
     readonly typeKey: string;
     readonly targetName: string;
@@ -38,6 +39,8 @@ export interface RuntimeProjectionInstall {
      * unsupported and outside the runtime projection contract.
      */
     readonly projectedBatchMaterializer?: NativeProjectedBatchMaterializer;
+    /** @internal Restrict an ordinary package's batch mapper to plan results. */
+    readonly planResultsOnly?: boolean;
 }
 export interface GeneratedSchemaAuthorityInstall {
     readonly schemaAuthorityJson: string;
@@ -48,6 +51,8 @@ export interface GeneratedSchemaAuthorityInstall {
  * dimension takes the core default; a given one may tighten or raise it.
  */
 export interface QueryExecutionResourceLimitOptions {
+    /** Collect a diagnostic timeline without a tracing subscriber. Defaults to false. */
+    readonly collectPhaseTimestamps?: boolean;
     readonly timeoutMilliseconds?: bigint;
     readonly items?: bigint;
     readonly bytes?: bigint;
@@ -61,6 +66,7 @@ export interface QueryExecutionResourceLimitOptions {
 export declare class QueryExecutionResourceLimits {
     #private;
     constructor(options?: QueryExecutionResourceLimitOptions);
+    get collectPhaseTimestamps(): boolean;
     get timeoutMilliseconds(): bigint;
     get items(): bigint;
     get bytes(): bigint;
@@ -68,7 +74,7 @@ export declare class QueryExecutionResourceLimits {
     get attributeValues(): bigint;
     get collectionMembers(): bigint;
     get rolePlayers(): bigint;
-    get statements(): bigint;
+    get statements(): bigint | undefined;
     /** @internal Exact native policy owner. */
     nativeHandle(): NativeQueryExecutionResources;
 }
@@ -108,14 +114,15 @@ export declare class QueryCancellation {
 /** One caller-owned request/response exchange. No retry is performed. */
 export type RuntimeProjectionRemoteExchange = (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>;
 /** Opaque verified remote terminal executor for one generated package. */
-export interface RuntimeProjectionRemote {
-    rows(query: RuntimeProjectionMatchQuery, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): Promise<RuntimeProjectionMatchResult>;
-    page(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<RuntimeProjectionMatchResult>;
-    count(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<RuntimeProjectionMatchResult>;
-    exists(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<RuntimeProjectionMatchResult>;
-    reduce(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchBinding | null, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
-    reduceByField(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchField, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
-    reduceByFields(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, groups: RuntimeProjectionMatchField[], reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
+export type RuntimeProjectionQueryResult = RuntimeProjectionMatchResult | NativePendingPlanAnswer;
+export interface RuntimeProjectionRemote<Result = RuntimeProjectionMatchResult> {
+    rows(query: RuntimeProjectionMatchQuery, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): Promise<Result>;
+    page(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<Result>;
+    count(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<Result>;
+    exists(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<Result>;
+    reduce(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchBinding | null, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<Result>;
+    reduceByField(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchField, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<Result>;
+    reduceByFields(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, groups: RuntimeProjectionMatchField[], reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<Result>;
 }
 declare const nativeProjectedFacadeProof: unique symbol;
 /** @internal Opaque non-serializable proof retained only by generated successor facades. */
@@ -124,9 +131,20 @@ export interface NativeProjectedFacadeProof {
 }
 /** @internal Private wire plus exact root and role-player proofs. */
 export interface NativeProjectedValueEnvelope {
+    readonly deleted: boolean;
     readonly json: string;
     rootProof(): NativeProjectedFacadeProof;
     roleProof(roleName: string, playerIndex: number): NativeProjectedFacadeProof;
+}
+/** @internal Cells and row order issued by the core authored-result proof. */
+export interface NativeAuthoredPlanCell {
+    readonly model?: NativeProjectedValueEnvelope | null;
+    readonly scalar?: string | null;
+}
+/** @internal Exactly one committed authored projection shape. */
+export interface NativeAuthoredPlanResult {
+    readonly models?: readonly NativeProjectedValueEnvelope[] | null;
+    readonly rows?: readonly (readonly NativeAuthoredPlanCell[])[] | null;
 }
 type NativeProjectedBatchMaterializer = (typeKey: string, ordinal: number, json: string, authority: NativeProjectedBatchAuthority) => object;
 declare const nativeProjectedBatchAuthority: unique symbol;
@@ -134,6 +152,8 @@ declare const nativeProjectedBatchAuthority: unique symbol;
 interface NativeProjectedBatchAuthority {
     readonly [nativeProjectedBatchAuthority]: never;
 }
+/** @internal Read the core snapshot flag while the generated mapper publishes a row. */
+export declare function projectedBatchDeleted(authority: NativeProjectedBatchAuthority, ordinal: number, roleName?: string, playerIndex?: number): boolean;
 /** @internal Exact root selector backed by one batch publication authority. */
 interface NativeProjectedBatchRootProof {
     readonly kind: "root";
@@ -157,25 +177,36 @@ interface NativeProjectedCreateBatchRow {
 interface NativeProjectedUpdateBatchRow extends NativeProjectedCreateBatchRow {
     readonly iid: string;
 }
+/** Complete hydrated roots from a single-input manager write, in answer order. */
+export interface WriteResult<T> {
+    readonly count: number;
+    readonly items: readonly T[];
+    readonly item: T | null;
+}
+/** Complete batch roots with their original input row indexes. */
+export interface BatchWriteResult<T> {
+    readonly count: number;
+    readonly items: readonly T[];
+    readonly inputIndexes: readonly number[];
+}
+/** Build the public write result from all roots already returned by the engine. */
+export declare function writeResult<T>(items: readonly T[]): WriteResult<T>;
 export interface NativeProjectedManager {
-    insertProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope;
-    insertJson(instanceJson: string): string;
-    insertManyJson(batchJson: string): string;
-    insertManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): readonly Complete[];
-    putProjected(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope;
-    putJson(instanceJson: string): string;
-    putManyJson(batchJson: string): string;
-    putManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): readonly Complete[];
-    updateProjected(iid: string, instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): NativeProjectedValueEnvelope;
-    updateJson(iid: string, instanceJson: string): string;
-    updateManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow): readonly Complete[];
+    insertProjected<Complete>(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): WriteResult<Complete>;
+    insertManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): BatchWriteResult<Complete>;
+    putProjected<Complete>(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): WriteResult<Complete>;
+    putManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedCreateBatchRow): BatchWriteResult<Complete>;
+    updateProjected<Complete>(iid: string, instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): WriteResult<Complete>;
+    updateManyProjected<Complete>(rowCount: number, rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow): BatchWriteResult<Complete>;
     deleteByIid(iid: string): void;
+    deleteByIidReturning<Complete>(iid: string): WriteResult<Complete>;
+    deleteManyReturning<Complete>(iids: string[]): BatchWriteResult<Complete>;
     deleteManyProjected(rowCount: number, rowAt: (ordinal: number) => string): void;
     managerFilter(): NativeProjectedManagerFilter;
     filterEntriesJson(filtersJson: string): NativeProjectedManager;
-    filterJson(filtersJson: string): NativeProjectedManager;
     getByIidProjected(iid: string): NativeProjectedValueEnvelope | null;
-    getByIidJson(iid: string): string;
+    allProjected(): readonly NativeProjectedValueEnvelope[];
+    firstProjected(): NativeProjectedValueEnvelope | null;
     allJson(): string;
     firstJson(): string;
     count(): bigint;
@@ -189,13 +220,16 @@ export interface NativeProjectedManagerFilter {
     firstProjected(): NativeProjectedValueEnvelope | null;
     count(): bigint;
     exists(): boolean;
+    delete(): void;
+    updateProjected<Complete>(instanceJson: string, proofs: (NativeProjectedInputProof | null)[]): WriteResult<Complete>;
 }
 /** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */
 export declare function projectedManagerNativeCall<Result>(operation: () => Result): Result;
-interface NativeProjectionHandle {
-    connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): NativeRustDatabase;
-    managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
-    managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
+export interface NativeProjectionHandle {
+    connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, queryLimits?: NativeQueryLimits): NativeDatabase;
+    managerForProxy(typeKey: string, connection: NativeProxyConnection): NativeProjectedManager;
+    managerForDatabase(typeKey: string, database: NativeDatabase): NativeProjectedManager;
+    managerForTransaction(typeKey: string, transaction: NativeTransactionContext): NativeProjectedManager;
     matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, queryLimits?: NativeQueryLimits | null): RuntimeProjectionMatchSession;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
@@ -224,6 +258,7 @@ interface NativeProjectionHandle {
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
     materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
+    materializePlanDocuments(plan: NativePlan, answerJson: string, declaredId: string): unknown[];
     materializeMatchThingProjected(thing: RuntimeProjectionMatchThing): NativeProjectedValueEnvelope;
 }
 /** Tighten-only controls for canonical record/archive work. */
@@ -240,6 +275,8 @@ export interface CanonicalCodecOptions {
 export declare class InstalledRuntimeProjection {
     #private;
     constructor(native: NativeProjectionHandle);
+    /** @internal Retain this installed package while compiling an authored result. */
+    nativeHandle(): NativeProjectionHandle;
     /** @internal Open through this installed generated package's authority. */
     connectDirect(input: {
         endpoint: string;
@@ -252,7 +289,8 @@ export declare class InstalledRuntimeProjection {
         connectionLimits?: QueryExecutionResourceLimits;
         answerLimits?: QueryExecutionResourceLimits;
         cancellation?: QueryCancellation;
-    }): RustDatabase;
+        queryLimits?: QueryLimits;
+    }): Database;
     /** @internal Bind one generated token without exposing its native handle. */
     manager(typeKey: string, connection: RuntimeProjectionConnection): NativeProjectedManager;
     /** @internal Create an opaque query session from verified projection evidence. */
@@ -311,20 +349,24 @@ export declare class InstalledRuntimeProjection {
     assertConnection(connection: RuntimeProjectionConnection): void;
     /** @internal Materialize one native-validated thing as projected private JSON. */
     materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
+    /** @internal Project validated plan documents through the installed model registry. */
+    materializePlanDocuments<Model>(plan: NativePlan, answerJson: string, declaredId: string): Model[];
     /** @internal Materialize one successor query thing with its exact opaque proof. */
     materializeMatchThingProjected(thing: RuntimeProjectionMatchThing): NativeProjectedValueEnvelope;
     /**
-     * @internal Bind one registered `RustDatabase` (owned) or transaction
+     * @internal Bind one registered `Database` (owned) or transaction
      * (borrowed) as a terminal executor. Terminals run on the provider runtime
      * and resolve without blocking the event loop.
      */
     direct(connection: RuntimeProjectionConnection): RuntimeProjectionRemote;
+    /** @internal Bind generated typed reads to one deferred transaction. */
+    staged(connection: StagedTransaction): RuntimeProjectionRemote<NativePendingPlanAnswer>;
     /**
      * @internal Bind remote authority, executor epoch, the session's resources
      * and cancellation, and one host exchange. `answerLimits` is the
      * connection's ceiling; left out, the session's resources are the ceiling.
      */
-    remote(authority: QueryV2Authority, advertisement: Uint8Array, exchange: RuntimeProjectionRemoteExchange, resources: QueryExecutionResourceLimits, cancellation: QueryCancellation, answerLimits?: QueryExecutionResourceLimits): RuntimeProjectionRemote;
+    remote(authority: PlanAuthority, advertisement: Uint8Array, exchange: RuntimeProjectionRemoteExchange, resources: QueryExecutionResourceLimits, cancellation: QueryCancellation, answerLimits?: QueryExecutionResourceLimits): RuntimeProjectionRemote;
 }
 /** TLS for a proxy endpoint; `custom_root` trusts the `tlsRootCa` bundle only. */
 export type ProxyTlsMode = "disabled" | "native_roots" | "custom_root";
@@ -344,12 +386,16 @@ export interface ProxyConnectionOptions {
      * it must name the same executor and reply key as `advertisement`.
      */
     readonly stagedAdvertisement?: Uint8Array;
+    /** Finite delivery window, default 60000 ms; independent of execution. */
+    readonly admissionWindowMilliseconds?: bigint;
     /** Bounds connecting, which fetches the advertisement. */
     readonly connectionLimits?: QueryExecutionResourceLimits;
     /** The ceiling every terminal on this connection is constrained by. */
     readonly answerLimits?: QueryExecutionResourceLimits;
     /** Cancels connecting. */
     readonly cancellation?: QueryCancellation;
+    /** Independent query policy, tightened by the staged server advertisement. */
+    readonly queryLimits?: QueryLimits;
 }
 /**
  * A verified connection to a TypeBridge server over the built-in HTTP route.
@@ -359,9 +405,27 @@ export interface ProxyConnectionOptions {
  */
 export declare class ProxyConnection implements RuntimeProjectionRemote {
     #private;
+    /** Open a raw context that accepts one query, committed on the proxy host. */
+    rawTransaction(kind?: import("./index.js").TransactionType): Promise<RawTransaction>;
+    /**
+     * Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+     * to TypeDB as written, and TypeDB's output comes back as it
+     * answered, in this SDK's native data types. TypeBridge adds no
+     * validation, rewriting, hydration, hooks, limits or extra
+     * queries. It runs in read, write and schema transactions and
+     * accepts any TypeQL, schema-breaking changes included. The caller
+     * owns its correctness; TypeBridge makes no promise about its
+     * effects. On a proxy connection it posts to the server's opt-in
+     * `/v3/raw` endpoint, which is off by default.
+     *
+     * Integer tokens outside the JavaScript safe range become bigint; safe integers and doubles stay number.
+     */
+    executeQuery(query: string, kind?: import("./index.js").TransactionType): Promise<RawValue>;
     private constructor();
+    /** Configured delivery window, before the server ceiling is applied. */
+    get admissionWindowMilliseconds(): bigint;
     /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
-    static connect(authority: QueryV2Authority, endpoint: string, options?: ProxyConnectionOptions): Promise<ProxyConnection>;
+    static connect(authority: PlanAuthority, endpoint: string, options?: ProxyConnectionOptions): Promise<ProxyConnection>;
     /**
      * Open a staged transaction whose commit is one signed `query-remote/v3`
      * exchange to `POST /v3/staged`. The staged advertisement is fetched from
@@ -371,6 +435,8 @@ export declare class ProxyConnection implements RuntimeProjectionRemote {
     transaction(kind?: StagedTransactionKind, options?: {
         readonly cancellation?: QueryCancellation;
     }): Promise<StagedTransaction>;
+    /** Query policy tightened by the currently pinned staged server ceiling. */
+    get queryLimits(): QueryLimits;
     /** The ceiling every terminal on this connection is constrained by. */
     get answerLimits(): QueryExecutionResourceLimits;
     rows(query: RuntimeProjectionMatchQuery, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): Promise<RuntimeProjectionMatchResult>;
@@ -384,5 +450,5 @@ export declare class ProxyConnection implements RuntimeProjectionRemote {
 /** Verify and install one generated package's exact projection evidence. */
 export declare function installRuntimeProjection(input: RuntimeProjectionInstall): InstalledRuntimeProjection;
 /** @internal Verify an embedded authority before a generated package installs. */
-export declare function installGeneratedSchemaAuthority(input: GeneratedSchemaAuthorityInstall): QueryV2Authority;
+export declare function installGeneratedSchemaAuthority(input: GeneratedSchemaAuthorityInstall): PlanAuthority;
 export {};

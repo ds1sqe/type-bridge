@@ -19,7 +19,7 @@ use type_bridge_contract::managed_scope::{
 };
 use type_bridge_contract::migration::CONDITIONAL_RESOLUTION_CAPABILITY;
 use type_bridge_contract::migration_assertion_capability_vocabulary;
-use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
+use type_bridge_contract::query_plan::query_plan_capability_vocabulary;
 use type_bridge_contract::schema::{
     DeclaredSchema, ManagedSchemaState, SchemaDiagnostics, decode_declared_schema,
     encode_declared_schema,
@@ -50,7 +50,7 @@ pub const MAX_SCHEMA_AUTHORITY_BYTES: usize = MAX_CANONICAL_BYTES;
 /// operation-specific capabilities.
 #[must_use]
 pub fn schema_authority_capability_vocabulary() -> CapabilitySet {
-    let mut capabilities = query_plan_v2_capability_vocabulary();
+    let mut capabilities = query_plan_capability_vocabulary();
     for capability in schema_transition_capability_vocabulary()
         .into_iter()
         .chain(migration_assertion_capability_vocabulary())

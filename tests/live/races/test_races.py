@@ -18,7 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from type_bridge_core import PyRustDatabase
+from type_bridge_core import PyDatabase
 
 from type_bridge.failure import CommitConflict, CommitOutcomeUnknown, CommitRejected
 
@@ -67,7 +67,7 @@ def _export_declared(directory: Path) -> bytes:
 @pytest.fixture(scope="module")
 def base(tmp_path_factory: pytest.TempPathFactory) -> Target:
     assert ADDRESS is not None and HTTP_PORT is not None
-    probe = PyRustDatabase.connect(ADDRESS, "tb_race_probe", http_port=int(HTTP_PORT))
+    probe = PyDatabase.connect(ADDRESS, "tb_race_probe", http_port=int(HTTP_PORT))
     try:
         version = probe.server_version() or ""
     finally:
@@ -84,7 +84,7 @@ Check = Callable[[list[Outcome], dict[str, int]], None]
 def _rounds(
     base: Target,
     scenario: str,
-    state: dict[str, Callable[[driver.QueryV2Authority], driver.Plan]],
+    state: dict[str, Callable[[driver.PlanAuthority], driver.Plan]],
     check: Check,
 ) -> list[Counter[str]]:
     """Race `scenario` for every round; check each round; return the tallies."""
@@ -139,7 +139,7 @@ def test_purchase_sells_each_unit_once(base: Target) -> None:
     _contended(tallies, "conflict:STC2")
 
 
-ON_CALL: dict[str, Callable[[driver.QueryV2Authority], driver.Plan]] = {
+ON_CALL: dict[str, Callable[[driver.PlanAuthority], driver.Plan]] = {
     "on_call": lambda a: driver.count_of(a, driver.Doctor, on_call=True),
 }
 

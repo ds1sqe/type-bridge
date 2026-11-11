@@ -4,6 +4,7 @@ use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, Projecti
 use type_bridge_contract::schema::{DocumentId, OwnsFactId};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticName, SdkDiagnosticPathSegment,
+    SdkExecutionDiagnostic,
 };
 use type_bridge_contract::temporal::{CanonicalDateTimeTz, TimeZoneDesignator};
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, DecimalValue};
@@ -147,7 +148,7 @@ fn membership_create(installed: &InstalledRuntimeProjection, identifier: &str) -
 fn roleless_membership_create(
     installed: &InstalledRuntimeProjection,
     identifier: &str,
-) -> ProjectedCreate {
+) -> Result<ProjectedCreate, SdkExecutionDiagnostic> {
     let membership = type_id(TypeKind::Relation, "membership");
     ProjectedCreate::try_new(
         installed,
@@ -158,7 +159,6 @@ fn roleless_membership_create(
         )],
         vec![],
     )
-    .unwrap()
 }
 
 fn scalar_key_create(
@@ -330,10 +330,6 @@ fn binding_budget_authority_brand_and_row_model_match_full_construction() {
             type_id(TypeKind::Entity, "abstract-item"),
             ProjectedBatchOperation::Delete,
         ),
-        (
-            type_id(TypeKind::Entity, "log"),
-            ProjectedBatchOperation::Put,
-        ),
     ];
     for (model, operation) in constructor_cases {
         let incremental_error =
@@ -430,16 +426,19 @@ fn binding_budget_preserves_authority_control_and_row_precedence_before_brand_fe
         ProjectedBatchBindingBudget::try_new(&python, person.clone(), ProjectedBatchOperation::Put)
             .unwrap();
     let row = ProjectedBatchRow::Create(person_create(&unkeyed, "foreign"));
+    // A keyless put is admitted; a foreign row then meets the brand fence.
     let incremental = put.try_add_row(&unkeyed, &row).unwrap_err();
-    let authoritative = ProjectedBatch::try_new(
+    assert_eq!(
+        incremental.code().as_str(),
+        "generated_token_package_mismatch"
+    );
+    ProjectedBatch::try_new(
         &unkeyed,
         person.clone(),
         ProjectedBatchOperation::Put,
         vec![row],
     )
-    .unwrap_err();
-    assert_eq!(incremental, authoritative);
-    assert_eq!(incremental.code().as_str(), "put_requires_projected_key");
+    .unwrap();
     assert!(put.is_empty());
 
     let cancellation = AnswerCancellation::default();
@@ -893,36 +892,16 @@ fn all_operations_validate_empty_authority_and_store_ordinals() {
 }
 
 #[test]
-fn relation_writes_reject_a_roleless_final_row_before_io_but_delete_is_valid() {
+fn relation_creates_refuse_playerless_values_before_any_batch_or_provider_work() {
     let installed = installed(BindingTarget::Python);
     let membership = type_id(TypeKind::Relation, "membership");
-    for operation in [
-        ProjectedBatchOperation::Insert,
-        ProjectedBatchOperation::Put,
-        ProjectedBatchOperation::Update,
-    ] {
-        let row = if operation == ProjectedBatchOperation::Update {
-            ProjectedBatchRow::Update {
-                iid: "0x10".into(),
-                replacement: roleless_membership_create(&installed, "empty"),
-            }
-        } else {
-            ProjectedBatchRow::Create(roleless_membership_create(&installed, "empty"))
-        };
-        let error = ProjectedBatch::try_new(&installed, membership.clone(), operation, vec![row])
-            .unwrap_err();
-        assert_eq!(error.category(), SdkDiagnosticCategory::InvalidInput);
-        assert_eq!(error.code().as_str(), "relation_requires_role_player");
-        assert_eq!(
-            error.path(),
-            [
-                SdkDiagnosticPathSegment::Argument(name("rows")),
-                SdkDiagnosticPathSegment::Index(0),
-                SdkDiagnosticPathSegment::Type(membership.clone()),
-            ]
-        );
-    }
-
+    let error = roleless_membership_create(&installed, "empty").unwrap_err();
+    assert_eq!(error.category(), SdkDiagnosticCategory::InvalidInput);
+    assert_eq!(error.code().as_str(), "relation_requires_player");
+    assert_eq!(
+        error.path(),
+        [SdkDiagnosticPathSegment::Type(membership.clone())]
+    );
     ProjectedBatch::try_new(
         &installed,
         membership,
@@ -933,7 +912,7 @@ fn relation_writes_reject_a_roleless_final_row_before_io_but_delete_is_valid() {
 }
 
 #[test]
-fn roleless_relation_failure_reports_the_exact_later_ordinal() {
+fn relation_row_model_failure_reports_the_exact_later_ordinal() {
     let installed = installed(BindingTarget::Python);
     let membership = type_id(TypeKind::Relation, "membership");
     let error = ProjectedBatch::try_new(
@@ -942,17 +921,17 @@ fn roleless_relation_failure_reports_the_exact_later_ordinal() {
         ProjectedBatchOperation::Insert,
         vec![
             ProjectedBatchRow::Create(membership_create(&installed, "valid")),
-            ProjectedBatchRow::Create(roleless_membership_create(&installed, "empty")),
+            ProjectedBatchRow::Create(person_create(&installed, "wrong-model")),
         ],
     )
     .unwrap_err();
-    assert_eq!(error.code().as_str(), "relation_requires_role_player");
+    assert_eq!(error.code().as_str(), "batch_row_model_mismatch");
     assert_eq!(
         error.path(),
         [
             SdkDiagnosticPathSegment::Argument(name("rows")),
             SdkDiagnosticPathSegment::Index(1),
-            SdkDiagnosticPathSegment::Type(membership),
+            SdkDiagnosticPathSegment::Type(type_id(TypeKind::Entity, "person")),
         ]
     );
 }
@@ -1315,7 +1294,7 @@ fn decimal_and_datetime_tz_keys_use_semantic_identity() {
 }
 
 #[test]
-fn unkeyed_insert_and_update_keep_equal_rows_distinct_but_put_rejects() {
+fn unkeyed_insert_update_and_put_keep_equal_rows_distinct() {
     let installed = installed(BindingTarget::Python);
     let log = type_id(TypeKind::Entity, "log");
     let create = || {
@@ -1356,9 +1335,53 @@ fn unkeyed_insert_and_update_keep_equal_rows_distinct_but_put_rejects() {
         ],
     )
     .unwrap();
-    let error =
-        ProjectedBatch::try_new(&installed, log, ProjectedBatchOperation::Put, vec![]).unwrap_err();
-    assert_eq!(error.code().as_str(), "put_requires_projected_key");
+    let empty = ProjectedBatch::try_new(
+        &installed,
+        log.clone(),
+        ProjectedBatchOperation::Put,
+        vec![],
+    )
+    .unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(empty.resource_measure().statements(), 0);
+    empty.validate_for(&installed).unwrap();
+    // A keyless put is a TypeQL put of each row's whole pattern; equal rows
+    // are admitted and chain at execution.
+    let mut budget =
+        ProjectedBatchBindingBudget::try_new(&installed, log.clone(), ProjectedBatchOperation::Put)
+            .unwrap();
+    assert!(budget.is_empty());
+    let row = ProjectedBatchRow::Create(create());
+    budget.try_add_row(&installed, &row).unwrap();
+    budget.try_add_row(&installed, &row).unwrap();
+    assert_eq!(budget.len(), 2);
+    ProjectedBatch::try_new(
+        &installed,
+        log.clone(),
+        ProjectedBatchOperation::Put,
+        vec![row.clone(), row.clone()],
+    )
+    .unwrap();
+    // A keyless put forecasts one statement per row chunk, as insert does:
+    // the plans it needs are known once the rows are grouped, and charged
+    // before execution.
+    let mut limits = full_limits();
+    limits.statements = Some(2);
+    let control = ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default());
+    for operation in [
+        ProjectedBatchOperation::Put,
+        ProjectedBatchOperation::Insert,
+    ] {
+        let batch = ProjectedBatch::try_new_for_invocation(
+            &installed,
+            log.clone(),
+            operation,
+            vec![row.clone(), row.clone(), row.clone()],
+            &control,
+        )
+        .unwrap();
+        assert_eq!(batch.resource_measure().statements(), 1);
+    }
 }
 
 #[test]
@@ -1377,7 +1400,7 @@ fn measures_do_not_conflate_structural_members_and_forecast_bulk_statements() {
     assert_eq!(person_measure.attribute_values(), 3);
     assert_eq!(person_measure.collection_members(), 3);
     assert_eq!(person_measure.role_players(), 0);
-    assert_eq!(person_measure.statements(), 2);
+    assert_eq!(person_measure.statements(), 1);
 
     let relation = ProjectedBatch::try_new(
         &installed,
@@ -1394,7 +1417,7 @@ fn measures_do_not_conflate_structural_members_and_forecast_bulk_statements() {
     assert_eq!(relation_measure.attribute_values(), 2);
     assert_eq!(relation_measure.collection_members(), 3);
     assert_eq!(relation_measure.role_players(), 1);
-    assert_eq!(relation_measure.statements(), 3);
+    assert_eq!(relation_measure.statements(), 1);
 
     let delete = ProjectedBatch::try_new(
         &installed,
@@ -1605,8 +1628,8 @@ fn every_resource_dimension_is_checked_in_deterministic_order() {
     assert_eq!(first.code().as_str(), "batch_item_limit");
 }
 
-#[test]
-fn cancellation_and_deadline_diagnostics_are_exact() {
+#[tokio::test(start_paused = true)]
+async fn cancellation_and_deadline_diagnostics_are_exact() {
     let installed = installed(BindingTarget::Python);
     let person = type_id(TypeKind::Entity, "person");
     let make_insert = || vec![ProjectedBatchRow::Create(person_create(&installed, "ada"))];
@@ -1632,24 +1655,22 @@ fn cancellation_and_deadline_diagnostics_are_exact() {
     assert_eq!(cancellation.code().as_str(), "provider_cancelled");
     assert!(cancellation.path().is_empty());
     assert!(cancellation.details().is_empty());
-    let deadline = PreparedProjectedBatchInvocation::try_new(
-        &installed,
-        &batch,
-        ProjectedBatchInvocationControl::capture(
-            QueryExecutionResourceLimits::tightened(
-                0,
-                u64::MAX,
-                u64::MAX,
-                u64::MAX,
-                u64::MAX,
-                u64::MAX,
-                u64::MAX,
-                3,
-            ),
-            AnswerCancellation::default(),
+    let control = ProjectedBatchInvocationControl::capture(
+        QueryExecutionResourceLimits::tightened(
+            1,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            3,
         ),
-    )
-    .unwrap_err();
+        AnswerCancellation::default(),
+    );
+    tokio::time::advance(std::time::Duration::from_millis(2)).await;
+    let deadline =
+        PreparedProjectedBatchInvocation::try_new(&installed, &batch, control).unwrap_err();
     assert_eq!(deadline.category(), SdkDiagnosticCategory::ResourceLimit);
     assert_eq!(deadline.code().as_str(), "transaction_deadline_exceeded");
     assert!(deadline.path().is_empty());

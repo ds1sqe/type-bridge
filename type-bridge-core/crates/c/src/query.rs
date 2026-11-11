@@ -2,6 +2,8 @@
 
 #![allow(missing_docs)]
 
+use crate::iid::TypeBridgeIid;
+
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -20,7 +22,7 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
 };
 use type_bridge_orm::_registry::DescriptorRegistry;
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::{
     BindingHandle, FieldHandle, FunctionArgumentHandle, FunctionCallHandle, FunctionHandle,
     FunctionValueHandle, MatchMode, MissingOrder, OrderHandle, PredicateHandle,
@@ -29,7 +31,7 @@ use type_bridge_orm::{
     ProjectedQueryOrigin, ProjectedQueryResult, ProjectedQuerySlotValue, ProjectedQueryValue,
     ProjectedReducedValue, ProjectedReductionGroup, ProjectedReductionRow, ProjectedThing,
     QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle, Reduction,
-    RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
+    RemoteModelQueryError, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
     SortDirection, ValidatedMatchRequest, Window, lower_execution_error,
     materialize_projected_query_result_with_budget, validate_field_group_count,
     validate_order_term_count, validate_reducer_count, validate_selection_count,
@@ -74,7 +76,7 @@ pub use proxy_connection::{
 #[cfg(test)]
 use proxy_connection::{
     type_bridge_proxy_connection_close, type_bridge_proxy_connection_open_v1,
-    type_bridge_proxy_query_execute_v1,
+    type_bridge_proxy_query_execute,
 };
 
 const DESCRIPTOR_VERSION: u32 = 1;
@@ -174,8 +176,8 @@ pub struct TypeBridgeQuerySelectionDescriptorV1 {
     pub kind: u32,
     pub distinct: u8,
     pub reserved0: [u8; 7],
-    pub orders: *const *const TypeBridgeQueryOrder,
-    pub order_count: usize,
+    pub sorts: *const *const TypeBridgeQueryOrder,
+    pub sort_count: usize,
     pub reserved: [u64; 4],
 }
 
@@ -243,8 +245,8 @@ pub struct TypeBridgeQueryTerminalDescriptorV1 {
     pub expected_root_model: *const TypeBridgeProjectedTokenV1,
     pub expected_root_mode: u32,
     pub reserved1: u32,
-    pub orders: *const *const TypeBridgeQueryOrder,
-    pub order_count: usize,
+    pub sorts: *const *const TypeBridgeQueryOrder,
+    pub sort_count: usize,
     pub offset: u64,
     pub limit: u64,
     pub include_total: u8,
@@ -262,11 +264,11 @@ pub struct TypeBridgeQueryTerminalDescriptorV1 {
 
 /// Version-1 common tightened direct and remote generated-query limits.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct TypeBridgeQueryExecutionLimitsV1 {
     pub struct_size: u32,
     pub version: u32,
-    pub timeout_milliseconds: u64,
+    pub timeout_milliseconds: i64,
     pub items: u64,
     pub bytes: u64,
     pub graph_nodes: u64,
@@ -274,7 +276,7 @@ pub struct TypeBridgeQueryExecutionLimitsV1 {
     pub collection_members: u64,
     pub role_players: u64,
     pub statements: u32,
-    pub reserved0: u32,
+    pub collect_phase_timestamps: u32,
     pub reserved: [u64; 4],
 }
 
@@ -512,12 +514,80 @@ pub struct TypeBridgeQueryResult {
 #[allow(clippy::large_enum_variant)]
 enum QueryResultStorage {
     Query(ProjectedQueryResult),
+    SharedQuery(Arc<StagedQueryResult>),
     ManagerRows {
         model: TypeId,
         rows: Vec<Arc<ProjectedThing>>,
     },
     ManagerCount(u64),
     ManagerExists(bool),
+}
+
+struct StagedQueryResult {
+    request: Arc<ValidatedMatchRequest>,
+    value: ProjectedQueryValue,
+}
+
+pub(crate) struct StagedQueryPending {
+    state: Arc<QuerySessionState>,
+    request: Arc<ValidatedMatchRequest>,
+    pending: type_bridge_orm::session::staged::Pending<type_bridge_orm::ValidatedMatchResult>,
+    origin: ProjectedQueryOrigin,
+    resources: QueryExecutionResourceLimits,
+    cancellation: type_bridge_orm::AnswerCancellation,
+    projected: std::sync::OnceLock<Arc<StagedQueryResult>>,
+}
+
+impl StagedQueryPending {
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        check_state_ranges(&self.state, preflight)?;
+        if let Some(value) = self.projected.get() {
+            check_query_value_ranges(&value.value, preflight)?;
+        }
+        Ok(())
+    }
+
+    fn result(
+        &self,
+        result: &type_bridge_orm::ValidatedMatchResult,
+    ) -> Result<TypeBridgeQueryResult, SdkExecutionDiagnostic> {
+        let deadline = QueryExecutionDeadline::for_limits(self.resources);
+        deadline.check(&self.cancellation)?;
+        let projected = self.materialize(result, deadline)?;
+        Ok(TypeBridgeQueryResult {
+            state: Arc::clone(&self.state),
+            storage: QueryResultStorage::SharedQuery(Arc::clone(projected)),
+        })
+    }
+
+    fn materialize(
+        &self,
+        result: &type_bridge_orm::ValidatedMatchResult,
+        deadline: QueryExecutionDeadline,
+    ) -> Result<&Arc<StagedQueryResult>, SdkExecutionDiagnostic> {
+        if self.projected.get().is_none() {
+            let (value, _) = self.origin.clone().materialize_borrowed_with_budget(
+                &self.state.package.installed_projection,
+                &self.state.registry,
+                &self.request,
+                result,
+                self.resources.projected(),
+                &self.cancellation,
+                Some(deadline),
+            )?;
+            let _ = self.projected.set(Arc::new(StagedQueryResult {
+                request: Arc::clone(&self.request),
+                value,
+            }));
+        }
+        Ok(self
+            .projected
+            .get()
+            .expect("successful query materialization"))
+    }
 }
 
 struct QueryRemoteContextState {
@@ -535,7 +605,7 @@ pub struct TypeBridgeQueryRemoteContext {
 pub struct TypeBridgeQueryRemotePending {
     state: Arc<QueryRemoteContextState>,
     terminal: TypeBridgeQueryTerminal,
-    pending: type_bridge_orm::PendingRemoteModelQueryV2,
+    pending: type_bridge_orm::PendingRemoteModelQuery,
     deadline: QueryExecutionDeadline,
     claim_consumed: AtomicBool,
 }
@@ -544,7 +614,7 @@ pub struct TypeBridgeQueryRemotePending {
 pub struct TypeBridgeQueryRemoteClaim {
     state: Arc<QueryRemoteContextState>,
     terminal: TypeBridgeQueryTerminal,
-    claimed: Mutex<Option<type_bridge_orm::ClaimedRemoteModelReplyV2>>,
+    claimed: Mutex<Option<type_bridge_orm::ClaimedRemoteModelReply>>,
     response_snapshot_limit: usize,
     deadline: QueryExecutionDeadline,
 }
@@ -611,10 +681,11 @@ fn lower(error: type_bridge_orm::OrmError) -> SdkExecutionDiagnostic {
     lower_execution_error(error, SdkProviderOperation::Read)
 }
 
-fn lower_remote(error: RemoteModelQueryV2Error) -> SdkExecutionDiagnostic {
+fn lower_remote(error: RemoteModelQueryError) -> SdkExecutionDiagnostic {
     match error {
-        RemoteModelQueryV2Error::Match(error) => type_bridge_orm::lower_match_error(&error),
-        RemoteModelQueryV2Error::Diagnostic(error) => {
+        RemoteModelQueryError::Match(error) => type_bridge_orm::lower_match_error(&error),
+        RemoteModelQueryError::Execution(error) => error,
+        RemoteModelQueryError::Diagnostic(error) => {
             type_bridge_orm::lower_remote_query_diagnostic(error)
         }
     }
@@ -766,6 +837,52 @@ impl TypeBridgeQueryRemoteClaim {
     }
 }
 
+fn check_query_value_ranges(
+    value: &ProjectedQueryValue,
+    preflight: &DirectOutputPreflight,
+) -> Result<(), TypeBridgeStatus> {
+    match value {
+        ProjectedQueryValue::Rows { rows } | ProjectedQueryValue::Page { entries: rows, .. } => {
+            for row in rows {
+                for slot in row.slots() {
+                    match slot.value() {
+                        ProjectedQuerySlotValue::One(value) => {
+                            check_projected_thing_ranges(value, preflight)?;
+                        }
+                        ProjectedQuerySlotValue::Many(values) => {
+                            for value in values {
+                                check_projected_thing_ranges(value, preflight)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ProjectedQueryValue::Reduction { rows, .. }
+        | ProjectedQueryValue::FieldReduction { rows, .. }
+        | ProjectedQueryValue::FieldTupleReduction { rows, .. } => {
+            for row in rows {
+                match row.group() {
+                    Some(ProjectedReductionGroup::Thing(value)) => {
+                        check_projected_thing_ranges(value, preflight)?;
+                    }
+                    Some(ProjectedReductionGroup::Field(value)) => {
+                        check_projected_attribute_value_ranges(value, preflight)?;
+                    }
+                    Some(ProjectedReductionGroup::Fields(values)) => {
+                        for value in values {
+                            check_projected_attribute_value_ranges(value, preflight)?;
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+        ProjectedQueryValue::Count { .. } | ProjectedQueryValue::Exists { .. } => {}
+    }
+    Ok(())
+}
+
 impl TypeBridgeQueryResult {
     pub(crate) fn check_borrowed_ranges(
         &self,
@@ -773,46 +890,10 @@ impl TypeBridgeQueryResult {
     ) -> Result<(), TypeBridgeStatus> {
         check_state_ranges(&self.state, preflight)?;
         match &self.storage {
-            QueryResultStorage::Query(value) => match value.value() {
-                ProjectedQueryValue::Rows { rows }
-                | ProjectedQueryValue::Page { entries: rows, .. } => {
-                    for row in rows {
-                        for slot in row.slots() {
-                            match slot.value() {
-                                ProjectedQuerySlotValue::One(value) => {
-                                    check_projected_thing_ranges(value, preflight)?;
-                                }
-                                ProjectedQuerySlotValue::Many(values) => {
-                                    for value in values {
-                                        check_projected_thing_ranges(value, preflight)?;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                ProjectedQueryValue::Reduction { rows, .. }
-                | ProjectedQueryValue::FieldReduction { rows, .. }
-                | ProjectedQueryValue::FieldTupleReduction { rows, .. } => {
-                    for row in rows {
-                        match row.group() {
-                            Some(ProjectedReductionGroup::Thing(value)) => {
-                                check_projected_thing_ranges(value, preflight)?;
-                            }
-                            Some(ProjectedReductionGroup::Field(value)) => {
-                                check_projected_attribute_value_ranges(value, preflight)?;
-                            }
-                            Some(ProjectedReductionGroup::Fields(values)) => {
-                                for value in values {
-                                    check_projected_attribute_value_ranges(value, preflight)?;
-                                }
-                            }
-                            None => {}
-                        }
-                    }
-                }
-                ProjectedQueryValue::Count { .. } | ProjectedQueryValue::Exists { .. } => {}
-            },
+            QueryResultStorage::Query(value) => check_query_value_ranges(value.value(), preflight)?,
+            QueryResultStorage::SharedQuery(value) => {
+                check_query_value_ranges(&value.value, preflight)?
+            }
             QueryResultStorage::ManagerRows { rows, .. } => {
                 for value in rows {
                     check_projected_thing_ranges(value, preflight)?;
@@ -931,8 +1012,8 @@ fn write_handle<T>(
 }
 
 fn query_result_kind(storage: &QueryResultStorage) -> u32 {
-    match storage {
-        QueryResultStorage::Query(value) => match value.value() {
+    if let Some(value) = query_result_value(storage) {
+        return match value {
             ProjectedQueryValue::Rows { .. } => RESULT_ROWS,
             ProjectedQueryValue::Page { .. } => RESULT_PAGE,
             ProjectedQueryValue::Count { .. } => RESULT_COUNT,
@@ -940,7 +1021,12 @@ fn query_result_kind(storage: &QueryResultStorage) -> u32 {
             ProjectedQueryValue::FieldReduction { .. } => RESULT_FIELD_REDUCTION,
             ProjectedQueryValue::FieldTupleReduction { .. } => RESULT_FIELD_TUPLE_REDUCTION,
             ProjectedQueryValue::Exists { .. } => RESULT_EXISTS,
-        },
+        };
+    }
+    match storage {
+        QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
+            unreachable!("query kind returned above")
+        }
         QueryResultStorage::ManagerRows { .. } => RESULT_ROWS,
         QueryResultStorage::ManagerCount(_) => RESULT_COUNT,
         QueryResultStorage::ManagerExists(_) => RESULT_EXISTS,
@@ -950,6 +1036,7 @@ fn query_result_kind(storage: &QueryResultStorage) -> u32 {
 fn query_result_value(storage: &QueryResultStorage) -> Option<&ProjectedQueryValue> {
     match storage {
         QueryResultStorage::Query(value) => Some(value.value()),
+        QueryResultStorage::SharedQuery(value) => Some(&value.value),
         QueryResultStorage::ManagerRows { .. }
         | QueryResultStorage::ManagerCount(_)
         | QueryResultStorage::ManagerExists(_) => None,
@@ -977,7 +1064,7 @@ pub unsafe extern "C" fn type_bridge_query_session_open(
 ) -> TypeBridgeStatus {
     // SAFETY: the caller contract is forwarded unchanged with no overrides.
     unsafe {
-        type_bridge_query_session_open_with_limits_v1(
+        type_bridge_query_session_open_with_limits(
             package,
             ptr::null(),
             0,
@@ -995,7 +1082,7 @@ pub unsafe extern "C" fn type_bridge_query_session_open(
 /// admits the values: an unknown name, a repeated name, or an unsupported
 /// value returns `TYPE_BRIDGE_STATUS_INVALID_ARGUMENT` and opens nothing.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_session_open_with_limits_v1(
+pub unsafe extern "C" fn type_bridge_query_session_open_with_limits(
     package: *const TypeBridgeSchemaPackage,
     overrides: *const TypeBridgeQueryLimitOverrideV1,
     override_count: usize,
@@ -1056,7 +1143,7 @@ pub unsafe extern "C" fn type_bridge_query_session_open_with_limits_v1(
 /// # Safety
 /// `overrides` must be NULL with a zero count, or point to `count` readable
 /// entries whose `name` ranges are readable for `name_length` bytes.
-unsafe fn query_limits_from_overrides(
+pub(crate) unsafe fn query_limits_from_overrides(
     overrides: *const TypeBridgeQueryLimitOverrideV1,
     count: usize,
 ) -> Option<QueryLimits> {
@@ -1067,10 +1154,10 @@ unsafe fn query_limits_from_overrides(
     if overrides.is_null() || count > QueryLimits::FIELDS.len() {
         return None;
     }
-    // SAFETY: the caller guarantees `count` readable entries.
-    let entries = unsafe { std::slice::from_raw_parts(overrides, count) };
     let mut named = Vec::with_capacity(count);
-    for entry in entries {
+    for index in 0..count {
+        // SAFETY: the caller guarantees the array range; descriptors may be unaligned.
+        let entry = unsafe { overrides.add(index).read_unaligned() };
         if entry.name.is_null() {
             return None;
         }
@@ -1085,6 +1172,62 @@ unsafe fn query_limits_from_overrides(
     QueryLimits::from_overrides(named).ok()
 }
 
+/// Fence named limit overrides before any caller output is initialized.
+/// # Safety
+/// Each nonempty array/name is readable for its declared range.
+pub(crate) unsafe fn check_query_limit_override_ranges(
+    outputs: &DirectOutputPreflight,
+    overrides: *const TypeBridgeQueryLimitOverrideV1,
+    count: usize,
+) -> Result<(), TypeBridgeStatus> {
+    if count > QueryLimits::FIELDS.len() {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
+    let bytes = count
+        .checked_mul(size_of::<TypeBridgeQueryLimitOverrideV1>())
+        .ok_or(TypeBridgeStatus::InvalidArgument)?;
+    if bytes != 0 {
+        if overrides.is_null() {
+            return Err(TypeBridgeStatus::InvalidArgument);
+        }
+        outputs.check_bytes(overrides.cast(), bytes)?;
+    }
+    for index in 0..count {
+        // SAFETY: the array was fenced and is caller-readable.
+        let entry = unsafe { overrides.add(index).read_unaligned() };
+        if entry.name.is_null()
+            || entry.name_length > type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES
+        {
+            return Err(TypeBridgeStatus::InvalidArgument);
+        }
+        outputs.check_bytes(entry.name.cast(), entry.name_length)?;
+    }
+    Ok(())
+}
+
+/// Capture a validated optional connection policy without changing default paths.
+/// # Safety
+/// The named override graph has passed output-alias preflight and is readable.
+pub(crate) unsafe fn connection_query_limits(
+    overrides: *const TypeBridgeQueryLimitOverrideV1,
+    count: usize,
+) -> Result<Option<QueryLimits>, SdkExecutionDiagnostic> {
+    if count == 0 {
+        return Ok(None);
+    }
+    // SAFETY: the caller fenced every borrowed input range.
+    unsafe { query_limits_from_overrides(overrides, count) }
+        .and_then(|limits| limits.validate_plan().ok())
+        .map(Some)
+        .ok_or_else(|| {
+            SdkExecutionDiagnostic::invalid_input(
+                SdkDiagnosticCode::new("c_query_limits_invalid").expect("static code"),
+                SdkDiagnosticMessage::new("Named connection query limits are invalid")
+                    .expect("static message"),
+            )
+        })
+}
+
 /// Close an immutable query-construction session handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_query_session_close(
@@ -1096,7 +1239,7 @@ pub unsafe extern "C" fn type_bridge_query_session_close(
 
 /// Open one fresh exact or subtype-inclusive model binding.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_binding_open_v1(
+pub unsafe extern "C" fn type_bridge_query_binding_open(
     session: *const TypeBridgeQuerySession,
     model: *const TypeBridgeProjectedTokenV1,
     mode: u32,
@@ -1499,7 +1642,7 @@ fn function_argument_graph_layout(value: TypeBridgeQueryFunctionArgumentsGraphV1
 
 /// Construct one immutable, signature-checked scalar schema-function call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_function_call_open_v1(
+pub unsafe extern "C" fn type_bridge_query_function_call_open(
     function: *const TypeBridgeQueryFunction,
     expected_function: *const TypeBridgeProjectedTokenV1,
     arguments: *const TypeBridgeQueryFunctionArgumentsGraphV1,
@@ -2009,29 +2152,11 @@ pub unsafe extern "C" fn type_bridge_query_field_compare_function(
     })
 }
 
-unsafe fn copied_iid(view: TypeBridgeByteView) -> Result<String, SdkExecutionDiagnostic> {
-    if view.length == 0 || view.length > 258 || view.data.is_null() {
-        return Err(invalid(
-            "c_query_iid_view_invalid",
-            "A typed-query IID must be one nonempty bounded canonical byte view",
-        ));
-    }
-    // SAFETY: full bounded storage was checked by the caller before this snapshot.
-    let bytes = unsafe { std::slice::from_raw_parts(view.data, view.length) };
-    let value = std::str::from_utf8(bytes).map_err(|_| {
-        invalid(
-            "c_query_iid_utf8_invalid",
-            "A typed-query IID must be canonical UTF-8 identity text",
-        )
-    })?;
-    Ok(value.to_owned())
-}
-
 unsafe fn binding_iid_impl(
     binding: *const TypeBridgeQueryBinding,
     expected_model: *const TypeBridgeProjectedTokenV1,
     expected_mode: u32,
-    iids: *const TypeBridgeByteView,
+    iids: *const *const TypeBridgeIid,
     iid_count: usize,
     out_predicate: *mut *mut TypeBridgeQueryPredicate,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -2062,7 +2187,7 @@ unsafe fn binding_iid_impl(
         }
         return return_execution_error(layout_invalid(), out_diagnostics);
     }
-    let table_bytes = match iid_count.checked_mul(size_of::<TypeBridgeByteView>()) {
+    let table_bytes = match iid_count.checked_mul(size_of::<*const TypeBridgeIid>()) {
         Some(value) => value,
         None => return TypeBridgeStatus::ResourceLimit,
     };
@@ -2070,11 +2195,9 @@ unsafe fn binding_iid_impl(
         return status;
     }
     for index in 0..iid_count {
-        // SAFETY: complete bounded view storage was checked immediately above.
-        let view = unsafe { iids.add(index).read_unaligned() };
-        if view.length != 0
-            && let Err(status) = preflight.check_bytes(view.data.cast(), view.length)
-        {
+        // SAFETY: complete bounded pointer storage was checked immediately above.
+        let iid = unsafe { iids.add(index).read_unaligned() };
+        if let Err(status) = unsafe { preflight_handle(&preflight, iid) } {
             return status;
         }
     }
@@ -2099,13 +2222,13 @@ unsafe fn binding_iid_impl(
             return return_execution_error(allocation_exhausted(), out_diagnostics);
         }
         for index in 0..iid_count {
-            // SAFETY: complete view storage and its bytes were checked before output writes.
-            let view = unsafe { iids.add(index).read_unaligned() };
-            // SAFETY: this view's complete bytes remain readable for the call.
-            match unsafe { copied_iid(view) } {
-                Ok(value) => copied.push(value),
-                Err(error) => return return_execution_error(error, out_diagnostics),
+            // SAFETY: complete pointer storage and IID owners were checked before output writes.
+            let iid = unsafe { iids.add(index).read_unaligned() };
+            if iid.is_null() {
+                return TypeBridgeStatus::InvalidArgument;
             }
+            // SAFETY: the complete immutable IID was fenced before output writes.
+            copied.push(unsafe { &*iid }.as_str().to_owned());
         }
         let handle = if copied.len() == 1 {
             binding.handle.iid(copied.pop().expect("one IID remains"))
@@ -2130,15 +2253,15 @@ unsafe fn binding_iid_impl(
 
 /// Construct one generated-model-fenced IID predicate.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_binding_iid_v1(
+pub unsafe extern "C" fn type_bridge_query_binding_iid(
     binding: *const TypeBridgeQueryBinding,
     expected_model: *const TypeBridgeProjectedTokenV1,
     expected_mode: u32,
-    iid: TypeBridgeByteView,
+    iid: *const TypeBridgeIid,
     out_predicate: *mut *mut TypeBridgeQueryPredicate,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    // SAFETY: the shared implementation snapshots exactly one bounded view.
+    // SAFETY: the shared implementation snapshots exactly one validated IID.
     unsafe {
         binding_iid_impl(
             binding,
@@ -2154,16 +2277,16 @@ pub unsafe extern "C" fn type_bridge_query_binding_iid_v1(
 
 /// Construct one generated-model-fenced bounded IID-set predicate.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_binding_iid_in_v1(
+pub unsafe extern "C" fn type_bridge_query_binding_iid_in(
     binding: *const TypeBridgeQueryBinding,
     expected_model: *const TypeBridgeProjectedTokenV1,
     expected_mode: u32,
-    iids: *const TypeBridgeByteView,
+    iids: *const *const TypeBridgeIid,
     iid_count: usize,
     out_predicate: *mut *mut TypeBridgeQueryPredicate,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
-    // SAFETY: the shared implementation checks and snapshots the bounded view table.
+    // SAFETY: the shared implementation checks and snapshots the bounded IID pointer table.
     unsafe {
         binding_iid_impl(
             binding,
@@ -2384,7 +2507,7 @@ pub unsafe extern "C" fn type_bridge_query_field_presence(
 
 /// Construct one exact generated role-player edge predicate.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_role_connects(
+pub unsafe extern "C" fn type_bridge_query_role_links(
     role: *const TypeBridgeQueryRole,
     expected_role: *const TypeBridgeProjectedTokenV1,
     player: *const TypeBridgeQueryBinding,
@@ -2703,7 +2826,7 @@ pub unsafe extern "C" fn type_bridge_query_predicate_close(
 
 /// Open one immutable exact-field stable order term.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_order_open_v1(
+pub unsafe extern "C" fn type_bridge_query_order_open(
     descriptor: *const TypeBridgeQueryOrderDescriptorV1,
     out_order: *mut *mut TypeBridgeQueryOrder,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -2828,7 +2951,7 @@ unsafe fn snapshot_orders(
 
 /// Open one singular or collection selected output slot.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_selection_open_v1(
+pub unsafe extern "C" fn type_bridge_query_selection_open(
     descriptor: *const TypeBridgeQuerySelectionDescriptorV1,
     out_selection: *mut *mut TypeBridgeQuerySelection,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -2856,11 +2979,11 @@ pub unsafe extern "C" fn type_bridge_query_selection_open_v1(
             && matches!(value.kind, SELECTION_ONE | SELECTION_COLLECT)
             && value.distinct <= 1
             && collection_pointer_is_canonical(
-                value.orders,
-                value.order_count,
+                value.sorts,
+                value.sort_count,
                 COLLECTION_ORDER_TERM_MAX,
             )
-            && (value.kind != SELECTION_ONE || (value.distinct == 0 && value.order_count == 0))
+            && (value.kind != SELECTION_ONE || (value.distinct == 0 && value.sort_count == 0))
     });
     if layout_active {
         let value = snapshot.expect("checked as present");
@@ -2873,10 +2996,10 @@ pub unsafe extern "C" fn type_bridge_query_selection_open_v1(
                 return status;
             }
         }
-        if value.order_count != 0 {
+        if value.sort_count != 0 {
             // SAFETY: pointer/count canonicality and hard ceiling were checked above.
             if let Err(status) =
-                unsafe { preflight.check_pointer_array(value.orders, value.order_count) }
+                unsafe { preflight.check_pointer_array(value.sorts, value.sort_count) }
             {
                 return status;
             }
@@ -2887,9 +3010,9 @@ pub unsafe extern "C" fn type_bridge_query_selection_open_v1(
         {
             return status;
         }
-        for index in 0..value.order_count {
+        for index in 0..value.sort_count {
             // SAFETY: the complete bounded pointer table was checked above.
-            let pointer = unsafe { value.orders.add(index).read_unaligned() };
+            let pointer = unsafe { value.sorts.add(index).read_unaligned() };
             if !pointer.is_null()
                 // SAFETY: caller retains every immutable order handle.
                 && let Err(status) = unsafe { &*pointer }.check_borrowed_ranges(&preflight)
@@ -2927,7 +3050,7 @@ pub unsafe extern "C" fn type_bridge_query_selection_open_v1(
         };
         // SAFETY: the pointer table was completely checked and remains immutable.
         let orders = match unsafe {
-            snapshot_orders(&binding.state, descriptor.orders, descriptor.order_count)
+            snapshot_orders(&binding.state, descriptor.sorts, descriptor.sort_count)
         } {
             Ok(value) => value,
             Err(error) => return return_execution_error(error, out_diagnostics),
@@ -2964,7 +3087,7 @@ pub unsafe extern "C" fn type_bridge_query_selection_close(
 
 /// Open one immutable positional or declaration-checked named query lineage.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_open_v1(
+pub unsafe extern "C" fn type_bridge_query_open(
     session: *const TypeBridgeQuerySession,
     descriptor: *const TypeBridgeQueryDescriptorV1,
     out_query: *mut *mut TypeBridgeQuery,
@@ -3206,7 +3329,7 @@ unsafe fn preflight_query_transition<T>(
 
 /// Add one generated-model-fenced hidden binding to an immutable query lineage.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_add_hidden(
+pub unsafe extern "C" fn type_bridge_query_match(
     query: *const TypeBridgeQuery,
     binding: *const TypeBridgeQueryBinding,
     expected_model: *const TypeBridgeProjectedTokenV1,
@@ -3429,8 +3552,8 @@ fn manager_terminal_marker(
         || value.root.is_null()
         || value.expected_root_model.is_null()
         || value.expected_root_mode != MATCH_EXACT
-        || !value.orders.is_null()
-        || value.order_count != 0
+        || !value.sorts.is_null()
+        || value.sort_count != 0
         || value.offset != 0
         || value.limit != 0
         || value.include_total != 0
@@ -3513,12 +3636,12 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
         return false;
     }
     if !matches!(value.kind, TERMINAL_ROWS | TERMINAL_FIRST | TERMINAL_PAGE)
-        && (!value.orders.is_null() || value.order_count != 0)
+        && (!value.sorts.is_null() || value.sort_count != 0)
     {
         return false;
     }
     if matches!(value.kind, TERMINAL_ROWS | TERMINAL_FIRST | TERMINAL_PAGE)
-        && !collection_pointer_is_canonical(value.orders, value.order_count, usize::MAX)
+        && !collection_pointer_is_canonical(value.sorts, value.sort_count, usize::MAX)
     {
         return false;
     }
@@ -3612,7 +3735,7 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
 /// Whether a terminal table is longer than the core's absolute ceiling, so it
 /// is not read and the core's refusal is returned instead.
 fn terminal_table_over_ceiling(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
-    value.order_count > ORDER_TERM_MAX
+    value.sort_count > ORDER_TERM_MAX
         || value.group_field_count > SELECTED_SLOT_MAX
         || value.reducer_count > SELECTED_SLOT_MAX
 }
@@ -3622,7 +3745,7 @@ fn terminal_ceiling_refusal(
     limits: StructuralLimits,
     value: &TypeBridgeQueryTerminalDescriptorV1,
 ) -> SdkExecutionDiagnostic {
-    validate_order_term_count(value.order_count, limits)
+    validate_order_term_count(value.sort_count, limits)
         .and_then(|()| validate_field_group_count(limits, value.group_field_count))
         .and_then(|()| validate_reducer_count(limits, value.reducer_count))
         .err()
@@ -3680,12 +3803,12 @@ unsafe fn terminal_active_preflight(
         // SAFETY: caller retains the active immutable group binding.
         unsafe { &*value.group_binding }.check_borrowed_ranges(preflight)?;
     }
-    if tables_readable && value.order_count != 0 {
+    if tables_readable && value.sort_count != 0 {
         // SAFETY: lane validation bounded the canonical active pointer table.
-        unsafe { preflight.check_pointer_array(value.orders, value.order_count) }?;
-        for index in 0..value.order_count {
+        unsafe { preflight.check_pointer_array(value.sorts, value.sort_count) }?;
+        for index in 0..value.sort_count {
             // SAFETY: the complete bounded pointer table was checked above.
-            let pointer = unsafe { value.orders.add(index).read_unaligned() };
+            let pointer = unsafe { value.sorts.add(index).read_unaligned() };
             if !pointer.is_null() {
                 // SAFETY: caller retains every active immutable order handle.
                 unsafe { &*pointer }.check_borrowed_ranges(preflight)?;
@@ -3788,7 +3911,7 @@ unsafe fn reducer_specs(
 
 /// Open one immutable reusable terminal plan.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_terminal_open_v1(
+pub unsafe extern "C" fn type_bridge_query_terminal_open(
     query: *const TypeBridgeQuery,
     descriptor: *const TypeBridgeQueryTerminalDescriptorV1,
     out_terminal: *mut *mut TypeBridgeQueryTerminal,
@@ -3853,13 +3976,12 @@ pub unsafe extern "C" fn type_bridge_query_terminal_open_v1(
         if manager_operation.is_some() && !manager_terminal_package_allowed(&query.state.package) {
             return return_execution_error(layout_invalid(), out_diagnostics);
         }
-        let orders = if descriptor.order_count == 0 {
+        let orders = if descriptor.sort_count == 0 {
             Vec::new()
         } else {
             // SAFETY: active bounded pointer table and pointees were completely preflighted.
-            match unsafe {
-                snapshot_orders(&query.state, descriptor.orders, descriptor.order_count)
-            } {
+            match unsafe { snapshot_orders(&query.state, descriptor.sorts, descriptor.sort_count) }
+            {
                 Ok(value) => value,
                 Err(error) => return return_execution_error(error, out_diagnostics),
             }
@@ -4144,13 +4266,13 @@ fn check_read_transaction_query_borrowed_ranges(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn execute_preflight<T>(
+unsafe fn execute_preflight<T, Output>(
     target: *const T,
     target_borrowed_ranges: impl FnOnce(&DirectOutputPreflight, &T) -> Result<(), TypeBridgeStatus>,
     terminal: *const TypeBridgeQueryTerminal,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
-    out_result: *mut *mut TypeBridgeQueryResult,
+    out_result: *mut *mut Output,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<ExecuteInvocationPreflight, TypeBridgeStatus> {
     let preflight = preflight_outputs(out_result, out_diagnostics)?;
@@ -4242,9 +4364,13 @@ fn materialize_result(
 fn lower_target(error: type_bridge_orm::QueryTargetError) -> SdkExecutionDiagnostic {
     match error {
         type_bridge_orm::QueryTargetError::Direct(error) => lower(error),
+        type_bridge_orm::QueryTargetError::Commit(error) => error.diagnostic(),
         type_bridge_orm::QueryTargetError::Prepare(error)
         | type_bridge_orm::QueryTargetError::Reply(error) => lower_remote(error),
         type_bridge_orm::QueryTargetError::Interrupted(error) => error,
+        error @ type_bridge_orm::QueryTargetError::Callback(_) => {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        }
     }
 }
 
@@ -4285,9 +4411,9 @@ pub(crate) async fn execute_validated_on_target(
     )
 }
 
-async fn execute_manager_database(
+async fn execute_manager_on_target(
     terminal: &TypeBridgeQueryTerminal,
-    database: &TypeBridgeDatabase,
+    target: type_bridge_orm::QueryTarget<'_>,
     operation: ManagerTerminalKind,
     filter: &ProjectedManagerFilter,
     resources: QueryExecutionResourceLimits,
@@ -4302,71 +4428,46 @@ async fn execute_manager_database(
         ManagerTerminalKind::All => QueryResultStorage::ManagerRows {
             model,
             rows: executor
-                .all_with_control(database.orm_database(), filter, control)
-                .await?,
+                .all_on_target(target, filter, control)
+                .await
+                .map_err(|error| {
+                    error.into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                    )
+                })?,
         },
         ManagerTerminalKind::First => QueryResultStorage::ManagerRows {
             model,
             rows: executor
-                .first_with_control(database.orm_database(), filter, control)
-                .await?
+                .first_on_target(target, filter, control)
+                .await
+                .map_err(|error| {
+                    error.into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                    )
+                })?
                 .into_iter()
                 .collect(),
         },
         ManagerTerminalKind::Count => QueryResultStorage::ManagerCount(
             executor
-                .count_with_control(database.orm_database(), filter, control)
-                .await?,
+                .count_on_target(target, filter, control)
+                .await
+                .map_err(|error| {
+                    error.into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                    )
+                })?,
         ),
         ManagerTerminalKind::Exists => QueryResultStorage::ManagerExists(
             executor
-                .exists_with_control(database.orm_database(), filter, control)
-                .await?,
-        ),
-    };
-    Ok(TypeBridgeQueryResult {
-        state: Arc::clone(&terminal.state),
-        storage,
-    })
-}
-
-async fn execute_manager_read_transaction(
-    terminal: &TypeBridgeQueryTerminal,
-    context: &type_bridge_orm::TransactionContext,
-    operation: ManagerTerminalKind,
-    filter: &ProjectedManagerFilter,
-    resources: QueryExecutionResourceLimits,
-    deadline: QueryExecutionDeadline,
-    answer: type_bridge_orm::AnswerCancellation,
-) -> Result<TypeBridgeQueryResult, SdkExecutionDiagnostic> {
-    let executor =
-        ProjectedManagerFilterExecutor::new(&terminal.state.package.installed_projection);
-    let control = ProjectedManagerFilterInvocationControl::from_parts(resources, deadline, answer);
-    let model = filter.model().clone();
-    let storage = match operation {
-        ManagerTerminalKind::All => QueryResultStorage::ManagerRows {
-            model,
-            rows: executor
-                .all_in_read_transaction_with_control(context, filter, control)
-                .await?,
-        },
-        ManagerTerminalKind::First => QueryResultStorage::ManagerRows {
-            model,
-            rows: executor
-                .first_in_read_transaction_with_control(context, filter, control)
-                .await?
-                .into_iter()
-                .collect(),
-        },
-        ManagerTerminalKind::Count => QueryResultStorage::ManagerCount(
-            executor
-                .count_in_read_transaction_with_control(context, filter, control)
-                .await?,
-        ),
-        ManagerTerminalKind::Exists => QueryResultStorage::ManagerExists(
-            executor
-                .exists_in_read_transaction_with_control(context, filter, control)
-                .await?,
+                .exists_on_target(target, filter, control)
+                .await
+                .map_err(|error| {
+                    error.into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                    )
+                })?,
         ),
     };
     Ok(TypeBridgeQueryResult {
@@ -4441,7 +4542,7 @@ fn remote_response_limit() -> SdkExecutionDiagnostic {
 fn manager_remote_unsupported() -> SdkExecutionDiagnostic {
     invalid(
         "c_query_manager_terminal_remote_unsupported",
-        "Generated manager terminals support database and borrowed read-transaction execution only",
+        "Generated manager terminals require database, borrowed read or proxy connection execution",
     )
 }
 
@@ -4506,7 +4607,7 @@ fn remote_authority(
 
 fn take_remote_claim(
     claim: &TypeBridgeQueryRemoteClaim,
-) -> Result<type_bridge_orm::ClaimedRemoteModelReplyV2, SdkExecutionDiagnostic> {
+) -> Result<type_bridge_orm::ClaimedRemoteModelReply, SdkExecutionDiagnostic> {
     claim
         .claimed
         .lock()
@@ -4515,9 +4616,172 @@ fn take_remote_claim(
         .ok_or_else(remote_claim_consumed)
 }
 
+/// Stage one typed query with execute's nominal, resource and cancellation fences.
+/// No provider transaction opens until commit. Manager terminals are unsupported.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_staged_query_stage(
+    transaction: *mut crate::staged::TypeBridgeStagedTransaction,
+    terminal: *const TypeBridgeQueryTerminal,
+    expected_terminal_kind: u32,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_pending: *mut *mut crate::staged::TypeBridgePending,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let _entry = crate::perf_stages::entry().entered();
+    // SAFETY: execute preflight fences every input, including the retained transaction owner.
+    let invocation = match unsafe {
+        execute_preflight(
+            transaction,
+            |outputs, transaction| crate::staged::check_transaction(outputs, transaction),
+            terminal,
+            limits,
+            cancellation,
+            out_pending,
+            out_diagnostics,
+        )
+    } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let ExecuteInvocationPreflight {
+        outputs: _preflight,
+        answer,
+        parsed,
+    } = invocation;
+    // SAFETY: output slots were fenced against all active input storage.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_pending, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if transaction.is_null() || terminal.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: callers retain these complete handles and exclusively drive the transaction.
+        let (transaction, terminal) = unsafe { (&mut *transaction, &*terminal) };
+        let parsed = match parsed {
+            Ok(value) => value,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
+        if let Err(error) = parsed.deadline.check(&answer) {
+            return return_execution_error(error, out_diagnostics);
+        }
+        if terminal.kind != expected_terminal_kind {
+            return return_execution_error(nominal_mismatch(), out_diagnostics);
+        }
+        if !Arc::ptr_eq(transaction.package_state(), &terminal.state.package) {
+            return return_execution_error(package_mismatch(), out_diagnostics);
+        }
+        if matches!(terminal.spec, TerminalSpec::Manager { .. }) {
+            return return_execution_error(
+                SdkExecutionDiagnostic::unsupported_capability(
+                    code("c_query_manager_staged_unsupported"),
+                    message("Generated manager terminals do not accept a staged transaction"),
+                ),
+                out_diagnostics,
+            );
+        }
+        let request = match validate_terminal(&terminal.query, &terminal.spec) {
+            Ok(value) => Arc::new(value),
+            Err(error) => return return_execution_error(lower(error), out_diagnostics),
+        };
+        let reservation = match ReservedBox::try_new(AllocationSite::QueryStagedPendingHandle) {
+            Ok(value) => value,
+            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+        };
+        let (pending, origin) = match transaction.stage_query(
+            &terminal.state.registry,
+            Arc::clone(&request),
+            type_bridge_orm::MatchExecutionLimits::from_policy(parsed.resources, answer.clone()),
+        ) {
+            Ok(value) => value,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
+        let state = crate::staged_answers::PendingState::query(StagedQueryPending {
+            state: Arc::clone(&terminal.state),
+            request,
+            pending,
+            origin,
+            resources: parsed.resources,
+            cancellation: answer,
+            projected: std::sync::OnceLock::new(),
+        });
+        let handle = reservation.initialize(crate::staged::TypeBridgePending {
+            tag: crate::staged_answers::QUERY_PENDING_TAG,
+            state: Arc::new(state),
+        });
+        // SAFETY: initialized output is disjoint and writable.
+        unsafe { out_pending.write_unaligned(Box::into_raw(handle)) };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Publish a typed query result after commit; IN_USE means it has not committed.
+/// The result retains its proof independently of the pending and authoring handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_pending_query_result(
+    pending: *const crate::staged::TypeBridgePending,
+    out_result: *mut *mut TypeBridgeQueryResult,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let _entry = crate::perf_stages::entry().entered();
+    let preflight = match preflight_outputs(out_result, out_diagnostics) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    // SAFETY: live cursor tags select complete layouts and fence all retained bytes before writes.
+    let tag = match unsafe {
+        crate::staged_answers::check_cursor_ranges(
+            &preflight,
+            pending.cast(),
+            size_of::<crate::staged::TypeBridgePending>(),
+        )
+    } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    // SAFETY: no output overlaps another output, cursor, package, or cached projection.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_result, out_diagnostics) } {
+        return status;
+    }
+    if tag != Some(crate::staged_answers::QUERY_PENDING_TAG) {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    guarded(|| {
+        // SAFETY: the tag identifies a retained, live pending handle.
+        let pending = unsafe { &*pending };
+        let crate::staged_answers::PendingSource::Query(query) = &pending.state.pending else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        let result = match query.pending.get() {
+            Ok(value) => value,
+            Err(type_bridge_orm::session::staged::PendingError::NotCommitted) => {
+                return TypeBridgeStatus::InUse;
+            }
+            Err(error) => {
+                return return_execution_error(
+                    crate::staged::pending_diagnostic(&error),
+                    out_diagnostics,
+                );
+            }
+        };
+        let reservation = match ReservedBox::try_new(AllocationSite::QueryResultHandle) {
+            Ok(value) => value,
+            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+        };
+        let value = match query.result(&result) {
+            Ok(value) => value,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
+        // SAFETY: the output was initialized after full borrowed-range preflight.
+        unsafe { out_result.write_unaligned(Box::into_raw(reservation.initialize(value))) };
+        TypeBridgeStatus::Ok
+    })
+}
+
 /// Execute one reusable terminal through a database-owned read transaction.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
+pub unsafe extern "C" fn type_bridge_database_query_execute(
     database: *const TypeBridgeDatabase,
     terminal: *const TypeBridgeQueryTerminal,
     expected_terminal_kind: u32,
@@ -4580,9 +4844,9 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
                     }
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    database.block_on(execute_manager_database(
+                    database.block_on(execute_manager_on_target(
                         terminal,
-                        database,
+                        type_bridge_orm::QueryTarget::Database(database.orm_database()),
                         *operation,
                         filter,
                         parsed.resources,
@@ -4649,7 +4913,7 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
 
 /// Execute one reusable terminal through a caller-owned borrowed read transaction.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
+pub unsafe extern "C" fn type_bridge_read_transaction_query_execute(
     transaction: *const TypeBridgeReadTransaction,
     terminal: *const TypeBridgeQueryTerminal,
     expected_terminal_kind: u32,
@@ -4718,9 +4982,9 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
                     }
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    transaction.block_on(execute_manager_read_transaction(
+                    transaction.block_on(execute_manager_on_target(
                         terminal,
-                        context,
+                        type_bridge_orm::QueryTarget::Transaction(context),
                         *operation,
                         filter,
                         parsed.resources,
@@ -4780,7 +5044,7 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
 
 /// Open one managed caller-transport remote query context.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_remote_context_open_v1(
+pub unsafe extern "C" fn type_bridge_query_remote_context_open(
     package: *const TypeBridgeSchemaPackage,
     advertisement: TypeBridgeByteView,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
@@ -4875,7 +5139,7 @@ pub unsafe extern "C" fn type_bridge_query_remote_context_close(
 
 /// Prepare one fresh authenticated remote request from a reusable terminal.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_remote_prepare_v1(
+pub unsafe extern "C" fn type_bridge_query_remote_prepare(
     context: *const TypeBridgeQueryRemoteContext,
     terminal: *const TypeBridgeQueryTerminal,
     expected_terminal_kind: u32,
@@ -5103,7 +5367,7 @@ pub unsafe extern "C" fn type_bridge_query_remote_pending_claim(
             return return_execution_error(error, out_diagnostics);
         }
         let response_snapshot_limit = claimed.response_snapshot_limit();
-        debug_assert_eq!(response_snapshot_limit, REMOTE_RESPONSE_SNAPSHOT_LIMIT);
+        debug_assert_eq!(response_snapshot_limit, MAX_REMOTE_ENVELOPE_BYTES);
         let claim = reservation.initialize(TypeBridgeQueryRemoteClaim {
             state: Arc::clone(&pending.state),
             terminal: pending.terminal.clone(),
@@ -5167,7 +5431,7 @@ pub unsafe extern "C" fn type_bridge_query_remote_pending_response_snapshot_limi
 
 /// Snapshot, authenticate, decode, and materialize one claimed remote reply.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_remote_claim_decode_v1(
+pub unsafe extern "C" fn type_bridge_query_remote_claim_decode(
     claim: *const TypeBridgeQueryRemoteClaim,
     expected_terminal_kind: u32,
     cancellation: *const TypeBridgeCancellation,
@@ -5402,9 +5666,11 @@ pub unsafe extern "C" fn type_bridge_query_result_row_count(
             return return_execution_error(result_mismatch(), out_diagnostics);
         }
         let count = match &result.storage {
-            QueryResultStorage::Query(value) => rows(value.value())
-                .expect("kind checked as row result")
-                .len(),
+            QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
+                rows(query_result_value(&result.storage).expect("query storage"))
+                    .expect("kind checked as row result")
+                    .len()
+            }
             QueryResultStorage::ManagerRows { rows, .. } => rows.len(),
             QueryResultStorage::ManagerCount(_) | QueryResultStorage::ManagerExists(_) => {
                 unreachable!("result kind checked as rows")
@@ -5442,8 +5708,8 @@ unsafe fn checked_row_slot(
         return Err(layout_invalid());
     };
     match &result.storage {
-        QueryResultStorage::Query(value) => {
-            let row = rows(value.value())
+        QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
+            let row = rows(query_result_value(&result.storage).expect("query storage"))
                 .and_then(|rows| rows.get(row_index))
                 .ok_or_else(result_index_invalid)?;
             let slot = row
@@ -5644,7 +5910,7 @@ pub unsafe extern "C" fn type_bridge_query_result_row_slot_thing_at(
 
 /// Return page window and optional same-snapshot total metadata.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_result_page_metadata_v1(
+pub unsafe extern "C" fn type_bridge_query_result_page_metadata(
     result: *const TypeBridgeQueryResult,
     out_metadata: *mut TypeBridgeQueryPageMetadataV1,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
@@ -5717,8 +5983,10 @@ pub unsafe extern "C" fn type_bridge_query_result_count(
         // SAFETY: caller retains the immutable result.
         let result = unsafe { &*result };
         let value = match &result.storage {
-            QueryResultStorage::Query(value) => {
-                let ProjectedQueryValue::Count { value, .. } = value.value() else {
+            QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
+                let ProjectedQueryValue::Count { value, .. } =
+                    query_result_value(&result.storage).expect("query storage")
+                else {
                     return return_execution_error(result_mismatch(), out_diagnostics);
                 };
                 *value
@@ -5754,8 +6022,10 @@ pub unsafe extern "C" fn type_bridge_query_result_exists(
         // SAFETY: caller retains the immutable result.
         let result = unsafe { &*result };
         let value = match &result.storage {
-            QueryResultStorage::Query(value) => {
-                let ProjectedQueryValue::Exists { value, .. } = value.value() else {
+            QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
+                let ProjectedQueryValue::Exists { value, .. } =
+                    query_result_value(&result.storage).expect("query storage")
+                else {
                     return return_execution_error(result_mismatch(), out_diagnostics);
                 };
                 *value
@@ -5856,17 +6126,18 @@ pub unsafe extern "C" fn type_bridge_query_result_reduction_group_kind(
 fn binding_group_contract(
     result: &TypeBridgeQueryResult,
 ) -> Option<(type_bridge_orm::BindingId, &type_bridge_orm::MatchBinding)> {
-    let QueryResultStorage::Query(projected) = &result.storage else {
-        return None;
+    let (value, request) = match &result.storage {
+        QueryResultStorage::Query(value) => (value.value(), value.request_proof()),
+        QueryResultStorage::SharedQuery(value) => (&value.value, value.request.as_ref()),
+        _ => return None,
     };
     let ProjectedQueryValue::Reduction {
         group: Some(group), ..
-    } = projected.value()
+    } = value
     else {
         return None;
     };
-    let binding = projected
-        .request_proof()
+    let binding = request
         .request()
         .plan
         .bindings
@@ -6107,7 +6378,7 @@ pub unsafe extern "C" fn type_bridge_query_result_reduction_group_field_at(
 
 /// Return kind and optionality metadata for one reducer output cell.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_query_result_reduction_value_metadata_v1(
+pub unsafe extern "C" fn type_bridge_query_result_reduction_value_metadata(
     result: *const TypeBridgeQueryResult,
     expected_result_kind: u32,
     row_index: usize,
@@ -6412,21 +6683,19 @@ mod tests {
         Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticPath, DiagnosticPathSegment,
     };
     use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, TypeId, TypeKind};
-    use type_bridge_contract::migration_assertion::BindingId as ContractBindingId;
     use type_bridge_contract::projection::{
         ProjectedTokenKind, TYPE_BRIDGE_PROJECTED_TOKEN_VERSION,
     };
-    use type_bridge_contract::query_plan::{ModelQueryV2, query_plan_v2_capability_vocabulary};
+    use type_bridge_contract::query_plan::{Operation, Stage, query_plan_capability_vocabulary};
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-    use type_bridge_contract::query_remote_v2::{
-        HydrationGraphV2, RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2,
-        RemoteQueryResponseV2, RemoteReducedValueV2, RemoteReductionRowV2, RemoteResultKindV2,
-        query_remote_v2_required_capabilities,
+
+    use type_bridge_contract::query_remote::{
+        StagedAnswer, StagedOutcome, StagedReply, StagedRequest,
     };
     use type_bridge_core_lib::ast::{
         TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
     };
-    use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+    use type_bridge_orm::remote_signing::RemoteReplySigningKey;
     use type_bridge_orm::session::backend::{
         AnswerConsumer, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader, BoundedAnswerStats,
         BoxFuture, DriverBackend, QueryResult, TransactionOps,
@@ -6510,6 +6779,7 @@ mod tests {
                 queries: Arc::clone(&self.queries),
                 hydrations: Arc::clone(&self.hydrations),
                 close_failure: self.close_failure,
+                native: None,
             };
             Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
         }
@@ -6517,13 +6787,81 @@ mod tests {
         fn is_open(&self) -> bool {
             true
         }
+        fn supports_given_rows(&self) -> bool {
+            true
+        }
     }
 
     struct FakeTransaction {
+        native: Option<(Vec<serde_json::Value>, Vec<Vec<serde_json::Value>>)>,
         events: Arc<Events>,
         queries: Arc<Mutex<VecDeque<Response>>>,
         hydrations: Arc<Mutex<VecDeque<Response>>>,
         close_failure: bool,
+    }
+
+    fn native_test_variables(value: &str) -> Vec<String> {
+        value
+            .split('$')
+            .skip(1)
+            .map(|variable| {
+                variable
+                    .chars()
+                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                    .collect()
+            })
+            .collect()
+    }
+    fn native_test_attributes(node: &serde_json::Value) -> serde_json::Value {
+        serde_json::Value::Object(
+            node["attributes"]
+                .as_array()
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|value| {
+                            (
+                                value["field"]
+                                    .as_str()
+                                    .unwrap()
+                                    .rsplit('_')
+                                    .next()
+                                    .unwrap()
+                                    .to_owned(),
+                                value["values"][0].clone(),
+                            )
+                        })
+                        .collect::<serde_json::Map<_, _>>()
+                })
+                .unwrap_or_default(),
+        )
+    }
+    fn native_test_documents(node: &serde_json::Value) -> Vec<serde_json::Value> {
+        let mut documents = vec![
+            serde_json::json!({"_iid":node["concept_id"],"_type":node["concrete_type"],"attributes":native_test_attributes(node)}),
+        ];
+        let mut roles = node["roles"].as_array().cloned().unwrap_or_default();
+        roles.sort_by(|left, right| left["role"].as_str().cmp(&right["role"].as_str()));
+        for (index, role) in roles.iter().enumerate() {
+            let players = role["players"].as_array().unwrap();
+            if players.is_empty() {
+                continue;
+            }
+            documents = documents
+                .into_iter()
+                .flat_map(|document| {
+                    players.iter().map(move |player| {
+                        let mut document = document.clone();
+                        document[format!("_role_{index}_iid")] = player["concept_id"].clone();
+                        document[format!("_role_{index}_type")] = player["concrete_type"].clone();
+                        document[format!("_role_{index}_attributes")] =
+                            native_test_attributes(player);
+                        document
+                    })
+                })
+                .collect();
+        }
+        documents
     }
 
     fn feed(
@@ -6544,8 +6882,235 @@ mod tests {
     }
 
     impl TransactionOps for FakeTransaction {
-        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            Box::pin(async { panic!("typed-query tests must not use raw TypeQL") })
+        fn supports_given_rows(&self) -> bool {
+            true
+        }
+        fn query_with_rows(
+            &mut self,
+            typeql: &str,
+            _rows: type_bridge_orm::session::backend::GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.query(typeql)
+        }
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            let typeql = typeql.to_owned();
+            Box::pin(async move {
+                if self.native.is_none() {
+                    self.events.queries.fetch_add(1, Ordering::AcqRel);
+                    let response = self
+                        .queries
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_else(|| Response::Items(vec![]));
+                    let items = match response {
+                        Response::Items(items) => items,
+                        Response::Error => {
+                            return Err(OrmError::QueryExecution(
+                                "provider-secret-query-failure".into(),
+                            ));
+                        }
+                        Response::Panic => panic!("injected native query panic"),
+                        Response::Pending => self.events.pending().await,
+                    };
+                    let roots = items
+                        .into_iter()
+                        .map(|item| match item {
+                            AnswerItem::Row(row) | AnswerItem::Document(row) => row,
+                        })
+                        .collect::<Vec<_>>();
+                    self.native = Some((roots, vec![]));
+                }
+                let needs_models = typeql.contains("fetch") || typeql.contains("groupby");
+                let needs_hydration = needs_models
+                    && self.native.as_ref().unwrap().1.is_empty()
+                    && !self.native.as_ref().unwrap().0.is_empty();
+                if needs_hydration {
+                    self.events.hydrations.fetch_add(1, Ordering::AcqRel);
+                    let response = self
+                        .hydrations
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_else(|| Response::Items(vec![]));
+                    let items = match response {
+                        Response::Items(items) => items,
+                        Response::Error => {
+                            return Err(OrmError::QueryExecution(
+                                "provider-secret-hydration-failure".into(),
+                            ));
+                        }
+                        Response::Panic => panic!("injected native hydration panic"),
+                        Response::Pending => self.events.pending().await,
+                    };
+                    let tuples = items
+                        .into_iter()
+                        .map(|item| {
+                            let row = match item {
+                                AnswerItem::Row(row) | AnswerItem::Document(row) => row,
+                            };
+                            row.get("bindings")
+                                .and_then(serde_json::Value::as_array)
+                                .cloned()
+                                .unwrap_or_else(|| vec![row])
+                        })
+                        .collect();
+                    self.native.as_mut().unwrap().1 = tuples;
+                }
+                let (roots, tuples) = self.native.as_ref().unwrap();
+                let selected = typeql
+                    .rsplit("select ")
+                    .next()
+                    .and_then(|tail| tail.split(';').next())
+                    .unwrap_or("");
+                let columns = native_test_variables(selected);
+                let words = typeql.split_whitespace().collect::<Vec<_>>();
+                let fields = words
+                    .windows(4)
+                    .filter(|part| {
+                        part[1] == "has" && part[0].starts_with("$b") && part[3].starts_with("$b")
+                    })
+                    .map(|part| {
+                        (
+                            part[3]
+                                .trim_start_matches('$')
+                                .trim_end_matches([';', ','])
+                                .to_owned(),
+                            (
+                                part[0].trim_start_matches("$b").parse::<usize>().unwrap(),
+                                part[2].trim_end_matches(',').to_owned(),
+                            ),
+                        )
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                let cell = |variable: &str, tuple: &Vec<serde_json::Value>| {
+                    if let Some((owner, field)) = fields.get(variable) {
+                        let attribute = tuple[*owner]["attributes"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|item| {
+                                item["field"].as_str().is_some_and(|name| {
+                                    name == field || name.ends_with(&format!("_{field}"))
+                                })
+                            })
+                            .unwrap();
+                        return serde_json::json!({"category":"Attribute","label":field,"value_type":attribute["value_type"],"value":attribute["values"][0]});
+                    }
+                    let index = variable.trim_start_matches('b').parse::<usize>().unwrap();
+                    let node = &tuple[index];
+                    serde_json::json!({"category":if node["kind"]=="relation" {"Relation"} else {"Entity"},"label":node.get("concrete_type").and_then(serde_json::Value::as_str).unwrap_or("person"),"iid":node["concept_id"]})
+                };
+                let fallback = roots
+                    .iter()
+                    .map(|root| {
+                        root.get("bindings")
+                            .and_then(serde_json::Value::as_array)
+                            .cloned()
+                            .unwrap_or_else(|| vec![root.clone()])
+                    })
+                    .collect::<Vec<_>>();
+                let source = if tuples.is_empty() { &fallback } else { tuples };
+                if let Some(reduce) = typeql
+                    .split("reduce ")
+                    .nth(1)
+                    .filter(|_| !typeql.contains("fetch"))
+                {
+                    let grouping = typeql
+                        .split("groupby ")
+                        .nth(1)
+                        .map(|text| native_test_variables(text.split(';').next().unwrap()))
+                        .unwrap_or_default();
+                    let mut groups = std::collections::BTreeMap::<
+                        Vec<String>,
+                        (Vec<serde_json::Value>, std::collections::BTreeSet<String>),
+                    >::new();
+                    for tuple in source {
+                        let values = grouping
+                            .iter()
+                            .map(|variable| cell(variable, tuple))
+                            .collect::<Vec<_>>();
+                        let key = values.iter().map(|value| value.to_string()).collect();
+                        groups
+                            .entry(key)
+                            .or_insert_with(|| (values, Default::default()))
+                            .1
+                            .insert(tuple[0]["concept_id"].as_str().unwrap().to_owned());
+                    }
+                    if grouping.is_empty() && groups.is_empty() {
+                        groups.insert(vec![], (vec![], Default::default()));
+                    }
+                    let assignments = reduce
+                        .split(';')
+                        .next()
+                        .unwrap()
+                        .split("groupby")
+                        .next()
+                        .unwrap()
+                        .split(',')
+                        .map(|assignment| {
+                            assignment
+                                .split_whitespace()
+                                .next()
+                                .unwrap()
+                                .trim_start_matches('$')
+                                .to_owned()
+                        })
+                        .collect::<Vec<_>>();
+                    let rows=groups.into_values().map(|(values,roots)| {
+                        let mut row=grouping.iter().cloned().zip(values).collect::<serde_json::Map<_,_>>();
+                        for name in &assignments {row.insert(name.clone(),serde_json::json!({"category":"Value","value_type":"integer","value":roots.len()}));}
+                        serde_json::Value::Object(row)
+                    }).collect();
+                    if (!grouping.is_empty()
+                        && grouping
+                            .iter()
+                            .all(|variable| fields.contains_key(variable)))
+                        || (grouping.is_empty() && self.hydrations.lock().unwrap().is_empty())
+                    {
+                        self.native = None;
+                    }
+                    return Ok(QueryResult::Rows(rows));
+                }
+                if let Some(fetch) = typeql.split("\"_iid\": iid($b").nth(1) {
+                    let binding = fetch.split(')').next().unwrap().parse::<usize>().unwrap();
+                    let mut documents = std::collections::BTreeMap::new();
+                    for tuple in tuples {
+                        let node = &tuple[binding];
+                        documents.insert(
+                            node["concept_id"].as_str().unwrap().to_owned(),
+                            node.clone(),
+                        );
+                    }
+                    let number = |name: &str| {
+                        words
+                            .windows(2)
+                            .find(|part| part[0] == name)
+                            .and_then(|part| part[1].trim_end_matches(';').parse::<usize>().ok())
+                    };
+                    let documents = documents
+                        .into_values()
+                        .skip(number("offset").unwrap_or(0))
+                        .take(number("limit").unwrap_or(usize::MAX))
+                        .flat_map(|node| native_test_documents(&node))
+                        .collect();
+                    self.native = None;
+                    return Ok(QueryResult::Documents(documents));
+                }
+                Ok(QueryResult::Rows(
+                    source
+                        .iter()
+                        .map(|tuple| {
+                            serde_json::Value::Object(
+                                columns
+                                    .iter()
+                                    .map(|variable| (variable.clone(), cell(variable, tuple)))
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                ))
+            })
         }
 
         fn query_typed_bounded<'a>(
@@ -7196,6 +7761,8 @@ mod tests {
     }
 
     struct RemoteFixture {
+        seed: u8,
+        schema: type_bridge_contract::schema::DeclaredSchema,
         contract: RemoteCapabilities,
         advertisement: Vec<u8>,
         signer: RemoteReplySigningKey,
@@ -7203,9 +7770,12 @@ mod tests {
 
     fn remote_fixture(seed: u8) -> RemoteFixture {
         let signer = RemoteReplySigningKey::from_secret_bytes([seed; 32]);
-        let mut capabilities = query_plan_v2_capability_vocabulary();
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
         }
         let contract = RemoteCapabilities::new(
             capabilities,
@@ -7218,38 +7788,82 @@ mod tests {
         );
         let advertisement = contract.encode().expect("test advertisement");
         RemoteFixture {
+            seed,
+            schema: package("remotefixture")
+                .state()
+                ._authority
+                .declared_schema()
+                .clone(),
             contract,
             advertisement,
             signer,
         }
     }
 
-    fn remote_count_reply(request: &[u8], fixture: &RemoteFixture, value: u64) -> Vec<u8> {
-        let request = RemoteQueryRequestV2::decode(request).expect("test request envelope");
-        request
-            .validate_advertisement(&fixture.contract)
-            .expect("request binds exact advertisement");
-        let plan = request.plan().expect("test request plan");
-        assert_eq!(request.result_kind(), RemoteResultKindV2::DistinctCount);
-        RemoteQueryResponseV2::new(
-            request.nonce(),
-            &plan,
-            &request.fingerprint().expect("request fingerprint"),
-            RemoteResultKindV2::DistinctCount,
-            RemoteOutcomeV2::DistinctCount {
-                root: ContractBindingId::new(0).expect("test root binding"),
-                value,
-            },
+    fn remote_envelope(bytes: &[u8], fixture: &RemoteFixture) -> StagedRequest {
+        StagedRequest::decode(bytes, &fixture.schema, &fixture.contract)
+            .expect("native test request")
+    }
+
+    // Mirrors the contract's outer envelope and signing digest for hostile test payloads.
+    fn sign_hostile_payload(
+        payload: &serde_json::Value,
+        fixture: &RemoteFixture,
+        advertisement: &RemoteCapabilities,
+    ) -> Vec<u8> {
+        use ed25519_dalek::Signer;
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[fixture.seed; 32]);
+        let key = fixture.signer.public_key().to_hex();
+        assert_eq!(
+            signing.verifying_key().to_bytes().as_slice(),
+            fixture.signer.public_key().as_bytes()
+        );
+        let key_id = type_bridge_contract::query_remote::RemoteSigningKeyId::for_public_key(
+            fixture.signer.public_key(),
         )
-        .expect("request-bound count reply")
-        .encode_signed(
-            &fixture
-                .contract
-                .fingerprint()
-                .expect("advertisement fingerprint"),
-            &fixture.signer,
+        .to_hex();
+        let advertisement = advertisement.fingerprint().unwrap().digest_hex();
+        let prefix = format!(
+            "{{\"advertisement\":\"{advertisement}\",\"format\":\"typebridge.query-remote-signed-reply/v1\",\"key\":\"{key}\",\"key_id\":\"{key_id}\",\"payload\":"
+        );
+        let payload = type_bridge_contract::codec::to_canonical_json(payload).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(b"typebridge.query.remote-reply-signature/v1\0");
+        hasher.update(prefix.as_bytes());
+        hasher.update(&payload);
+        hasher.update(b"}");
+        let signature = signing
+            .sign(&hasher.finalize())
+            .to_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        [
+            prefix.into_bytes(),
+            payload,
+            format!(",\"signature\":\"{signature}\"}}").into_bytes(),
+        ]
+        .concat()
+    }
+
+    fn remote_count_reply(bytes: &[u8], fixture: &RemoteFixture, value: u64) -> Vec<u8> {
+        let request = remote_envelope(bytes, fixture);
+        assert_eq!(request.plans().len(), 1);
+        let answer = StagedAnswer::Rows {
+            rows: vec![vec![
+                type_bridge_contract::query_remote::RemoteValue::Value {
+                    value: type_bridge_contract::value::CanonicalValue::Long(
+                        i64::try_from(value).unwrap(),
+                    ),
+                },
+            ]],
+        };
+        let reply = StagedReply::new(&request, StagedOutcome::Committed, vec![answer]).unwrap();
+        sign_hostile_payload(
+            &serde_json::from_slice(&reply.encode_payload().unwrap()).unwrap(),
+            fixture,
+            &fixture.contract,
         )
-        .expect("signed count reply")
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -7271,66 +7885,56 @@ mod tests {
         if matches!(kind, HostileRemoteReply::MalformedOuter) {
             return br#"{"secret-provider-reply":"must-not-escape""#.to_vec();
         }
-        let request = RemoteQueryRequestV2::decode(request).expect("test request envelope");
-        let plan = request.plan().expect("test request plan");
-        let response = RemoteQueryResponseV2::new(
-            request.nonce(),
-            &plan,
-            &request.fingerprint().expect("request fingerprint"),
-            RemoteResultKindV2::DistinctCount,
-            RemoteOutcomeV2::DistinctCount {
-                root: ContractBindingId::new(0).expect("test root binding"),
-                value: 19,
-            },
-        )
-        .expect("request-bound count reply");
-        let response = match kind {
+        let valid: serde_json::Value =
+            serde_json::from_slice(&remote_count_reply(request, fixture, 19)).unwrap();
+        let mut payload = valid["payload"].clone();
+        match kind {
             HostileRemoteReply::WrongNonce => {
-                let mut value = serde_json::to_value(response).expect("response JSON");
-                value["nonce"] = serde_json::json!("foreign-nonce-0000000000000000");
-                serde_json::from_value(value).expect("syntactically valid foreign nonce response")
+                payload["nonce"] = serde_json::json!("foreign-nonce-0000000000000000")
             }
             HostileRemoteReply::WrongRequest => {
-                let mut value = serde_json::to_value(response).expect("response JSON");
-                value["request"] = serde_json::json!("11".repeat(32));
-                serde_json::from_value(value).expect("syntactically valid foreign request response")
+                payload["request"] = serde_json::json!("11".repeat(32))
             }
             HostileRemoteReply::ForeignSchemaOrProfilePlan => {
-                let mut value = serde_json::to_value(response).expect("response JSON");
-                value["plan"] = serde_json::json!("22".repeat(32));
-                serde_json::from_value(value).expect("syntactically valid foreign plan response")
+                let mut foreign: serde_json::Value = serde_json::from_slice(request).unwrap();
+                let hex = foreign["plans"][0]["plan_bytes"].as_str().unwrap();
+                let bytes = hex
+                    .as_bytes()
+                    .chunks_exact(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                    .collect::<Vec<_>>();
+                let mut plan: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                plan["managed_semantics"]["digest"] = serde_json::json!("22".repeat(32));
+                let plan = type_bridge_contract::codec::to_canonical_json(&plan)
+                    .unwrap()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                foreign["plans"][0]["plan_bytes"] = serde_json::json!(plan);
+                let foreign = remote_envelope(
+                    &type_bridge_contract::codec::to_canonical_json(&foreign).unwrap(),
+                    fixture,
+                );
+                payload["request"] =
+                    serde_json::json!(foreign.fingerprint().unwrap().digest().to_hex());
             }
             HostileRemoteReply::UnknownPayloadFormat => {
-                let mut value = serde_json::to_value(response).expect("response JSON");
-                value["format"] = serde_json::json!("typebridge.query-remote-response/v999");
-                serde_json::from_value(value).expect("syntactically valid unknown response")
+                payload["format"] = serde_json::json!("typebridge.query-remote-response/v999")
             }
-            HostileRemoteReply::MalformedOuter
-            | HostileRemoteReply::BadSignature
-            | HostileRemoteReply::ForeignCapabilityAdvertisement => response,
-        };
+            _ => {}
+        }
         let advertisement = if matches!(kind, HostileRemoteReply::ForeignCapabilityAdvertisement) {
             let mut capabilities = fixture.contract.capabilities().clone();
-            capabilities.insert(
-                CapabilityId::new("c.remote.hostile.extra-capability")
-                    .expect("test extra capability"),
-            );
+            capabilities.insert(CapabilityId::new("c.remote.hostile.extra-capability").unwrap());
             RemoteCapabilities::new(
                 capabilities,
                 fixture.contract.executor().clone(),
                 fixture.signer.public_key(),
             )
-            .fingerprint()
-            .expect("foreign advertisement fingerprint")
         } else {
-            fixture
-                .contract
-                .fingerprint()
-                .expect("advertisement fingerprint")
+            fixture.contract.clone()
         };
-        let mut bytes = response
-            .encode_signed(&advertisement, &fixture.signer)
-            .expect("signed hostile response");
+        let mut bytes = sign_hostile_payload(&payload, fixture, &advertisement);
         if matches!(kind, HostileRemoteReply::BadSignature) {
             let marker = b"\"signature\":\"";
             let index = bytes
@@ -7343,91 +7947,45 @@ mod tests {
         bytes
     }
 
-    fn remote_terminal_reply(request: &[u8], fixture: &RemoteFixture) -> Vec<u8> {
-        let request = RemoteQueryRequestV2::decode(request).expect("test request envelope");
-        request
-            .validate_advertisement(&fixture.contract)
-            .expect("request binds exact advertisement");
-        let plan = request.plan().expect("test request plan");
-        let outcome = match request.result_kind() {
-            RemoteResultKindV2::HydratedRows => RemoteOutcomeV2::HydratedRows {
-                graph: HydrationGraphV2::new(vec![]).expect("empty hydration graph"),
-                rows: vec![],
-            },
-            RemoteResultKindV2::HydratedPage => {
-                let Some(ModelQueryV2::Page {
-                    include_total,
-                    root,
-                    window,
-                    ..
-                }) = plan
-                    .v2_compatibility()
-                    .and_then(|compatibility| compatibility.model_query())
-                else {
-                    panic!("page request lacks its model contract")
-                };
-                RemoteOutcomeV2::HydratedPage {
-                    entries: vec![],
-                    graph: HydrationGraphV2::new(vec![]).expect("empty hydration graph"),
-                    limit: window.limit(),
-                    offset: window.offset(),
-                    root: *root,
-                    total: include_total.then_some(0),
+    fn remote_terminal_reply(bytes: &[u8], fixture: &RemoteFixture) -> Vec<u8> {
+        let request = remote_envelope(bytes, fixture);
+        let has_fetch = request
+            .plans()
+            .iter()
+            .any(|entry| entry.plan().fetch_document_shape().is_some());
+        let answers = request
+            .plans()
+            .iter()
+            .map(|entry| {
+                let plan = entry.plan();
+                if plan.operation() == Operation::Exists {
+                    return StagedAnswer::Exists { value: true };
                 }
-            }
-            RemoteResultKindV2::DistinctExists => {
-                let Some(ModelQueryV2::DistinctExists { root, .. }) = plan
-                    .v2_compatibility()
-                    .and_then(|compatibility| compatibility.model_query())
-                else {
-                    panic!("exists request lacks its model contract")
-                };
-                RemoteOutcomeV2::DistinctExists {
-                    root: *root,
-                    value: true,
+                if plan.fetch_document_shape().is_some() {
+                    return StagedAnswer::Documents { documents: vec![] };
                 }
-            }
-            RemoteResultKindV2::ModelReduction => {
-                let Some(ModelQueryV2::Reduction {
-                    root,
-                    group,
-                    reducers,
-                    ..
-                }) = plan
-                    .v2_compatibility()
-                    .and_then(|compatibility| compatibility.model_query())
-                else {
-                    panic!("reduction request lacks its model contract")
+                let rows = if plan
+                    .pipeline()
+                    .iter()
+                    .any(|stage| matches!(stage, Stage::Reduce { .. }))
+                {
+                    vec![vec![
+                        type_bridge_contract::query_remote::RemoteValue::Value {
+                            value: type_bridge_contract::value::CanonicalValue::Long(
+                                if has_fetch { 0 } else { 13 },
+                            ),
+                        },
+                    ]]
+                } else {
+                    vec![]
                 };
-                RemoteOutcomeV2::ModelReduction {
-                    graph: HydrationGraphV2::new(vec![]).expect("empty hydration graph"),
-                    root: *root,
-                    group: group.clone(),
-                    reducers: reducers.clone(),
-                    rows: vec![RemoteReductionRowV2::new(
-                        None,
-                        vec![RemoteReducedValueV2::Count { value: 13 }],
-                    )],
-                }
-            }
-            other => panic!("unexpected test remote result kind {other:?}"),
-        };
-        RemoteQueryResponseV2::new(
-            request.nonce(),
-            &plan,
-            &request.fingerprint().expect("request fingerprint"),
-            request.result_kind(),
-            outcome,
-        )
-        .expect("request-bound terminal reply")
-        .encode_signed(
-            &fixture
-                .contract
-                .fingerprint()
-                .expect("advertisement fingerprint"),
-            &fixture.signer,
-        )
-        .expect("signed terminal reply")
+                StagedAnswer::Rows { rows }
+            })
+            .collect();
+        StagedReply::new(&request, StagedOutcome::Committed, answers)
+            .unwrap()
+            .encode_signed(&request, &fixture.contract, &fixture.signer)
+            .unwrap()
     }
 
     unsafe fn open_remote_context(
@@ -7452,7 +8010,7 @@ mod tests {
         assert_eq!(
             // SAFETY: caller retains all immutable inputs and writable independent outputs.
             unsafe {
-                type_bridge_query_remote_context_open_v1(
+                type_bridge_query_remote_context_open(
                     package,
                     view,
                     limits,
@@ -7464,6 +8022,525 @@ mod tests {
         );
         assert!(diagnostics.is_null());
         context
+    }
+
+    unsafe fn staged_query_transaction(
+        database: &FakeDatabase,
+    ) -> *mut crate::staged::TypeBridgeStagedTransaction {
+        let mut transaction = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                crate::staged::type_bridge_database_transaction(
+                    &*database.value,
+                    crate::staged::TYPE_BRIDGE_TRANSACTION_READ,
+                    &mut transaction,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(diagnostics.is_null());
+        transaction
+    }
+
+    #[test]
+    fn staged_query_results_equal_execute_and_outlive_authoring_and_transaction() {
+        let package = package("querystagedresults");
+        for kind in [
+            TERMINAL_ROWS,
+            TERMINAL_FIRST,
+            TERMINAL_PAGE,
+            TERMINAL_COUNT,
+            TERMINAL_EXISTS,
+            TERMINAL_REDUCE,
+        ] {
+            let mut built = unsafe { BuiltQuery::open(&package, kind, ROWS_BOUNDED_MANY) };
+            let database = fake_database(
+                &package,
+                (0..2)
+                    .map(|_| Response::Items(vec![solution("0x01")]))
+                    .collect(),
+                (0..2)
+                    .map(|_| Response::Items(vec![hydration(&package, "0x01", "Ada")]))
+                    .collect(),
+            );
+            let mut direct = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    type_bridge_database_query_execute(
+                        &*database.value,
+                        built.terminal,
+                        kind,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut direct,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok,
+                "kind {kind}"
+            );
+            let before = database.events.opens.load(Ordering::Acquire);
+            let mut transaction = unsafe { staged_query_transaction(&database) };
+            let mut pending = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    type_bridge_staged_query_stage(
+                        transaction,
+                        built.terminal,
+                        kind,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut pending,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(database.events.opens.load(Ordering::Acquire), before);
+            let mut result = ptr::dangling_mut();
+            assert_eq!(
+                unsafe { type_bridge_pending_query_result(pending, &mut result, &mut diagnostics) },
+                TypeBridgeStatus::InUse
+            );
+            assert!(result.is_null() && diagnostics.is_null());
+            unsafe {
+                built.close_builders();
+                type_bridge_query_terminal_close(&mut built.terminal);
+            }
+            assert_eq!(
+                unsafe {
+                    crate::staged::type_bridge_staged_transaction_commit(
+                        transaction,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            unsafe {
+                crate::staged::type_bridge_staged_transaction_close(&mut transaction);
+            }
+            assert_eq!(
+                unsafe { type_bridge_pending_query_result(pending, &mut result, &mut diagnostics) },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe { query_result_value(&(*direct).storage) },
+                unsafe { query_result_value(&(*result).storage) },
+                "kind {kind}"
+            );
+            let mut again = ptr::null_mut();
+            assert_eq!(
+                unsafe { type_bridge_pending_query_result(pending, &mut again, &mut diagnostics) },
+                TypeBridgeStatus::Ok
+            );
+            let (QueryResultStorage::SharedQuery(first), QueryResultStorage::SharedQuery(second)) =
+                (unsafe { &(*result).storage }, unsafe { &(*again).storage })
+            else {
+                panic!("staged storage");
+            };
+            assert!(Arc::ptr_eq(first, second));
+            unsafe {
+                crate::staged::type_bridge_pending_free(&mut pending);
+                assert_eq!(
+                    type_bridge_query_result_close(&mut direct),
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    type_bridge_query_result_close(&mut result),
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    type_bridge_query_result_close(&mut again),
+                    TypeBridgeStatus::Ok
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn staged_query_materialization_retries_after_a_deadline_failure() {
+        let package = package("querystagedretry");
+        let built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let database = fake_database(
+            &package,
+            vec![Response::Items(vec![solution("0x01")])],
+            vec![],
+        );
+        let mut transaction = unsafe { staged_query_transaction(&database) };
+        let mut pending = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_staged_query_stage(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut pending,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                crate::staged::type_bridge_staged_transaction_commit(transaction, &mut diagnostics)
+            },
+            TypeBridgeStatus::Ok
+        );
+        let crate::staged_answers::PendingSource::Query(query) =
+            &(unsafe { &*pending }).state.pending
+        else {
+            panic!("typed pending")
+        };
+        let proof = query.pending.get().unwrap();
+        let failure = query
+            .materialize(&proof, QueryExecutionDeadline::expired())
+            .err()
+            .unwrap();
+        assert_eq!(failure.code().as_str(), "transaction_deadline_exceeded");
+        assert!(query.projected.get().is_none());
+        let mut result = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, &mut result, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(query.projected.get().is_some());
+        assert_eq!(database.events.queries.load(Ordering::Acquire), 1);
+        unsafe {
+            type_bridge_query_result_close(&mut result);
+            crate::staged::type_bridge_pending_free(&mut pending);
+            crate::staged::type_bridge_staged_transaction_close(&mut transaction);
+        }
+    }
+
+    #[test]
+    fn staged_query_predispatch_fences_and_rollback_publish_no_result() {
+        let package = ordered_package("querystagedfences");
+        let mut built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let database = fake_database(&package, vec![], vec![]);
+        let mut transaction = unsafe { staged_query_transaction(&database) };
+        let mut diagnostics = ptr::null_mut();
+        let mut pending = ptr::dangling_mut();
+        // Output slots cannot overwrite either active handle.
+        for output in [transaction.cast(), built.terminal.cast()] {
+            assert_eq!(
+                unsafe {
+                    type_bridge_staged_query_stage(
+                        transaction,
+                        built.terminal,
+                        TERMINAL_COUNT,
+                        ptr::null(),
+                        ptr::null(),
+                        output,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert!(diagnostics.is_null());
+        }
+        let mut invalid_limits = default_limits();
+        invalid_limits.version = 0;
+        let mut cancellation = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_cancellation_open(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_cancellation_request(cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        for (kind, limits, cancel, status, expected) in [
+            (
+                TERMINAL_EXISTS,
+                ptr::null(),
+                ptr::null(),
+                TypeBridgeStatus::InvalidArgument,
+                "c_query_nominal_contract_mismatch",
+            ),
+            (
+                TERMINAL_COUNT,
+                &invalid_limits as *const _,
+                ptr::null(),
+                TypeBridgeStatus::InvalidArgument,
+                "c_query_execution_limits_invalid",
+            ),
+            (
+                TERMINAL_COUNT,
+                ptr::null(),
+                cancellation as *const _,
+                TypeBridgeStatus::Cancelled,
+                "provider_cancelled",
+            ),
+        ] {
+            assert_eq!(
+                unsafe {
+                    type_bridge_staged_query_stage(
+                        transaction,
+                        built.terminal,
+                        kind,
+                        limits,
+                        cancel,
+                        &mut pending,
+                        &mut diagnostics,
+                    )
+                },
+                status
+            );
+            assert!(pending.is_null());
+            assert_eq!(unsafe { diagnostic_code(diagnostics) }, expected);
+            unsafe {
+                close_diagnostics(&mut diagnostics);
+            }
+        }
+        unsafe {
+            type_bridge_cancellation_close(&mut cancellation);
+        }
+        let failure = inject_failure(AllocationSite::QueryStagedPendingHandle, 0);
+        assert_eq!(
+            unsafe {
+                type_bridge_staged_query_stage(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut pending,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert!(pending.is_null());
+        drop(failure);
+        unsafe {
+            close_diagnostics(&mut diagnostics);
+        }
+        let descriptor = manager_terminal_descriptor(&built, ManagerTerminalKind::Count);
+        unsafe {
+            replace_terminal(&mut built, &descriptor);
+        }
+        assert_eq!(
+            unsafe {
+                type_bridge_staged_query_stage(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut pending,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Unsupported
+        );
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "c_query_manager_staged_unsupported"
+        );
+        unsafe {
+            close_diagnostics(&mut diagnostics);
+        }
+        assert_eq!(
+            unsafe {
+                crate::staged::type_bridge_staged_transaction_commit(transaction, &mut diagnostics)
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(database.events.opens.load(Ordering::Acquire), 0);
+        let descriptor = root_terminal_descriptor(&built, TERMINAL_COUNT);
+        unsafe {
+            replace_terminal(&mut built, &descriptor);
+        }
+        assert_eq!(
+            unsafe {
+                type_bridge_staged_query_stage(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut pending,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { crate::staged::type_bridge_staged_transaction_rollback(transaction) },
+            TypeBridgeStatus::Ok
+        );
+        let mut result = ptr::dangling_mut();
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, &mut result, &mut diagnostics) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert!(result.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "staged_transaction_lifecycle"
+        );
+        unsafe {
+            close_diagnostics(&mut diagnostics);
+            crate::staged::type_bridge_pending_free(&mut pending);
+            crate::staged::type_bridge_staged_transaction_close(&mut transaction);
+        }
+    }
+
+    #[test]
+    fn staged_query_commit_budgets_and_retained_cancellation_are_enforced() {
+        let package = package("querystagedbudget");
+        let built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        for statements in [true, false] {
+            let database = fake_database(
+                &package,
+                vec![Response::Items(vec![solution("0x01")])],
+                vec![],
+            );
+            let mut transaction = unsafe { staged_query_transaction(&database) };
+            let mut pending = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            let mut limits = default_limits();
+            if statements {
+                limits.statements = 0;
+            } else {
+                limits.items = 0;
+            }
+            assert_eq!(
+                unsafe {
+                    type_bridge_staged_query_stage(
+                        transaction,
+                        built.terminal,
+                        TERMINAL_COUNT,
+                        &limits,
+                        ptr::null(),
+                        &mut pending,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe {
+                    crate::staged::type_bridge_staged_transaction_commit(
+                        transaction,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::ResourceLimit
+            );
+            let code = unsafe { diagnostic_code(diagnostics) };
+            assert_eq!(
+                code,
+                if statements {
+                    "statement_count_limit"
+                } else {
+                    "processed_item_limit"
+                }
+            );
+            unsafe {
+                close_diagnostics(&mut diagnostics);
+            }
+            let mut result = ptr::dangling_mut();
+            assert_eq!(
+                unsafe { type_bridge_pending_query_result(pending, &mut result, &mut diagnostics) },
+                TypeBridgeStatus::ResourceLimit
+            );
+            assert!(result.is_null());
+            assert_eq!(unsafe { diagnostic_code(diagnostics) }, code);
+            unsafe {
+                close_diagnostics(&mut diagnostics);
+                crate::staged::type_bridge_pending_free(&mut pending);
+                crate::staged::type_bridge_staged_transaction_close(&mut transaction);
+            }
+        }
+        let database = fake_database(
+            &package,
+            vec![Response::Items(vec![solution("0x01")])],
+            vec![],
+        );
+        let mut transaction = unsafe { staged_query_transaction(&database) };
+        let mut pending = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        let mut cancellation = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_cancellation_open(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                type_bridge_staged_query_stage(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    cancellation,
+                    &mut pending,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                crate::staged::type_bridge_staged_transaction_commit(transaction, &mut diagnostics)
+            },
+            TypeBridgeStatus::Ok
+        );
+        let failure = inject_failure(AllocationSite::QueryResultHandle, 0);
+        let mut refused = ptr::dangling_mut();
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, &mut refused, &mut diagnostics) },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert!(refused.is_null());
+        drop(failure);
+        unsafe {
+            close_diagnostics(&mut diagnostics);
+        }
+        // Unaligned outputs remain supported; cached output storage is retained.
+        let mut bytes = [0u8; size_of::<*mut TypeBridgeQueryResult>() + 1];
+        let output = unsafe {
+            bytes
+                .as_mut_ptr()
+                .add(1)
+                .cast::<*mut TypeBridgeQueryResult>()
+        };
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, output, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        let mut result = unsafe { output.read_unaligned() };
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, pending.cast(), &mut diagnostics) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(
+            unsafe { type_bridge_cancellation_request(cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        let mut cancelled = ptr::dangling_mut();
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, &mut cancelled, &mut diagnostics) },
+            TypeBridgeStatus::Cancelled
+        );
+        assert!(cancelled.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "provider_cancelled"
+        );
+        unsafe {
+            close_diagnostics(&mut diagnostics);
+            type_bridge_query_result_close(&mut result);
+            type_bridge_cancellation_close(&mut cancellation);
+            crate::staged::type_bridge_pending_free(&mut pending);
+            crate::staged::type_bridge_staged_transaction_close(&mut transaction);
+        }
     }
 
     #[test]
@@ -7496,7 +8573,7 @@ mod tests {
         assert_eq!(
             // SAFETY: caller retains all immutable inputs and writable independent outputs.
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     terminal,
                     kind,
@@ -7579,7 +8656,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: package, overrides, and writable independent outputs are live.
                 unsafe {
-                    type_bridge_query_session_open_with_limits_v1(
+                    type_bridge_query_session_open_with_limits(
                         package,
                         if overrides.is_empty() {
                             ptr::null()
@@ -7598,7 +8675,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: retained session/token and writable outputs are live.
                 unsafe {
-                    type_bridge_query_binding_open_v1(
+                    type_bridge_query_binding_open(
                         session,
                         &model,
                         MATCH_EXACT,
@@ -7617,15 +8694,15 @@ mod tests {
                 kind: SELECTION_ONE,
                 distinct: 0,
                 reserved0: [0; 7],
-                orders: ptr::null(),
-                order_count: 0,
+                sorts: ptr::null(),
+                sort_count: 0,
                 reserved: [0; 4],
             };
             let mut selection = ptr::null_mut();
             assert_eq!(
                 // SAFETY: descriptor graph and writable outputs are live.
                 unsafe {
-                    type_bridge_query_selection_open_v1(
+                    type_bridge_query_selection_open(
                         &selection_descriptor,
                         &mut selection,
                         &mut diagnostics,
@@ -7660,12 +8737,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: descriptor graph and writable outputs are live.
                 unsafe {
-                    type_bridge_query_open_v1(
-                        session,
-                        &query_descriptor,
-                        &mut query,
-                        &mut diagnostics,
-                    )
+                    type_bridge_query_open(session, &query_descriptor, &mut query, &mut diagnostics)
                 },
                 TypeBridgeStatus::Ok,
             );
@@ -7695,7 +8767,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: descriptor graph and writable outputs are live.
                 unsafe {
-                    type_bridge_query_terminal_open_v1(
+                    type_bridge_query_terminal_open(
                         query,
                         &terminal_descriptor,
                         &mut terminal,
@@ -7765,7 +8837,7 @@ mod tests {
             TypeBridgeStatus::Ok,
         );
         let status = unsafe {
-            type_bridge_database_query_execute_v1(
+            type_bridge_database_query_execute(
                 &*database.value,
                 built.terminal,
                 TERMINAL_FIRST,
@@ -7806,7 +8878,7 @@ mod tests {
         );
         result = std::ptr::NonNull::<TypeBridgeQueryResult>::dangling().as_ptr();
         let status = unsafe {
-            type_bridge_database_query_execute_v1(
+            type_bridge_database_query_execute(
                 &*statement_database.value,
                 built.terminal,
                 TERMINAL_FIRST,
@@ -7873,7 +8945,7 @@ mod tests {
             TypeBridgeStatus::Ok,
         );
         let before_exchange_status = unsafe {
-            type_bridge_query_remote_prepare_v1(
+            type_bridge_query_remote_prepare(
                 context,
                 built.terminal,
                 TERMINAL_COUNT,
@@ -7922,7 +8994,7 @@ mod tests {
         );
         let mut result = std::ptr::NonNull::<TypeBridgeQueryResult>::dangling().as_ptr();
         let during_decode_status = unsafe {
-            type_bridge_query_remote_claim_decode_v1(
+            type_bridge_query_remote_claim_decode(
                 claim,
                 TERMINAL_COUNT,
                 cancellation,
@@ -7944,7 +9016,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -8008,7 +9080,7 @@ mod tests {
         let request =
             unsafe { std::slice::from_raw_parts(request_view.data, request_view.length).to_vec() };
         let mut claim = unsafe { claim_remote(pending) };
-        let envelope = RemoteQueryRequestV2::decode(&request).expect("test request envelope");
+        let envelope = remote_envelope(&request, &remote);
         let failure = Diagnostic::new(
             DiagnosticCategory::Integrity,
             DiagnosticCode::new("remote_application_failure").expect("test code"),
@@ -8024,21 +9096,16 @@ mod tests {
         .with_detail("retryable", false)
         .with_detail("subject", "person")
         .with_detail("provider_secret", "must-not-cross");
-        let response = RemoteQueryFailureV2::bound(
-            envelope.nonce(),
-            &envelope.fingerprint().expect("request fingerprint"),
-            &failure,
+        let response = StagedReply::new(
+            &envelope,
+            StagedOutcome::Failed {
+                diagnostic: type_bridge_orm::lower_remote_query_diagnostic(failure),
+            },
+            vec![],
         )
-        .and_then(|failure| {
-            failure.encode_signed(
-                &remote
-                    .contract
-                    .fingerprint()
-                    .expect("advertisement fingerprint"),
-                &remote.signer,
-            )
-        })
-        .expect("signed failure reply");
+        .unwrap()
+        .encode_signed(&envelope, &remote.contract, &remote.signer)
+        .unwrap();
         let response_view = TypeBridgeByteView {
             data: response.as_ptr(),
             length: response.len(),
@@ -8047,7 +9114,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -8212,7 +9279,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -8264,8 +9331,8 @@ mod tests {
             expected_root_model: ptr::null(),
             expected_root_mode: 0,
             reserved1: 0,
-            orders: ptr::null(),
-            order_count: 0,
+            sorts: ptr::null(),
+            sort_count: 0,
             offset: 0,
             limit: u64::from(has_window),
             include_total: 0,
@@ -8355,7 +9422,7 @@ mod tests {
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: DESCRIPTOR_VERSION,
-            timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+            timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS as i64,
             items: DEFAULT_PROXY_QUERY_ITEMS,
             bytes: DEFAULT_PROXY_QUERY_BYTES,
             graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES,
@@ -8363,7 +9430,7 @@ mod tests {
             collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
             role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
             statements: DEFAULT_PROXY_QUERY_STATEMENTS,
-            reserved0: 0,
+            collect_phase_timestamps: 0,
             reserved: [0; 4],
         }
     }
@@ -8411,7 +9478,7 @@ mod tests {
         assert_eq!(
             // SAFETY: the descriptor graph and independent output slots remain live.
             unsafe {
-                type_bridge_query_terminal_open_v1(
+                type_bridge_query_terminal_open(
                     built.query,
                     descriptor,
                     &mut built.terminal,
@@ -8432,14 +9499,11 @@ mod tests {
         assert_eq!(
             // SAFETY: exact generated handles and immutable IID bytes remain live.
             unsafe {
-                type_bridge_query_binding_iid_v1(
+                type_bridge_query_binding_iid(
                     built.binding,
                     &built.model,
                     MATCH_EXACT,
-                    TypeBridgeByteView {
-                        data: iid.as_ptr(),
-                        length: iid.len(),
-                    },
+                    &TypeBridgeIid::new(std::str::from_utf8(iid).unwrap()).unwrap(),
                     &mut predicate,
                     &mut diagnostics,
                 )
@@ -8541,7 +9605,7 @@ mod tests {
         assert_eq!(
             // SAFETY: the inactive dangling lane must be rejected before traversal.
             unsafe {
-                type_bridge_query_terminal_open_v1(
+                type_bridge_query_terminal_open(
                     built.query,
                     &descriptor,
                     &mut output,
@@ -8616,7 +9680,7 @@ mod tests {
             let mut diagnostics = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_query_terminal_open_v1(
+                    type_bridge_query_terminal_open(
                         built.query,
                         &descriptor,
                         &mut built.terminal,
@@ -8721,7 +9785,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: package, overrides, and writable outputs are live.
                 unsafe {
-                    type_bridge_query_session_open_with_limits_v1(
+                    type_bridge_query_session_open_with_limits(
                         &package,
                         refused.as_ptr(),
                         refused.len(),
@@ -8738,7 +9802,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_session_open_with_limits_v1(
+                type_bridge_query_session_open_with_limits(
                     &package,
                     ptr::null(),
                     1,
@@ -8771,7 +9835,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_terminal_open_v1(
+                type_bridge_query_terminal_open(
                     built.query,
                     &descriptor,
                     &mut built.terminal,
@@ -8821,7 +9885,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_terminal_open_v1(
+                type_bridge_query_terminal_open(
                     built.query,
                     &descriptor,
                     &mut built.terminal,
@@ -8858,7 +9922,7 @@ mod tests {
         let mut result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     all.terminal,
                     TERMINAL_ROWS,
@@ -8941,7 +10005,7 @@ mod tests {
             let database = fake_database(&package, vec![Response::Items(items)], Vec::new());
             assert_eq!(
                 unsafe {
-                    type_bridge_database_query_execute_v1(
+                    type_bridge_database_query_execute(
                         &*database.value,
                         built.terminal,
                         descriptor.kind,
@@ -8990,7 +10054,7 @@ mod tests {
         let database = fake_database(&package, Vec::new(), Vec::new());
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     first.terminal,
                     TERMINAL_FIRST,
@@ -9017,11 +10081,14 @@ mod tests {
         let database = fake_database(
             &package,
             vec![Response::Items(vec![solution("0x01"), solution("0x02")])],
-            Vec::new(),
+            vec![Response::Items(vec![
+                hydration(&package, "0x01", "Ada"),
+                hydration(&package, "0x02", "Ada"),
+            ])],
         );
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     first.terminal,
                     TERMINAL_FIRST,
@@ -9062,6 +10129,7 @@ mod tests {
                 type_bridge_read_transaction_open(
                     &*database.value,
                     ptr::null(),
+                    ptr::null(),
                     &mut read,
                     &mut diagnostics,
                 )
@@ -9073,7 +10141,7 @@ mod tests {
             let mut result = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_read_transaction_query_execute_v1(
+                    type_bridge_read_transaction_query_execute(
                         read,
                         built.terminal,
                         TERMINAL_COUNT,
@@ -9159,7 +10227,7 @@ mod tests {
         let mut order = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_order_open_v1(&order_descriptor, &mut order, &mut diagnostics)
+                type_bridge_query_order_open(&order_descriptor, &mut order, &mut diagnostics)
             },
             TypeBridgeStatus::Ok,
         );
@@ -9171,7 +10239,7 @@ mod tests {
         let mut relation_binding = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_binding_open_v1(
+                type_bridge_query_binding_open(
                     built.session,
                     &membership,
                     MATCH_EXACT,
@@ -9246,7 +10314,7 @@ mod tests {
         let mut function_call = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     function,
                     &identity,
                     &graph,
@@ -9261,7 +10329,7 @@ mod tests {
         let mut result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -9417,7 +10485,7 @@ mod tests {
         let mut identity_call = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &value_graph,
@@ -9437,7 +10505,7 @@ mod tests {
         let mut person_call = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     person_handle,
                     &person_identifier,
                     &binding_graph,
@@ -9457,7 +10525,7 @@ mod tests {
         let mut nested_call = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &nested_graph,
@@ -9536,7 +10604,7 @@ mod tests {
         let mut rejected = std::ptr::NonNull::<TypeBridgeQueryFunctionCall>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &person_identifier,
                     &value_graph,
@@ -9564,7 +10632,7 @@ mod tests {
         let malformed_graph = function_arguments_graph(&malformed_arguments, &single_member);
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &malformed_graph,
@@ -9632,7 +10700,7 @@ mod tests {
         let _failure = inject_failure(AllocationSite::QueryFunctionArguments, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &foreign_graph,
@@ -9656,7 +10724,7 @@ mod tests {
             .cast::<*mut TypeBridgeQueryFunctionCall>();
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &over_limit_graph,
@@ -9703,7 +10771,7 @@ mod tests {
         };
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &max_graph,
@@ -9727,7 +10795,7 @@ mod tests {
         let bad_version_graph = function_arguments_graph(&bad_version_arguments, &single_member);
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &bad_version_graph,
@@ -9745,7 +10813,7 @@ mod tests {
         let argument_failure = inject_failure(AllocationSite::QueryFunctionArguments, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &value_graph,
@@ -9761,7 +10829,7 @@ mod tests {
         let call_failure = inject_failure(AllocationSite::QueryFunctionCallHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &value_graph,
@@ -9777,7 +10845,7 @@ mod tests {
         // The active foreign handle and local function remain reusable.
         assert_eq!(
             unsafe {
-                type_bridge_query_function_call_open_v1(
+                type_bridge_query_function_call_open(
                     identity_handle,
                     &identity,
                     &value_graph,
@@ -9855,7 +10923,7 @@ mod tests {
         let mut target = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_binding_open_v1(
+                type_bridge_query_binding_open(
                     built.session,
                     &event,
                     MATCH_EXACT,
@@ -9868,7 +10936,7 @@ mod tests {
         let mut relation_binding = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_binding_open_v1(
+                type_bridge_query_binding_open(
                     built.session,
                     &membership,
                     MATCH_EXACT,
@@ -9891,7 +10959,7 @@ mod tests {
         let mut predicate = std::ptr::NonNull::<TypeBridgeQueryPredicate>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_role_connects(
+                type_bridge_query_role_links(
                     role,
                     &event,
                     built.binding,
@@ -9911,7 +10979,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_role_connects(
+                type_bridge_query_role_links(
                     role,
                     &member,
                     built.binding,
@@ -10028,6 +11096,66 @@ mod tests {
     }
 
     #[test]
+    fn typed_iid_predicates_fence_each_owner_and_snapshot_the_list() {
+        let package = package("querytypedids");
+        // SAFETY: fixture owns exact generated handles.
+        let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };
+        let mut iid = TypeBridgeIid::new("0xAb12").unwrap();
+        let ids = [ptr::addr_of!(iid)];
+        let mut predicate = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: inputs and independent output owners are live; alias calls only preflight.
+        unsafe {
+            assert_eq!(
+                type_bridge_query_binding_iid_in(
+                    built.binding,
+                    &built.model,
+                    MATCH_EXACT,
+                    ids.as_ptr(),
+                    1,
+                    ptr::addr_of_mut!(iid).cast(),
+                    &mut diagnostics,
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(iid.as_str(), "0xAb12");
+            assert!(diagnostics.is_null());
+            assert_eq!(
+                type_bridge_query_binding_iid_in(
+                    built.binding,
+                    &built.model,
+                    MATCH_EXACT,
+                    ids.as_ptr(),
+                    1,
+                    &mut predicate,
+                    &mut diagnostics,
+                ),
+                TypeBridgeStatus::Ok
+            );
+            assert!(!predicate.is_null());
+            assert_eq!(
+                type_bridge_query_predicate_close(&mut predicate),
+                TypeBridgeStatus::Ok
+            );
+            let missing = [ptr::null()];
+            assert_eq!(
+                type_bridge_query_binding_iid_in(
+                    built.binding,
+                    &built.model,
+                    MATCH_EXACT,
+                    missing.as_ptr(),
+                    1,
+                    &mut predicate,
+                    &mut diagnostics,
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert!(predicate.is_null());
+            assert!(diagnostics.is_null());
+        }
+    }
+
+    #[test]
     fn malformed_boolean_topology_checks_live_outer_ranges_before_output_clear() {
         let package = package("queryboolalias");
         // SAFETY: fixture owns exact generated handles.
@@ -10138,7 +11266,7 @@ mod tests {
         let mut query = std::ptr::NonNull::<TypeBridgeQuery>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(built.session, &descriptor, &mut query, &mut diagnostics)
+                type_bridge_query_open(built.session, &descriptor, &mut query, &mut diagnostics)
             },
             TypeBridgeStatus::InvalidArgument,
         );
@@ -10156,7 +11284,7 @@ mod tests {
         };
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(built.session, &descriptor, &mut query, &mut diagnostics)
+                type_bridge_query_open(built.session, &descriptor, &mut query, &mut diagnostics)
             },
             TypeBridgeStatus::InvalidArgument,
         );
@@ -10175,7 +11303,7 @@ mod tests {
         let mut primary_query = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(
+                type_bridge_query_open(
                     built.session,
                     &descriptor,
                     &mut primary_query,
@@ -10193,7 +11321,7 @@ mod tests {
         let mut renamed_query = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(
+                type_bridge_query_open(
                     built.session,
                     &descriptor,
                     &mut renamed_query,
@@ -10211,7 +11339,7 @@ mod tests {
         let mut copied_reference_query = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(
+                type_bridge_query_open(
                     built.session,
                     &descriptor,
                     &mut copied_reference_query,
@@ -10266,7 +11394,7 @@ mod tests {
         let mut second_binding = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_binding_open_v1(
+                type_bridge_query_binding_open(
                     built.session,
                     &built.model,
                     MATCH_EXACT,
@@ -10285,14 +11413,14 @@ mod tests {
             kind: SELECTION_ONE,
             distinct: 0,
             reserved0: [0; 7],
-            orders: ptr::null(),
-            order_count: 0,
+            sorts: ptr::null(),
+            sort_count: 0,
             reserved: [0; 4],
         };
         let mut second_selection = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_selection_open_v1(
+                type_bridge_query_selection_open(
                     &second_descriptor,
                     &mut second_selection,
                     &mut diagnostics,
@@ -10323,7 +11451,7 @@ mod tests {
         query = std::ptr::NonNull::<TypeBridgeQuery>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_open_v1(built.session, &descriptor, &mut query, &mut diagnostics)
+                type_bridge_query_open(built.session, &descriptor, &mut query, &mut diagnostics)
             },
             TypeBridgeStatus::InvalidArgument,
         );
@@ -10398,7 +11526,7 @@ mod tests {
             let mut result = ptr::null_mut();
             let mut diagnostics = ptr::null_mut();
             let status = unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -10663,7 +11791,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: retained branded handles and disjoint writable outputs are live.
                 unsafe {
-                    type_bridge_database_query_execute_v1(
+                    type_bridge_database_query_execute(
                         &*database.value,
                         built.terminal,
                         TERMINAL_FIRST,
@@ -10725,7 +11853,7 @@ mod tests {
         let mut page_result = ptr::null_mut();
         let mut diagnostics = ptr::null_mut();
         let status = unsafe {
-            type_bridge_database_query_execute_v1(
+            type_bridge_database_query_execute(
                 &*page_database.value,
                 page.terminal,
                 TERMINAL_PAGE,
@@ -10816,7 +11944,7 @@ mod tests {
         let mut metadata = std::mem::MaybeUninit::<TypeBridgeQueryPageMetadataV1>::uninit();
         assert_eq!(
             unsafe {
-                type_bridge_query_result_page_metadata_v1(
+                type_bridge_query_result_page_metadata(
                     page_result,
                     metadata.as_mut_ptr(),
                     ptr::null_mut(),
@@ -10832,7 +11960,7 @@ mod tests {
         diagnostics = std::ptr::NonNull::<TypeBridgeExecutionDiagnostics>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_result_page_metadata_v1(
+                type_bridge_query_result_page_metadata(
                     page_result,
                     ptr::null_mut(),
                     &mut diagnostics,
@@ -10844,7 +11972,7 @@ mod tests {
         let mut metadata = std::mem::MaybeUninit::<TypeBridgeQueryPageMetadataV1>::uninit();
         assert_eq!(
             unsafe {
-                type_bridge_query_result_page_metadata_v1(
+                type_bridge_query_result_page_metadata(
                     page_result,
                     metadata.as_mut_ptr(),
                     &mut diagnostics,
@@ -10856,7 +11984,7 @@ mod tests {
         let metadata = unsafe { metadata.assume_init() };
         assert_eq!((metadata.offset, metadata.limit), (0, 1));
         assert_eq!((metadata.has_total, metadata.total), (1, 2));
-        assert_eq!(page_database.events.queries.load(Ordering::Acquire), 2);
+        assert_eq!(page_database.events.queries.load(Ordering::Acquire), 1);
         assert_eq!(page_database.events.hydrations.load(Ordering::Acquire), 1);
         assert_eq!(page_database.events.closes.load(Ordering::Acquire), 1);
         assert_eq!(
@@ -10879,7 +12007,7 @@ mod tests {
         let mut count_result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*count_database.value,
                     count.terminal,
                     TERMINAL_COUNT,
@@ -10927,7 +12055,7 @@ mod tests {
             let mut result = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_database_query_execute_v1(
+                    type_bridge_database_query_execute(
                         &*database.value,
                         exists.terminal,
                         TERMINAL_EXISTS,
@@ -10966,7 +12094,7 @@ mod tests {
         let mut reduction_result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*reduction_database.value,
                     reduction.terminal,
                     TERMINAL_REDUCE,
@@ -11022,7 +12150,7 @@ mod tests {
             std::mem::MaybeUninit::<TypeBridgeQueryReducedValueMetadataV1>::uninit();
         assert_eq!(
             unsafe {
-                type_bridge_query_result_reduction_value_metadata_v1(
+                type_bridge_query_result_reduction_value_metadata(
                     reduction_result,
                     RESULT_REDUCTION,
                     0,
@@ -11042,7 +12170,7 @@ mod tests {
             std::mem::MaybeUninit::<TypeBridgeQueryReducedValueMetadataV1>::uninit();
         assert_eq!(
             unsafe {
-                type_bridge_query_result_reduction_value_metadata_v1(
+                type_bridge_query_result_reduction_value_metadata(
                     reduction_result,
                     RESULT_REDUCTION,
                     0,
@@ -11210,7 +12338,7 @@ mod tests {
             let mut result = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_database_query_execute_v1(
+                    type_bridge_database_query_execute(
                         &*database.value,
                         built.terminal,
                         terminal_kind,
@@ -11322,7 +12450,7 @@ mod tests {
                 std::mem::MaybeUninit::<TypeBridgeQueryReducedValueMetadataV1>::uninit();
             assert_eq!(
                 unsafe {
-                    type_bridge_query_result_reduction_value_metadata_v1(
+                    type_bridge_query_result_reduction_value_metadata(
                         result,
                         expected_result_kind,
                         0,
@@ -11422,7 +12550,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_binding_open_v1(
+                type_bridge_query_binding_open(
                     built.session,
                     &organization_model,
                     MATCH_EXACT,
@@ -11435,7 +12563,7 @@ mod tests {
         let mut query = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_add_hidden(
+                type_bridge_query_match(
                     built.query,
                     organization,
                     &organization_model,
@@ -11533,7 +12661,7 @@ mod tests {
         );
         let mut result = ptr::null_mut();
         let status = unsafe {
-            type_bridge_database_query_execute_v1(
+            type_bridge_database_query_execute(
                 &*database.value,
                 built.terminal,
                 TERMINAL_REDUCE,
@@ -11702,7 +12830,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -11735,7 +12863,7 @@ mod tests {
         );
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -11856,7 +12984,7 @@ mod tests {
         result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_REDUCE_FIELD,
@@ -11930,7 +13058,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -11967,6 +13095,7 @@ mod tests {
                 type_bridge_read_transaction_open(
                     &*database.value,
                     ptr::null(),
+                    ptr::null(),
                     &mut transaction,
                     &mut diagnostics,
                 )
@@ -11974,11 +13103,12 @@ mod tests {
             TypeBridgeStatus::Ok,
         );
         let mut interruption_limits = default_limits();
-        interruption_limits.timeout_milliseconds = 0;
+        interruption_limits.timeout_milliseconds = 1;
+        QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| delay.set(5));
         let deadline_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -12008,7 +13138,7 @@ mod tests {
         let cancelled_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -12033,7 +13163,7 @@ mod tests {
         assert_eq!(database.events.queries.load(Ordering::Acquire), 0);
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12052,7 +13182,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12077,7 +13207,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_query_execution_cannot_widen_a_v2_target_answer_ceiling() {
+    fn legacy_query_execution_cannot_widen_a_target_answer_ceiling() {
         let package = package("querytargetceiling");
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };
@@ -12097,7 +13227,7 @@ mod tests {
 
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12127,7 +13257,7 @@ mod tests {
         ));
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12167,7 +13297,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         // SAFETY: fixture owns every live handle and the writable outputs.
         let status = unsafe {
-            type_bridge_database_query_execute_v1(
+            type_bridge_database_query_execute(
                 &*database.value,
                 all.terminal,
                 TERMINAL_ROWS,
@@ -12223,7 +13353,7 @@ mod tests {
         };
 
         // Without a ceiling the raised call runs, and the call's own
-        // one-item or zero-timeout limit fixes the refusal codes.
+        // one-item limit refuses, while a zero timeout is unbounded.
         let (queries, hydrations) = rows();
         let unbounded = fake_database(&package, queries, hydrations);
         assert_eq!(manager_all_refusal(&unbounded, &all, &raised), None);
@@ -12231,13 +13361,13 @@ mod tests {
         let unbounded = fake_database(&package, queries, hydrations);
         let item_code =
             manager_all_refusal(&unbounded, &all, &one_item).expect("one item refuses two rows");
-        let unbounded = fake_database(&package, Vec::new(), Vec::new());
-        let timeout_code =
-            manager_all_refusal(&unbounded, &all, &zero_timeout).expect("a zero timeout refuses");
-        assert_eq!(unbounded.events.opens.load(Ordering::Acquire), 0);
+        let (queries, hydrations) = rows();
+        let unbounded = fake_database(&package, queries, hydrations);
+        assert_eq!(manager_all_refusal(&unbounded, &all, &zero_timeout), None);
+        assert_eq!(unbounded.events.opens.load(Ordering::Acquire), 1);
 
         // The same raised call on a connection whose orm ceiling is one item,
-        // or a zero timeout, refuses exactly as the narrow call did.
+        // refuses exactly as the narrow call did; no deadline stays unbounded.
         let (queries, hydrations) = rows();
         let one_item_ceiling = QueryExecutionResourceLimits {
             items: 1,
@@ -12250,20 +13380,14 @@ mod tests {
             Some(item_code)
         );
         let zero_timeout_ceiling = QueryExecutionResourceLimits {
-            timeout_milliseconds: 0,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
             ..QueryExecutionResourceLimits::default()
         };
-        let bounded = fake_database_with_answer_ceiling(
-            &package,
-            Vec::new(),
-            Vec::new(),
-            zero_timeout_ceiling,
-        );
-        assert_eq!(
-            manager_all_refusal(&bounded, &all, &raised),
-            Some(timeout_code)
-        );
-        assert_eq!(bounded.events.opens.load(Ordering::Acquire), 0);
+        let (queries, hydrations) = rows();
+        let bounded =
+            fake_database_with_answer_ceiling(&package, queries, hydrations, zero_timeout_ceiling);
+        assert_eq!(manager_all_refusal(&bounded, &all, &raised), None);
+        assert_eq!(bounded.events.opens.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -12279,7 +13403,7 @@ mod tests {
         limits.statements = 0;
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12300,7 +13424,7 @@ mod tests {
         // A dimension may be raised past its default and is kept as given.
         let raised = {
             let mut value = default_limits();
-            value.timeout_milliseconds = DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1;
+            value.timeout_milliseconds = DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS as i64 + 1;
             value.items = DEFAULT_PROXY_QUERY_ITEMS + 1;
             value.bytes = DEFAULT_PROXY_QUERY_BYTES + 1;
             value.graph_nodes = DEFAULT_PROXY_QUERY_GRAPH_NODES + 1;
@@ -12313,29 +13437,25 @@ mod tests {
             parse_common_limits(Some(raised), type_bridge_orm::AnswerTransport::Direct)
                 .expect("a raised policy is admitted"),
             QueryExecutionResourceLimits {
-                timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1,
+                collect_phase_timestamps: false,
+                timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
+                    DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1
+                ),
                 items: DEFAULT_PROXY_QUERY_ITEMS + 1,
                 bytes: DEFAULT_PROXY_QUERY_BYTES + 1,
                 graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES + 1,
                 attribute_values: DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES + 1,
                 collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS + 1,
                 role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS + 1,
-                statements: DEFAULT_PROXY_QUERY_STATEMENTS,
+                statements: Some(DEFAULT_PROXY_QUERY_STATEMENTS),
             },
         );
         // Past a supported maximum it is refused, never clamped.
-        let unsupported = [
-            {
-                let mut value = default_limits();
-                value.timeout_milliseconds = type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.statements = type_bridge_orm::MAX_QUERY_STATEMENTS + 1;
-                value
-            },
-        ];
+        let unsupported = [{
+            let mut value = default_limits();
+            value.statements = type_bridge_orm::MAX_QUERY_STATEMENTS + 1;
+            value
+        }];
         for refused in &unsupported {
             assert_eq!(
                 parse_common_limits(Some(*refused), type_bridge_orm::AnswerTransport::Direct)
@@ -12348,7 +13468,7 @@ mod tests {
         }
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -12374,7 +13494,7 @@ mod tests {
         let cancelled_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -12401,7 +13521,7 @@ mod tests {
         let other = fake_database(&equivalent, Vec::new(), Vec::new());
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*other.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12425,7 +13545,7 @@ mod tests {
         limits = default_limits();
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*accepted.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12470,7 +13590,7 @@ mod tests {
 
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12498,7 +13618,7 @@ mod tests {
         ));
         assert_eq!(
             unsafe {
-                type_bridge_read_transaction_query_execute_v1(
+                type_bridge_read_transaction_query_execute(
                     transaction,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12533,11 +13653,12 @@ mod tests {
 
         let deadline_database = fake_database(&package, Vec::new(), Vec::new());
         let mut limits = default_limits();
-        limits.timeout_milliseconds = 0;
+        limits.timeout_milliseconds = 1;
+        QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| delay.set(5));
         let deadline_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*deadline_database.value,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -12571,7 +13692,7 @@ mod tests {
         let delayed_result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*deadline_database.value,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -12603,7 +13724,7 @@ mod tests {
         QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| delay.set(20));
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*open_database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12648,7 +13769,7 @@ mod tests {
         );
         assert_eq!(
             unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*statement_database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12710,7 +13831,7 @@ mod tests {
             let mut result = ptr::null_mut();
             let mut diagnostics = ptr::null_mut();
             let status = unsafe {
-                type_bridge_database_query_execute_v1(
+                type_bridge_database_query_execute(
                     &*database.value,
                     built.terminal,
                     TERMINAL_FIRST,
@@ -12758,6 +13879,7 @@ mod tests {
                     type_bridge_read_transaction_open(
                         &*database.value,
                         ptr::null(),
+                        ptr::null(),
                         &mut transaction,
                         &mut diagnostics,
                     )
@@ -12770,7 +13892,7 @@ mod tests {
             let mut result = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_read_transaction_query_execute_v1(
+                    type_bridge_read_transaction_query_execute(
                         transaction,
                         built.terminal,
                         TERMINAL_FIRST,
@@ -12785,7 +13907,7 @@ mod tests {
             let dispatched = database.events.queries.load(Ordering::Acquire);
             assert_eq!(
                 unsafe {
-                    type_bridge_read_transaction_query_execute_v1(
+                    type_bridge_read_transaction_query_execute(
                         transaction,
                         built.terminal,
                         TERMINAL_FIRST,
@@ -12809,6 +13931,48 @@ mod tests {
     }
 
     #[test]
+    fn hostile_payload_signer_accepts_an_unmodified_native_reply() {
+        let package = package("nativesigningsanity");
+        let mut built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let fixture = remote_fixture(0x51);
+        let mut context = unsafe { open_remote_context(&package, &fixture.advertisement) };
+        let mut pending = unsafe { prepare_remote(context, built.terminal, TERMINAL_COUNT) };
+        let view = unsafe { pending_request(pending) };
+        let request = remote_envelope(
+            unsafe { std::slice::from_raw_parts(view.data, view.length) },
+            &fixture,
+        );
+        let bytes = remote_count_reply(
+            unsafe { std::slice::from_raw_parts(view.data, view.length) },
+            &fixture,
+            17,
+        );
+        let verified = type_bridge_contract::query_remote::VerifiedStagedReply::decode(
+            &bytes,
+            &request,
+            &fixture.contract,
+            fixture.signer.public_key(),
+            &type_bridge_orm::remote_signing::Ed25519RemoteReplyVerifier,
+        )
+        .unwrap();
+        assert!(verified.committed());
+        assert!(matches!(&verified.answers()[0],StagedAnswer::Rows {rows} if rows.len()==1));
+        assert_eq!(
+            unsafe { type_bridge_query_remote_pending_close(&mut pending) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_query_remote_context_close(&mut context) },
+            TypeBridgeStatus::Ok
+        );
+        unsafe { built.close_builders() };
+        assert_eq!(
+            unsafe { type_bridge_query_terminal_close(&mut built.terminal) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
     fn remote_count_round_trip_retains_exact_lineage_and_one_shot_lifetimes() {
         let mut package_handle = Box::into_raw(Box::new(package("queryremote")));
         // SAFETY: package remains live through construction.
@@ -12825,7 +13989,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     other.terminal,
                     TERMINAL_COUNT,
@@ -12855,7 +14019,7 @@ mod tests {
         let cancelled_pending_failure = inject_failure(AllocationSite::QueryRemotePendingHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -12950,9 +14114,8 @@ mod tests {
             std::slice::from_raw_parts(second_request_view.data, second_request_view.length)
                 .to_vec()
         };
-        let first_envelope = RemoteQueryRequestV2::decode(&request).expect("first request");
-        let second_envelope =
-            RemoteQueryRequestV2::decode(&second_request).expect("second request");
+        let first_envelope = remote_envelope(&request, &remote);
+        let second_envelope = remote_envelope(&second_request, &remote);
         assert_ne!(first_envelope.nonce(), second_envelope.nonce());
         assert_ne!(request, second_request);
         assert_eq!(
@@ -12992,6 +14155,12 @@ mod tests {
 
         // SAFETY: pending has one unclaimed reply slot.
         let mut claim = unsafe { claim_remote(pending) };
+        assert_eq!(response_limit, MAX_REMOTE_ENVELOPE_BYTES + 1);
+        // Signed failure evidence uses the fixed envelope ceiling even under a smaller success budget.
+        assert_eq!(
+            unsafe { &*claim }.response_snapshot_limit,
+            MAX_REMOTE_ENVELOPE_BYTES
+        );
         let mut duplicate = ptr::null_mut();
         assert_eq!(
             unsafe {
@@ -13020,7 +14189,7 @@ mod tests {
         let mut result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -13050,21 +14219,22 @@ mod tests {
     }
 
     #[test]
-    fn remote_prepare_zero_deadline_precedes_kind_and_pending_reservation() {
+    fn remote_prepare_expired_deadline_precedes_kind_and_pending_reservation() {
         let package = package("queryremotezero");
         // SAFETY: fixture owns exact generated handles and copied advertisement.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
         let remote = remote_fixture(0x32);
         let mut limits = default_limits();
-        limits.timeout_milliseconds = 0;
+        limits.timeout_milliseconds = 1;
         let mut context =
             unsafe { open_remote_context_with_limits(&package, &remote.advertisement, &limits) };
         let mut pending = ptr::null_mut();
         let mut diagnostics = ptr::null_mut();
+        QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| delay.set(5));
         let pending_failure = inject_failure(AllocationSite::QueryRemotePendingHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -13096,7 +14266,7 @@ mod tests {
         let delayed_pending_failure = inject_failure(AllocationSite::QueryRemotePendingHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     built.terminal,
                     TERMINAL_ROWS,
@@ -13141,7 +14311,7 @@ mod tests {
         };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_context_open_v1(
+                type_bridge_query_remote_context_open(
                     &package,
                     advertisement,
                     ptr::null(),
@@ -13157,7 +14327,7 @@ mod tests {
         let mut context = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_context_open_v1(
+                type_bridge_query_remote_context_open(
                     &package,
                     advertisement,
                     ptr::null(),
@@ -13173,7 +14343,7 @@ mod tests {
             inject_failure(AllocationSite::QueryRemoteAdvertisementBytes, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_context_open_v1(
+                type_bridge_query_remote_context_open(
                     &package,
                     advertisement,
                     ptr::null(),
@@ -13192,7 +14362,7 @@ mod tests {
         let mut pending = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     context,
                     built.terminal,
                     TERMINAL_COUNT,
@@ -13303,7 +14473,7 @@ mod tests {
         };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -13320,7 +14490,7 @@ mod tests {
         let mut result = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -13335,7 +14505,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -13399,7 +14569,7 @@ mod tests {
             let mut result = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_query_remote_claim_decode_v1(
+                    type_bridge_query_remote_claim_decode(
                         claim,
                         terminal_kind,
                         ptr::null(),
@@ -13447,7 +14617,7 @@ mod tests {
                         };
                         assert_eq!(
                             unsafe {
-                                type_bridge_query_result_page_metadata_v1(
+                                type_bridge_query_result_page_metadata(
                                     result,
                                     &mut metadata,
                                     &mut diagnostics,
@@ -13544,7 +14714,7 @@ mod tests {
         let mut result = std::ptr::NonNull::<TypeBridgeQueryResult>::dangling().as_ptr();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_ROWS,
                     ptr::null(),
@@ -13567,7 +14737,7 @@ mod tests {
         let _result_failure = inject_failure(AllocationSite::QueryResultHandle, 0);
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -13581,7 +14751,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -13619,7 +14789,7 @@ mod tests {
         );
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     cancellation,
@@ -13633,7 +14803,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -13675,7 +14845,7 @@ mod tests {
         let oversized = vec![0x5a; limit + 1];
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -13696,7 +14866,7 @@ mod tests {
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_claim_decode_v1(
+                type_bridge_query_remote_claim_decode(
                     claim,
                     TERMINAL_COUNT,
                     ptr::null(),
@@ -13747,7 +14917,7 @@ mod tests {
         let mut diagnostics = ptr::null_mut();
         assert_eq!(
             unsafe {
-                type_bridge_query_remote_prepare_v1(
+                type_bridge_query_remote_prepare(
                     unsupported_context,
                     built.terminal,
                     TERMINAL_COUNT,
@@ -13784,17 +14954,17 @@ mod tests {
             (
                 HostileRemoteReply::WrongNonce,
                 TypeBridgeStatus::ExecutionFailed,
-                "query_remote_v2_nonce_mismatch",
+                "query_remote_binding_mismatch",
             ),
             (
                 HostileRemoteReply::WrongRequest,
                 TypeBridgeStatus::ExecutionFailed,
-                "query_remote_v2_request_mismatch",
+                "query_remote_binding_mismatch",
             ),
             (
                 HostileRemoteReply::ForeignSchemaOrProfilePlan,
                 TypeBridgeStatus::ExecutionFailed,
-                "query_remote_v2_plan_mismatch",
+                "query_remote_binding_mismatch",
             ),
             (
                 HostileRemoteReply::ForeignCapabilityAdvertisement,
@@ -13804,7 +14974,7 @@ mod tests {
             (
                 HostileRemoteReply::UnknownPayloadFormat,
                 TypeBridgeStatus::InvalidArgument,
-                "query_remote_v2_format_unsupported",
+                "query_remote_format_unsupported",
             ),
         ];
 
@@ -13825,7 +14995,7 @@ mod tests {
             let mut diagnostics = ptr::null_mut();
             assert_eq!(
                 unsafe {
-                    type_bridge_query_remote_claim_decode_v1(
+                    type_bridge_query_remote_claim_decode(
                         claim,
                         TERMINAL_COUNT,
                         ptr::null(),
@@ -13843,6 +15013,54 @@ mod tests {
                 expected_code,
                 "{kind:?}"
             );
+            if matches!(
+                kind,
+                HostileRemoteReply::WrongNonce
+                    | HostileRemoteReply::WrongRequest
+                    | HostileRemoteReply::ForeignSchemaOrProfilePlan
+            ) {
+                let expected = if matches!(kind, HostileRemoteReply::WrongNonce) {
+                    "nonce"
+                } else {
+                    "request"
+                };
+                let mut diagnostic =
+                    std::mem::MaybeUninit::<TypeBridgeExecutionDiagnosticViewV1>::uninit();
+                assert_eq!(
+                    unsafe {
+                        type_bridge_execution_diagnostics_get_v1(
+                            diagnostics,
+                            0,
+                            diagnostic.as_mut_ptr(),
+                        )
+                    },
+                    TypeBridgeStatus::Ok
+                );
+                let count = unsafe { diagnostic.assume_init() }.detail_count;
+                let mut found = false;
+                for index in 0..count {
+                    let mut detail = std::mem::MaybeUninit::<
+                        TypeBridgeExecutionDiagnosticDetailViewV1,
+                    >::uninit();
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_execution_diagnostics_detail_get_v1(
+                                diagnostics,
+                                0,
+                                index,
+                                detail.as_mut_ptr(),
+                            )
+                        },
+                        TypeBridgeStatus::Ok
+                    );
+                    let detail = unsafe { detail.assume_init() };
+                    if unsafe { view_string(detail.key) } == "reason" {
+                        assert_eq!(unsafe { view_string(detail.primary) }, expected);
+                        found = true;
+                    }
+                }
+                assert!(found, "binding mismatch omitted its reason");
+            }
             let diagnostic_evidence = unsafe { diagnostic_visible_text(diagnostics) };
             assert!(
                 !diagnostic_evidence
@@ -13857,7 +15075,7 @@ mod tests {
             result = std::ptr::NonNull::<TypeBridgeQueryResult>::dangling().as_ptr();
             assert_eq!(
                 unsafe {
-                    type_bridge_query_remote_claim_decode_v1(
+                    type_bridge_query_remote_claim_decode(
                         claim,
                         TERMINAL_COUNT,
                         ptr::null(),
@@ -13929,7 +15147,7 @@ mod tests {
         }
     }
 
-    fn proxy_options(endpoint: &'static str) -> TypeBridgeProxyConnectionOptionsV1 {
+    pub(super) fn proxy_options(endpoint: &'static str) -> TypeBridgeProxyConnectionOptionsV1 {
         TypeBridgeProxyConnectionOptionsV1 {
             struct_size: size_of::<TypeBridgeProxyConnectionOptionsV1>() as u32,
             version: 1,
@@ -13951,6 +15169,7 @@ mod tests {
             },
             connection_limits: ptr::null(),
             answer_limits: ptr::null(),
+            admission_window_milliseconds: 0,
             reserved: [0; 4],
         }
     }
@@ -14031,6 +15250,309 @@ mod tests {
     }
 
     #[test]
+    fn manager_proxy_terminals_use_one_staged_exchange_and_common_readers() {
+        use type_bridge_orm::session::StagedTransport;
+        use type_bridge_orm::{ProxyQueryConnection, QueryTargetError};
+        struct Transport {
+            fixture: RemoteFixture,
+            calls: AtomicUsize,
+        }
+        impl StagedTransport for Transport {
+            fn staged_capabilities(&self) -> BoxFuture<'_, Result<Vec<u8>, QueryTargetError>> {
+                panic!("staged capabilities are pinned")
+            }
+            fn exchange_staged<'a>(
+                &'a self,
+                bytes: &'a [u8],
+            ) -> BoxFuture<'a, Result<Vec<u8>, QueryTargetError>> {
+                Box::pin(async move {
+                    self.calls.fetch_add(1, Ordering::Relaxed);
+                    let request = remote_envelope(bytes, &self.fixture);
+                    assert_eq!(request.plans().len(), 1);
+                    assert_eq!(
+                        request.kind(),
+                        type_bridge_contract::query_remote::StagedKind::Read
+                    );
+                    Ok(remote_terminal_reply(bytes, &self.fixture))
+                })
+            }
+        }
+        let package = ordered_package("querymanagerproxy");
+        let mut fixture = remote_fixture(0x58);
+        fixture.schema = package.state()._authority.declared_schema().clone();
+        let advertisement = fixture.advertisement.clone();
+        let (authority, _) = remote_authority(package.state()).unwrap();
+        let transport = Arc::new(Transport {
+            fixture,
+            calls: 0.into(),
+        });
+        let connection = ProxyQueryConnection::with_exchange(
+            advertisement,
+            authority,
+            QueryExecutionResourceLimits::default(),
+        )
+        .unwrap()
+        .with_staged_transport(transport.clone());
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let proxy =
+            TypeBridgeProxyConnection::new(Arc::clone(package.state()), connection, runtime);
+        for operation in [
+            ManagerTerminalKind::All,
+            ManagerTerminalKind::First,
+            ManagerTerminalKind::Count,
+            ManagerTerminalKind::Exists,
+        ] {
+            let mut built =
+                unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+            if matches!(operation, ManagerTerminalKind::First) {
+                unsafe { add_identifier_equality(&package, &mut built, b"Ada") };
+            }
+            let descriptor = manager_terminal_descriptor(&built, operation);
+            unsafe { replace_terminal(&mut built, &descriptor) };
+            let mut result = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            let status = unsafe {
+                type_bridge_proxy_query_execute(
+                    &proxy,
+                    built.terminal,
+                    descriptor.kind,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            };
+            assert_eq!(
+                status,
+                TypeBridgeStatus::Ok,
+                "{operation:?}: {}",
+                if diagnostics.is_null() {
+                    String::new()
+                } else {
+                    unsafe { diagnostic_code(diagnostics) }
+                }
+            );
+            assert!(!result.is_null());
+            assert!(diagnostics.is_null());
+            drop(built);
+            match operation {
+                ManagerTerminalKind::All | ManagerTerminalKind::First => {
+                    let mut count = usize::MAX;
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_query_result_row_count(
+                                result,
+                                RESULT_ROWS,
+                                &mut count,
+                                &mut diagnostics,
+                            )
+                        },
+                        TypeBridgeStatus::Ok
+                    );
+                    assert_eq!(count, 0);
+                }
+                ManagerTerminalKind::Count => {
+                    let mut count = u64::MAX;
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_query_result_count(result, &mut count, &mut diagnostics)
+                        },
+                        TypeBridgeStatus::Ok
+                    );
+                    assert_eq!(count, 13);
+                }
+                ManagerTerminalKind::Exists => {
+                    let mut exists = u8::MAX;
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_query_result_exists(result, &mut exists, &mut diagnostics)
+                        },
+                        TypeBridgeStatus::Ok
+                    );
+                    assert_eq!(exists, 1);
+                }
+            }
+            assert_eq!(
+                unsafe { type_bridge_query_result_close(&mut result) },
+                TypeBridgeStatus::Ok
+            );
+        }
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn proxy_batches_use_one_staged_write_and_preserve_returning_cardinality() {
+        use crate::iid::TypeBridgeIid;
+        use crate::projected_batch::*;
+        use type_bridge_orm::session::StagedTransport;
+        use type_bridge_orm::{ProxyQueryConnection, QueryTargetError};
+        struct Transport {
+            fixture: RemoteFixture,
+            calls: AtomicUsize,
+        }
+        impl StagedTransport for Transport {
+            fn staged_capabilities(&self) -> BoxFuture<'_, Result<Vec<u8>, QueryTargetError>> {
+                panic!("staged capabilities are pinned")
+            }
+            fn exchange_staged<'a>(
+                &'a self,
+                bytes: &'a [u8],
+            ) -> BoxFuture<'a, Result<Vec<u8>, QueryTargetError>> {
+                Box::pin(async move {
+                    self.calls.fetch_add(1, Ordering::Relaxed);
+                    let request = remote_envelope(bytes, &self.fixture);
+                    assert_eq!(request.plans().len(), 1);
+                    assert_eq!(
+                        request.kind(),
+                        type_bridge_contract::query_remote::StagedKind::Write
+                    );
+                    Ok(remote_terminal_reply(bytes, &self.fixture))
+                })
+            }
+        }
+        let fixture =
+            crate::entity_crud::tests::fixture(vec![], crate::entity_crud::tests::COMMIT_SUCCESS);
+        let package = &fixture.package;
+        let mut remote = remote_fixture(0x59);
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_WRITE,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
+        }
+        remote.contract = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("c-batch-proxy-executor", "epoch-batch-proxy-v1").unwrap(),
+            remote.signer.public_key(),
+        );
+        remote.advertisement = remote.contract.encode().unwrap();
+        remote.schema = package.state()._authority.declared_schema().clone();
+        let (authority, _) = remote_authority(package.state()).unwrap();
+        let connection = ProxyQueryConnection::with_exchange(
+            remote.advertisement.clone(),
+            authority,
+            QueryExecutionResourceLimits::default(),
+        )
+        .unwrap();
+        let transport = Arc::new(Transport {
+            fixture: remote,
+            calls: 0.into(),
+        });
+        let connection = connection.with_staged_transport(transport.clone());
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let proxy =
+            TypeBridgeProxyConnection::new(Arc::clone(package.state()), connection, runtime);
+        for rows in [0usize, 2] {
+            let mut builder = ptr::null_mut();
+            let mut batch = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    type_bridge_projected_batch_builder_open_v1_impl(
+                        package,
+                        &fixture.token,
+                        4,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut builder,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            for iid in ["0x10", "0x11"].iter().take(rows) {
+                assert_eq!(
+                    unsafe {
+                        type_bridge_projected_batch_builder_add_v1_impl(
+                            builder,
+                            &TypeBridgeIid::new(iid).unwrap(),
+                            ptr::null(),
+                            &mut diagnostics,
+                        )
+                    },
+                    TypeBridgeStatus::Ok
+                );
+            }
+            assert_eq!(
+                unsafe {
+                    type_bridge_projected_batch_builder_finish_impl(
+                        &mut builder,
+                        &mut batch,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            for returning in [false, true] {
+                let mut result = ptr::null_mut();
+                let execute = if returning {
+                    type_bridge_proxy_connection_projected_batch_delete_returning
+                } else {
+                    type_bridge_proxy_connection_projected_batch_execute
+                };
+                let status = unsafe {
+                    execute(
+                        &proxy,
+                        batch,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut result,
+                        &mut diagnostics,
+                    )
+                };
+                assert_eq!(
+                    status,
+                    TypeBridgeStatus::Ok,
+                    "{}",
+                    if diagnostics.is_null() {
+                        String::new()
+                    } else {
+                        unsafe { diagnostic_code(diagnostics) }
+                    }
+                );
+                let mut count = usize::MAX;
+                assert_eq!(
+                    unsafe {
+                        type_bridge_projected_batch_result_count_impl(
+                            result,
+                            &fixture.token,
+                            4,
+                            &mut count,
+                            &mut diagnostics,
+                        )
+                    },
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(count, if returning { 0 } else { rows });
+                assert_eq!(
+                    unsafe { type_bridge_projected_batch_result_close_impl(&mut result) },
+                    TypeBridgeStatus::Ok
+                );
+            }
+            assert_eq!(
+                unsafe { type_bridge_projected_batch_close_impl(&mut batch) },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                transport.calls.load(Ordering::Relaxed),
+                if rows == 0 { 0 } else { 2 }
+            );
+        }
+    }
+
+    #[test]
     fn proxy_execute_reports_unreachable_route_and_package_mismatch() {
         let package_a = package("proxyroutea");
         let package_b = package("proxyrouteb");
@@ -14055,7 +15577,7 @@ mod tests {
             let mut diagnostics = ptr::null_mut();
             // SAFETY: every input is retained; outputs are independent.
             let status = unsafe {
-                type_bridge_proxy_query_execute_v1(
+                type_bridge_proxy_query_execute(
                     connection,
                     terminal,
                     TERMINAL_COUNT,

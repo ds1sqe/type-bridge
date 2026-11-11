@@ -360,7 +360,14 @@ const REMOTE_CAPABILITIES = [
   "query.stage.require",
   "query.stage.select",
   "query.stage.sort",
-];
+    "query.fetch.thing",
+    "query.let",
+    "query.expr.iid",
+    "query.pipeline.rematch",
+    "query.plan.v3",
+    "query.remote.envelope-v3",
+    "query.remote.answer-dimensions",
+].sort();
 const SIGNING_SEED = Buffer.alloc(32, 0x42);
 const SIGNING_PRIVATE_KEY = crypto.createPrivateKey({
   key: Buffer.concat([
@@ -648,42 +655,26 @@ function danaNode(nodeId = 1, iid = "0x02") {
 function hydratedRowsReply(request, advertisement, graph, declared, node) {
   const requestBytes = Buffer.from(request);
   const decoded = JSON.parse(requestBytes.toString("utf8"));
-  requireCondition(
-    decoded !== null && typeof decoded.plan === "object",
-    "generated remote request is malformed",
-  );
-  const plan = Buffer.from(canonicalString(decoded.plan));
-  return remoteSignedReply(
-    {
-      format: "typebridge.query-remote-response/v2",
-      nonce: decoded.nonce,
-      outcome: {
-        graph,
-        kind: "hydrated_rows",
-        rows: [
-          {
-            slots: [
-              {
-                kind: "singular",
-                value: { declared, node },
-              },
-            ],
-          },
-        ],
-      },
-      plan: fingerprint(
-        "typebridge.query.plan",
-        "typebridge.query-plan-c14n/v2",
-        plan,
-      ),
-      request: fingerprint(
-        "typebridge.query.remote-request",
-        "typebridge.query-remote-request/v2",
-        requestBytes,
-      ),
-    },
-    advertisement,
-  );
+  requireCondition(decoded.plans.length === 1, "exact fixture must use one native thing fetch");
+  const plan = JSON.parse(Buffer.from(decoded.plans[0].plan_bytes,"hex").toString("utf8"));
+  const fetch = plan.pipeline.find(stage => stage.kind === "fetch");
+  const nodes = new Map(graph.nodes.map(item => [item.id,item]));
+  const root = nodes.get(node);
+  const scalar = value => ({kind:"scalar",value});
+  const text = value => scalar({kind:"string",value});
+  const attributes = item => ({kind:"document",fields:Object.fromEntries(item.attributes.map(field => [field.attribute,field.attribute === "aliases" ? {kind:"list",values:field.values} : field.values.length ? scalar(field.values[0]) : {kind:"absent"}]))});
+  let documents = [{_iid:text(root.iid),_type:text(root.concrete.label),attributes:attributes(root)}];
+  fetch.roles.forEach((listed,index) => {
+    const role = root.roles.find(role => role.role.label === listed.role.label);
+    const players = role?.players.length ? role.players : [null];
+    documents = documents.flatMap(document => players.map(player => {
+      if (player === null) return document;
+      const target = nodes.get(player.node);
+      return {...document,[`_role_${index}_iid`]:text(target.iid),[`_role_${index}_type`]:text(target.concrete.label),[`_role_${index}_attributes`]:attributes(target)};
+    }));
+  });
+  return remoteSignedReply({answers:[{kind:"documents",documents}],format:"typebridge.query-remote-response/v3",nonce:decoded.nonce,outcome:{kind:"committed"},request:fingerprint("typebridge.query.remote-request","typebridge.query-remote-request/v3",requestBytes)},advertisement);
+
 }
 
 async function hydrateExact(
@@ -724,11 +715,11 @@ async function hydrateExact(
     ),
     {
       resources: new package_.QueryExecutionResourceLimits({
-        items: 8n,
+        items: 64n,
         bytes: 1n << 20n,
-        collectionMembers: 16n,
-        graphNodes: 16n,
-        attributeValues: 128n,
+        collectionMembers: 128n,
+        graphNodes: 64n,
+        attributeValues: 1024n,
         rolePlayers: 64n,
         timeoutMilliseconds: 30_000n,
         statements: 3n,
@@ -955,7 +946,7 @@ function constructedObservations(package_) {
     identifier: package_.Identifier.create("interaction-absent"),
     target: ada,
   });
-  const event = package_.Event.reference("0x20", {});
+  const event = package_.Event.reference(new package_.Iid("0x20"), {});
   const container = package_.Container.create({ item: [event] });
   return {
     ada,
@@ -969,6 +960,28 @@ function constructedObservations(package_) {
     plain,
     positiveRobot,
   };
+}
+
+async function orderedLinkObservation(package_, model, graph, rootNode) {
+  try {
+    await hydrateExact(package_, model, graph, rootNode);
+    throw new Error("populated ordered query role was accepted");
+  } catch (error) {
+    const diagnostic = diagnosticFrom(error);
+    requireCondition(diagnostic.code === "query_plan_hydration_ordered_role", "unexpected ordered-role diagnostic");
+    requireCondition(JSON.stringify(diagnostic.path) === JSON.stringify([{kind:"provider_evidence"}]), "ordered-role diagnostic path changed");
+    console.log("INTENDED_STAGED_DIFFERENCE ordered roles refused: network-link:participant");
+  }
+  const empty = structuredClone(graph);
+  empty.nodes[rootNode].roles.find(role => role.role.label === "participant").players = [];
+  const native = await hydrateExact(package_, model, empty, rootNode);
+  requireCondition(native.participant.length === 0, "empty ordered query role must succeed");
+  const ada = await hydrateExact(package_, package_.Person, {nodes:[adaNode()]}, 0);
+  const dana = await hydrateExact(package_, package_.Person, {nodes:[danaNode(0)]}, 0);
+  const symbol = Object.getOwnPropertySymbols(model).find(candidate => candidate.description === "typebridge.hydrate-complete");
+  requireCondition(typeof model[symbol] === "function", "model has no codec fixture hydration seam");
+  const complete = model[symbol]("0x10", {identifier:package_.Identifier.create("network-link-ordered"),nickname:null,destination:dana,origin:ada,participant:[ada,dana]});
+  return model.decodeSnapshot(model.encodeSnapshot(complete));
 }
 
 async function hydratedObservations(package_) {
@@ -1002,7 +1015,7 @@ async function hydratedObservations(package_) {
     },
     1,
   );
-  const link = await hydrateExact(
+  const link = await orderedLinkObservation(
     package_,
     package_.NetworkLink,
     {
@@ -1269,9 +1282,9 @@ function constraintObservation(package_, constructed) {
     () =>
       package_.Container.create({
         item: [
-          package_.Event.reference("0x01", {}),
-          package_.Event.reference("0x02", {}),
-          package_.Event.reference("0x03", {}),
+          package_.Event.reference(new package_.Iid("0x01"), {}),
+          package_.Event.reference(new package_.Iid("0x02"), {}),
+          package_.Event.reference(new package_.Iid("0x03"), {}),
         ],
       }),
     { category: "invalid_input", code: "role_cardinality_violation" },
@@ -1453,7 +1466,7 @@ async function buildReport(root, package_, foreign, semanticProfile = selectedPr
   const localHydration =
     hydrated.ada.__typebridgeModel === package_.Person.typeKey &&
     hydrated.ada.__typebridgeForm === "complete" &&
-    hydrated.ada.iid === "0x01" &&
+    hydrated.ada.iid.toString() === "0x01" &&
     Object.isFrozen(hydrated.ada);
   requireCondition(
     localConstruction && localHydration,

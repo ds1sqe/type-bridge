@@ -15,16 +15,30 @@ No model registry or handwritten descriptor is involved. Native execution
 accepts only the exact generated class and value wrappers installed by that
 package.
 
+Single writes return `WriteResult` with `count`, `items`, and `item`. `item`
+is present only when exactly one root was written. Python attaches the input
+facade's IID only in that case; zero or multiple roots leave it unchanged.
+Generated Python managers use the same native runtime for ordered and unordered
+schemas. They hydrate and stage publication before completing the write.
+Regenerate older packages to replace their V1 manager resource.
+Ordered and unordered Node packages now expose the same manager operations;
+regenerate older Node packages to use that surface.
+A failed owned write restores the input facade; a materialization failure in a
+borrowed write makes that transaction rollback-only.
+
 ## Entity manager operations
 
 | Operation | Result |
 | --- | --- |
 | `insert(value)` | Insert one model and attach its IID. |
 | `insert_many(values)` | Insert one homogeneous batch atomically. |
-| `put(value)` | Idempotently match/insert by the declared key. |
-| `put_many(values)` | Put one homogeneous batch atomically. |
-| `update(value)` | Update by attached IID, or resolve a detached Python model by its projected key. |
-| `delete(value_or_iid)` | Delete by IID, or resolve a detached Python model by its projected key. |
+| `put(value)` | Idempotently match/insert by the declared key; keyless models use TypeQL `put` of the given values. |
+| `put_many(values)` | Put one homogeneous batch atomically; keyless rows follow [keyless put](upgrade-3.0.md#keyless-put) grouping and statement limits. |
+| `update(value)` | Update by attached canonical TypeDB IID. |
+| `delete(value_or_iid)` | Delete by attached canonical TypeDB IID or an `Iid` value. |
+| `delete_returning(value)` | Delete by attached IID and return the stored pre-delete snapshot. |
+| `delete_many(values)` | Delete a batch by attached IIDs and return the inputs. |
+| `delete_many_returning(values)` | Delete a batch and return the existing snapshots in input order. |
 | `get_by_iid(iid)` | Return one hydrated model or `None`. |
 | `filter(**lookups)` | Return a new immutable filtered manager. |
 | `where(field, comparison, value)` | Start an immutable exact field-token filter. |
@@ -34,7 +48,8 @@ package.
 ```python
 manager = Person.manager(db)
 
-ada = manager.insert(Person(person_id=PersonId("ada"), age=Age(36)))
+ada = manager.insert(Person(person_id=PersonId("ada"), age=Age(36))).item
+assert ada is not None
 assert ada.iid is not None
 
 ada.age = Age(37)
@@ -45,16 +60,27 @@ manager.delete(ada)
 assert manager.get_by_iid(ada.iid) is None
 ```
 
-For Python, `update` and model-valued `delete` use an attached canonical TypeDB
-IID when present. A detached model is resolved by its projected key; if no row
-has that key, the operation is a no-op and the model remains detached. Passing
-an IID string to `delete` keeps exact-IID behavior. `put` requires the generated
-model's projected key contract.
+Python `update`, `update_many`, and model-valued deletion require attached
+canonical TypeDB IIDs. They do not look up detached models or discard inputs.
+Read the desired models first, then pass them to the explicit IID operations.
+A keyed `put` looks up the declared key and replaces the other fields. A
+keyless `put` is TypeQL `put` on the exact model type: it returns an instance
+holding every given value and role player, or inserts the pattern; it never
+updates, does not match subtype instances, and fails with
+`put_ambiguous_match` when several instances match. See
+[Keyless put](upgrade-3.0.md#keyless-put).
+
+The callback `update_with` is removed, and `delete()` without an instance
+requires a filtered manager: `filter(...).delete()` or `where(...).delete()`
+deletes every match without instance hooks. Use an authored update/delete plan
+staged in one transaction for other database-side mutations. For
+application-computed values, read the models, change them, then call
+`update_many` with their attached IIDs.
 
 ## Filters
 
 Generated managers retain the compatibility `filter(...)` surface for IID,
-raw-scalar, rich-operator, and filtered-mutation workflows. Its scalar lookup
+raw-scalar and rich-operator read workflows. Its scalar lookup
 suffixes are `eq`, `ne`, `gt`, `gte`, `lt`, and `lte`; no suffix means
 equality.
 
@@ -88,9 +114,8 @@ Person.manager(db).filter({ scoreGte__eq: ScoreGte.create(8n) }).all();
 
 For an exact generated-field contract, use the distinct immutable `where`
 filter. It accepts an issued field token, one of the closed six comparisons,
-and the field's exact generated attribute value. In TypeScript this surface is
-emitted by ordered successor packages; legacy unordered packages remain
-byte-exact.
+and the field's exact generated attribute value. Ordered and unordered packages
+expose the same native manager surface.
 
 ```python
 from app_models import ProjectedManagerComparison
@@ -114,10 +139,14 @@ const ada = Person.manager(db)
   .first();
 ```
 
-Canonical filters expose only `where`, `all`, `first`, `count`, and `exists`.
-They cannot mutate or accept string/IID/rich-operator escapes. Their `first`
-is identity-strict: every effective reference-key field needs one semantically
-consistent equality predicate. An unkeyed, partial, conflicting, or otherwise
+Canonical filters expose `where`, `all`, `first`, `count`, and `exists`.
+Python filters also expose `delete()` and `update(replacement)`; these mutations
+act on every match and do not run instance CRUD hooks. Python
+`filter(iid=Iid("0x1234"))` retains the IID selection for those terminals.
+Use `iid__in` for a list or iterable of `Iid` values; an empty list matches
+nothing without a provider request. String IID arguments are refused.
+Their `first` is identity-strict: supply a single IID or one semantically
+consistent equality predicate for every effective reference-key field. An unkeyed, partial, conflicting, or otherwise
 nonsingular filter fails before provider I/O. Compatibility-manager `first()`
 retains its released arbitrary-first behavior.
 
@@ -145,13 +174,21 @@ people = [
     Person(person_id=PersonId("ada"), age=Age(36)),
     Person(person_id=PersonId("grace"), age=Age(45)),
 ]
-Person.manager(db).insert_many(people)
+result = Person.manager(db).insert_many(people)
+assert result.count == len(result.items) == len(result.input_indexes)
 Person.manager(db).put_many(people)
 ```
 
-A bulk call uses one transaction and returns values in input order. On supported
-TypeDB 3.12/band-9 connections, eligible homogeneous entity inserts may use the
-compiled `given`-stage fast path; fallback execution has the same result.
+Python, Rust, and Node batch writes return one `BatchWriteResult`. Its `items`
+contain every root in input order; `input_indexes` (`inputIndexes` in Node)
+identify their original input rows. A missing input contributes no item, and
+several roots from one input repeat that input's index. Rust exposes `items()`
+and `input_indexes()` and can consume the models with `into_items()`.
+
+A batch call compiles one plan and runs every statement in the same transaction.
+Python preserves an input model's identity only when that input produces exactly
+one root. Zero or multiple roots leave it unchanged. A failure during hydration
+or publication rolls back the owned write or makes a borrowed write rollback-only.
 
 ## Caller-owned transactions
 
@@ -165,7 +202,8 @@ with db.transaction("write") as transaction:
 
     person = person_manager.put(
         Person(person_id=PersonId("ada"), age=Age(36))
-    )
+    ).item
+    assert person is not None
     employment_manager.insert(Employment(employee=person, employer=acme))
 ```
 

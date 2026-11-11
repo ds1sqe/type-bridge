@@ -1,8 +1,10 @@
 # Generated Typed Query Contract
 
-The additive read/write [query-plan V3 wire specification](../reference/query-plan-v3.md)
+The read/write [query-plan wire specification](../reference/query-plan.md)
 defines canonical bytes, expressions, write stages, operations and shared examples.
-V1/V2 encodings and fingerprints described here remain frozen.
+Typed queries and manager terminals lower to this one native plan path.
+Historical parity captures remain test oracles; retired query encodings are
+not accepted execution APIs.
 
 Status: implemented normative semantics for
 [#170](https://github.com/ds1sqe/type-bridge/issues/170) through
@@ -14,7 +16,7 @@ generated packages after the #189 cutover.
     `Query`, `QuerySession`, field tokens, role tokens, and model classes are
     emitted together inside each generated Python or TypeScript package. The
     base SDK supplies connections, the verified runtime projection, and
-    low-level Query V2; it does not accept handwritten descriptors as schema
+    typed staged plan execution; it does not accept handwritten descriptors as schema
     authority.
 
 This document fixes the public behavior shared by the Rust request, Python and
@@ -30,11 +32,12 @@ There are no separate public model-query, match-query, or fetch-query classes.
 | Language | Generated-query import | Required connection |
 | --- | --- | --- |
 | Python | `from your_generated_package import Query, QuerySession` | `Database | TransactionContext` |
-| TypeScript | `import { Query, QuerySession } from "./your-generated-package/index.js"` | `RustDatabase | RustTransactionContext` |
+| TypeScript | `import { Query, QuerySession } from "./your-generated-package/index.js"` | `Database | TransactionContext` |
 
-Python's package-root `Query` and `QueryBuilder` remain the mutable raw-TypeQL
-builders. TypeScript's package-root `TypedQuery<T, Row>` remains the separately
-unscheduled mutable compatibility query. Generated model managers provide the
+Python's package-root `Query` and `QueryBuilder` are removed in 3.0; use
+generated typed queries or `Database.execute_query` for raw TypeQL text.
+TypeScript's package-root `TypedQuery<T, Row>` is also removed; generated
+queries replace it. Generated model managers provide the
 concise single-type CRUD/query path; generated `QuerySession` provides immutable
 multi-binding queries and is Python's only typed query API; the handwritten
 `type_bridge.typed` facade was removed in 2.3.0. None of these retained
@@ -63,7 +66,7 @@ handles; they do not hold a mirrored semantic plan or raw TypeQL.
 from dataclasses import dataclass
 from typing import assert_type
 
-from generated_v2 import (
+from generated_package import (
     Container,
     Employment,
     Event,
@@ -84,12 +87,12 @@ event = session.exact(Event)
 container = session.exact(Container)
 employment = session.exact(Employment)
 
-employee = employment.role(Employment.employee).connects(person)
-subject = event.role(Event.subject).connects(person)
-contained = container.role(Container.item).connects(event)
+employee = employment.role(Employment.employee).links(person)
+subject = event.role(Event.subject).links(person)
+contained = container.role(Container.item).links(event)
 ```
 
-`generated_v2` is the checked fixture package in this repository. Applications
+`generated_package` is the checked fixture package in this repository. Applications
 use the package name emitted for their own Split-YAML workspace; they never
 write the classes shown above themselves.
 
@@ -114,8 +117,8 @@ five_slots: Query[Person, Event, Container, Event, Person] = session.query(
 ).where(
     subject,
     contained,
-    other_event.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(other_event),
+    other_event.role(Event.subject).links(colleague),
+    container.role(Container.item).links(other_event),
 )
 
 person_pair: Query[Person, Person] = (
@@ -124,8 +127,8 @@ person_pair: Query[Person, Person] = (
     .where(
         subject,
         contained,
-        other_event.role(Event.subject).connects(colleague),
-        container.role(Container.item).connects(other_event),
+        other_event.role(Event.subject).links(colleague),
+        container.role(Container.item).links(other_event),
     )
 )
 
@@ -149,18 +152,18 @@ async def selection_shapes() -> None:
 
 Fields and roles are bound through their owning variables. Python string
 helpers take the corresponding typed string attribute while TypeScript helpers
-take a string; only `regex` interprets that value as a regex. A disconnected
+take a string; only `like` interprets that value as a regex. A disconnected
 graph is invalid unless topology-level cross-join permission names its
 components.
 
 <!-- typed-query-example: python-topology-and-strings -->
 ```python
 adults = one_person.where(
-    person.field(Person.score).gte(Score(18)),
+    person.field(Person.score).ge(Score(18)),
     person.field(Person.identifier).starts_with(Identifier("Al")),
     person.field(Person.identifier).contains(Identifier("Research")),
     person.field(Person.identifier).ends_with(Identifier("Labs")),
-    person.field(Person.identifier).regex(Identifier(r"^A[[:alpha:]]+$")),
+    person.field(Person.identifier).like(Identifier(r"^A[[:alpha:]]+$")),
 )
 
 # Percent is literal input here; it has no SQL wildcard meaning.
@@ -195,7 +198,7 @@ async def terminals() -> None:
     ordered_people = await one_person.rows(
         limit=50,
         offset=0,
-        order_by=(person.field(Person.identifier).asc(),),
+        sort=(person.field(Person.identifier).asc(),),
     )
     assert_type(ordered_people, list[Person])
 
@@ -207,7 +210,7 @@ async def terminals() -> None:
         person,
         limit=50,
         offset=0,
-        order_by=(person.field(Person.identifier).asc(),),
+        sort=(person.field(Person.identifier).asc(),),
         include_total=True,
     )
     assert_type(page.items, tuple[PersonEvents, ...])
@@ -249,22 +252,22 @@ import {
   Score,
   type Page,
   type Query,
-} from "./generated_v2/src/index.js";
+} from "./generated_package/src/index.js";
 import {
-  RustDatabase,
-  type RustTransactionContext,
+  Database,
+  type TransactionContext,
 } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "typed_query_example");
+const db = Database.connect("localhost:1729", "typed_query_example");
 const session = new QuerySession(db);
 const person = session.exact(Person);
 const event = session.exact(Event);
 const container = session.exact(Container);
 const employment = session.exact(Employment);
 
-const employee = employment.role(Employment.employee).connects(person);
-const subject = event.role(Event.subject).connects(person);
-const contained = container.role(Container.item).connects(event);
+const employee = employment.role(Employment.employee).links(person);
+const subject = event.role(Event.subject).links(person);
+const contained = container.role(Container.item).links(event);
 ```
 
 TypeScript scalarizes a one-slot generated query and preserves a readonly tuple
@@ -292,8 +295,8 @@ const fiveSlots: Query<
   .where(
     subject,
     contained,
-    otherEvent.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(otherEvent),
+    otherEvent.role(Event.subject).links(colleague),
+    container.role(Container.item).links(otherEvent),
   );
 
 const personPair: Query<readonly [Person, Person]> = session
@@ -302,8 +305,8 @@ const personPair: Query<readonly [Person, Person]> = session
   .where(
     subject,
     contained,
-    otherEvent.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(otherEvent),
+    otherEvent.role(Event.subject).links(colleague),
+    container.role(Container.item).links(otherEvent),
   );
 
 void scalar;
@@ -318,11 +321,11 @@ void personPair;
 <!-- typed-query-example: typescript-topology-and-strings -->
 ```typescript
 const adults = onePerson.where(
-  person.field(Person.score).gte(Score.create(18n)),
+  person.field(Person.score).ge(Score.create(18n)),
   person.field(Person.identifier).startsWith(Identifier.create("Al")),
   person.field(Person.identifier).contains(Identifier.create("Research")),
   person.field(Person.identifier).endsWith(Identifier.create("Labs")),
-  person.field(Person.identifier).regex(Identifier.create(String.raw`^A[[:alpha:]]+$`)),
+  person.field(Person.identifier).like(Identifier.create(String.raw`^A[[:alpha:]]+$`)),
 );
 
 const literalPercent = onePerson.where(
@@ -343,7 +346,7 @@ void independentPairs;
 const orderedPeople: readonly Person[] = await onePerson.rows({
   limit: 50n,
   offset: 0n,
-  orderBy: [person.field(Person.identifier).asc()],
+  sort: [person.field(Person.identifier).asc()],
 });
 
 const personCount: bigint = await twoSlots.countBy(person);
@@ -363,7 +366,7 @@ const page: Page<Readonly<{
 }>> = await work.pageBy(person, {
   limit: 50n,
   offset: 0n,
-  orderBy: [person.field(Person.identifier).asc()],
+  sort: [person.field(Person.identifier).asc()],
   includeTotal: true,
 });
 
@@ -381,7 +384,7 @@ const ownedPerson = ownedSession.exact(Person);
 const ownedRows = await ownedSession.query(ownedPerson).rows({ limit: 10n });
 
 // Borrowed: only the caller closes the context, which remains reusable.
-const tx: RustTransactionContext = db.transaction("read");
+const tx: TransactionContext = db.transaction("read");
 try {
   const borrowed = new QuerySession(tx);
   const borrowedPerson = borrowed.exact(Person);
@@ -516,8 +519,7 @@ Concept identity determines equality but is not assumed sortable.
 
 `contains`, `starts_with`/`startsWith`, and `ends_with`/`endsWith` accept literal
 text. Rust owns escaping. A percent sign is an ordinary percent sign, not a SQL
-wildcard. `regex` is the only regex operator on the new facade. The new facade
-does not expose `like`; legacy `like` behavior remains unchanged.
+wildcard. `like` is the regular-expression operator on the generated query facade.
 
 ## TypeDB Parameter Transport
 
@@ -527,14 +529,12 @@ deterministic `$g0`, `$g1`, ... variables and the executor supplies one
 `given` row through the driver's bounded streaming path. Values never cross a
 Python or TypeScript raw-query boundary.
 
-Pre-3.12 provider bands compile the same validated values through Rust's inline
-literal renderer. Temporal, decimal, and duration operands also remain inline
-on band 9 because the current portable row adapter cannot preserve their full
+Temporal, decimal, and duration operands remain inline through Rust's literal
+renderer because the current portable row adapter cannot preserve their full
 canonical TypeQL spelling surface. TypeDB requires the right operand of `like`
 to be a string literal, so prefix, suffix, and regex predicates remain inline;
 Rust still owns their escaping and validation. `contains` can use `given`,
-retains TypeDB's Unicode case-folded substring semantics, and `regex` remains
-the only raw regular expression.
+retains TypeDB's Unicode case-folded substring semantics, and `like` is the operator that interprets a raw regular expression.
 The route is an internal provider choice and does not change the request shape,
 statement ceiling, transaction snapshot, or public API.
 
@@ -545,6 +545,14 @@ on success, validation failure after opening, provider error, decode error,
 timeout, and cancellation. With a caller-owned read `TransactionContext`, the
 terminal neither commits, rolls back, closes, nor consumes it. Every internal
 statement in the logical invocation uses that same transaction and snapshot.
+
+Rust core callers can use `TransactionContext::execute_plans`,
+`OwnedTransaction::execute_plans`, or `EagerTransaction::execute_plans` on a
+caller-owned Read, Write, or Schema transaction. Read transactions refuse
+write plans with `query_plan_read_only`. The stack shares one answer budget
+and deadline and leaves commit, rollback, and close to the caller. A failed
+or cancelled write makes the transaction rollback-only; a Schema transaction
+can combine native data plans with schema statements before one commit.
 
 Provider capability and schema-fingerprint checks happen before a data
 statement. Provider/session hard ceilings cover processed rows, collected
@@ -557,9 +565,14 @@ whole operation; no partial row or page is exposed.
 
 A query is held to one set of limits from authoring to execution: the plan's
 canonical encoding, its structure, and its remote request envelope. The limits
-are a value, `QueryLimits`, not library constants. Defaults reproduce the
-ceilings every earlier release enforced, so a caller who sets nothing sees
-unchanged plan bytes, fingerprints, and refusals.
+are a value, `QueryLimits`, not library constants. Small plans keep their
+existing canonical bytes and fingerprints. In 3.0, typed predicate strings
+also observe the default 1 MiB `canonical_string_bytes` ceiling; 2.x typed
+predicates could reach the caller's artifact ceiling. Raise
+`canonical_string_bytes` explicitly to retain that larger-value behavior,
+subject to the artifact ceiling and the receiver's own limits. Staged requests
+with actual strings above 1 MiB require `query.input.wide-strings`;
+refusals name the configured `canonical_string_bytes` limit.
 
 | Limit | Default | Supported maximum | Bounds |
 | --- | ---: | ---: | --- |
@@ -593,8 +606,8 @@ Rules that hold in every binding:
 - Rust admits limits. A binding passes named overrides through and never
   validates, clamps, or defaults them. An unknown name or an unsupported value
   is refused before a session exists.
-- A session's limits apply to every query it authors. Validation, V2
-  adaptation, canonical encoding, and execution all read the limits the
+- A session's limits apply to every query it authors. Validation, native plan
+  lowering, canonical encoding, and execution all read the limits the
   request was validated under.
 - Repeated `where` clauses and chained `and`/`or` build one flat conjunction
   or disjunction. Nesting depth reflects only nesting the caller wrote.
@@ -604,6 +617,13 @@ Rules that hold in every binding:
   raises it.
 - Answer ceilings are separate. How much a query may return is the answer
   policy described under [Answer Limits](#answer-limits), not a query limit.
+
+Manager `all()` authors its window from the caller's item policy. With no
+caller override, that window remains 100,000 on both direct and proxy targets.
+A proxy's transport default or a tighter server ceiling only bounds execution;
+it never rewrites that window or its plan bytes. Equal caller policies therefore
+produce equal plans. An answer exceeding the execution budget returns the
+existing typed resource-limit refusal, without publishing a truncated list.
 
 ### Remote agreement
 
@@ -646,14 +666,14 @@ an unset policy becomes a default; `Default` is the direct policy.
 
 | Limit | Direct default | Proxy default | Supported maximum | Bounds |
 | --- | ---: | ---: | ---: | --- |
-| `timeout_milliseconds` | 30,000 | 30,000 | 86,400,000 | Duration of one terminal |
+| `timeout_milliseconds` | 60,000 | 60,000 | none | Duration of one terminal; zero or negative binding input means no deadline |
 | `items` | 100,000 | 65,536 | none | Provider items read and rows returned; the scan and hydration both draw on it |
 | `bytes` | 64 MiB | 32 MiB | none | Provider answer bytes, the reply envelope, and the projected result |
 | `graph_nodes` | 1,000,000 | 65,536 | none | Hydrated things, including nested role players |
 | `attribute_values` | 4,000,000 | 65,536 | none | Hydrated attribute values |
 | `collection_members` | 1,000,000 | 65,536 | none | Collected identities, group keys, and reducer cells |
 | `role_players` | 1,000,000 | 65,536 | none | Role-player references |
-| `statements` | 3 | 3 | 3 | Provider statements of one terminal |
+| `statements` | unset (minimum 3) | unset (minimum 3) | 4,096 | Provider statements of one terminal |
 
 An answer between the two defaults is returned on a direct session and
 refused through a proxy with `limit` naming the dimension and `source`
@@ -683,55 +703,46 @@ request's budget and its own ceilings, per dimension. The reply is encoded
 and decoded under those budgets, so a reply over 32 MiB or 65,536 rows is
 exchanged only between peers that both raised the limit.
 
-The proxy keeps one bound of its own: a request lives at most five minutes,
-so a longer `timeout_milliseconds` shortens to that through a proxy.
+Execution timeouts start when the call executes, not when its plan is built.
+Rust represents them with `QueryTimeout`, either no deadline or a positive
+millisecond duration. Python, Node and C accept signed 64-bit milliseconds;
+zero and negative inputs select no deadline. A connection or server ceiling
+still tightens an unbounded request. Commit is never interrupted: a deadline
+observed before commit rolls back, and a dispatched commit runs to its outcome.
+
+The proxy's `admission_window_milliseconds` is separate: it defaults to 60,000 ms
+from request issue to admission. Configure it on the proxy connection (Node:
+`admissionWindowMilliseconds`) and the server. The server's advertised ceiling
+wins. It must be positive and finite; it protects request freshness and nonce
+retention without shortening an admitted operation's execution time.
 
 ## Remote Envelope
 
-A single query crosses the proxy boundary in one request format and one reply
-format, whatever the query: an authored low-level plan, a generated model
-query, or a reduction. A staged transaction crosses it in the V3 envelope
-described under [Staged transactions](#staged-transactions).
+All typed manager and query execution uses the staged envelope. Requests carry
+canonical native plans, given rows, transaction kind, resource budgets, the
+executor advertisement identity, a nonce and bounded admission expiry. Replies
+bind the request and carry validated answers or structured execution failures.
+The connection verifies the advertised reply key and complete request binding
+before publishing values. See the [wire specification](../reference/query-plan.md#staged-remote-envelope)
+for exact fields, tags and signing rules.
 
-| Wire value | Format |
-| --- | --- |
-| Request | `typebridge.query-remote-request/v2` |
-| Response | `typebridge.query-remote-response/v2` |
-| Failure | `typebridge.query-remote-failure/v2` |
-| Signed outer reply | `typebridge.query-remote-signed-reply/v1` |
-| Capability advertisement | `typebridge.query-remote-capabilities/v1` |
-
-The request carries the exact canonical plan bytes (either released plan
-format), the invocation, the result kind, the caller's answer budget, the
-advertisement fingerprint, a nonce, and an absolute bounded expiry. Every
-reply is signed with the executor's advertised key and binds the nonce, the
-plan fingerprint, and the fingerprint of the whole request, so a replayed or
-foreign reply is refused before any host object is built. A failure carries
-the complete structured diagnostic: category, code, message, path, and
-details.
-
-An executor advertises the envelope with three capabilities, `query.plan.v2`,
-`query.remote.envelope-v2`, and `query.remote.structured-diagnostic`; a client
-refuses to prepare a request for an advertisement that lacks one with
-`unsupported_required_capability` and the `missing` names. A request in
-another format is refused by the executor with
-`query_remote_v2_format_unsupported`, whose `supported` detail names the
-request format it accepts.
+`/v2/query` and `/v2/capabilities` are removed. Clients use `/v3/staged` and
+`/v3/capabilities`; the old envelopes are not accepted by a compatibility route.
 
 ### Staged transactions
 
 A transaction on a proxy connection is the same core `Transaction` as a
 direct one, with a proxy backend. Staging stays local; `commit` serializes the
 ordered stack into one `typebridge.query-remote-request/v3` envelope (exact
-canonical V3 plan bytes, given rows, kind, limits, nonce and expiry) and
+canonical staged plan bytes, given rows, kind, limits, nonce and expiry) and
 sends it to `POST /v3/staged`. The server runs the stack
 on one TypeDB transaction and returns a `typebridge.query-remote-response/v3`
 reply signed with the key from `GET /v3/capabilities`. The SDK verifies the
 signature and the request binding, then resolves each answer through the same
 plan answer path as direct execution; a failed reply becomes the same typed
 failure, and `commit_outcome_unknown` stays indeterminate rather than "not
-applied". Raw TypeQL and typed match reads have no V3 plan, so the proxy
-backend refuses them at stage time.
+applied". Typed match reads compile to native plans in the same stack.
+Raw TypeQL uses a separate explicit raw context and `/v3/raw`.
 
 Each commit is one request under a fresh random nonce, and the server keeps
 no replies. A lost or unverifiable reply, a cancelled commit, and the server's
@@ -741,31 +752,37 @@ direct commit. Every other verified signed refusal applied nothing and keeps
 its code. TypeBridge reports outcomes; retries, locking and concurrency limits
 are application policy. The staged advertisement is trusted only when its
 executor binding and reply key equal the connection's advertisement
-(`query_remote_v3_advertisement_mismatch` otherwise); it is pinned or fetched
+(`query_remote_advertisement_mismatch` otherwise); it is pinned or fetched
 once per connection. The server admits writes only from a caller an
-interceptor vouches for (`on_v3_write_authority`), or from any caller under
-`[v2] allow_unauthenticated_staged_writes`. The wire format and failure
+interceptor vouches for (`on_write_authority`), or from any caller under
+`[staged] allow_unauthenticated_staged_writes`. The wire format and failure
 vocabulary are in the
-[staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
+[staged remote envelope](../reference/query-plan.md#staged-remote-envelope).
+
+Fetch plans return a distinct `Documents` answer directly and remotely. The
+shared Rust verifier checks the document against the plan's possible exact
+types, owned attributes and listed roles. `AnswerLimits` bounds rows and
+documents under one policy before commit. Python exposes `Documents.documents`,
+TypeScript the `documents` answer variant, and Rust `PlanAnswer::Documents`.
+
 
 ### Hosting the staged executor in-process
 
 A host that embeds `type-bridge-server` as a library runs the staged route
-without its HTTP framing through `StagedExecutor`, the V3 counterpart of the
-V2 pair `preflight_remote_request_v2` / `execute_admitted_remote_request_v2`.
-It takes the same `QueryPipeline` and `V2QueryState` the server binary builds
+without its HTTP framing through `StagedExecutor`.
+It takes the same `QueryPipeline` and `StagedQueryState` the server binary builds
 and does everything the route does after the body is read:
 
 ```rust
-use type_bridge_server::transport::v3::{StagedExecutor, StagedOutcomeKind};
+use type_bridge_server::transport::staged::{StagedExecutor, StagedOutcomeKind};
 
 let executor = Arc::new(StagedExecutor::new(pipeline, query_state));
 
 // Admit the caller through the pipeline, as the route does for its headers.
 let mut ctx = executor
     .pipeline()
-    .v3_request_context(metadata)?;          // every policy must cover V3
-executor.pipeline().begin_v2_request(&mut ctx).await?;
+    .request_context(metadata);
+executor.pipeline().begin_request(&mut ctx).await?;
 
 // Signed request bytes in, signed reply bytes out.
 let outcome = executor
@@ -780,11 +797,11 @@ match outcome.kind {
 ```
 
 The hooks run in a fixed order, pinned by a test: the transport hook
-(`on_v2_transport`, during admission), `on_v3_write_authority` for a write,
-`on_v3_plan` for every bound plan in index order before anything is
+(`on_transport`, during admission), `on_write_authority` for a write,
+`on_plan` for every bound plan in index order before anything is
 reserved or opened, then nonce reservation, staging and one commit,
-`on_v3_commit` once the outcome is known (observe-only, bounded by the audit
-deadline), and the response policies (`on_v2_response`) over the signed
+`on_commit` once the outcome is known (observe-only, bounded by the audit
+deadline), and the response policies (`on_response`) over the signed
 reply. A refusal at any step before reservation leaves nothing reserved and
 nothing open, so a retry is re-authorized rather than replayed. The outcome
 is owned by a detached task once admitted: a host that stops awaiting
@@ -832,13 +849,14 @@ The #189 cutover removed the query facades' use as active schema/model
 authoring authority, and 2.3.0 removed the handwritten Python typed facade.
 The retained boundary is narrow:
 
-- Python package-root raw-TypeQL `Query`/`QueryBuilder` imports, in-place
-  mutation, and build output remain;
-- generated Python managers retain concise single-type filters, ordering,
-  terminals, aggregates, updates, deletes, and hydration;
-- TypeScript package-root `TypedQuery<T, Row>` retains its two-parameter query
-  behavior for released compatibility artifacts;
-- low-level Python and Node Query V2 authority remains public;
+- Python package-root raw-TypeQL `Query`/`QueryBuilder` imports are removed
+  in 3.0; generated typed queries and `Database.execute_query` replace them;
+- generated Python managers retain concise single-type filters, terminals,
+  updates, deletes, and hydration;
+- TypeScript generated queries replace the removed package-root
+  `TypedQuery<T, Row>` facade;
+- native staged plans replace the removed low-level Python and Node query
+  authority;
 - the former Node handwritten `/typed` registration surface and root model,
   field, role, attribute, flag, registry, and descriptor declarations are not
   active application paths.
@@ -896,8 +914,7 @@ Typed diagnostics add `retry_safe` as a boolean, `code` as a validated TypeDB
 identity and `rejection` (`conflict`, `cardinality`, `unique`, `constraint` or
 `other`) for a rejection. Conflict diagnostics include `lock_kind`; annotation
 constraints include `annotation`. These use bounded identity detail values.
-The C ABI 1.6 projection omits them and keeps the released detail set
-(`SdkExecutionDiagnostic::released_details`). A staged operation index
+The C ABI 2.0 projection carries these typed failure details. A staged operation index
 is an `Index` path segment; possible owner and attribute sites are `Type` and
 `Field` path segments taken only from plan metadata. They are possible sites,
 not evidence that a particular site or another transaction caused the failure.
@@ -917,3 +934,72 @@ keep the operation name and a fixed transport kind, with the driver code when
 available. Raw HTTP/TLS causes and endpoint values are discarded. Local
 validation messages and application-owned transport errors retain their
 existing contracts.
+
+An unset statement budget remains `None` in Rust and Python, and `undefined`
+in Node. At execution, a typed adapter resolves it to the larger of three
+and its complete static stack size; user-authored plan execution resolves it
+to three. An explicit value, including three, remains a strict ceiling.
+Intersecting an unset policy with an explicit connection ceiling retains the
+explicit ceiling. The existing C numeric limits struct stays unchanged:
+a NULL descriptor leaves the budget unset; a supplied descriptor is explicit.
+An advertisement omits an unset statement ceiling and retains an explicit
+`statements: 3`; other default-valued answer-limit entries remain forbidden.
+A 2.x peer refuses the explicit-three advertisement as noncanonical.
+
+
+The core `build_plan_fetch_stack(registry, plan, model_slots)` constructor owns
+native model projection for both released typed reads and generated plan
+facades. It preserves scalar columns and duplicate selection rows, hydrates each
+concrete model case, and returns one sealed model-tuple proof with core row/slot
+ordinals. Generated bindings consume `selection()`, `request()`, `result()` and
+`model_ordinal()` without reconstructing model graphs or joining IIDs. Unsupported
+split shapes fail with `plan_returning_models_shape`, optional inputs with
+`plan_returning_models_optional_input`, and distinct windows over multiple given
+rows with `plan_returning_models_given_window`; model projection after writes
+requires one complete model-only fetch or fails with
+`plan_returning_models_after_write`. Shared staged plan carriers retain the
+original canonical Arc allocation and refuse a source that changes its plan
+identity after admission.
+
+### Optional execution timelines
+
+`QueryExecutionResourceLimits.collect_phase_timestamps` (Node:
+`collectPhaseTimestamps`) defaults to `false`. Set it to `true` to retain a
+full diagnostic phase timeline without a tracing subscriber. C uses the
+`collect_phase_timestamps` word in its query execution limits descriptor:
+0 disables collection, 1 enables it, and other values are refused. Rust
+transactions also expose `TransactionOptions::with_collect_phase_timestamps`.
+Python's `Database.staged_transaction` accepts keyword `timeout_milliseconds`
+and `collect_phase_timestamps`. Node's `Database.stagedTransaction(kind, options)`
+accepts `timeoutMilliseconds` (a signed bigint) and `collectPhaseTimestamps`.
+Omitting these options preserves 60000 ms and collection off; zero or a negative
+timeout disables the deadline. C's `*_transaction_with_options` factories
+accept `type_bridge_staged_transaction_options_t`; a null options pointer
+keeps those defaults. Explicit options require version 1 and the exact struct
+size, a signed timeout, and collection 0 or 1.
+This is a diagnostic option, not another resource ceiling or deadline.
+With collection disabled and no enabled plan tracing span, phase observation
+adds no heap allocation or per-phase clock reads. Full collection allocates
+timeline storage and its growing stamp vector; its storage uses one additional
+allocation to keep default manager futures small.
+
+The option survives policy intersection when either side enables it. Proxy
+requests carry it as an optional Boolean; omission means disabled. Timelines
+contain one UTC anchor and monotonic offsets on that process's clock, with
+statement indices and the failing phase. They remain diagnostic data and
+never become answer content. Ordinary diagnostic details keep their existing
+byte ceiling; timeline records use the request's existing statement bound
+and the reply envelope ceiling.
+
+Execution deadlines do not bound transport admission: the server's finite
+admission window independently bounds transport policy, body collection,
+preflight/decode, plan authorization and replay reservation, even when execution
+is unbounded. Proxy connection setup also retains finite TCP, TLS-handshake and
+capability-fetch timeouts. Raw and schema calls retain no implicit execution
+deadline unless the caller configures one; the 60000 ms default applies to typed
+plans and programs.
+
+Collected timelines retain the first 8192 statement records and bounded
+lifecycle/terminal records. Larger direct calls continue executing, but their
+additional statement records are omitted. Invalid collected lifecycle data
+produces a typed internal diagnostic rather than a reporting panic.

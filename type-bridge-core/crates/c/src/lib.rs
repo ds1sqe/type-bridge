@@ -7,15 +7,25 @@
 mod abi;
 mod allocation;
 mod canonical_archive;
-mod crud_v2;
 mod diagnostic;
 mod entity_crud;
 mod execution_diagnostic;
 mod generated_preflight;
+mod iid;
+mod manager_create;
+mod manager_filter;
+mod manager_read;
+mod manager_returning;
+mod manager_target;
+mod manager_write;
 mod migration_abi;
+mod migration_user_steps;
+mod policy_crud;
+pub use migration_user_steps::TypeBridgeMigrationCallback;
 mod migration_runtime;
 mod perf_stages;
 mod plan_builder;
+mod plan_results;
 mod policy;
 mod projected_batch;
 mod projected_create_builder;
@@ -23,7 +33,7 @@ mod projected_model;
 mod projected_token;
 mod projected_value;
 mod query;
-mod relation_crud;
+mod raw;
 mod runtime;
 mod schema_package;
 #[cfg(test)]
@@ -31,6 +41,8 @@ mod schema_package;
 #[allow(dead_code)]
 mod sdk_profile_matrix;
 mod staged;
+mod staged_answers;
+mod staged_terminals;
 mod thing_crud;
 
 pub use abi::{
@@ -46,7 +58,8 @@ pub use execution_diagnostic::{
     TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailKind,
     TypeBridgeExecutionDiagnosticDetailViewV1, TypeBridgeExecutionDiagnosticPathKind,
     TypeBridgeExecutionDiagnosticPathViewV1, TypeBridgeExecutionDiagnosticViewV1,
-    TypeBridgeExecutionDiagnostics, TypeBridgeExecutionFailureV1,
+    TypeBridgeExecutionDiagnostics, TypeBridgeExecutionFailureV1, TypeBridgeExecutionPhaseViewV1,
+    TypeBridgeExecutionTimelineViewV1,
 };
 pub use generated_preflight::{
     GENERATED_CREATE_GRAPH_VERSION, GENERATED_CREATE_HOSTED_OBJECT_BYTES_MAX,
@@ -56,14 +69,16 @@ pub use generated_preflight::{
     GENERATED_INPUT_CANONICAL_ARCHIVE, GENERATED_INPUT_CANONICAL_ARCHIVE_BUILDER,
     GENERATED_INPUT_CANONICAL_BYTES, GENERATED_INPUT_CREATE_ARGS_GRAPH, GENERATED_INPUT_DATABASE,
     GENERATED_INPUT_DIAGNOSTICS, GENERATED_INPUT_EXECUTION_DIAGNOSTICS,
-    GENERATED_INPUT_PROJECTED_BATCH, GENERATED_INPUT_PROJECTED_BATCH_BUILDER,
-    GENERATED_INPUT_PROJECTED_BATCH_RESULT, GENERATED_INPUT_PROJECTED_CODEC_OPTIONS,
-    GENERATED_INPUT_PROJECTED_CREATE, GENERATED_INPUT_PROJECTED_REFERENCE,
-    GENERATED_INPUT_PROJECTED_REFERENCE_POINTER_ARRAY, GENERATED_INPUT_PROJECTED_STRUCT,
-    GENERATED_INPUT_PROJECTED_STRUCT_MEMBER, GENERATED_INPUT_PROJECTED_THING,
-    GENERATED_INPUT_PROJECTED_TOKEN, GENERATED_INPUT_PROJECTED_VALUE,
-    GENERATED_INPUT_PROJECTED_VALUE_POINTER_ARRAY, GENERATED_INPUT_QUERY,
-    GENERATED_INPUT_QUERY_BINDING, GENERATED_INPUT_QUERY_FIELD, GENERATED_INPUT_QUERY_FUNCTION,
+    GENERATED_INPUT_MANAGER_FILTER, GENERATED_INPUT_MANAGER_RESULT, GENERATED_INPUT_PLAN_BUILDER,
+    GENERATED_INPUT_PLAN_OPTIONS, GENERATED_INPUT_PROJECTED_BATCH,
+    GENERATED_INPUT_PROJECTED_BATCH_BUILDER, GENERATED_INPUT_PROJECTED_BATCH_RESULT,
+    GENERATED_INPUT_PROJECTED_CODEC_OPTIONS, GENERATED_INPUT_PROJECTED_CREATE,
+    GENERATED_INPUT_PROJECTED_REFERENCE, GENERATED_INPUT_PROJECTED_REFERENCE_POINTER_ARRAY,
+    GENERATED_INPUT_PROJECTED_STRUCT, GENERATED_INPUT_PROJECTED_STRUCT_MEMBER,
+    GENERATED_INPUT_PROJECTED_THING, GENERATED_INPUT_PROJECTED_TOKEN,
+    GENERATED_INPUT_PROJECTED_VALUE, GENERATED_INPUT_PROJECTED_VALUE_POINTER_ARRAY,
+    GENERATED_INPUT_PROXY_CONNECTION, GENERATED_INPUT_QUERY, GENERATED_INPUT_QUERY_BINDING,
+    GENERATED_INPUT_QUERY_FIELD, GENERATED_INPUT_QUERY_FUNCTION,
     GENERATED_INPUT_QUERY_FUNCTION_CALL, GENERATED_INPUT_QUERY_FUNCTION_VALUE,
     GENERATED_INPUT_QUERY_ORDER, GENERATED_INPUT_QUERY_PREDICATE,
     GENERATED_INPUT_QUERY_REMOTE_CLAIM, GENERATED_INPUT_QUERY_REMOTE_CONTEXT,
@@ -74,6 +89,7 @@ pub use generated_preflight::{
     TypeBridgeGeneratedCreateHandleChunkV1, TypeBridgeGeneratedCreateMemberV1,
     TypeBridgeGeneratedOpaqueInputV1, TypeBridgeGeneratedOutputRangeV1,
 };
+pub use policy::TypeBridgeDatabaseConfig;
 pub use projected_create_builder::TypeBridgeProjectedCreateBuilder;
 pub use projected_model::{
     TypeBridgeProjectedCreate, TypeBridgeProjectedCreateDescriptorV1,
@@ -98,7 +114,29 @@ pub use query::{
     TypeBridgeQueryShapeSlotV1, TypeBridgeQueryTerminal, TypeBridgeQueryTerminalDescriptorV1,
 };
 pub use runtime::{
-    TypeBridgeCancellation, TypeBridgeDatabase, TypeBridgeDatabaseConfigV1,
-    TypeBridgeReadTransaction, TypeBridgeRuntime, TypeBridgeRuntimeConfigV1,
-    TypeBridgeWriteTransaction,
+    TypeBridgeCancellation, TypeBridgeDatabase, TypeBridgeReadTransaction, TypeBridgeRuntime,
+    TypeBridgeRuntimeConfigV1, TypeBridgeWriteTransaction,
 };
+
+pub use runtime::{TypeBridgeDebugListener, type_bridge_debug_listener_set};
+
+pub use staged::{TypeBridgeStagedTransactionOptionsV1, type_bridge_plan_explain};
+
+pub use plan_builder::idioms::{
+    TypeBridgePlanBoolean, TypeBridgePlanCondition, TypeBridgePlanDate, TypeBridgePlanDateTime,
+    TypeBridgePlanDateTimeTz, TypeBridgePlanDecimal, TypeBridgePlanDouble, TypeBridgePlanDuration,
+    TypeBridgePlanLong, TypeBridgePlanString,
+};
+
+pub use plan_builder::bulk::{
+    TypeBridgePlanBulkCell, TypeBridgePlanBulkColumn, TypeBridgePlanBulkHostColumn,
+    TypeBridgePlanBulkLiteral,
+};
+
+pub use plan_builder::context::{TYPE_BRIDGE_PLAN_OPTIONS_VERSION, TypeBridgePlanOptionsV1};
+pub use query::TypeBridgeQueryLimitOverrideV1;
+
+pub use iid::TypeBridgeIid;
+pub use manager_filter::TypeBridgeManagerFilter;
+pub use manager_read::TypeBridgeManagerResult;
+pub use raw::{TypeBridgeRawResult, TypeBridgeRawTransaction};

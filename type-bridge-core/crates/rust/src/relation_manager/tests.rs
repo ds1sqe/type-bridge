@@ -1,3 +1,13 @@
+mod native_batch_answer_item {
+    pub use type_bridge_orm::session::backend::{AnswerItem, QueryResult};
+}
+#[allow(dead_code)]
+mod native_batch {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../orm/tests/support/native_batch.rs"
+    ));
+}
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -198,6 +208,7 @@ impl IntoEncodedReference for PersonRef {
 
 #[derive(Debug)]
 struct Assignment {
+    origin: ReferenceOrigin,
     iid: String,
     position: String,
     worker_iid: String,
@@ -272,6 +283,7 @@ impl MaterializeModel for Assignment {
             },
         );
         Ok(Self {
+            origin: row.origin().clone(),
             iid: row.iid().to_owned(),
             position,
             worker_iid: worker_iid.to_owned(),
@@ -379,6 +391,35 @@ impl TransactionOps for Tx {
         self.state.lock().unwrap().query_modes.push("canonical");
         self.query_recorded(q)
     }
+    fn query_plan_bounded<'a>(
+        &'a mut self,
+        source: &'a str,
+        limits: type_bridge_orm::session::backend::AnswerLimits,
+        consumer: &'a mut dyn type_bridge_orm::session::backend::AnswerConsumer,
+    ) -> BoxFuture<'a, Result<type_bridge_orm::session::backend::BoundedAnswerStats, OrmError>>
+    {
+        Box::pin(async move {
+            use type_bridge_orm::session::backend::{
+                AnswerControl, AnswerItem, BoundedAnswerReader,
+            };
+            let result = self.query_canonical(source).await?;
+            let items = match result {
+                QueryResult::Ok => vec![],
+                QueryResult::Rows(rows) => rows.into_iter().map(AnswerItem::Row).collect(),
+                QueryResult::Documents(documents) => {
+                    documents.into_iter().map(AnswerItem::Document).collect()
+                }
+            };
+            let mut reader = BoundedAnswerReader::new(limits.answer);
+            reader.check_before_read()?;
+            for item in items {
+                if reader.accept(item, consumer)? == AnswerControl::Stop {
+                    break;
+                }
+            }
+            Ok(reader.stats())
+        })
+    }
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
         self.state.lock().unwrap().events.push(Event::Commit);
         Box::pin(async { Ok(()) })
@@ -406,9 +447,10 @@ impl Tx {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| panic!("unexpected recording query: {q}"));
+        let source = q.to_owned();
         Box::pin(async move {
             match result {
-                Response::Result(value) => Ok(value),
+                Response::Result(value) => Ok(native_batch::result(&source, value)),
                 Response::Error(error) => Err(OrmError::QueryExecution(error)),
             }
         })
@@ -430,20 +472,14 @@ fn test_db(responses: Vec<Response>) -> (crate::session::Database<TestSchema>, A
     )
 }
 
-fn iid_doc(iid: &str) -> Response {
-    Response::Result(QueryResult::Documents(vec![serde_json::json!({
-        "iid": iid
-    })]))
-}
-
 fn fetch_doc(iid: &str, position: &str, worker_iid: &str, worker_name: &str) -> serde_json::Value {
     serde_json::json!({
         "_iid": iid,
         "_type": "assignment",
-        "attributes": {"position": [position]},
+        "attributes": {"position": position},
         "_role_0_iid": worker_iid,
         "_role_0_type": "person",
-        "_role_0_attributes": {"name": [worker_name]}
+        "_role_0_attributes": {"name": worker_name}
     })
 }
 
@@ -460,7 +496,7 @@ fn person_fetch(iid: &str, name: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "_iid": iid,
         "_type": "person",
-        "attributes": {"name": [name]}
+        "attributes": {"name": name}
     })]))
 }
 
@@ -511,41 +547,22 @@ fn assert_assignment(value: &Assignment, iid: &str, position: &str, worker_iid: 
 #[tokio::test]
 async fn public_relation_preflight_failures_are_zero_io() {
     let (db, state) = test_db(Vec::new());
-    assert_model_error(
-        db.relations::<Assignment>()
-            .get_by_iid("bad-iid")
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
+
+    let error = db
+        .relations::<Assignment>()
+        .insert_many(vec![create("ok", "0x9"), create("reject-input", "0x9")])
+        .await
+        .unwrap_err();
+    assert!(matches!(&error, crate::Error::Classified { .. }));
+    assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
+    assert_eq!(
+        error.model_validation_phase(),
+        Some(crate::error::ModelValidationPhase::Input)
     );
-    assert_model_error(
-        db.relations::<Assignment>()
-            .update("bad-iid", create("p", "0x9"))
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
-    assert_model_error(
-        db.relations::<Assignment>()
-            .delete("bad-iid")
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
-    assert_model_error(
-        db.relations::<Assignment>()
-            .insert_many(vec![create("ok", "0x9"), create("reject-input", "0x9")])
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "rejected_create",
-        &["position"],
+    assert_eq!(error.code(), Some("rejected_create"));
+    assert_eq!(
+        error.path(),
+        Some(&["rows".into(), "[1]".into(), "position".into()][..])
     );
     assert_model_error(
         db.relations::<Assignment>()
@@ -562,6 +579,7 @@ async fn public_relation_preflight_failures_are_zero_io() {
             .insert_many(vec![])
             .await
             .unwrap()
+            .items()
             .is_empty()
     );
     assert!(
@@ -569,6 +587,7 @@ async fn public_relation_preflight_failures_are_zero_io() {
             .put_many(vec![])
             .await
             .unwrap()
+            .items()
             .is_empty()
     );
     assert_eq!(state.lock().unwrap().events.as_slice(), &[] as &[Event]);
@@ -619,20 +638,20 @@ async fn public_relation_managers_report_schema_not_bound_before_io() {
     );
     check(
         db.relations::<Assignment>()
-            .update("0x1", create("p", "0x9"))
+            .update(&crate::Iid::new("0x1").unwrap(), create("p", "0x9"))
             .await
             .unwrap_err(),
     );
     check(
         db.relations::<Assignment>()
-            .delete("0x1")
+            .delete(&crate::Iid::new("0x1").unwrap())
             .await
             .unwrap_err(),
     );
     check(db.relations::<Assignment>().count().await.unwrap_err());
     check(
         db.relations::<Assignment>()
-            .get_by_iid("0x1")
+            .get_by_iid(&crate::Iid::new("0x1").unwrap())
             .await
             .unwrap_err(),
     );
@@ -646,7 +665,10 @@ async fn public_relation_insert_runs_canonical_insert_fetch_commit() {
         .relations::<Assignment>()
         .insert(create("captain", "0x9"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_assignment(&value, "0x1", "captain", "0x9");
     let guard = state.lock().unwrap();
     // One query: the insert fetches its own hydration document.
@@ -679,7 +701,7 @@ async fn hydrated_generated_reference_preserves_database_origin_before_relation_
     ]);
     let person = source
         .entities::<Person>()
-        .get_by_iid("0x9")
+        .get_by_iid(&crate::Iid::new("0x9").unwrap())
         .await
         .unwrap()
         .expect("source person exists");
@@ -727,7 +749,10 @@ async fn hydrated_generated_reference_preserves_database_origin_before_relation_
     let stored = source_manager
         .insert(create_from_person("captain", &person))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_assignment(&stored, "0x1", "captain", "0x9");
     assert_eq!(source_hook.before.load(Ordering::SeqCst), 1);
     assert_eq!(source_hook.after.load(Ordering::SeqCst), 1);
@@ -784,26 +809,30 @@ async fn public_relation_insert_provider_error_rolls_back() {
 }
 
 #[tokio::test]
-async fn public_relation_insert_without_a_written_row_rolls_back() {
+async fn public_relation_insert_without_a_written_row_commits_an_empty_result() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
-    let error = db
+    let result = db
         .relations::<Assignment>()
         .insert(create("p", "0x9"))
         .await
-        .unwrap_err();
-    // An empty answer means the write matched nothing: no row was written.
-    assert_eq!(error.code(), Some("provider_identity_cardinality_invalid"));
+        .unwrap();
+    assert_eq!(result.count(), 0);
+    assert!(result.items().is_empty());
+    assert!(result.item().is_none());
     let guard = state.lock().unwrap();
-    assert!(matches!(guard.events.last(), Some(Event::Rollback)));
+    assert!(matches!(
+        guard.events.as_slice(),
+        [Event::Open(TxType::Write), Event::Query(_), Event::Commit]
+    ));
 }
 
 #[tokio::test]
-async fn public_relation_hydration_failure_rolls_back() {
+async fn public_relation_document_validation_failure_rolls_back() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
         serde_json::json!({
             "_iid": "0x1",
             "_type": "assignment",
-            "attributes": {"position": ["p"]},
+            "attributes": {"position": "p"},
             "_role_0_iid": "0x9",
             "_role_0_type": "person",
             "_role_0_attributes": {"bogus": ["x"]}
@@ -814,14 +843,13 @@ async fn public_relation_hydration_failure_rolls_back() {
         .insert(create("p", "0x9"))
         .await
         .unwrap_err();
-    assert_model_error(
-        error,
-        crate::error::ModelValidationPhase::Hydration,
-        "invalid_player_attributes",
-        &["worker[0]", "attributes"],
-    );
+    // The shared plan decoder rejects an undeclared player attribute before hydration.
+    assert_eq!(error.code(), Some("query_remote_answer_kind"));
     let guard = state.lock().unwrap();
-    assert!(matches!(guard.events.last(), Some(Event::Rollback)));
+    assert!(matches!(
+        guard.events.as_slice(),
+        [Event::Open(TxType::Write), Event::Query(_), Event::Rollback]
+    ));
 }
 
 #[tokio::test]
@@ -844,38 +872,44 @@ async fn public_relation_materializer_failure_rolls_back() {
 
 #[tokio::test]
 async fn public_relation_batch_correlates_in_input_order() {
-    let (db, state) = test_db(vec![
-        iid_doc("0x1"),
-        iid_doc("0x2"),
-        fetch("0x1", "first", "0x9", "alice"),
-        fetch("0x2", "second", "0x9", "alice"),
-    ]);
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        {
+            let mut document = fetch_doc("0x2", "second", "0x9", "alice");
+            document["ordinal"] = serde_json::json!(1);
+            document
+        },
+        {
+            let mut document = fetch_doc("0x1", "first", "0x9", "alice");
+            document["ordinal"] = serde_json::json!(0);
+            document
+        },
+    ]))]);
     let values = db
         .relations::<Assignment>()
         .insert_many(vec![create("first", "0x9"), create("second", "0x9")])
         .await
         .unwrap();
-    assert_eq!(values.len(), 2);
-    assert_assignment(&values[0], "0x1", "first", "0x9");
-    assert_assignment(&values[1], "0x2", "second", "0x9");
+    assert_eq!(values.count(), 2);
+    assert_assignment(&values.items()[0], "0x1", "first", "0x9");
+    assert_assignment(&values.items()[1], "0x2", "second", "0x9");
     let guard = state.lock().unwrap();
+    assert_eq!(guard.query_modes, ["canonical"]);
     assert!(matches!(guard.events.last(), Some(Event::Commit)));
     assert!(guard.query_modes.iter().all(|mode| *mode == "canonical"));
 }
 
 #[tokio::test]
 async fn public_relation_batch_provider_error_rolls_back_whole_call() {
-    let (db, state) = test_db(vec![
-        iid_doc("0x1"),
-        Response::Error("second insert failed".into()),
-    ]);
+    let (db, state) = test_db(vec![Response::Error("batch insert failed".into())]);
     let error = db
         .relations::<Assignment>()
         .insert_many(vec![create("first", "0x9"), create("second", "0x9")])
         .await
         .unwrap_err();
-    assert!(matches!(error, crate::Error::QueryExecution { .. }));
-    assert!(error.to_string().contains("second insert failed"));
+    assert!(matches!(&error, crate::Error::Classified { .. }));
+    assert_eq!(error.category(), crate::ErrorCategory::QueryExecution);
+    assert_eq!(error.code(), Some("provider_operation_failed"));
+    assert!(!error.to_string().contains("batch insert failed"));
     let guard = state.lock().unwrap();
     assert!(matches!(guard.events.last(), Some(Event::Rollback)));
 }
@@ -885,7 +919,7 @@ async fn public_relation_get_by_iid_zero_and_one_use_exact_read() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
     assert!(
         db.relations::<Assignment>()
-            .get_by_iid("0x1")
+            .get_by_iid(&crate::Iid::new("0x1").unwrap())
             .await
             .unwrap()
             .is_none()
@@ -904,7 +938,7 @@ async fn public_relation_get_by_iid_zero_and_one_use_exact_read() {
     let (db, state) = test_db(vec![fetch("0x1", "captain", "0x9", "alice")]);
     let value = db
         .relations::<Assignment>()
-        .get_by_iid("0x1")
+        .get_by_iid(&crate::Iid::new("0x1").unwrap())
         .await
         .unwrap()
         .expect("expected assignment");
@@ -923,6 +957,11 @@ async fn public_relation_all_preserves_provider_order() {
         fetch_doc("0x1", "first", "0x8", "bob"),
     ]))]);
     let values = db.relations::<Assignment>().all().await.unwrap();
+    assert!(
+        values
+            .iter()
+            .all(|value| value.origin.projected().is_some())
+    );
     assert_eq!(values.len(), 2);
     assert_assignment(&values[0], "0x2", "second", "0x9");
     assert_assignment(&values[1], "0x1", "first", "0x8");
@@ -954,7 +993,10 @@ async fn public_relation_count_uses_one_exact_reduction() {
 #[tokio::test]
 async fn public_relation_delete_commits_one_exact_delete() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Rows(Vec::new()))]);
-    db.relations::<Assignment>().delete("0x1").await.unwrap();
+    db.relations::<Assignment>()
+        .delete(&crate::Iid::new("0x1").unwrap())
+        .await
+        .unwrap();
     let guard = state.lock().unwrap();
     let [
         Event::Open(TxType::Write),
@@ -964,7 +1006,9 @@ async fn public_relation_delete_commits_one_exact_delete() {
     else {
         panic!("unexpected events: {:?}", guard.events)
     };
-    assert!(query.contains("delete") && query.contains("iid 0x1"));
+    assert!(query.contains("delete") && query.contains("isa! assignment"));
+    assert!(query.contains("let $PlanLiteralCell1 = \"0x1\""));
+    assert!(query.contains("iid($thing1) == $target_iid"));
     assert_eq!(guard.query_modes, vec!["canonical"]);
 }
 
@@ -974,9 +1018,12 @@ async fn public_relation_update_replaces_and_rehydrates() {
     let (db, state) = test_db(vec![fetch("0x1", "captain", "0x9", "alice")]);
     let value = db
         .relations::<Assignment>()
-        .update("0x1", create("captain", "0x9"))
+        .update(&crate::Iid::new("0x1").unwrap(), create("captain", "0x9"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_assignment(&value, "0x1", "captain", "0x9");
     let guard = state.lock().unwrap();
     assert!(matches!(
@@ -989,18 +1036,15 @@ async fn public_relation_update_replaces_and_rehydrates() {
 
 #[tokio::test]
 async fn public_relation_put_key_hit_replaces_existing_and_preserves_iid() {
-    let (db, state) = test_db(vec![
-        iid_doc("0x1"),
-        iid_doc("0x9"),
-        Response::Result(QueryResult::Ok),
-        Response::Result(QueryResult::Ok),
-        fetch("0x1", "captain", "0x9", "alice"),
-    ]);
+    let (db, state) = test_db(vec![fetch("0x1", "captain", "0x9", "alice")]);
     let value = db
         .relations::<Assignment>()
         .put(create("captain", "0x9"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_assignment(&value, "0x1", "captain", "0x9");
     let guard = state.lock().unwrap();
     assert!(matches!(
@@ -1016,23 +1060,22 @@ async fn public_relation_put_key_hit_replaces_existing_and_preserves_iid() {
             _ => None,
         })
         .collect();
-    assert_eq!(queries.len(), 5);
+    assert_eq!(queries.len(), 1);
+    assert!(queries[0].contains("put") && queries[0].contains("fetch"));
     assert!(guard.query_modes.iter().all(|mode| *mode == "canonical"));
 }
 
 #[tokio::test]
 async fn public_relation_put_key_miss_inserts_and_rehydrates() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(Vec::new())),
-        iid_doc("0x9"),
-        iid_doc("0x1"),
-        fetch("0x1", "captain", "0x9", "alice"),
-    ]);
+    let (db, state) = test_db(vec![fetch("0x1", "captain", "0x9", "alice")]);
     let value = db
         .relations::<Assignment>()
         .put(create("captain", "0x9"))
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_assignment(&value, "0x1", "captain", "0x9");
     let guard = state.lock().unwrap();
     assert!(matches!(
@@ -1086,21 +1129,30 @@ impl __codegen::SubtypeRootModel for Engagement {
     }
 }
 
-fn identity_doc(iid: &str, type_name: &str) -> serde_json::Value {
-    serde_json::json!({"_iid": iid, "_type": type_name})
+fn assert_subtype_fetch_query(query: &str) {
+    for needle in [
+        "$root0 isa engagement",
+        "select $root0;",
+        "distinct;",
+        "fetch",
+        "attributes",
+    ] {
+        assert!(query.contains(needle), "{query}");
+    }
+    assert!(!query.contains("isa! engagement"));
 }
 
 #[tokio::test]
-async fn public_relation_subtypes_all_rehydrates_concrete_children_in_discovery_order() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            identity_doc("0x2", "assignment"),
-            identity_doc("0x1", "assignment"),
-        ])),
-        fetch("0x2", "second", "0x9", "alice"),
-        fetch("0x1", "first", "0x8", "bob"),
-    ]);
+async fn public_relation_subtypes_all_fetches_complete_children_in_one_plan() {
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        fetch_doc("0x2", "second", "0x9", "alice"),
+        fetch_doc("0x1", "first", "0x8", "bob"),
+    ]))]);
     let values = db.relations::<Engagement>().subtypes().all().await.unwrap();
+    assert!(values.iter().all(|value| {
+        let EngagementFamily::Assignment(assignment) = value;
+        assignment.origin.projected().is_some()
+    }));
     assert_eq!(
         values
             .iter()
@@ -1116,113 +1168,122 @@ async fn public_relation_subtypes_all_rehydrates_concrete_children_in_discovery_
         vec![("0x2", "second", "0x9"), ("0x1", "first", "0x8")]
     );
     let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(discovery),
-        Event::Query(child2),
-        Event::Query(child1),
-        Event::Close,
-    ] = guard.events.as_slice()
+    let [Event::Open(TxType::Read), Event::Query(query), Event::Close] = guard.events.as_slice()
     else {
-        panic!("unexpected events: {:?}", guard.events)
+        panic!("unexpected events: {:?}", guard.events);
     };
-    assert!(discovery.contains("sub engagement"));
-    assert!(discovery.contains("_iid") && discovery.contains("_type"));
-    for (query, iid) in [(child2, "0x2"), (child1, "0x1")] {
-        assert!(query.contains("assignment") && query.contains(iid) && query.contains("fetch"));
-    }
-    assert!(guard.query_modes.iter().all(|mode| *mode == "canonical"));
+    assert_subtype_fetch_query(query);
+    assert_eq!(guard.query_modes, vec!["canonical"]);
 }
 
 #[tokio::test]
 async fn public_relation_subtypes_get_by_iid_zero_and_one() {
-    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
-    assert!(
-        db.relations::<Engagement>()
+    for present in [false, true] {
+        let mut expected_query = None;
+        for filtered in [false, true] {
+            let rows = if present {
+                vec![fetch_doc("0x1", "captain", "0x9", "alice")]
+            } else {
+                vec![]
+            };
+            let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(rows))]);
+            let manager = db.relations::<Engagement>().subtypes();
+            let value = if filtered {
+                manager
+                    .filter()
+                    .unwrap()
+                    .iid(&crate::Iid::new("0x1").unwrap())
+                    .unwrap()
+                    .first()
+                    .await
+                    .unwrap()
+            } else {
+                manager
+                    .get_by_iid(&crate::Iid::new("0x1").unwrap())
+                    .await
+                    .unwrap()
+            };
+            if present {
+                let Some(EngagementFamily::Assignment(assignment)) = value else {
+                    panic!("expected child");
+                };
+                assert_assignment(&assignment, "0x1", "captain", "0x9");
+                assert!(assignment.origin.projected().is_some());
+            } else {
+                assert!(value.is_none());
+            }
+            let guard = state.lock().unwrap();
+            let [Event::Open(TxType::Read), Event::Query(query), Event::Close] =
+                guard.events.as_slice()
+            else {
+                panic!("unexpected events: {:?}", guard.events);
+            };
+            assert_subtype_fetch_query(query);
+            assert!(query.contains("iid 0x1"));
+            if let Some(expected) = &expected_query {
+                assert_eq!(query, expected);
+            } else {
+                expected_query = Some(query.clone());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn public_relation_subtypes_reject_invalid_evidence_before_materialization() {
+    let valid = fetch_doc("0x1", "captain", "0x9", "alice");
+    let mut missing = valid.clone();
+    missing["attributes"] = serde_json::json!({});
+    let mut conflicting = valid.clone();
+    conflicting["attributes"]["position"] = serde_json::json!("different");
+    for (rows, code) in [
+        (
+            vec![serde_json::json!({"_iid":"0x1","_type":"unknown","attributes":{}})],
+            "query_remote_document_type",
+        ),
+        (
+            vec![serde_json::json!({"_iid":"0x1","_type":"engagement","attributes":{}})],
+            "query_remote_document_type",
+        ),
+        (
+            vec![serde_json::json!({"_iid":"0x1","_type":"sidework","attributes":{}})],
+            "query_remote_document_type",
+        ),
+        (vec![missing], "query_remote_document_value"),
+        (vec![valid, conflicting], "query_plan_hydration_conflict"),
+    ] {
+        let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(rows))]);
+        let error = db
+            .relations::<Engagement>()
             .subtypes()
-            .get_by_iid("0x1")
+            .all()
             .await
-            .unwrap()
-            .is_none()
-    );
-    {
+            .unwrap_err();
+        assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
+        assert_eq!(error.sdk_category(), Some("integrity"));
+        assert_eq!(error.code(), Some(code));
         let guard = state.lock().unwrap();
         let [Event::Open(TxType::Read), Event::Query(query), Event::Close] =
             guard.events.as_slice()
         else {
-            panic!("unexpected events: {:?}", guard.events)
+            panic!("unexpected events: {:?}", guard.events);
         };
-        assert!(query.contains("sub engagement") && query.contains("iid 0x1"));
+        assert_subtype_fetch_query(query);
     }
-    let (db, _state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![identity_doc(
-            "0x1",
-            "assignment",
-        )])),
-        fetch("0x1", "captain", "0x9", "alice"),
-    ]);
-    let value = db
-        .relations::<Engagement>()
-        .subtypes()
-        .get_by_iid("0x1")
-        .await
-        .unwrap()
-        .expect("expected family member");
-    let EngagementFamily::Assignment(assignment) = value;
-    assert_assignment(&assignment, "0x1", "captain", "0x9");
 }
 
 #[tokio::test]
-async fn public_relation_subtypes_reject_foreign_concrete_type() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![identity_doc(
-            "0x1", "sidework",
-        )])),
-        Response::Result(QueryResult::Documents(vec![serde_json::json!({
-            "_iid": "0x1",
-            "_type": "sidework",
-            "attributes": {}
-        })])),
-    ]);
-    let error = db
-        .relations::<Engagement>()
-        .subtypes()
-        .all()
-        .await
-        .unwrap_err();
-    assert_model_error(
-        error,
-        crate::error::ModelValidationPhase::Hydration,
-        "wrong_concrete_model_type",
-        &["type_id"],
-    );
-    let guard = state.lock().unwrap();
-    assert!(matches!(guard.events.last(), Some(Event::Close)));
-}
-
-#[tokio::test]
-async fn public_relation_subtypes_missing_concrete_row_closes_context() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![identity_doc(
-            "0x1",
-            "assignment",
-        )])),
-        Response::Result(QueryResult::Documents(Vec::new())),
-    ]);
-    let error = db
-        .relations::<Engagement>()
-        .subtypes()
-        .all()
-        .await
-        .unwrap_err();
-    assert_model_error(
-        error,
-        crate::error::ModelValidationPhase::Hydration,
-        "missing_concrete_row",
-        &["iid"],
-    );
-    let guard = state.lock().unwrap();
-    assert!(matches!(guard.events.last(), Some(Event::Close)));
+async fn public_relation_subtypes_all_coalesces_identical_native_documents() {
+    let row = fetch_doc("0x1", "captain", "0x9", "alice");
+    let (db, _) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        row.clone(),
+        row,
+    ]))]);
+    let values = db.relations::<Engagement>().subtypes().all().await.unwrap();
+    let [EngagementFamily::Assignment(assignment)] = values.as_slice() else {
+        panic!("expected one child");
+    };
+    assert_assignment(assignment, "0x1", "captain", "0x9");
 }
 
 #[tokio::test]

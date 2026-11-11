@@ -15,6 +15,18 @@
 #include <typebridge/type_bridge.h>
 #include <fixture/models.h>
 
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
+
 #define CHECK(condition)                                                       \
   do {                                                                         \
     if (!(condition)) {                                                        \
@@ -23,6 +35,17 @@
       return __LINE__;                                                         \
     }                                                                          \
   } while (0)
+
+/* Reuse one caller-owned validated argument between synchronous calls. */
+static const type_bridge_iid_t *checked_iid(type_bridge_byte_view_t text,
+                                          type_bridge_iid_t **owner) {
+  if (type_bridge_iid_close(owner) != TYPE_BRIDGE_STATUS_OK ||
+      type_bridge_iid_open(text, owner) != TYPE_BRIDGE_STATUS_OK) {
+    fputs("invalid test IID argument\n", stderr);
+    abort();
+  }
+  return *owner;
+}
 
 static type_bridge_byte_view_t view_of(const char *text) {
   type_bridge_byte_view_t view;
@@ -54,7 +77,7 @@ static int copy_stable_text(type_bridge_byte_view_t value, char *output,
   return 1;
 }
 
-static int emit_v2_observation(const char *observation_ref,
+static int emit_observation(const char *observation_ref,
                                const char *proof_kind,
                                const char *canonical_json) {
   const char *cursor;
@@ -67,11 +90,11 @@ static int emit_v2_observation(const char *observation_ref,
       return 0;
     }
   }
-  return printf("TYPE_BRIDGE_C_V2_FACT\t%s\t%s\t%s\n", observation_ref,
+  return printf("TYPE_BRIDGE_C_FACT\t%s\t%s\t%s\n", observation_ref,
                 proof_kind, canonical_json) > 0;
 }
 
-static int emit_v2_observationf(const char *observation_ref,
+static int emit_observationf(const char *observation_ref,
                                 const char *proof_kind,
                                 const char *format, ...) {
   char canonical_json[4096];
@@ -83,7 +106,7 @@ static int emit_v2_observationf(const char *observation_ref,
   if (length < 0 || (size_t)length >= sizeof(canonical_json)) {
     return 0;
   }
-  return emit_v2_observation(observation_ref, proof_kind, canonical_json);
+  return emit_observation(observation_ref, proof_kind, canonical_json);
 }
 
 typedef struct sdk_person_rows_observation {
@@ -171,7 +194,7 @@ typedef struct sdk_resource_limit_observation {
 static int emit_model_values_observation(
     const char *proof_kind,
     const sdk_person_rows_observation_t *observation) {
-  if (observation == NULL || observation->count != 2u) {
+  if (observation == NULL || observation->count != 1u) {
     return 0;
   }
   if (observation->first_alias[0] == '\0' ||
@@ -181,7 +204,7 @@ static int emit_model_values_observation(
           SDK_SCALAR_DOMAIN_MASK_ALL) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "model_values_and_references", proof_kind,
       "{\"aliases\":[\"%s\"],\"key\":\"%s\",\"model\":\"person\","
       "\"nickname\":\"%s\",\"reference\":{\"key\":\"%s\",\"model\":"
@@ -200,7 +223,7 @@ static int emit_owner_iid_observation(
       optional->count != 1u) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "owner_iid_set", proof_kind,
       "{\"iid_set_keys\":[\"%s\",\"%s\"],\"optional_field\":\"nickname\","
       "\"optional_present_keys\":[\"%s\"],\"owner_field\":\"score\","
@@ -217,7 +240,7 @@ static int emit_scalar_domain_observation(
       comparison != TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN_OR_EQUAL) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "scalar_domain", proof_kind,
       "{\"domain\":\"long\",\"keys\":[\"%s\"],\"operand\":%" PRId64
       ",\"operator\":\"gte\"}",
@@ -232,7 +255,7 @@ static int emit_schema_function_observation(
       nested->count != 2u) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "schema_function", proof_kind,
       "{\"minimum\":%" PRId64 ",\"nested_values\":[%" PRId64 ",%" PRId64
       "],\"values\":[%" PRId64 ",%" PRId64 "]}",
@@ -245,7 +268,7 @@ static int emit_grouped_reducer_observation(
   if (value == NULL) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "grouped_reducer", proof_kind,
       "{\"groups\":{\"binding\":[{\"count\":%" PRIu64
       ",\"key\":\"%s\",\"model\":\"person\"},{\"count\":%" PRIu64
@@ -272,7 +295,7 @@ static int emit_exact_subtypes_observation(const char *proof_kind,
                                            const char *exact_key,
                                            const char *employee_key,
                                            const char *manager_key) {
-  return emit_v2_observationf(
+  return emit_observationf(
       "exact_subtypes", proof_kind,
       "{\"declared_model\":\"employee\",\"exact\":[{\"key\":\"%s\","
       "\"model\":\"employee\"}],\"subtypes\":[{\"key\":\"%s\",\"model\":"
@@ -282,7 +305,7 @@ static int emit_exact_subtypes_observation(const char *proof_kind,
 
 static int emit_hydrated_result_observation(const char *proof_kind,
                                             const char *member_key) {
-  return emit_v2_observationf(
+  return emit_observationf(
       "hydrated_result", proof_kind,
       "{\"rows\":[{\"model\":\"membership\",\"roles\":{\"member\":[{"
       "\"key\":\"%s\",\"model\":\"person\"}]}}]}",
@@ -295,7 +318,7 @@ static int emit_roles_observation(const char *proof_kind,
                                   const char *destination_key,
                                   const char *first_participant_key,
                                   const char *second_participant_key) {
-  return emit_v2_observationf(
+  return emit_observationf(
       "roles", proof_kind,
       "{\"membership\":{\"players\":[{\"key\":\"%s\",\"model\":"
       "\"person\"}],\"relation\":\"membership\",\"role\":\"member\"},"
@@ -315,7 +338,7 @@ static int emit_scalar_boolean_observation(
       or_rows == NULL || or_rows->count != 2u) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "scalar_boolean", proof_kind,
       "{\"and_keys\":[\"%s\"],\"field_comparison_keys\":[\"%s\"],"
       "\"not_keys\":[\"%s\"],\"or_keys\":[\"%s\",\"%s\"]}",
@@ -332,7 +355,7 @@ static int emit_selection_shapes_observation(
       observation->collection_order != TYPE_BRIDGE_QUERY_SORT_ASCENDING) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "selection_shapes", proof_kind,
       "{\"collected_distinct\":%s,\"collection_order\":\"identifier_asc\","
       "\"named\":{\"origin\":\"%s\",\"participants\":[\"%s\",\"%s\"]},"
@@ -351,7 +374,7 @@ static int emit_topology_observation(
       observation->max_hops == 0u) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "topology", proof_kind,
       "{\"cross_join_pairs\":[[\"%s\",\"%s\"],[\"%s\",\"%s\"],[\"%s\","
       "\"%s\"],[\"%s\",\"%s\"]],\"reachable\":[{\"from\":\"%s\","
@@ -373,7 +396,7 @@ static int emit_terminals_observation(
   if (page == NULL || page->count != 1u || rows == NULL || rows->count != 2u) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "terminals", proof_kind,
       "{\"count\":%" PRIu64 ",\"exists\":%s,\"first\":\"%s\",\"one\":"
       "\"%s\",\"page\":{\"items\":[\"%s\"],\"limit\":%" PRIu64
@@ -393,7 +416,7 @@ static int emit_structured_query_diagnostic_observation(
       !observation->redacted) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "structured_query_diagnostic", "diagnostic",
       "{\"category\":\"invalid_input\",\"code\":\"%s\",\"details\":{"
       "\"%s\":{\"kind\":\"count\",\"value\":\"%" PRIu64
@@ -409,7 +432,7 @@ static int emit_query_lifecycle_observation(
       !observation->remote_lane_observed) {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "query_resource_lifecycle", "lifecycle",
       "{\"lanes\":[\"direct\",\"remote\"],\"query\":{"
       "\"ancestor_usable_after_descendant_close\":%s,\"close_idempotent\":%s,"
@@ -430,13 +453,14 @@ static int emit_query_lifecycle_observation(
 
 static int emit_resource_limits_observation(
     const char *proof_kind,
+    const type_bridge_query_execution_limits_v1_t *policy,
     const sdk_resource_limit_observation_t *observation) {
-  if (observation == NULL ||
+  if (policy == NULL || observation == NULL ||
       observation->category != TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_RESOURCE_LIMIT ||
       observation->code[0] == '\0' || observation->dimension[0] == '\0') {
     return 0;
   }
-  return emit_v2_observationf(
+  return emit_observationf(
       "resource_limits", proof_kind,
       "{\"defaults\":{\"attribute_values\":%" PRIu64
       ",\"bytes\":%" PRIu64 ",\"collection_members\":%" PRIu64
@@ -447,16 +471,16 @@ static int emit_resource_limits_observation(
       "\"dimension\":\"%s\","
       "\"no_partial_result\":%s},\"past_maximum_refused\":%s,"
       "\"plus_one_kept_all\":%s,\"zero_tightening_all\":%s}",
-      TYPE_BRIDGE_QUERY_DEFAULT_ATTRIBUTE_VALUES,
-      TYPE_BRIDGE_QUERY_DEFAULT_BYTES,
-      TYPE_BRIDGE_QUERY_DEFAULT_COLLECTION_MEMBERS,
-      TYPE_BRIDGE_QUERY_DEFAULT_GRAPH_NODES, TYPE_BRIDGE_QUERY_DEFAULT_ITEMS,
-      TYPE_BRIDGE_QUERY_DEFAULT_ROLE_PLAYERS,
-      TYPE_BRIDGE_QUERY_DEFAULT_STATEMENTS,
-      TYPE_BRIDGE_QUERY_DEFAULT_TIMEOUT_MILLISECONDS,
+      policy->attribute_values,
+      policy->bytes,
+      policy->collection_members,
+      policy->graph_nodes, policy->items,
+      policy->role_players,
+      policy->statements,
+      (uint64_t)policy->timeout_milliseconds,
       observation->code, observation->dimension,
       observation->no_partial_result ? "true" : "false",
-      observation->past_maximum_refusals == 2u ? "true" : "false",
+      observation->past_maximum_refusals == 1u ? "true" : "false",
       observation->plus_one_dimensions == 7u ? "true" : "false",
       observation->zero_dimensions == 8u ? "true" : "false");
 }
@@ -466,10 +490,13 @@ static int execution_code_is(
     const char *expected) {
   type_bridge_execution_diagnostic_view_v1_t diagnostic = {0};
   const size_t expected_length = strlen(expected);
-  return type_bridge_execution_diagnostics_get_v1(
-             diagnostics, 0u, &diagnostic) == TYPE_BRIDGE_STATUS_OK &&
-         diagnostic.code.length == expected_length &&
-         memcmp(diagnostic.code.data, expected, expected_length) == 0;
+  if (type_bridge_execution_diagnostics_get_v1(diagnostics, 0u, &diagnostic) !=
+      TYPE_BRIDGE_STATUS_OK) return 0;
+  if (diagnostic.code.length == expected_length &&
+      memcmp(diagnostic.code.data, expected, expected_length) == 0) return 1;
+  fprintf(stderr, "expected diagnostic %s, got %.*s\n", expected,
+          (int)diagnostic.code.length, (const char *)diagnostic.code.data);
+  return 0;
 }
 
 static int check_structured_execution_diagnostic(
@@ -626,6 +653,69 @@ static int send_all(int socket_fd, const uint8_t *data, size_t length) {
 /* The acceptance server returns bounded identity bodies with Content-Length.
  * This deliberately tiny client performs transport in ordinary C: the native
  * query ABI only prepares/authenticates bytes and never opens a socket. */
+static FILE *plan_witness = NULL;
+static char *plan_advertisement = NULL;
+static int plan_call_open = 0;
+static int plan_call_seen = 0;
+static int plan_request_seen = 0;
+
+static void witness_hex(FILE *file, const uint8_t *bytes, size_t length) {
+  size_t index;
+  for (index = 0u; index < length; ++index) fprintf(file, "%02x", bytes[index]);
+}
+
+static void witness_stop(void) {
+  if (plan_witness != NULL && plan_call_open) {
+    fputs("]}", plan_witness);
+    plan_call_open = 0;
+  }
+}
+
+static void witness_mark(const char *name) {
+  if (plan_witness == NULL || name == NULL) return;
+  witness_stop();
+  fprintf(plan_witness, "%s\"%s\":{\"source\":\"exchange\",\"requests\":[",
+          plan_call_seen ? "," : "", name);
+  plan_call_seen = 1;
+  plan_call_open = 1;
+  plan_request_seen = 0;
+}
+
+static void witness_exchange(const uint8_t *request, size_t length) {
+  const char *policy = "{\"timeout_milliseconds\":60000,\"items\":65536,"
+      "\"bytes\":33554432,\"graph_nodes\":65536,\"attribute_values\":65536,"
+      "\"collection_members\":65536,\"role_players\":65536,\"statements\":null}";
+  if (plan_witness == NULL || !plan_call_open) return;
+  if (plan_request_seen++) { fputs("extra selected exchange\n", stderr); abort(); }
+  fputs("{\"request_hex\":\"", plan_witness);
+  witness_hex(plan_witness, request, length);
+  fprintf(plan_witness, "\",\"advertisement_hex\":\"%s\",\"caller\":%s,"
+      "\"session\":%s,\"proxy_defaults\":%s,\"caller_deadline_ms\":60000}",
+      plan_advertisement, policy, policy, policy);
+}
+
+static const char *witness_terminal_name(const char *terminal) {
+  static const char *const names[][2] = {
+    {"one_terminal", "terminals.one"}, {"first_terminal", "terminals.first"},
+    {"rows_terminal", "terminals.rows"}, {"page_terminal", "terminals.page"},
+    {"count_terminal", "terminals.count"}, {"exists_terminal", "terminals.exists"},
+    {"nickname_terminal", "owner_iid_set.optional_present_keys"},
+    {"nested_terminal", "schema_function.nested"},
+    {"exact_terminal", "exact_subtypes.exact"}, {"subtype_terminal", "exact_subtypes.subtypes"},
+    {"global_terminal", "grouped_reducer.global"}, {"binding_terminal", "grouped_reducer.binding"},
+    {"field_terminal", "grouped_reducer.field"}, {"tuple_terminal", "grouped_reducer.field_tuple"},
+    {"role_terminal", "roles.membership"}, {"topology_terminal", "roles.network"},
+    {"reachable_terminal", "topology.reachable"}, {"cross_terminal", "topology.cross_join"},
+    {"or_terminal", "scalar_boolean.or"}, {"not_terminal", "scalar_boolean.not"},
+    {"field_comparison_terminal", "scalar_boolean.field_comparison"},
+    {"named_terminal", "selection_shapes.named"}, {"positional_terminal", "selection_shapes.positional"},
+  };
+  size_t index;
+  for (index = 0u; index < sizeof(names) / sizeof(names[0]); ++index)
+    if (strcmp(names[index][0], terminal) == 0) return names[index][1];
+  return NULL;
+}
+
 static int caller_http_exchange(uint16_t port, const char *method,
                                 const char *path, const uint8_t *request_body,
                                 size_t request_length, size_t body_limit,
@@ -642,6 +732,8 @@ static int caller_http_exchange(uint16_t port, const char *method,
 
   out_body->data = NULL;
   out_body->length = 0u;
+  if (strcmp(method, "POST") == 0 && strcmp(path, "/v3/staged") == 0)
+    witness_exchange(request_body, request_length);
   socket_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (socket_fd < 0) {
     return 0;
@@ -1743,12 +1835,27 @@ static int check_employee_subtype_result(
   return 0;
 }
 
+static int read_person_reference_key(
+    const fixture_person_ref *reference, const char *expected,
+    char *output, size_t capacity,
+    type_bridge_execution_diagnostics_t **out_diagnostics) {
+  fixture_identifier *identifier = NULL;
+  type_bridge_byte_view_t text = {NULL, 0u};
+  CHECK(fixture_person_ref_identifier_key(reference, &identifier, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_identifier_value(identifier, &text, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(same_text(text, expected));
+  CHECK(copy_stable_text(text, output, capacity));
+  CHECK(fixture_identifier_close(&identifier) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
 static int check_membership_query_result(
     fixture_query_rows_result *result, type_bridge_byte_view_t ada_iid,
     char *out_member_key, size_t member_key_capacity,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   fixture_membership *membership = NULL;
-  fixture_person *member = NULL;
+  fixture_membership_member_player *player = NULL;
+  fixture_person_ref *member = NULL;
   size_t row_count = 0u;
   CHECK(fixture_query_result_row_count(fixture_query_rows_result_ref(result),
                                        &row_count, out_diagnostics) ==
@@ -1759,15 +1866,11 @@ static int check_membership_query_result(
                                                                       0u),
             0u, &membership, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_membership(membership, ada_iid, out_diagnostics) == 0);
-  CHECK(fixture_person_query_exact_one_at(
-            fixture_person_query_exact_one_result_slot_v1_t_rows(result, 1u),
-            0u, &member, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(check_query_person_identifier(member, "query-ada", out_diagnostics) ==
-        0);
-  CHECK(read_query_person_identifier(member, out_member_key,
-                                     member_key_capacity, out_diagnostics) ==
-        0);
-  CHECK(fixture_person_close(&member) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_membership_member(membership, &player, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_membership_member_player_as_person(player, &member, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(read_person_reference_key(member, "query-ada", out_member_key, member_key_capacity, out_diagnostics) == 0);
+  CHECK(fixture_person_ref_close(&member) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_membership_member_player_close(&player) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_membership_close(&membership) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
@@ -1779,8 +1882,10 @@ static int check_network_topology_result(
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   fixture_networkzhlink *link = NULL;
   fixture_identifier *identifier = NULL;
-  fixture_person *source = NULL;
-  fixture_person *target = NULL;
+  fixture_person_ref *source = NULL;
+  fixture_person_ref *target = NULL;
+  fixture_networkzhlink_origin_player *origin = NULL;
+  fixture_networkzhlink_destination_player *destination = NULL;
   type_bridge_byte_view_t text = {NULL, 0u};
   size_t row_count = 0u;
   CHECK(fixture_query_result_row_count(fixture_query_rows_result_ref(result),
@@ -1797,24 +1902,16 @@ static int check_network_topology_result(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(same_text(text, "query-link"));
   CHECK(fixture_identifier_close(&identifier) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_person_query_exact_one_at(
-            fixture_person_query_exact_one_result_slot_v1_t_rows(result, 1u),
-            0u, &source, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_person_query_exact_one_at(
-            fixture_person_query_exact_one_result_slot_v1_t_rows(result, 2u),
-            0u, &target, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(check_query_person_identifier(source, "query-ada", out_diagnostics) ==
-        0);
-  CHECK(check_query_person_identifier(target, "query-dana", out_diagnostics) ==
-        0);
-  CHECK(read_query_person_identifier(source, out_source_key,
-                                     source_key_capacity, out_diagnostics) ==
-        0);
-  CHECK(read_query_person_identifier(target, out_target_key,
-                                     target_key_capacity, out_diagnostics) ==
-        0);
-  CHECK(fixture_person_close(&target) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_person_close(&source) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_origin(link, &origin, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_destination(link, &destination, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_origin_player_as_person(origin, &source, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_destination_player_as_person(destination, &target, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(read_person_reference_key(source, "query-ada", out_source_key, source_key_capacity, out_diagnostics) == 0);
+  CHECK(read_person_reference_key(target, "query-dana", out_target_key, target_key_capacity, out_diagnostics) == 0);
+  CHECK(fixture_person_ref_close(&target) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_ref_close(&source) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_origin_player_close(&origin) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_destination_player_close(&destination) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
@@ -2244,8 +2341,6 @@ static int observe_connection_terminals(
     const fixture_query_exists_terminal *exists_terminal,
     connection_terminals_observation_t *observation,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
-  type_bridge_query_execution_limits_v1_t limits =
-      TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
   type_bridge_query_execution_limits_v1_t one_item =
       TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
   type_bridge_execution_diagnostic_view_v1_t diagnostic = {0};
@@ -2256,26 +2351,26 @@ static int observe_connection_terminals(
   fixture_person *page_person = NULL;
   memset(observation, 0, sizeof(*observation));
 
-  CHECK(CONNECTION_EXECUTE(rows, connection, rows_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(rows, connection, rows_terminal, NULL,
                            &rows_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(observe_person_rows(rows_result, &observation->rows,
                             out_diagnostics) == 0);
   CHECK(fixture_query_rows_result_close(&rows_result) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(CONNECTION_EXECUTE(first, connection, first_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(first, connection, first_terminal, NULL,
                            &rows_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(observe_person_rows(rows_result, &observation->first,
                             out_diagnostics) == 0);
   CHECK(fixture_query_rows_result_close(&rows_result) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(CONNECTION_EXECUTE(rows, connection, nickname_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(rows, connection, nickname_terminal, NULL,
                            &rows_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(observe_person_rows(rows_result, &observation->nickname,
                             out_diagnostics) == 0);
   CHECK(fixture_query_rows_result_close(&rows_result) == TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(CONNECTION_EXECUTE(page, connection, page_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(page, connection, page_terminal, NULL,
                            &page_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_page_metadata(page_result, &observation->page_metadata,
@@ -2290,7 +2385,7 @@ static int observe_connection_terminals(
   CHECK(fixture_person_close(&page_person) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_page_result_close(&page_result) == TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(CONNECTION_EXECUTE(count, connection, count_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(count, connection, count_terminal, NULL,
                            &count_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_count_result_value(count_result, &observation->count,
@@ -2298,7 +2393,7 @@ static int observe_connection_terminals(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_count_result_close(&count_result) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(CONNECTION_EXECUTE(exists, connection, exists_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(exists, connection, exists_terminal, NULL,
                            &exists_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_exists_result_value(exists_result, &observation->exists,
@@ -2322,6 +2417,72 @@ static int observe_connection_terminals(
                          sizeof(observation->refusal_code)));
   CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
+/* The authored insert and typed count share one provider transaction. */
+static int check_staged_write_then_typed_read(
+    const type_bridge_schema_package_t *package,
+    const query_connection_t *connection,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  type_bridge_staged_transaction_t *transaction = NULL;
+  type_bridge_plan_builder_t *builder = NULL;
+  fixture_robot_insert_t values = {0};
+  fixture_robot_plan_t insert;
+  fixture_robot_pending_t *insert_pending = NULL;
+  fixture_query_session *session = NULL;
+  fixture_robot_query_exact_binding *binding = NULL;
+  fixture_robot_query_exact_one_selection *selection = NULL;
+  fixture_query *query = NULL;
+  fixture_query_count_terminal *terminal = NULL;
+  type_bridge_pending_t *pending = NULL;
+  type_bridge_query_result_t *result = NULL;
+  uint64_t count = 0u;
+  fixture_robot_handle_t robot;
+  type_bridge_matched_plan_t deletion;
+  type_bridge_matched_pending_t *deleted = NULL;
+  values.robotzuid = 27004;
+  values.valzuconstrained = 10;
+  CHECK(fixture_plan_open(NULL, &builder, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_insert(builder, &values, &insert) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_session_open(package, &session, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_query_exact_binding_open(session, &binding, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_query_exact_one_selection_open(binding, &selection, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_positional_1(session, fixture_robot_query_exact_one_selection_ref(selection), &query, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_count_by(fixture_robot_query_exact_binding_root(query, binding), &terminal, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK((connection->proxy != NULL
+      ? type_bridge_proxy_connection_transaction(connection->proxy, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, diagnostics)
+      : type_bridge_database_transaction(connection->database, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_stage(transaction, insert, &insert_pending, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_staged_query_stage(transaction, (const type_bridge_query_terminal_t *)terminal,
+      TYPE_BRIDGE_QUERY_TERMINAL_COUNT, NULL, NULL, &pending, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_pending_query_result(pending, &result, diagnostics) == TYPE_BRIDGE_STATUS_IN_USE);
+  CHECK(result == NULL && *diagnostics == NULL);
+  CHECK(fixture_query_count_terminal_close(&terminal) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_close(&query) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_query_exact_one_selection_close(&selection) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_query_exact_binding_close(&binding) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_session_close(&session) == TYPE_BRIDGE_STATUS_OK);
+  type_bridge_plan_builder_free(&builder);
+  CHECK(type_bridge_staged_transaction_commit(transaction, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  type_bridge_staged_transaction_close(&transaction);
+  CHECK(type_bridge_pending_query_result(pending, &result, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_query_result_count(result, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(count == 1u);
+  type_bridge_pending_free(&pending);
+  fixture_robot_pending_free(&insert_pending);
+  CHECK(type_bridge_query_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_plan_open(NULL, &builder, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_match(builder, 27004, &robot) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_delete(builder, robot, &deletion) == TYPE_BRIDGE_STATUS_OK);
+  CHECK((connection->proxy != NULL
+      ? type_bridge_proxy_connection_transaction(connection->proxy, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, diagnostics)
+      : type_bridge_database_transaction(connection->database, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_matched_stage(transaction, deletion, &deleted, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_staged_transaction_commit(transaction, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  type_bridge_staged_transaction_close(&transaction);
+  type_bridge_matched_pending_free(&deleted);
+  type_bridge_plan_builder_free(&builder);
   return 0;
 }
 
@@ -2358,6 +2519,7 @@ static int check_proxy_connection_parity(
   configurations[1].database = NULL;
   configurations[1].proxy = proxy;
   for (index = 0u; index < 2u; ++index) {
+    CHECK(check_staged_write_then_typed_read(package, &configurations[index], out_diagnostics) == 0);
     if (observe_connection_terminals(
             &configurations[index], rows_terminal, first_terminal,
             nickname_terminal, page_terminal, count_terminal, exists_terminal,
@@ -2399,6 +2561,36 @@ static int check_proxy_connection_parity(
   return 0;
 }
 
+static int person_identifier_predicate(
+    const type_bridge_schema_package_t *package,
+    const fixture_person_query_exact_binding *binding, const char *key,
+    fixture_query_predicate **out_predicate,
+    type_bridge_execution_diagnostics_t **out_diagnostics) {
+  fixture_person_identifier_query_field *field = NULL;
+  fixture_identifier *value = NULL;
+  CHECK(fixture_person_identifier_query_field_from_exact(binding, &field, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_identifier_open(package, view_of(key), &value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_identifier_query_field_compare_value(field, TYPE_BRIDGE_QUERY_COMPARE_EQUAL, value, out_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_identifier_close(&value) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_identifier_query_field_close(&field) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
+static int person_identifier_scope(
+    const type_bridge_schema_package_t *package,
+    const fixture_person_query_exact_binding *binding,
+    fixture_query_predicate **out_predicate,
+    type_bridge_execution_diagnostics_t **out_diagnostics) {
+  fixture_query_predicate *ada = NULL;
+  fixture_query_predicate *dana = NULL;
+  CHECK(person_identifier_predicate(package, binding, "query-ada", &ada, out_diagnostics) == 0);
+  CHECK(person_identifier_predicate(package, binding, "query-dana", &dana, out_diagnostics) == 0);
+  CHECK(fixture_query_predicate_or(ada, dana, out_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_predicate_close(&dana) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_predicate_close(&ada) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
 static int run_typed_query_function_and_remote(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
@@ -2406,6 +2598,9 @@ static int run_typed_query_function_and_remote(
     type_bridge_byte_view_t membership_iid,
     type_bridge_byte_view_t network_link_iid,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_iid_t *iid_argument = NULL;
+  type_bridge_iid_t *iid_ada = NULL;
+  type_bridge_iid_t *iid_dana = NULL;
   const int64_t minimum_number = 30;
   const int64_t threshold_number = 40;
   const type_bridge_query_comparison_t threshold_comparison =
@@ -2422,6 +2617,7 @@ static int run_typed_query_function_and_remote(
   fixture_query_function_integer_input *minimum_input = NULL;
   fixture_query_predicate *predicate = NULL;
   fixture_query_predicate *iid_predicate = NULL;
+  fixture_query_predicate *people_scope = NULL;
   fixture_query_predicate *filtered_predicate = NULL;
   fixture_query_predicate *threshold_predicate = NULL;
   fixture_query_predicate *dana_predicate = NULL;
@@ -2459,15 +2655,28 @@ static int run_typed_query_function_and_remote(
   fixture_score *threshold = NULL;
   fixture_query_order *identifier_order = NULL;
   const fixture_query_order *orders[1];
-  const type_bridge_byte_view_t sdk_iids[2] = {ada_iid, dana_iid};
+  const type_bridge_iid_t *sdk_iids[2] = {checked_iid(ada_iid, &iid_ada), checked_iid(dana_iid, &iid_dana)};
   const char *const expected_rows[2] = {"query-ada", "query-dana"};
   const char *const expected_dana[1] = {"query-dana"};
   const char *const expected_ada[1] = {"query-ada"};
   caller_http_body_t advertisement = {NULL, 0u};
   caller_http_body_t response = {NULL, 0u};
   type_bridge_byte_view_t request = {NULL, 0u};
-  type_bridge_query_execution_limits_v1_t limits =
+  const type_bridge_query_execution_limits_v1_t current_defaults =
       TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
+  /* Replay the frozen 30 s policy explicitly; the ABI 2.0 default is 60 s. */
+  type_bridge_query_execution_limits_v1_t limits = {
+      .struct_size = (uint32_t)sizeof(type_bridge_query_execution_limits_v1_t),
+      .version = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_VERSION,
+      .timeout_milliseconds = 30000u,
+      .items = 65536u,
+      .bytes = 33554432u,
+      .graph_nodes = 65536u,
+      .attribute_values = 65536u,
+      .collection_members = 65536u,
+      .role_players = 65536u,
+      .statements = 3u,
+  };
   fixture_qualifyingzhscore_query_arguments_v1_t arguments = {0};
   size_t response_limit = 0u;
   size_t remote_exchange_count = 0u;
@@ -2485,6 +2694,14 @@ static int run_typed_query_function_and_remote(
   type_bridge_query_page_metadata_v1_t direct_page_metadata = {0};
   type_bridge_query_page_metadata_v1_t remote_page_metadata = {0};
   type_bridge_read_transaction_t *read_transaction = NULL;
+  sdk_person_rows_observation_t direct_model_rows = {0};
+  sdk_person_rows_observation_t remote_model_rows = {0};
+  sdk_person_rows_observation_t direct_owner_rows = {0};
+  sdk_person_rows_observation_t remote_owner_rows = {0};
+  sdk_person_rows_observation_t direct_and_rows = {0};
+  sdk_person_rows_observation_t remote_and_rows = {0};
+  sdk_person_rows_observation_t direct_scalar_rows = {0};
+  sdk_person_rows_observation_t remote_scalar_rows = {0};
   sdk_person_rows_observation_t direct_function_rows = {0};
   sdk_person_rows_observation_t remote_function_rows = {0};
   sdk_person_rows_observation_t direct_nested_function_rows = {0};
@@ -2515,6 +2732,7 @@ static int run_typed_query_function_and_remote(
 
   (void)network_link_iid;
 
+  CHECK(current_defaults.timeout_milliseconds == 60000u);
   CHECK(remote_port != 0u);
   CHECK(fixture_query_session_open(package, &session, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
@@ -2562,22 +2780,23 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_qualifyingzhscore_query_call_open(
             function, &arguments, &call, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_qualifyingzhscore_query_call_equal_field(
+  CHECK(fixture_qualifyingzhscore_query_call_ge_field(
             call,
             fixture_person_score_query_field_function_field(score_field),
             &predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_query_exact_binding_iid_in(
             person_binding, sdk_iids, 2u, &iid_predicate,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(person_identifier_scope(package, person_binding, &people_scope, out_diagnostics) == 0);
   CHECK(fixture_query_predicate_and(
-            predicate, iid_predicate, &filtered_predicate,
+            people_scope, predicate, &filtered_predicate,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_positional_1(
             session,
             fixture_person_query_exact_one_selection_ref(selection), &query,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_predicate_and(
-            nickname_present, iid_predicate, &nickname_scoped_predicate,
+            nickname_present, people_scope, &nickname_scoped_predicate,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_where(query, nickname_scoped_predicate,
                             &nickname_query, out_diagnostics) ==
@@ -2588,17 +2807,17 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_where(query, filtered_predicate, &filtered,
                             out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_rows(filtered, orders, 1u, 0u, 16u, &terminal,
+  CHECK(fixture_query_rows(filtered, orders, 1u, 0u, 2u, &terminal,
                            out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_database_query_execute_rows(
-            database, terminal, &limits, NULL, &direct_result,
+            database, terminal, NULL, NULL, &direct_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_result(direct_result, 2u, minimum_number,
                           out_diagnostics) == 0);
   CHECK(observe_person_rows(direct_result, &direct_function_rows,
                             out_diagnostics) == 0);
   CHECK(fixture_database_query_execute_rows(
-            database, nickname_terminal, &limits, NULL, &nickname_result,
+            database, nickname_terminal, NULL, NULL, &nickname_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(nickname_result, expected_ada, 1u,
                                out_diagnostics) == 0);
@@ -2614,17 +2833,14 @@ static int run_typed_query_function_and_remote(
             score_field, threshold_comparison, threshold, &threshold_predicate,
             out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_predicate_and(iid_predicate, threshold_predicate,
-                                    &dana_predicate, out_diagnostics) ==
-        TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_predicate_and(iid_predicate, score_present,
-                                    &owner_iid_predicate, out_diagnostics) ==
-        TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_where(query, owner_iid_predicate, &sdk_query,
+  CHECK(person_identifier_predicate(package, person_binding, "query-dana", &dana_predicate, out_diagnostics) == 0);
+  CHECK(fixture_query_predicate_and(score_present, people_scope,
+                                    &owner_iid_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_where(query, people_scope, &sdk_query,
                             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_where(query, dana_predicate, &dana_query,
                             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_query_one(dana_query, orders, 1u, &one_terminal,
+  CHECK(fixture_query_one(dana_query, NULL, 0u, &one_terminal,
                           out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_first(sdk_query, orders, 1u, &first_terminal,
                             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -2635,36 +2851,36 @@ static int run_typed_query_function_and_remote(
     fixture_query_root_v1_t root =
         fixture_person_query_exact_binding_root(sdk_query,
                                                 person_binding);
-    CHECK(fixture_query_page(root, orders, 1u, 0u, 1u, 1u, &page_terminal,
+    CHECK(fixture_query_page_by(root, orders, 1u, 0u, 1u, 1u, &page_terminal,
                              out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_count(root, &count_terminal, out_diagnostics) ==
+    CHECK(fixture_query_count_by(root, &count_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_exists(root, &exists_terminal, out_diagnostics) ==
+    CHECK(fixture_query_exists_by(root, &exists_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
   }
   CHECK(fixture_database_query_execute_rows(
-            database, one_terminal, &limits, NULL, &one_result,
+            database, one_terminal, NULL, NULL, &one_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(one_result, expected_dana, 1u,
                                out_diagnostics) == 0);
   CHECK(observe_person_rows(one_result, &direct_one_rows, out_diagnostics) ==
         0);
   CHECK(fixture_database_query_execute_first(
-            database, first_terminal, &limits, NULL, &first_result,
+            database, first_terminal, NULL, NULL, &first_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(first_result, expected_ada, 1u,
                                out_diagnostics) == 0);
   CHECK(observe_person_rows(first_result, &direct_first_rows,
                             out_diagnostics) == 0);
   CHECK(fixture_database_query_execute_rows(
-            database, rows_terminal, &limits, NULL, &rows_result,
+            database, rows_terminal, NULL, NULL, &rows_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(rows_result, expected_rows, 2u,
                                out_diagnostics) == 0);
   CHECK(observe_person_rows(rows_result, &direct_sdk_rows,
                             out_diagnostics) == 0);
   CHECK(fixture_database_query_execute_page(
-            database, page_terminal, &limits, NULL, &page_result,
+            database, page_terminal, NULL, NULL, &page_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_page_metadata(page_result, &page_metadata,
                                     out_diagnostics) ==
@@ -2690,7 +2906,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_person_close(&page_person) == TYPE_BRIDGE_STATUS_OK);
   }
   CHECK(fixture_database_query_execute_count(
-            database, count_terminal, &limits, NULL, &count_result,
+            database, count_terminal, NULL, NULL, &count_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_count_result_value(count_result, &count_value,
                                          out_diagnostics) ==
@@ -2698,7 +2914,7 @@ static int run_typed_query_function_and_remote(
   CHECK(count_value == 2u);
   direct_terminal_count = count_value;
   CHECK(fixture_database_query_execute_exists(
-            database, exists_terminal, &limits, NULL, &exists_result,
+            database, exists_terminal, NULL, NULL, &exists_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_exists_result_value(exists_result, &exists_value,
                                           out_diagnostics) ==
@@ -2711,18 +2927,18 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_exists_result_close(&exists_result) ==
         TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(type_bridge_read_transaction_open(database, NULL, &read_transaction,
+  CHECK(type_bridge_read_transaction_open(database, NULL,  NULL, &read_transaction,
                                           out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_read_transaction_query_execute_rows(
-            read_transaction, rows_terminal, &limits, NULL,
+            read_transaction, rows_terminal, NULL, NULL,
             &read_rows_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(read_rows_result, expected_rows, 2u,
                                out_diagnostics) == 0);
   CHECK(fixture_query_rows_result_close(&read_rows_result) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_read_transaction_query_execute_count(
-            read_transaction, count_terminal, &limits, NULL, &count_result,
+            read_transaction, count_terminal, NULL, NULL, &count_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_count_result_value(count_result, &count_value,
                                          out_diagnostics) ==
@@ -2731,7 +2947,7 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_count_result_close(&count_result) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_read_transaction_query_execute_exists(
-            read_transaction, exists_terminal, &limits, NULL, &exists_result,
+            read_transaction, exists_terminal, NULL, NULL, &exists_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_exists_result_value(exists_result, &exists_value,
                                           out_diagnostics) ==
@@ -2748,14 +2964,33 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_rows_result_close(&first_result) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_rows_result_close(&one_result) == TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(caller_http_exchange(remote_port, "GET", "/v2/capabilities", NULL,
+  CHECK(caller_http_exchange(remote_port, "GET", "/v3/capabilities", NULL,
                              0u, 1024u * 1024u, &advertisement));
   CHECK(fixture_query_remote_context_open(
             package,
             (type_bridge_byte_view_t){advertisement.data,
                                       advertisement.length},
-            &limits, &remote_context, out_diagnostics) ==
+            NULL, &remote_context, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
+  if (getenv("TYPE_BRIDGE_SDK_PLAN_WITNESS") != NULL) {
+    size_t index;
+    const char *profile = getenv("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE");
+    const char *const names[4] = {"query-ada", "query-dana", "query-membership", "query-link"};
+    const type_bridge_byte_view_t ids[4] = {ada_iid, dana_iid, membership_iid, network_link_iid};
+    plan_witness = fopen(getenv("TYPE_BRIDGE_SDK_PLAN_WITNESS"), "wx");
+    CHECK(plan_witness != NULL);
+    plan_advertisement = malloc(advertisement.length * 2u + 1u);
+    CHECK(plan_advertisement != NULL);
+    for (index = 0u; index < advertisement.length; ++index)
+      snprintf(plan_advertisement + index * 2u, 3u, "%02x", advertisement.data[index]);
+    fprintf(plan_witness, "{\"format\":\"typebridge.sdk-plan-witness/v1\","
+        "\"suite\":\"queries\",\"binding\":\"c\",\"semantic_profile\":\"%s\",\"records\":{",
+        profile == NULL ? "typedb-3.13.6/v1" : profile);
+    for (index = 0u; index < 4u; ++index)
+      fprintf(plan_witness, "%s\"%s\":[\"%.*s\"]", index ? "," : "", names[index],
+              (int)ids[index].length, (const char *)ids[index].data);
+    fputs("},\"calls\":{", plan_witness);
+  }
   free(advertisement.data);
   advertisement.data = NULL;
   advertisement.length = 0u;
@@ -2768,10 +3003,12 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_rows_remote_pending_response_snapshot_limit(
             pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
   CHECK(response_limit != 0u);
+  witness_mark("schema_function.simple");
   /* Exactly one caller-owned terminal request/response exchange. */
-  CHECK(caller_http_exchange(remote_port, "POST", "/v2/query", request.data,
+  CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged", request.data,
                              request.length, response_limit, &response));
   ++remote_exchange_count;
+  witness_stop();
   CHECK(fixture_query_rows_remote_pending_claim(
             pending, NULL, &claim, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_rows_remote_pending_close(&pending) ==
@@ -2795,6 +3032,7 @@ static int run_typed_query_function_and_remote(
 
 #define RUN_REMOTE_QUERY(family, terminal_value, out_result_value)              \
   do {                                                                          \
+    witness_mark(witness_terminal_name(#terminal_value));                       \
     fixture_query_##family##_remote_pending *round_pending = NULL;              \
     fixture_query_##family##_remote_claim *round_claim = NULL;                  \
     request.data = NULL;                                                        \
@@ -2809,7 +3047,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_##family##_remote_pending_response_snapshot_limit(      \
               round_pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);         \
     CHECK(response_limit != 0u);                                                 \
-    CHECK(caller_http_exchange(remote_port, "POST", "/v2/query",             \
+    CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged",             \
                                request.data, request.length, response_limit,     \
                                &response));                                      \
     ++remote_exchange_count;                                                     \
@@ -2827,7 +3065,72 @@ static int run_typed_query_function_and_remote(
     response.length = 0u;                                                        \
     CHECK(fixture_query_##family##_remote_claim_close(&round_claim) ==           \
           TYPE_BRIDGE_STATUS_OK);                                                \
+    witness_stop();                                                             \
   } while (0)
+
+  {
+    const char *const names[5] = {"model_values_and_references.person", "owner_iid_set.owner_keys", "owner_iid_set.iid_set_keys", "scalar_boolean.and", "scalar_domain.rows"};
+    size_t index;
+    for (index = 0u; index < 5u; ++index) {
+      fixture_query_predicate *extra_predicate = NULL;
+      fixture_query_predicate *extra_conjunction = NULL;
+      fixture_query_predicate *boolean_predicate = NULL;
+      fixture_person_valzubool_query_field *boolean_field = NULL;
+      fixture_valzubool *true_value = NULL;
+      fixture_query *extra_query = NULL;
+      fixture_query_rows_terminal *extra_terminal = NULL;
+      fixture_query_rows_result *extra_result = NULL;
+      sdk_person_rows_observation_t direct_extra = {0};
+      sdk_person_rows_observation_t remote_extra = {0};
+      if (index == 0u) {
+        CHECK(person_identifier_predicate(package, person_binding, "query-ada", &extra_predicate, out_diagnostics) == 0);
+      } else if (index == 1u) {
+        CHECK(fixture_query_predicate_and(score_present, people_scope, &extra_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      } else if (index == 2u) {
+        CHECK(fixture_person_query_exact_binding_iid_in(person_binding, sdk_iids, 2u, &extra_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      } else if (index == 3u) {
+        CHECK(fixture_person_valzubool_query_field_from_exact(person_binding, &boolean_field, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_valzubool_open(package, 1u, &true_value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_person_valzubool_query_field_compare_value(boolean_field, TYPE_BRIDGE_QUERY_COMPARE_EQUAL, true_value, &boolean_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_query_predicate_and(threshold_predicate, boolean_predicate, &extra_conjunction, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_query_predicate_and(people_scope, extra_conjunction, &extra_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      } else {
+        CHECK(fixture_query_predicate_and(people_scope, threshold_predicate, &extra_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      }
+      CHECK(fixture_query_where(query, extra_predicate, &extra_query, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      if (index == 0u) {
+        CHECK(fixture_query_one(extra_query, NULL, 0u, &extra_terminal, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      } else {
+        CHECK(fixture_query_rows(extra_query, orders, 1u, 0u, 2u, &extra_terminal, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      }
+      CHECK(fixture_database_query_execute_rows(database, extra_terminal, NULL, NULL, &extra_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(check_rows_identifiers(extra_result, index == 0u ? expected_ada : index < 3u ? expected_rows : expected_dana, index > 0u && index < 3u ? 2u : 1u, out_diagnostics) == 0);
+      CHECK(observe_person_rows(extra_result, &direct_extra, out_diagnostics) == 0);
+      CHECK(fixture_query_rows_result_close(&extra_result) == TYPE_BRIDGE_STATUS_OK);
+      witness_mark(names[index]);
+      RUN_REMOTE_QUERY(rows, extra_terminal, extra_result);
+      CHECK(check_rows_identifiers(extra_result, index == 0u ? expected_ada : index < 3u ? expected_rows : expected_dana, index > 0u && index < 3u ? 2u : 1u, out_diagnostics) == 0);
+      CHECK(observe_person_rows(extra_result, &remote_extra, out_diagnostics) == 0);
+      CHECK(direct_extra.count == remote_extra.count);
+      {
+        size_t row;
+        for (row = 0u; row < direct_extra.count; ++row)
+          CHECK(strcmp(direct_extra.keys[row], remote_extra.keys[row]) == 0);
+      }
+      CHECK(fixture_query_rows_result_close(&extra_result) == TYPE_BRIDGE_STATUS_OK);
+      if (index == 0u) { direct_model_rows = direct_extra; remote_model_rows = remote_extra; }
+      if (index == 1u) { direct_owner_rows = direct_extra; remote_owner_rows = remote_extra; }
+      if (index == 3u) { direct_and_rows = direct_extra; remote_and_rows = remote_extra; }
+      if (index == 4u) { direct_scalar_rows = direct_extra; remote_scalar_rows = remote_extra; }
+      CHECK(fixture_query_rows_terminal_close(&extra_terminal) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(fixture_query_close(&extra_query) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(fixture_query_predicate_close(&extra_predicate) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(fixture_query_predicate_close(&extra_conjunction) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(fixture_query_predicate_close(&boolean_predicate) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(fixture_valzubool_close(&true_value) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(fixture_person_valzubool_query_field_close(&boolean_field) == TYPE_BRIDGE_STATUS_OK);
+    }
+  }
 
   {
     const size_t before = remote_exchange_count;
@@ -2902,12 +3205,12 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_rows_result_close(&nickname_result) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(emit_model_values_observation("direct_runtime",
-                                      &direct_function_rows));
+                                      &direct_model_rows));
   CHECK(emit_model_values_observation("remote_runtime",
-                                      &remote_function_rows));
-  CHECK(emit_owner_iid_observation("direct_runtime", &direct_sdk_rows,
+                                      &remote_model_rows));
+  CHECK(emit_owner_iid_observation("direct_runtime", &direct_owner_rows,
                                    &direct_nickname_rows));
-  CHECK(emit_owner_iid_observation("remote_runtime", &remote_sdk_rows,
+  CHECK(emit_owner_iid_observation("remote_runtime", &remote_owner_rows,
                                    &remote_nickname_rows));
   CHECK(emit_terminals_observation(
       "direct_runtime", direct_terminal_count, direct_terminal_exists,
@@ -2925,7 +3228,7 @@ static int run_typed_query_function_and_remote(
             package, database, remote_port, rows_terminal, first_terminal,
             nickname_terminal, page_terminal, count_terminal, exists_terminal,
             out_diagnostics) == 0);
-  CHECK(emit_v2_observationf(
+  CHECK(emit_observationf(
       "remote_one_exchange", "remote_runtime",
       "{\"exchange_count\":%zu,\"terminal\":\"one\"}",
       remote_one_exchange_count));
@@ -2953,20 +3256,20 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_qualifyingzhscore_query_call_open(
               function, &nested_arguments, &nested_call, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_qualifyingzhscore_query_call_equal_field(
+    CHECK(fixture_qualifyingzhscore_query_call_ge_field(
               nested_call,
               fixture_person_score_query_field_function_field(score_field),
               &nested_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_predicate_and(
-              nested_predicate, iid_predicate, &nested_filtered_predicate,
+              people_scope, nested_predicate, &nested_filtered_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_where(query, nested_filtered_predicate, &nested_query,
                               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_rows(nested_query, orders, 1u, 0u, 16u,
+    CHECK(fixture_query_rows(nested_query, orders, 1u, 0u, 2u,
                              &nested_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, nested_terminal, &limits, NULL, &nested_result,
+              database, nested_terminal, NULL, NULL, &nested_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_rows_result(nested_result, 2u, minimum_number,
                             out_diagnostics) == 0);
@@ -3013,7 +3316,7 @@ static int run_typed_query_function_and_remote(
               count_pending, &request) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_count_remote_pending_response_snapshot_limit(
               count_pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(caller_http_exchange(remote_port, "POST", "/v2/query",
+    CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged",
                                request.data, request.length, response_limit,
                                &response));
     ++remote_exchange_count;
@@ -3058,11 +3361,11 @@ static int run_typed_query_function_and_remote(
     sdk_not_unique_observation_t direct_not_unique = {0};
     sdk_not_unique_observation_t remote_not_unique = {0};
 
-    CHECK(fixture_query_one(sdk_query, orders, 1u,
+    CHECK(fixture_query_one(sdk_query, NULL, 0u,
                             &not_unique_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, not_unique_terminal, &limits, NULL,
+              database, not_unique_terminal, NULL, NULL,
               &not_unique_result, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
     CHECK(not_unique_result == NULL);
@@ -3070,6 +3373,7 @@ static int run_typed_query_function_and_remote(
                                       &direct_not_unique) == 0);
     CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
+    witness_mark("structured_query_diagnostic.one");
     CHECK(fixture_query_remote_prepare_rows(
               remote_context, not_unique_terminal, NULL, &failure_pending,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -3077,9 +3381,10 @@ static int run_typed_query_function_and_remote(
               failure_pending, &request) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_rows_remote_pending_response_snapshot_limit(
               failure_pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(caller_http_exchange(remote_port, "POST", "/v2/query", request.data,
+    CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged", request.data,
                                request.length, response_limit, &response));
     ++remote_exchange_count;
+    witness_stop();
     CHECK(fixture_query_rows_remote_pending_claim(
               failure_pending, NULL, &failure_claim, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
@@ -3137,8 +3442,7 @@ static int run_typed_query_function_and_remote(
         TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
     size_t limit_index;
 
-    CHECK(limits.timeout_milliseconds ==
-              TYPE_BRIDGE_QUERY_DEFAULT_TIMEOUT_MILLISECONDS &&
+    CHECK(limits.timeout_milliseconds == 30000u &&
           limits.items == TYPE_BRIDGE_QUERY_DEFAULT_ITEMS &&
           limits.bytes == TYPE_BRIDGE_QUERY_DEFAULT_BYTES &&
           limits.graph_nodes == TYPE_BRIDGE_QUERY_DEFAULT_GRAPH_NODES &&
@@ -3157,7 +3461,16 @@ static int run_typed_query_function_and_remote(
     zero_limits[3].graph_nodes = 0u;
     zero_limits[4].attribute_values = 0u;
     zero_limits[5].statements = 0u;
-    for (limit_index = 0u; limit_index < 6u; ++limit_index) {
+    /* Zero timeout is unbounded; zero resource counters still refuse. */
+    CHECK(fixture_database_query_execute_rows(
+              database, rows_terminal, &zero_limits[0], NULL,
+              &rejected_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(rejected_result != NULL && *out_diagnostics == NULL);
+    CHECK(check_rows_identifiers(rejected_result, expected_rows, 2u,
+                                 out_diagnostics) == 0);
+    CHECK(fixture_query_rows_result_close(&rejected_result) == TYPE_BRIDGE_STATUS_OK);
+    ++zero_limit_dimension_count;
+    for (limit_index = 1u; limit_index < 6u; ++limit_index) {
       CHECK(fixture_database_query_execute_rows(
                 database, rows_terminal, &zero_limits[limit_index], NULL,
                 &rejected_result, out_diagnostics) ==
@@ -3166,7 +3479,7 @@ static int run_typed_query_function_and_remote(
       CHECK(check_structured_execution_diagnostic(
                 *out_diagnostics,
                 TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_RESOURCE_LIMIT,
-                limit_index == 0u ? "transaction_deadline_exceeded" : NULL) ==
+                NULL) ==
             0);
       CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
@@ -3192,7 +3505,7 @@ static int run_typed_query_function_and_remote(
     CHECK(type_bridge_cancellation_request(cancellation) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, rows_terminal, &limits, cancellation,
+              database, rows_terminal, NULL, cancellation,
               &rejected_result, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_CANCELLED);
     CHECK(rejected_result == NULL);
@@ -3213,8 +3526,9 @@ static int run_typed_query_function_and_remote(
     CHECK(type_bridge_cancellation_close(&cancellation) ==
           TYPE_BRIDGE_STATUS_OK);
 
-    zero_remote_limits.timeout_milliseconds = 0u;
-    CHECK(caller_http_exchange(remote_port, "GET", "/v2/capabilities", NULL,
+    zero_remote_limits.timeout_milliseconds = 0;
+    zero_remote_limits.items = 0u;
+    CHECK(caller_http_exchange(remote_port, "GET", "/v3/capabilities", NULL,
                                0u, 1024u * 1024u, &advertisement));
     CHECK(fixture_query_remote_context_open(
               package,
@@ -3229,10 +3543,20 @@ static int run_typed_query_function_and_remote(
               zero_context, rows_terminal, NULL, &rejected_pending,
               out_diagnostics) == TYPE_BRIDGE_STATUS_RESOURCE_LIMIT);
     CHECK(rejected_pending == NULL);
-    CHECK(check_structured_execution_diagnostic(
-              *out_diagnostics,
-              TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_RESOURCE_LIMIT,
-              "transaction_deadline_exceeded") == 0);
+    /* The staged envelope requires a positive item budget. This is a
+     * whole-request admission refusal, so it has no model/field path. */
+    {
+      type_bridge_execution_diagnostic_view_v1_t zero_diagnostic = {0};
+      size_t zero_diagnostic_count = 0u;
+      CHECK(type_bridge_execution_diagnostics_count(
+                *out_diagnostics, &zero_diagnostic_count) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(zero_diagnostic_count == 1u);
+      CHECK(type_bridge_execution_diagnostics_get_v1(
+                *out_diagnostics, 0u, &zero_diagnostic) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(zero_diagnostic.category == TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_RESOURCE_LIMIT);
+      CHECK(zero_diagnostic.path_count == 0u);
+      CHECK(execution_code_is(*out_diagnostics, "query_remote_limits"));
+    }
     CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_remote_context_close(&zero_context) ==
@@ -3249,7 +3573,7 @@ static int run_typed_query_function_and_remote(
     plus_one_limits[4].attribute_values += 1u;
     plus_one_limits[5].collection_members += 1u;
     plus_one_limits[6].role_players += 1u;
-    plus_one_limits[7].statements += 1u;
+    plus_one_limits[7].statements = 4097u;
     /* Every dimension but the statement count may be raised past its
      * default and is kept as given. */
     for (limit_index = 0u; limit_index < 7u; ++limit_index) {
@@ -3264,21 +3588,22 @@ static int run_typed_query_function_and_remote(
             TYPE_BRIDGE_STATUS_OK);
       ++plus_one_limit_dimension_count;
     }
-    /* Past a supported maximum a value is refused by name, never clamped. */
-    /* One millisecond past the longest supported duration, a day. */
-    plus_one_limits[0].timeout_milliseconds = UINT64_C(86400001);
-    for (limit_index = 0u; limit_index < 8u; limit_index += 7u) {
-      CHECK(fixture_database_query_execute_count(
-                database, count_terminal, &plus_one_limits[limit_index], NULL,
-                &clamped_direct, out_diagnostics) ==
-            TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
-      CHECK(clamped_direct == NULL);
-      CHECK(execution_code_is(*out_diagnostics,
-                              "c_query_execution_limits_invalid"));
-      CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
-            TYPE_BRIDGE_STATUS_OK);
-      ++past_maximum_refusal_count;
-    }
+    /* Durations beyond a day are valid; only statement count has this ceiling. */
+    plus_one_limits[0].timeout_milliseconds = INT64_C(86400001);
+    CHECK(fixture_database_query_execute_count(
+              database, count_terminal, &plus_one_limits[0], NULL,
+              &clamped_direct, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_count_result_value(clamped_direct, &count_value,
+                                           out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(count_value == 2u);
+    CHECK(fixture_query_count_result_close(&clamped_direct) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_database_query_execute_count(
+              database, count_terminal, &plus_one_limits[7], NULL,
+              &clamped_direct, out_diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
+    CHECK(clamped_direct == NULL);
+    CHECK(execution_code_is(*out_diagnostics, "c_query_execution_limits_invalid"));
+    CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    ++past_maximum_refusal_count;
     clamped_limits.timeout_milliseconds += 1u;
     clamped_limits.items += 1u;
     clamped_limits.bytes += 1u;
@@ -3295,7 +3620,7 @@ static int run_typed_query_function_and_remote(
     CHECK(count_value == 2u);
     CHECK(fixture_query_count_result_close(&clamped_direct) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(caller_http_exchange(remote_port, "GET", "/v2/capabilities", NULL,
+    CHECK(caller_http_exchange(remote_port, "GET", "/v3/capabilities", NULL,
                                0u, 1024u * 1024u, &advertisement));
     CHECK(fixture_query_remote_context_open(
               package,
@@ -3313,7 +3638,7 @@ static int run_typed_query_function_and_remote(
               clamped_pending, &request) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_count_remote_pending_response_snapshot_limit(
               clamped_pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(caller_http_exchange(remote_port, "POST", "/v2/query",
+    CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged",
                                request.data, request.length, response_limit,
                                &response));
     ++remote_exchange_count;
@@ -3341,7 +3666,7 @@ static int run_typed_query_function_and_remote(
           TYPE_BRIDGE_STATUS_OK);
     remote_plus_one_kept_all = 1;
     CHECK(plus_one_limit_dimension_count == 7u);
-    CHECK(past_maximum_refusal_count == 2u);
+    CHECK(past_maximum_refusal_count == 1u);
     puts("G05 pre-dispatch cancellation direct/remote: passed");
     puts("G06 raised limits kept, unsupported ones refused, remote limit: passed");
     puts("G08 live structured cancellation/resource diagnostics: passed");
@@ -3381,7 +3706,7 @@ static int run_typed_query_function_and_remote(
                              &ancestor_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, ancestor_terminal, &limits, NULL, &ancestor_result,
+              database, ancestor_terminal, NULL, NULL, &ancestor_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     lifecycle_observation.ancestor_usable_after_descendant_close = 1;
     CHECK(fixture_query_rows_terminal_close(&ancestor_terminal) ==
@@ -3418,7 +3743,7 @@ static int run_typed_query_function_and_remote(
                              &lifecycle_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, lifecycle_terminal, &limits, NULL, &lifecycle_result,
+              database, lifecycle_terminal, NULL, NULL, &lifecycle_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_rows_identifiers(lifecycle_result, expected_dana, 1u,
                                  out_diagnostics) == 0);
@@ -3431,7 +3756,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_terminal_close(&lifecycle_terminal) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, lifecycle_terminal, &limits, NULL, &lifecycle_result,
+              database, lifecycle_terminal, NULL, NULL, &lifecycle_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
     CHECK(lifecycle_result == NULL && *out_diagnostics == NULL);
     CHECK(fixture_query_rows_terminal_close(&lifecycle_terminal) ==
@@ -3461,7 +3786,7 @@ static int run_typed_query_function_and_remote(
               replay_pending, &request) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_count_remote_pending_response_snapshot_limit(
               replay_pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(caller_http_exchange(remote_port, "POST", "/v2/query",
+    CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged",
                                request.data, request.length, response_limit,
                                &response));
     ++remote_exchange_count;
@@ -3508,6 +3833,12 @@ static int run_typed_query_function_and_remote(
     fixture_employee_query_exact_one_selection *exact_selection = NULL;
     fixture_employee_query_subtypes_one_selection *subtype_selection = NULL;
     fixture_employee_identifier_query_field *subtype_identifier = NULL;
+    fixture_employee_identifier_query_field *exact_identifier = NULL;
+    fixture_query_order *exact_order = NULL;
+    const fixture_query_order *exact_orders[1];
+    fixture_query *exact_shape = NULL;
+    fixture_query *subtype_shape = NULL;
+    fixture_query_predicate *employee_scope[2] = {NULL, NULL};
     fixture_query_order *subtype_order = NULL;
     const fixture_query_order *subtype_orders[1];
     fixture_query *exact_query = NULL;
@@ -3545,20 +3876,44 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_positional_1(
               session,
               fixture_employee_query_exact_one_selection_ref(exact_selection),
-              &exact_query, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+              &exact_shape, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_positional_1(
               session,
               fixture_employee_query_subtypes_one_selection_ref(
                   subtype_selection),
-              &subtype_query, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_rows(exact_query, NULL, 0u, 0u, 4u,
+              &subtype_shape, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_employee_identifier_query_field_from_exact(exact, &exact_identifier, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_employee_identifier_query_field_order(exact_identifier, TYPE_BRIDGE_QUERY_SORT_ASCENDING, TYPE_BRIDGE_QUERY_MISSING_REJECT, &exact_order, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    exact_orders[0] = exact_order;
+    {
+      size_t index;
+      fixture_employee_identifier_query_field *fields[2] = {exact_identifier, subtype_identifier};
+      for (index = 0u; index < 2u; ++index) {
+        fixture_identifier *employee_key = NULL;
+        fixture_identifier *manager_key = NULL;
+        fixture_query_predicate *employee_eq = NULL;
+        fixture_query_predicate *manager_eq = NULL;
+        CHECK(fixture_identifier_open(package, view_of("query-employee"), &employee_key, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_identifier_open(package, view_of("query-manager"), &manager_key, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_employee_identifier_query_field_compare_value(fields[index], TYPE_BRIDGE_QUERY_COMPARE_EQUAL, employee_key, &employee_eq, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_employee_identifier_query_field_compare_value(fields[index], TYPE_BRIDGE_QUERY_COMPARE_EQUAL, manager_key, &manager_eq, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_query_predicate_or(employee_eq, manager_eq, &employee_scope[index], out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_query_predicate_close(&manager_eq) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_query_predicate_close(&employee_eq) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_identifier_close(&manager_key) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(fixture_identifier_close(&employee_key) == TYPE_BRIDGE_STATUS_OK);
+      }
+    }
+    CHECK(fixture_query_where(exact_shape, employee_scope[0], &exact_query, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_where(subtype_shape, employee_scope[1], &subtype_query, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_rows(exact_query, exact_orders, 1u, 0u, 2u,
                              &exact_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_rows(subtype_query, subtype_orders, 1u, 0u, 4u,
+    CHECK(fixture_query_rows(subtype_query, subtype_orders, 1u, 0u, 2u,
                              &subtype_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, exact_terminal, &limits, NULL, &exact_result,
+              database, exact_terminal, NULL, NULL, &exact_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_result_row_count(
               fixture_query_rows_result_ref(exact_result), &row_count,
@@ -3587,7 +3942,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_result_close(&exact_result) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, subtype_terminal, &limits, NULL, &subtype_result,
+              database, subtype_terminal, NULL, NULL, &subtype_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_result_row_count(
               fixture_query_rows_result_ref(subtype_result), &row_count,
@@ -3669,6 +4024,12 @@ static int run_typed_query_function_and_remote(
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_rows_terminal_close(&exact_terminal) ==
           TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_close(&subtype_shape) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_close(&exact_shape) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_predicate_close(&employee_scope[0]) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_predicate_close(&employee_scope[1]) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_order_close(&exact_order) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_employee_identifier_query_field_close(&exact_identifier) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_close(&subtype_query) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_close(&exact_query) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_order_close(&subtype_order) == TYPE_BRIDGE_STATUS_OK);
@@ -3721,7 +4082,7 @@ static int run_typed_query_function_and_remote(
                   group_identifier_field),
               &group_equal_predicate, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_add_hidden(
+    CHECK(fixture_query_match(
               sdk_query,
               fixture_person_query_exact_binding_ref(group_binding),
               &group_hidden, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -3754,7 +4115,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_reduce(root, reducers, 7u, &global_terminal,
                                out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_reduction(
-              database, global_terminal, &limits, NULL, &global_result,
+              database, global_terminal, NULL, NULL, &global_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_sdk_reducers(
               fixture_query_reduction_result_ref(global_result),
@@ -3775,7 +4136,7 @@ static int run_typed_query_function_and_remote(
               count_reducer, 1u, &binding_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_reduction(
-              database, binding_terminal, &limits, NULL, &binding_result,
+              database, binding_terminal, NULL, NULL, &binding_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_sdk_binding_groups(
               fixture_query_reduction_result_ref(binding_result),
@@ -3796,7 +4157,7 @@ static int run_typed_query_function_and_remote(
               count_reducer, 1u, &field_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_field_reduction(
-              database, field_terminal, &limits, NULL, &field_result,
+              database, field_terminal, NULL, NULL, &field_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_sdk_field_groups(
               fixture_query_field_reduction_result_ref(field_result),
@@ -3814,7 +4175,7 @@ static int run_typed_query_function_and_remote(
               root, tuple_groups, 2u, count_reducer, 1u, &tuple_terminal,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_field_tuple_reduction(
-              database, tuple_terminal, &limits, NULL, &tuple_result,
+              database, tuple_terminal, NULL, NULL, &tuple_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_sdk_field_tuple_groups(
               fixture_query_field_tuple_reduction_result_ref(tuple_result),
@@ -3865,6 +4226,7 @@ static int run_typed_query_function_and_remote(
     fixture_query_predicate *relation_and_role = NULL;
     fixture_query_predicate *all_predicates = NULL;
     fixture_query *role_query = NULL;
+    fixture_query *role_hidden = NULL;
     fixture_query *filtered_role_query = NULL;
     fixture_query_rows_terminal *role_terminal = NULL;
     fixture_query_rows_result *role_result = NULL;
@@ -3882,18 +4244,16 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_membership_member_query_role_from_exact(
               relation, &member_role, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_membership_member_query_role_connects(
+    CHECK(fixture_membership_member_query_role_links(
               member_role,
               fixture_membership_member_query_role_player_person_exact(member),
               &role_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_membership_query_exact_binding_iid(
-              relation, membership_iid, &relation_iid_predicate,
+              relation, checked_iid(membership_iid, &iid_argument), &relation_iid_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_query_exact_binding_iid(
-              member, ada_iid, &member_iid_predicate, out_diagnostics) ==
-          TYPE_BRIDGE_STATUS_OK);
+    CHECK(person_identifier_predicate(package, member, "query-ada", &member_iid_predicate, out_diagnostics) == 0);
     CHECK(fixture_query_predicate_and(
-              role_predicate, relation_iid_predicate, &relation_and_role,
+              relation_iid_predicate, role_predicate, &relation_and_role,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_predicate_and(
               relation_and_role, member_iid_predicate, &all_predicates,
@@ -3904,13 +4264,9 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_person_query_exact_one_selection_open(
               member, &member_selection, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_positional_2(
-              session,
-              fixture_membership_query_exact_one_selection_ref(
-                  relation_selection),
-              fixture_person_query_exact_one_selection_ref(member_selection),
-              &role_query, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_where(role_query, all_predicates,
+    CHECK(fixture_query_positional_1(session, fixture_membership_query_exact_one_selection_ref(relation_selection), &role_query, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_match(role_query, fixture_person_query_exact_binding_ref(member), &role_hidden, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_where(role_hidden, all_predicates,
                               &filtered_role_query, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_one(filtered_role_query, NULL, 0u, &role_terminal,
@@ -3944,16 +4300,16 @@ static int run_typed_query_function_and_remote(
       resource_limit_observation.no_partial_result =
           role_limit_result == NULL;
       CHECK(emit_resource_limits_observation(
-          "direct_runtime", &resource_limit_observation));
+          "direct_runtime", &limits, &resource_limit_observation));
       resource_limit_observation.no_partial_result =
           role_limit_result == NULL && remote_representative_zero_limit &&
           remote_plus_one_kept_all;
       CHECK(emit_resource_limits_observation(
-          "remote_runtime", &resource_limit_observation));
-      puts("G06 all-eight independent zero ceilings: passed");
+          "remote_runtime", &limits, &resource_limit_observation));
+      puts("G06 unbounded zero timeout and seven independent zero resource ceilings: passed");
     }
     CHECK(fixture_database_query_execute_rows(
-              database, role_terminal, &limits, NULL, &role_result,
+              database, role_terminal, NULL, NULL, &role_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_result_row_count(
               fixture_query_rows_result_ref(role_result), &row_count,
@@ -3964,19 +4320,19 @@ static int run_typed_query_function_and_remote(
               sizeof(direct_membership_member_key), out_diagnostics) == 0);
     {
       fixture_membership *value = NULL;
-      fixture_person *member_value = NULL;
+      fixture_membership_member_player *member_player = NULL;
+      fixture_person_ref *member_value = NULL;
+      char member_key[64] = {0};
       CHECK(fixture_membership_query_exact_one_at(
                 fixture_membership_query_exact_one_result_slot_v1_t_rows(
                     role_result, 0u),
                 0u, &value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
       CHECK(check_membership(value, ada_iid, out_diagnostics) == 0);
-      CHECK(fixture_person_query_exact_one_at(
-                fixture_person_query_exact_one_result_slot_v1_t_rows(
-                    role_result, 1u),
-                0u, &member_value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-      CHECK(check_query_person_identifier(member_value, "query-ada",
-                                          out_diagnostics) == 0);
-      CHECK(fixture_person_close(&member_value) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(fixture_membership_member(value, &member_player, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(fixture_membership_member_player_as_person(member_player, &member_value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(read_person_reference_key(member_value, "query-ada", member_key, sizeof(member_key), out_diagnostics) == 0);
+      CHECK(fixture_person_ref_close(&member_value) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(fixture_membership_member_player_close(&member_player) == TYPE_BRIDGE_STATUS_OK);
       CHECK(fixture_membership_close(&value) == TYPE_BRIDGE_STATUS_OK);
     }
     CHECK(fixture_query_rows_result_close(&role_result) ==
@@ -4011,7 +4367,7 @@ static int run_typed_query_function_and_remote(
               reducers, 2u, &reduction_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_reduction(
-              database, reduction_terminal, &limits, NULL, &reduction_result,
+              database, reduction_terminal, NULL, NULL, &reduction_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     {
       fixture_query_reduction_result_ref_v1_t reduction_ref =
@@ -4077,6 +4433,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_terminal_close(&role_terminal) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_close(&filtered_role_query) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_close(&role_hidden) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_close(&role_query) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_predicate_close(&all_predicates) ==
           TYPE_BRIDGE_STATUS_OK);
@@ -4122,6 +4479,8 @@ static int run_typed_query_function_and_remote(
     fixture_query_predicate *reachable_endpoints = NULL;
     fixture_query_predicate *reachable_all = NULL;
     fixture_query *topology_shape = NULL;
+    fixture_query *topology_hidden_1 = NULL;
+    fixture_query *topology_hidden_2 = NULL;
     fixture_query *topology_query = NULL;
     fixture_query *reachable_shape = NULL;
     fixture_query *reachable_query = NULL;
@@ -4152,21 +4511,17 @@ static int run_typed_query_function_and_remote(
     target_destination =
         fixture_networkzhlink_destination_query_role_player_person_exact(
             target);
-    CHECK(fixture_networkzhlink_origin_query_role_connects(
+    CHECK(fixture_networkzhlink_origin_query_role_links(
               origin_role, source_origin, &origin_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_networkzhlink_destination_query_role_connects(
+    CHECK(fixture_networkzhlink_destination_query_role_links(
               destination_role, target_destination, &destination_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_networkzhlink_query_exact_binding_iid(
-              relation, network_link_iid, &relation_iid_predicate,
+              relation, checked_iid(network_link_iid, &iid_argument), &relation_iid_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_query_exact_binding_iid(
-              source, ada_iid, &source_iid_predicate, out_diagnostics) ==
-          TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_query_exact_binding_iid(
-              target, dana_iid, &target_iid_predicate, out_diagnostics) ==
-          TYPE_BRIDGE_STATUS_OK);
+    CHECK(person_identifier_predicate(package, source, "query-ada", &source_iid_predicate, out_diagnostics) == 0);
+    CHECK(person_identifier_predicate(package, target, "query-dana", &target_iid_predicate, out_diagnostics) == 0);
     CHECK(fixture_query_predicate_and(
               relation_iid_predicate, origin_predicate,
               &topology_predicate_1, out_diagnostics) ==
@@ -4191,21 +4546,17 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_person_query_exact_one_selection_open(
               target, &target_selection, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_positional_3(
-              session,
-              fixture_networkzhlink_query_exact_one_selection_ref(
-                  relation_selection),
-              fixture_person_query_exact_one_selection_ref(source_selection),
-              fixture_person_query_exact_one_selection_ref(target_selection),
-              &topology_shape, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_where(topology_shape, topology_predicate,
+    CHECK(fixture_query_positional_1(session, fixture_networkzhlink_query_exact_one_selection_ref(relation_selection), &topology_shape, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_match(topology_shape, fixture_person_query_exact_binding_ref(source), &topology_hidden_1, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_match(topology_hidden_1, fixture_person_query_exact_binding_ref(target), &topology_hidden_2, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_where(topology_hidden_2, topology_predicate,
                               &topology_query, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_rows(topology_query, NULL, 0u, 0u, 2u,
+    CHECK(fixture_query_one(topology_query, NULL, 0u,
                              &topology_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, topology_terminal, &limits, NULL, &topology_result,
+              database, topology_terminal, NULL, NULL, &topology_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_network_topology_result(
               topology_result, direct_topology_source_key,
@@ -4215,41 +4566,7 @@ static int run_typed_query_function_and_remote(
               fixture_query_rows_result_ref(topology_result), &row_count,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(row_count == 1u);
-    {
-      fixture_networkzhlink *link = NULL;
-      fixture_identifier *identifier = NULL;
-      type_bridge_byte_view_t text = {NULL, 0u};
-      fixture_person *source_value = NULL;
-      fixture_person *target_value = NULL;
-      CHECK(fixture_networkzhlink_query_exact_one_at(
-                fixture_networkzhlink_query_exact_one_result_slot_v1_t_rows(
-                    topology_result, 0u),
-                0u, &link, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-      CHECK(fixture_networkzhlink_identifier(link, &identifier,
-                                             out_diagnostics) ==
-            TYPE_BRIDGE_STATUS_OK);
-      CHECK(fixture_identifier_value(identifier, &text, out_diagnostics) ==
-            TYPE_BRIDGE_STATUS_OK);
-      CHECK(same_text(text, "query-link"));
-      CHECK(fixture_identifier_close(&identifier) == TYPE_BRIDGE_STATUS_OK);
-      CHECK(fixture_person_query_exact_one_at(
-                fixture_person_query_exact_one_result_slot_v1_t_rows(
-                    topology_result, 1u),
-                0u, &source_value, out_diagnostics) ==
-            TYPE_BRIDGE_STATUS_OK);
-      CHECK(fixture_person_query_exact_one_at(
-                fixture_person_query_exact_one_result_slot_v1_t_rows(
-                    topology_result, 2u),
-                0u, &target_value, out_diagnostics) ==
-            TYPE_BRIDGE_STATUS_OK);
-      CHECK(check_query_person_identifier(source_value, "query-ada",
-                                          out_diagnostics) == 0);
-      CHECK(check_query_person_identifier(target_value, "query-dana",
-                                          out_diagnostics) == 0);
-      CHECK(fixture_person_close(&target_value) == TYPE_BRIDGE_STATUS_OK);
-      CHECK(fixture_person_close(&source_value) == TYPE_BRIDGE_STATUS_OK);
-      CHECK(fixture_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
-    }
+    CHECK(check_network_topology_result(topology_result, direct_topology_source_key, sizeof(direct_topology_source_key), direct_topology_target_key, sizeof(direct_topology_target_key), out_diagnostics) == 0);
     CHECK(fixture_query_rows_result_close(&topology_result) ==
           TYPE_BRIDGE_STATUS_OK);
     RUN_REMOTE_QUERY(rows, topology_terminal, topology_result);
@@ -4278,7 +4595,7 @@ static int run_typed_query_function_and_remote(
               &reachable_endpoints, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_predicate_and(
-              reachable_endpoints, reachable_predicate, &reachable_all,
+              reachable_predicate, reachable_endpoints, &reachable_all,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_positional_2(
               session,
@@ -4288,11 +4605,11 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_where(reachable_shape, reachable_all,
                               &reachable_query, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_rows(reachable_query, NULL, 0u, 0u, 2u,
+    CHECK(fixture_query_one(reachable_query, NULL, 0u,
                              &reachable_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, reachable_terminal, &limits, NULL, &reachable_result,
+              database, reachable_terminal, NULL, NULL, &reachable_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_reachable_result(reachable_result, &direct_topology,
                                  reachable_max_hops, out_diagnostics) == 0);
@@ -4326,6 +4643,8 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_terminal_close(&topology_terminal) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_close(&topology_query) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_close(&topology_hidden_2) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_close(&topology_hidden_1) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_close(&topology_shape) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_predicate_close(&topology_predicate) ==
           TYPE_BRIDGE_STATUS_OK);
@@ -4368,8 +4687,13 @@ static int run_typed_query_function_and_remote(
     fixture_person_query_exact_binding *right = NULL;
     fixture_person_identifier_query_field *left_identifier_field = NULL;
     fixture_person_score_query_field *left_score_field = NULL;
+    fixture_person_valzubool_query_field *left_boolean_field = NULL;
+    fixture_valzubool *true_value = NULL;
     fixture_person_scorezuzugte_query_field *left_score_gte_field = NULL;
     fixture_query_order *left_identifier_order = NULL;
+    fixture_person_identifier_query_field *right_identifier_field = NULL;
+    fixture_query_order *right_identifier_order = NULL;
+    const fixture_query_order *cross_orders[2];
     const fixture_query_order *left_orders[1];
     fixture_person_query_exact_one_selection *left_selection = NULL;
     fixture_person_query_exact_one_selection *right_selection = NULL;
@@ -4400,7 +4724,6 @@ static int run_typed_query_function_and_remote(
     fixture_query_rows_result *not_result = NULL;
     fixture_query_rows_result *field_comparison_result = NULL;
     fixture_query_rows_result *cross_result = NULL;
-    const type_bridge_byte_view_t iids[2] = {ada_iid, dana_iid};
     size_t row_count = 0u;
     sdk_person_rows_observation_t direct_or_rows = {0};
     sdk_person_rows_observation_t remote_or_rows = {0};
@@ -4413,12 +4736,8 @@ static int run_typed_query_function_and_remote(
               session, &left, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_query_exact_binding_open(
               session, &right, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_query_exact_binding_iid(
-              left, ada_iid, &left_ada, out_diagnostics) ==
-          TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_query_exact_binding_iid(
-              left, dana_iid, &left_dana, out_diagnostics) ==
-          TYPE_BRIDGE_STATUS_OK);
+    CHECK(person_identifier_predicate(package, left, "query-ada", &left_ada, out_diagnostics) == 0);
+    CHECK(person_identifier_predicate(package, left, "query-dana", &left_dana, out_diagnostics) == 0);
     CHECK(fixture_query_predicate_or(left_ada, left_dana, &left_or,
                                      out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
@@ -4441,10 +4760,9 @@ static int run_typed_query_function_and_remote(
                   left_score_gte_field),
               &field_comparison_predicate, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_score_query_field_compare_value(
-              left_score_field,
-              TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN_OR_EQUAL, threshold,
-              &left_high, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_person_valzubool_query_field_from_exact(left, &left_boolean_field, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_valzubool_open(package, 1u, &true_value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_person_valzubool_query_field_compare_value(left_boolean_field, TYPE_BRIDGE_QUERY_COMPARE_EQUAL, true_value, &left_high, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_predicate_not(left_high, &left_not_high,
                                       out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
@@ -4464,11 +4782,9 @@ static int run_typed_query_function_and_remote(
               TYPE_BRIDGE_QUERY_MISSING_REJECT, &left_identifier_order,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     left_orders[0] = left_identifier_order;
-    CHECK(fixture_person_query_exact_binding_iid_in(
-              right, iids, 2u, &right_in, out_diagnostics) ==
-          TYPE_BRIDGE_STATUS_OK);
+    CHECK(person_identifier_scope(package, right, &right_in, out_diagnostics) == 0);
     CHECK(fixture_query_predicate_and(
-              left_double_not, right_in, &cross_predicate,
+              left_or, right_in, &cross_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_query_exact_one_selection_open(
               left, &left_selection, out_diagnostics) ==
@@ -4497,7 +4813,7 @@ static int run_typed_query_function_and_remote(
                              &field_comparison_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, or_terminal, &limits, NULL, &or_result,
+              database, or_terminal, NULL, NULL, &or_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_rows_identifiers(or_result, expected_rows, 2u,
                                  out_diagnostics) == 0);
@@ -4513,7 +4829,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_result_close(&or_result) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, not_terminal, &limits, NULL, &not_result,
+              database, not_terminal, NULL, NULL, &not_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_rows_identifiers(not_result, expected_ada, 1u,
                                  out_diagnostics) == 0);
@@ -4522,7 +4838,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_result_close(&not_result) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, field_comparison_terminal, &limits, NULL,
+              database, field_comparison_terminal, NULL, NULL,
               &field_comparison_result, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_rows_identifiers(field_comparison_result, expected_dana, 1u,
@@ -4558,11 +4874,15 @@ static int run_typed_query_function_and_remote(
               cross_filtered, fixture_person_query_exact_binding_ref(left),
               fixture_person_query_exact_binding_ref(right), &cross_query,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_rows(cross_query, NULL, 0u, 0u, 8u,
+    CHECK(fixture_person_identifier_query_field_from_exact(right, &right_identifier_field, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_person_identifier_query_field_order(right_identifier_field, TYPE_BRIDGE_QUERY_SORT_ASCENDING, TYPE_BRIDGE_QUERY_MISSING_REJECT, &right_identifier_order, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    cross_orders[0] = left_identifier_order;
+    cross_orders[1] = right_identifier_order;
+    CHECK(fixture_query_rows(cross_query, cross_orders, 2u, 0u, 4u,
                              &cross_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, cross_terminal, &limits, NULL, &cross_result,
+              database, cross_terminal, NULL, NULL, &cross_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_cross_join_result(cross_result, &direct_topology,
                                   out_diagnostics) == 0);
@@ -4582,10 +4902,10 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_result_close(&cross_result) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(emit_scalar_boolean_observation(
-        "direct_runtime", &direct_one_rows, &direct_field_comparison_rows,
+        "direct_runtime", &direct_and_rows, &direct_field_comparison_rows,
         &direct_not_rows, &direct_or_rows));
     CHECK(emit_scalar_boolean_observation(
-        "remote_runtime", &remote_one_rows, &remote_field_comparison_rows,
+        "remote_runtime", &remote_and_rows, &remote_field_comparison_rows,
         &remote_not_rows, &remote_or_rows));
     CHECK(emit_topology_observation("direct_runtime", &direct_topology));
     CHECK(emit_topology_observation("remote_runtime", &remote_topology));
@@ -4629,10 +4949,14 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_predicate_close(&left_or) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_predicate_close(&left_dana) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_predicate_close(&left_ada) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_order_close(&right_identifier_order) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_person_identifier_query_field_close(&right_identifier_field) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_order_close(&left_identifier_order) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_identifier_query_field_close(
               &left_identifier_field) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_valzubool_close(&true_value) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_person_valzubool_query_field_close(&left_boolean_field) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_score_query_field_close(&left_score_field) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_scorezuzugte_query_field_close(
@@ -4676,7 +5000,7 @@ static int run_typed_query_function_and_remote(
     fixture_query_page_terminal *positional_terminal = NULL;
     fixture_query_page_result *named_result = NULL;
     fixture_query_page_result *positional_result = NULL;
-    const type_bridge_byte_view_t participant_iids[2] = {ada_iid, dana_iid};
+    const type_bridge_iid_t *participant_iids[2] = {iid_ada, iid_dana};
     const int collected_distinct = 1;
     const type_bridge_query_sort_direction_t collection_order =
         TYPE_BRIDGE_QUERY_SORT_ASCENDING;
@@ -4702,39 +5026,29 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_networkzhlink_participant_query_role_from_exact(
               relation, &participant_role, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_networkzhlink_origin_query_role_connects(
+    CHECK(fixture_networkzhlink_origin_query_role_links(
               origin_role,
               fixture_networkzhlink_origin_query_role_player_person_exact(
                   origin),
               &origin_role_predicate, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_networkzhlink_participant_query_role_connects(
+    CHECK(fixture_networkzhlink_participant_query_role_links(
               participant_role,
               fixture_networkzhlink_participant_query_role_player_person_exact(
                   participant),
               &participant_role_predicate, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_networkzhlink_query_exact_binding_iid(
-              relation, network_link_iid, &relation_iid_predicate,
+              relation, checked_iid(network_link_iid, &iid_argument), &relation_iid_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_query_exact_binding_iid(
-              origin, ada_iid, &origin_iid_predicate, out_diagnostics) ==
+              origin, checked_iid(ada_iid, &iid_argument), &origin_iid_predicate, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_query_exact_binding_iid_in(
               participant, participant_iids, 2u, &participant_iid_predicate,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_predicate_and(
-              relation_iid_predicate, origin_iid_predicate,
-              &shape_predicate_1, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_predicate_and(
-              shape_predicate_1, participant_iid_predicate,
-              &shape_predicate_2, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_predicate_and(
-              shape_predicate_2, origin_role_predicate, &shape_predicate_3,
-              out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_predicate_and(
-              shape_predicate_3, participant_role_predicate,
-              &shape_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_predicate_and(relation_iid_predicate, origin_role_predicate, &shape_predicate_1, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_query_predicate_and(shape_predicate_1, participant_role_predicate, &shape_predicate, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_identifier_query_field_from_exact(
               participant, &participant_identifier, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
@@ -4765,7 +5079,7 @@ static int run_typed_query_function_and_remote(
               fixture_person_query_exact_collect_selection_ref(
                   participant_selection),
               &named_shape, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_add_hidden(
+    CHECK(fixture_query_match(
               named_shape,
               fixture_networkzhlink_query_exact_binding_ref(relation),
               &named_hidden, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -4774,12 +5088,12 @@ static int run_typed_query_function_and_remote(
     {
       fixture_query_root_v1_t named_root =
           fixture_person_query_exact_binding_root(named_query, origin);
-      CHECK(fixture_query_page(named_root, origin_orders, 1u, 0u, 1u, 1u,
+      CHECK(fixture_query_page_by(named_root, origin_orders, 1u, 0u, 1u, 1u,
                                &named_terminal, out_diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
     }
     CHECK(fixture_database_query_execute_page(
-              database, named_terminal, &limits, NULL, &named_result,
+              database, named_terminal, NULL, NULL, &named_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_selection_shape_result(
               named_result, direct_selection_shape.named_origin,
@@ -4813,7 +5127,7 @@ static int run_typed_query_function_and_remote(
               fixture_person_query_exact_collect_selection_ref(
                   participant_selection),
               &positional_shape, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_query_add_hidden(
+    CHECK(fixture_query_match(
               positional_shape,
               fixture_networkzhlink_query_exact_binding_ref(relation),
               &positional_hidden, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -4823,12 +5137,12 @@ static int run_typed_query_function_and_remote(
     {
       fixture_query_root_v1_t positional_root =
           fixture_person_query_exact_binding_root(positional_query, origin);
-      CHECK(fixture_query_page(positional_root, origin_orders, 1u, 0u, 1u, 1u,
+      CHECK(fixture_query_page_by(positional_root, origin_orders, 1u, 0u, 1u, 1u,
                                &positional_terminal, out_diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
     }
     CHECK(fixture_database_query_execute_page(
-              database, positional_terminal, &limits, NULL,
+              database, positional_terminal, NULL, NULL,
               &positional_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_selection_shape_result(
               positional_result, direct_selection_shape.positional_origin,
@@ -4919,6 +5233,14 @@ static int run_typed_query_function_and_remote(
   }
 
 #undef RUN_REMOTE_QUERY
+  if (plan_witness != NULL) {
+    witness_stop();
+    fputs("}}", plan_witness);
+    CHECK(fclose(plan_witness) == 0);
+    plan_witness = NULL;
+    free(plan_advertisement);
+    plan_advertisement = NULL;
+  }
 
   CHECK(fixture_query_remote_context_close(&remote_context) ==
         TYPE_BRIDGE_STATUS_OK);
@@ -4958,6 +5280,7 @@ static int run_typed_query_function_and_remote(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_predicate_close(&filtered_predicate) ==
         TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_predicate_close(&people_scope) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_predicate_close(&iid_predicate) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_predicate_close(&predicate) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_qualifyingzhscore_query_call_close(&call) ==
@@ -4980,13 +5303,16 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_person_query_exact_binding_close(&person_binding) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_session_close(&session) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(emit_scalar_domain_observation("direct_runtime", &direct_one_rows,
+  CHECK(emit_scalar_domain_observation("direct_runtime", &direct_scalar_rows,
                                        threshold_comparison,
                                        threshold_number));
-  CHECK(emit_scalar_domain_observation("remote_runtime", &remote_one_rows,
+  CHECK(emit_scalar_domain_observation("remote_runtime", &remote_scalar_rows,
                                        threshold_comparison,
                                        threshold_number));
   CHECK(*out_diagnostics == NULL);
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_close(&iid_ada) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_close(&iid_dana) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 
@@ -5005,14 +5331,18 @@ static int write_canonical_view(const char *directory, const char *name,
   return 1;
 }
 
+
 static int run_sdk_serialization_live_codec(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_status_t write_status;
+  fixture_employment_insert_batch_result *fixture_employment_insert_result = NULL;
+  fixture_employment_update_batch_result *fixture_employment_update_result = NULL;
+  fixture_person_insert_batch_result *fixture_person_insert_result = NULL;
+  type_bridge_iid_t *iid_argument = NULL;
   const char *directory = getenv("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR");
   const uint16_t remote_port = required_remote_port();
-  type_bridge_query_execution_limits_v1_t limits =
-      TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
   fixture_person_create *person_create = NULL;
   fixture_person *inserted_person = NULL;
   fixture_person_ref *inserted_person_ref = NULL;
@@ -5071,8 +5401,7 @@ static int run_sdk_serialization_live_codec(
   CHECK(remote_port != 0u);
   CHECK(open_person_create(package, "v5-live-person", 70, &person_create,
                            out_diagnostics) == 0);
-  CHECK(fixture_person_database_insert(database, person_create, NULL,
-                                       &inserted_person, out_diagnostics) ==
+  CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_database_insert(database, person_create, NULL,  NULL,&fixture_person_insert_result, out_diagnostics), &inserted_person, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_reference(inserted_person, &inserted_person_ref,
                                  out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -5085,9 +5414,9 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_employment_create_open(package, &employment_args,
                                        &employment_create, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_employment_database_insert(
-            database, employment_create, NULL, &inserted_employment,
-            out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_employment, insert, fixture_employment_database_insert(
+            database, employment_create, NULL,  NULL,&fixture_employment_insert_result,
+            out_diagnostics), &inserted_employment, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_employment_iid(inserted_employment, &employment_iid,
                                out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(employment_iid.length != 0u &&
@@ -5105,7 +5434,7 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_employment_employee_query_role_from_exact(
             employment_binding, &employee_role, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_employment_employee_query_role_connects(
+  CHECK(fixture_employment_employee_query_role_links(
             employee_role,
             fixture_employment_employee_query_role_player_person_exact(
                 person_binding),
@@ -5138,7 +5467,7 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_query_one(query, NULL, 0u, &terminal, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_database_query_execute_rows(
-            database, terminal, &limits, NULL, &direct_result,
+            database, terminal, NULL, NULL, &direct_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_result_row_count(
             fixture_query_rows_result_ref(direct_result), &row_count,
@@ -5165,13 +5494,13 @@ static int run_sdk_serialization_live_codec(
                                          &direct_relation_view) ==
         TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(caller_http_exchange(remote_port, "GET", "/v2/capabilities", NULL, 0u,
+  CHECK(caller_http_exchange(remote_port, "GET", "/v3/capabilities", NULL, 0u,
                              1024u * 1024u, &advertisement));
   CHECK(fixture_query_remote_context_open(
             package,
             (type_bridge_byte_view_t){advertisement.data,
                                       advertisement.length},
-            &limits, &remote_context, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+            NULL, &remote_context, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   free(advertisement.data);
   CHECK(fixture_query_remote_prepare_rows(remote_context, terminal, NULL,
                                           &pending, out_diagnostics) ==
@@ -5180,7 +5509,7 @@ static int run_sdk_serialization_live_codec(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_rows_remote_pending_response_snapshot_limit(
             pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(caller_http_exchange(remote_port, "POST", "/v2/query", request.data,
+  CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged", request.data,
                              request.length, response_limit, &response));
   CHECK(fixture_query_rows_remote_pending_claim(
             pending, NULL, &claim, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -5222,7 +5551,7 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_person_canonical_decode(package, direct_entity_view,
                                         &detached_person, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_employment_database_count(database, NULL, &count_before,
+  CHECK(fixture_employment_database_count(database, NULL,  NULL, &count_before,
                                           out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_reference(detached_person, &detached_person_ref,
@@ -5232,7 +5561,7 @@ static int run_sdk_serialization_live_codec(
         execution_code_is(*out_diagnostics, "projected_snapshot_detached"));
   CHECK(type_bridge_execution_diagnostics_close(out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_employment_database_count(database, NULL, &count_after,
+  CHECK(fixture_employment_database_count(database, NULL,  NULL, &count_after,
                                           out_diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count_after == count_before);
@@ -5246,20 +5575,19 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_employment_create_open(package, &employment_args,
                                        &rebound_create, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_employment_database_update(
-            database, employment_iid, rebound_create, NULL,
-            &updated_employment, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_employment, update, fixture_employment_database_update(
+            database, checked_iid(employment_iid, &iid_argument), rebound_create, NULL,  NULL,&fixture_employment_update_result, out_diagnostics), &updated_employment, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(write_canonical_view(directory, "entity.bin", direct_entity_view));
   CHECK(write_canonical_view(directory, "relation.bin", direct_relation_view));
 
   CHECK(fixture_employment_database_delete_by_iid(
-            database, employment_iid, NULL, out_diagnostics) ==
+            database, checked_iid(employment_iid, &iid_argument), NULL,  NULL, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_byte_view_t person_iid = {0};
     CHECK(fixture_person_iid(inserted_person, &person_iid, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_database_delete_by_iid(database, person_iid, NULL,
+    CHECK(fixture_person_database_delete_by_iid(database, checked_iid(person_iid, &iid_argument), NULL,  NULL,
                                                 out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
   }
@@ -5320,11 +5648,23 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_person_close(&inserted_person) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_create_close(&person_create) == TYPE_BRIDGE_STATUS_OK);
   puts("Serialization C live codec direct/remote parity: passed");
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 #endif
 
 int main(void) {
+  type_bridge_status_t write_status;
+  fixture_employee_insert_batch_result *fixture_employee_insert_result = NULL;
+  fixture_manager_insert_batch_result *fixture_manager_insert_result = NULL;
+  fixture_membership_insert_batch_result *fixture_membership_insert_result = NULL;
+  fixture_membership_put_batch_result *fixture_membership_put_result = NULL;
+  fixture_membership_update_batch_result *fixture_membership_update_result = NULL;
+  fixture_networkzhlink_insert_batch_result *fixture_networkzhlink_insert_result = NULL;
+  fixture_person_insert_batch_result *fixture_person_insert_result = NULL;
+  fixture_person_put_batch_result *fixture_person_put_result = NULL;
+  fixture_person_update_batch_result *fixture_person_update_result = NULL;
+  type_bridge_iid_t *iid_argument = NULL;
   const char *address = getenv("TYPEDB_ADDRESS");
   const char *database_name = getenv("TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE");
   const char *username = getenv("TYPEDB_USERNAME");
@@ -5334,7 +5674,7 @@ int main(void) {
       getenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION");
   const uint32_t http_port = required_http_port();
   type_bridge_schema_package_t *package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_database_t *database = NULL;
@@ -5400,7 +5740,7 @@ int main(void) {
       TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN,
       0u,
       {0u, 0u, 0u, 0u}};
-  type_bridge_database_config_v1_t database_config;
+  type_bridge_database_config_t database_config;
 
   CHECK(address != NULL && address[0] != '\0');
   CHECK(expected_server_version != NULL &&
@@ -5424,7 +5764,7 @@ int main(void) {
   CHECK(package != NULL && package_diagnostics == NULL);
   CHECK(type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(type_bridge_database_open_v1(runtime, package, &database_config, NULL,
+  CHECK(type_bridge_database_open(runtime, package, &database_config, NULL,
                                      &database, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(type_bridge_database_server_version(database, &version) ==
@@ -5457,18 +5797,18 @@ int main(void) {
   CHECK(fixture_robotzuid_close(&robot_id) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzuconstrained_close(&robot_constrained) ==
         TYPE_BRIDGE_STATUS_OK);
-  person = (fixture_person *)(uintptr_t)1u;
+  fixture_person_insert_result = (fixture_person_insert_batch_result *)(uintptr_t)1u;
   CHECK(fixture_person_database_insert(
-            database, (const fixture_person_create *)robot_create, NULL,
-            &person, &diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
-  CHECK(person == NULL && diagnostics != NULL);
+            database, (const fixture_person_create *)robot_create, NULL, NULL,
+            &fixture_person_insert_result, &diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
+  CHECK(fixture_person_insert_result == NULL && diagnostics != NULL);
   CHECK(execution_code_is(diagnostics, "c_entity_create_model_mismatch"));
   CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(fixture_person_database_count(database, NULL, &count, &diagnostics) ==
+  CHECK(fixture_person_database_count(database, NULL,  NULL, &count, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(count == 0u);
-  CHECK(fixture_robot_database_count(database, NULL, &count, &diagnostics) ==
+  CHECK(fixture_robot_database_count(database, NULL,  NULL, &count, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(count == 0u);
   CHECK(fixture_robot_create_close(&robot_create) == TYPE_BRIDGE_STATUS_OK);
@@ -5476,8 +5816,8 @@ int main(void) {
 
   CHECK(open_person_create(package, "query-ada", 36, &ada_create, &diagnostics) ==
         0);
-  CHECK(fixture_person_database_insert(database, ada_create, NULL, &person,
-                                       &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_database_insert(database, ada_create, NULL,  NULL,&fixture_person_insert_result,
+                                       &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   entity_created = 1;
   CHECK(check_person(person, "query-ada", 36, &diagnostics) == 0);
   CHECK(read_query_person_identifier(person, entity_lifecycle_key,
@@ -5493,22 +5833,21 @@ int main(void) {
     const type_bridge_byte_view_t ada_iid = {ada_iid_storage, ada_iid_length};
     CHECK(check_reference_constructors(package, ada_iid, &diagnostics) == 0);
     puts("P4 nominal references: passed");
-    CHECK(fixture_person_database_get_by_iid(database, ada_iid, NULL, &person,
+    CHECK(fixture_person_database_get_by_iid(database, checked_iid(ada_iid, &iid_argument), NULL,  NULL, &person,
                                              &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 36, &diagnostics) == 0);
     entity_read_after_create = 1;
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
     puts("P4 database get: passed");
-    CHECK(fixture_person_database_count(database, NULL, &count, &diagnostics) ==
+    CHECK(fixture_person_database_count(database, NULL,  NULL, &count, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(count == 1u);
     puts("P4 database count: passed");
 
     CHECK(open_person_create(package, "query-ada", 37, &ada_update, &diagnostics) ==
           0);
-    CHECK(fixture_person_database_update(database, ada_iid, ada_update, NULL,
-                                         &person, &diagnostics) ==
+    CHECK(TEST_SINGLE_WRITE(fixture_person, update, fixture_person_database_update(database, checked_iid(ada_iid, &iid_argument), ada_update, NULL,  NULL,&fixture_person_update_result, &diagnostics), &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 37, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
@@ -5521,11 +5860,11 @@ int main(void) {
           0);
     CHECK(open_person_create(package, "cara", 25, &cara_create,
                              &diagnostics) == 0);
-    CHECK(type_bridge_write_transaction_open(database, NULL, &write_tx,
+    CHECK(type_bridge_write_transaction_open(database, NULL,  NULL, &write_tx,
                                              &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_write_transaction_insert(
-              write_tx, bob_create, NULL, &person, &diagnostics) ==
+    CHECK(TEST_SINGLE_WRITE(fixture_person, insert, fixture_person_write_transaction_insert(
+              write_tx, bob_create, NULL,  NULL,&fixture_person_insert_result, &diagnostics), &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(copy_person_iid(person, bob_iid_storage, sizeof(bob_iid_storage),
                           &bob_iid_length, &diagnostics) == 0);
@@ -5533,8 +5872,8 @@ int main(void) {
     CHECK(fixture_person_create_close(&bob_create) == TYPE_BRIDGE_STATUS_OK);
     puts("P4 write transaction insert: passed");
 
-    CHECK(fixture_person_write_transaction_put(
-              write_tx, cara_create, NULL, &person, &diagnostics) ==
+    CHECK(TEST_SINGLE_WRITE(fixture_person, put, fixture_person_write_transaction_put(
+              write_tx, cara_create, NULL,  NULL,&fixture_person_put_result, &diagnostics), &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(copy_person_iid(person, cara_iid_storage, sizeof(cara_iid_storage),
                           &cara_iid_length, &diagnostics) == 0);
@@ -5543,15 +5882,15 @@ int main(void) {
     puts("P4 write transaction put: passed");
 
     CHECK(fixture_person_write_transaction_get_by_iid(
-              write_tx, ada_iid, NULL, &person, &diagnostics) ==
+              write_tx, checked_iid(ada_iid, &iid_argument), NULL,  NULL, &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 37, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
     puts("P4 write transaction get: passed");
 
-    CHECK(fixture_person_write_transaction_update(
-              write_tx, ada_iid, ada_tx_update, NULL, &person,
-              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_person, update, fixture_person_write_transaction_update(
+              write_tx, checked_iid(ada_iid, &iid_argument), ada_tx_update, NULL,  NULL,&fixture_person_update_result,
+              &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 38, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_create_close(&ada_tx_update) ==
@@ -5562,30 +5901,30 @@ int main(void) {
       const type_bridge_byte_view_t bob_iid = {bob_iid_storage,
                                                bob_iid_length};
       CHECK(fixture_person_write_transaction_delete_by_iid(
-                write_tx, bob_iid, NULL, &diagnostics) ==
+                write_tx, checked_iid(bob_iid, &iid_argument), NULL,  NULL, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
     }
     puts("P4 write transaction delete: passed");
-    CHECK(fixture_person_write_transaction_count(write_tx, NULL, &count,
+    CHECK(fixture_person_write_transaction_count(write_tx, NULL,  NULL, &count,
                                                   &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(count == 2u);
     puts("P4 write transaction count: passed");
-    CHECK(type_bridge_write_transaction_commit(&write_tx, NULL,
+    CHECK(type_bridge_write_transaction_commit(&write_tx, NULL,  NULL,
                                                &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(write_tx == NULL && diagnostics == NULL);
 
-    CHECK(type_bridge_read_transaction_open(database, NULL, &read_tx,
+    CHECK(type_bridge_read_transaction_open(database, NULL,  NULL, &read_tx,
                                             &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_read_transaction_get_by_iid(
-              read_tx, ada_iid, NULL, &person, &diagnostics) ==
+              read_tx, checked_iid(ada_iid, &iid_argument), NULL,  NULL, &person, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_person(person, "query-ada", 38, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
     puts("P4 read transaction get: passed");
-    CHECK(fixture_person_read_transaction_count(read_tx, NULL, &count,
+    CHECK(fixture_person_read_transaction_count(read_tx, NULL,  NULL, &count,
                                                  &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(count == 2u);
@@ -5596,8 +5935,8 @@ int main(void) {
 
     CHECK(open_person_create(package, "query-dana", 45, &dana_create,
                              &diagnostics) == 0);
-    CHECK(fixture_person_database_put(database, dana_create, NULL, &person,
-                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_person, put, fixture_person_database_put(database, dana_create, NULL,  NULL,&fixture_person_put_result,
+                                      &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(copy_person_iid(person, dana_iid_storage, sizeof(dana_iid_storage),
                           &dana_iid_length, &diagnostics) == 0);
     CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
@@ -5606,9 +5945,9 @@ int main(void) {
 
     CHECK(open_employee_create(package, "query-employee", 3,
                                &query_employee_create, &diagnostics) == 0);
-    CHECK(fixture_employee_database_insert(
-              database, query_employee_create, NULL, &query_employee,
-              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_employee, insert, fixture_employee_database_insert(
+              database, query_employee_create, NULL,  NULL,&fixture_employee_insert_result,
+              &diagnostics), &query_employee, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     {
       type_bridge_byte_view_t iid = {NULL, 0u};
       CHECK(fixture_employee_iid(query_employee, &iid, &diagnostics) ==
@@ -5624,9 +5963,9 @@ int main(void) {
 
     CHECK(open_manager_create(package, "query-manager", 5,
                               &query_manager_create, &diagnostics) == 0);
-    CHECK(fixture_manager_database_insert(
-              database, query_manager_create, NULL, &query_manager,
-              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_manager, insert, fixture_manager_database_insert(
+              database, query_manager_create, NULL,  NULL,&fixture_manager_insert_result,
+              &diagnostics), &query_manager, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     {
       type_bridge_byte_view_t iid = {NULL, 0u};
       CHECK(fixture_manager_iid(query_manager, &iid, &diagnostics) ==
@@ -5642,11 +5981,11 @@ int main(void) {
 
     CHECK(open_membership_create(package, ada_iid, &query_membership_create,
                                  &diagnostics) == 0);
-    CHECK(fixture_membership_database_insert(
-              database, query_membership_create, NULL, &membership,
-              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_membership, insert, fixture_membership_database_insert(
+              database, query_membership_create, NULL,  NULL,&fixture_membership_insert_result,
+              &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     relation_created = 1;
-    CHECK(fixture_person_database_get_by_iid(database, ada_iid, NULL, &person,
+    CHECK(fixture_person_database_get_by_iid(database, checked_iid(ada_iid, &iid_argument), NULL,  NULL, &person,
                                              &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(read_query_person_identifier(person, relation_lifecycle_player_key,
@@ -5665,9 +6004,9 @@ int main(void) {
                                                              dana_iid_length},
                                    &query_network_link_create,
                                    &diagnostics) == 0);
-    CHECK(fixture_networkzhlink_database_insert(
-              database, query_network_link_create, NULL, &query_network_link,
-              &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(TEST_SINGLE_WRITE(fixture_networkzhlink, insert, fixture_networkzhlink_database_insert(
+              database, query_network_link_create, NULL,  NULL,&fixture_networkzhlink_insert_result,
+              &diagnostics), &query_network_link, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     {
       type_bridge_byte_view_t iid = {NULL, 0u};
       CHECK(fixture_networkzhlink_iid(query_network_link, &iid,
@@ -5694,31 +6033,27 @@ int main(void) {
                                               &diagnostics) == 0);
 
     CHECK(fixture_networkzhlink_database_delete_by_iid(
-              database,
-              (type_bridge_byte_view_t){query_network_link_iid_storage,
-                                        query_network_link_iid_length},
+              database, checked_iid((type_bridge_byte_view_t){query_network_link_iid_storage,
+                                        query_network_link_iid_length}, &iid_argument), NULL,
               NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_membership_database_delete_by_iid(
-              database,
-              (type_bridge_byte_view_t){query_membership_iid_storage,
-                                        query_membership_iid_length},
+              database, checked_iid((type_bridge_byte_view_t){query_membership_iid_storage,
+                                        query_membership_iid_length}, &iid_argument), NULL,
               NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     relation_deleted = 1;
-    CHECK(emit_v2_observationf(
+    CHECK(emit_observationf(
         "relation_lifecycle", "direct_runtime",
         "{\"created\":%s,\"deleted\":%s,\"model\":\"membership\","
         "\"player_key\":\"%s\",\"role\":\"member\"}",
         relation_created ? "true" : "false",
         relation_deleted ? "true" : "false", relation_lifecycle_player_key));
     CHECK(fixture_manager_database_delete_by_iid(
-              database,
-              (type_bridge_byte_view_t){query_manager_iid_storage,
-                                        query_manager_iid_length},
+              database, checked_iid((type_bridge_byte_view_t){query_manager_iid_storage,
+                                        query_manager_iid_length}, &iid_argument), NULL,
               NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_employee_database_delete_by_iid(
-              database,
-              (type_bridge_byte_view_t){query_employee_iid_storage,
-                                        query_employee_iid_length},
+              database, checked_iid((type_bridge_byte_view_t){query_employee_iid_storage,
+                                        query_employee_iid_length}, &iid_argument), NULL,
               NULL, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
     puts("C14/C16/C17 query fixture cleanup: passed");
 
@@ -5734,9 +6069,9 @@ int main(void) {
                                    &cara_membership_create, &diagnostics) == 0);
       puts("P5 generated Person role-player unions: passed");
 
-      CHECK(fixture_membership_database_insert(
-                database, ada_membership_create, NULL, &membership,
-                &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(TEST_SINGLE_WRITE(fixture_membership, insert, fixture_membership_database_insert(
+                database, ada_membership_create, NULL,  NULL,&fixture_membership_insert_result,
+                &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
       CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
       CHECK(copy_membership_iid(
                 membership, membership_one_iid_storage,
@@ -5762,29 +6097,28 @@ int main(void) {
         puts("P5 nominal relation reference: passed");
 
         CHECK(fixture_membership_database_get_by_iid(
-                  database, membership_one_iid, NULL, &membership,
+                  database, checked_iid(membership_one_iid, &iid_argument), NULL,  NULL, &membership,
                   &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
               TYPE_BRIDGE_STATUS_OK);
         puts("P5 database relation get: passed");
-        CHECK(fixture_membership_database_count(database, NULL, &count,
+        CHECK(fixture_membership_database_count(database, NULL,  NULL, &count,
                                                 &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
         CHECK(count == 1u);
         puts("P5 database relation count: passed");
 
-        CHECK(fixture_membership_database_update(
-                  database, membership_one_iid, cara_membership_create, NULL,
-                  &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(TEST_SINGLE_WRITE(fixture_membership, update, fixture_membership_database_update(
+                  database, checked_iid(membership_one_iid, &iid_argument), cara_membership_create, NULL,  NULL,&fixture_membership_update_result, &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, cara_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
               TYPE_BRIDGE_STATUS_OK);
         puts("P5 database relation update: passed");
 
-        CHECK(fixture_membership_database_put(
-                  database, ada_membership_create, NULL, &membership,
-                  &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(TEST_SINGLE_WRITE(fixture_membership, put, fixture_membership_database_put(
+                  database, ada_membership_create, NULL,  NULL,&fixture_membership_put_result,
+                  &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(copy_membership_iid(
                   membership, membership_two_iid_storage,
@@ -5794,12 +6128,12 @@ int main(void) {
               TYPE_BRIDGE_STATUS_OK);
         puts("P5 database relation put: passed");
 
-        CHECK(type_bridge_write_transaction_open(database, NULL, &write_tx,
+        CHECK(type_bridge_write_transaction_open(database, NULL,  NULL, &write_tx,
                                                  &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
-        CHECK(fixture_membership_write_transaction_insert(
-                  write_tx, ada_membership_create, NULL, &membership,
-                  &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(TEST_SINGLE_WRITE(fixture_membership, insert, fixture_membership_write_transaction_insert(
+                  write_tx, ada_membership_create, NULL,  NULL,&fixture_membership_insert_result,
+                  &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(copy_membership_iid(
                   membership, membership_three_iid_storage,
@@ -5809,9 +6143,9 @@ int main(void) {
               TYPE_BRIDGE_STATUS_OK);
         puts("P5 write transaction relation insert: passed");
 
-        CHECK(fixture_membership_write_transaction_put(
-                  write_tx, cara_membership_create, NULL, &membership,
-                  &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(TEST_SINGLE_WRITE(fixture_membership, put, fixture_membership_write_transaction_put(
+                  write_tx, cara_membership_create, NULL,  NULL,&fixture_membership_put_result,
+                  &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, cara_iid, &diagnostics) == 0);
         CHECK(copy_membership_iid(
                   membership, membership_four_iid_storage,
@@ -5822,16 +6156,15 @@ int main(void) {
         puts("P5 write transaction relation put: passed");
 
         CHECK(fixture_membership_write_transaction_get_by_iid(
-                  write_tx, membership_one_iid, NULL, &membership,
+                  write_tx, checked_iid(membership_one_iid, &iid_argument), NULL,  NULL, &membership,
                   &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, cara_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
               TYPE_BRIDGE_STATUS_OK);
         puts("P5 write transaction relation get: passed");
 
-        CHECK(fixture_membership_write_transaction_update(
-                  write_tx, membership_one_iid, ada_membership_create, NULL,
-                  &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+        CHECK(TEST_SINGLE_WRITE(fixture_membership, update, fixture_membership_write_transaction_update(
+                  write_tx, checked_iid(membership_one_iid, &iid_argument), ada_membership_create, NULL,  NULL,&fixture_membership_update_result, &diagnostics), &membership, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
               TYPE_BRIDGE_STATUS_OK);
@@ -5841,41 +6174,43 @@ int main(void) {
           const type_bridge_byte_view_t membership_three_iid = {
               membership_three_iid_storage, membership_three_iid_length};
           CHECK(fixture_membership_write_transaction_delete_by_iid(
-                    write_tx, membership_three_iid, NULL, &diagnostics) ==
+                    write_tx, checked_iid(membership_three_iid, &iid_argument), NULL,  NULL, &diagnostics) ==
                 TYPE_BRIDGE_STATUS_OK);
         }
         puts("P5 write transaction relation delete: passed");
         CHECK(fixture_membership_write_transaction_count(
-                  write_tx, NULL, &count, &diagnostics) ==
+                  write_tx, NULL,  NULL, &count, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
-        CHECK(count == 3u);
+        /* The keyless cara put matched the first membership instead of
+         * inserting a fourth, so two remain after the delete. */
+        CHECK(count == 2u);
         puts("P5 write transaction relation count: passed");
-        CHECK(type_bridge_write_transaction_commit(&write_tx, NULL,
+        CHECK(type_bridge_write_transaction_commit(&write_tx, NULL,  NULL,
                                                    &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
         CHECK(write_tx == NULL && diagnostics == NULL);
 
-        CHECK(type_bridge_read_transaction_open(database, NULL, &read_tx,
+        CHECK(type_bridge_read_transaction_open(database, NULL,  NULL, &read_tx,
                                                 &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
         CHECK(fixture_membership_read_transaction_get_by_iid(
-                  read_tx, membership_one_iid, NULL, &membership,
+                  read_tx, checked_iid(membership_one_iid, &iid_argument), NULL,  NULL, &membership,
                   &diagnostics) == TYPE_BRIDGE_STATUS_OK);
         CHECK(check_membership(membership, ada_iid, &diagnostics) == 0);
         CHECK(fixture_membership_close(&membership) ==
               TYPE_BRIDGE_STATUS_OK);
         puts("P5 read transaction relation get: passed");
         CHECK(fixture_membership_read_transaction_count(
-                  read_tx, NULL, &count, &diagnostics) ==
+                  read_tx, NULL,  NULL, &count, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
-        CHECK(count == 3u);
+        CHECK(count == 2u);
         puts("P5 read transaction relation count: passed");
         CHECK(type_bridge_read_transaction_close(&read_tx, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
         CHECK(read_tx == NULL && diagnostics == NULL);
 
         CHECK(fixture_membership_database_delete_by_iid(
-                  database, membership_one_iid, NULL, &diagnostics) ==
+                  database, checked_iid(membership_one_iid, &iid_argument), NULL,  NULL, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK);
         {
           const type_bridge_byte_view_t membership_two_iid = {
@@ -5883,19 +6218,19 @@ int main(void) {
           const type_bridge_byte_view_t membership_four_iid = {
               membership_four_iid_storage, membership_four_iid_length};
           CHECK(fixture_membership_database_delete_by_iid(
-                    database, membership_two_iid, NULL, &diagnostics) ==
+                    database, checked_iid(membership_two_iid, &iid_argument), NULL,  NULL, &diagnostics) ==
                 TYPE_BRIDGE_STATUS_OK);
           CHECK(fixture_membership_database_delete_by_iid(
-                    database, membership_four_iid, NULL, &diagnostics) ==
+                    database, checked_iid(membership_four_iid, &iid_argument), NULL,  NULL, &diagnostics) ==
                 TYPE_BRIDGE_STATUS_OK);
           CHECK(fixture_membership_database_delete_by_iid(
-                    database, membership_four_iid, NULL, &diagnostics) ==
+                    database, checked_iid(membership_four_iid, &iid_argument), NULL,  NULL, &diagnostics) ==
                 TYPE_BRIDGE_STATUS_OK);
         }
         puts("P5 database relation delete and repeated delete: passed");
       }
 
-      CHECK(fixture_membership_database_count(database, NULL, &count,
+      CHECK(fixture_membership_database_count(database, NULL,  NULL, &count,
                                               &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
       CHECK(count == 0u);
@@ -5907,7 +6242,7 @@ int main(void) {
       puts("P5 generated C relation CRUD journey: passed");
     }
 
-    CHECK(fixture_person_database_delete_by_iid(database, ada_iid, NULL,
+    CHECK(fixture_person_database_delete_by_iid(database, checked_iid(ada_iid, &iid_argument), NULL,  NULL,
                                                 &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     entity_deleted = 1;
@@ -5916,23 +6251,23 @@ int main(void) {
                                                 cara_iid_length};
       const type_bridge_byte_view_t dana_iid = {dana_iid_storage,
                                                 dana_iid_length};
-      CHECK(fixture_person_database_delete_by_iid(database, cara_iid, NULL,
+      CHECK(fixture_person_database_delete_by_iid(database, checked_iid(cara_iid, &iid_argument), NULL,  NULL,
                                                   &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
-      CHECK(fixture_person_database_delete_by_iid(database, dana_iid, NULL,
+      CHECK(fixture_person_database_delete_by_iid(database, checked_iid(dana_iid, &iid_argument), NULL,  NULL,
                                                   &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
-      CHECK(fixture_person_database_delete_by_iid(database, dana_iid, NULL,
+      CHECK(fixture_person_database_delete_by_iid(database, checked_iid(dana_iid, &iid_argument), NULL,  NULL,
                                                   &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
     }
     puts("P4 database delete and repeated delete: passed");
   }
 
-  CHECK(fixture_person_database_count(database, NULL, &count, &diagnostics) ==
+  CHECK(fixture_person_database_count(database, NULL,  NULL, &count, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(count == 0u);
-  CHECK(emit_v2_observationf(
+  CHECK(emit_observationf(
       "entity_lifecycle", "direct_runtime",
       "{\"created\":%s,\"deleted\":%s,\"key\":\"%s\","
       "\"model\":\"person\",\"read_after_create\":%s}",
@@ -5947,5 +6282,6 @@ int main(void) {
   CHECK(database == NULL && runtime == NULL && package == NULL &&
         diagnostics == NULL);
   puts("P4 generated C entity CRUD journey: passed");
+  CHECK(type_bridge_iid_close(&iid_argument) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }

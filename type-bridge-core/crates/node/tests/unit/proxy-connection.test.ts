@@ -5,9 +5,10 @@ import net = require("node:net");
 import path = require("node:path");
 import test = require("node:test");
 
-import { QueryV2Authority } from "../../typescript/index.js";
+import { PlanAuthority } from "../../typescript/index.js";
 import { loadNative } from "../../typescript/native.js";
 import {
+  InstalledRuntimeProjection,
   ProxyConnection,
   QueryExecutionResourceLimits,
 } from "../../typescript/runtime-projection.js";
@@ -20,12 +21,12 @@ interface Corpus {
 }
 
 const corpus = JSON.parse(fs.readFileSync(
-  path.resolve(process.cwd(), "../../../tests/fixtures/query-v2-remote-failures.json"),
+  path.resolve(process.cwd(), "../../../tests/fixtures/plan-authority.json"),
   "utf8",
 )) as Corpus;
 
-function authority(): QueryV2Authority {
-  return new QueryV2Authority(
+function authority(): PlanAuthority {
+  return new PlanAuthority(
     Buffer.from(corpus.declared_b64, "base64"),
     corpus.scope,
     corpus.profile,
@@ -33,7 +34,7 @@ function authority(): QueryV2Authority {
 }
 
 /** A valid advertisement, keys sorted the way the contract codec writes them. */
-function advertisement(): Uint8Array {
+function advertisement(capabilities: readonly string[] = corpus.capabilities): Uint8Array {
   const privateKey = crypto.createPrivateKey({
     key: Buffer.concat([
       Buffer.from("302e020100300506032b657004220420", "hex"),
@@ -52,7 +53,7 @@ function advertisement(): Uint8Array {
     .update(publicKey)
     .digest("hex");
   return Buffer.from(JSON.stringify({
-    capabilities: corpus.capabilities,
+    capabilities,
     executor: { epoch: "node-proxy-epoch-0001", identity: "node-proxy-executor" },
     format: "typebridge.query-remote-capabilities/v1",
     reply_key: publicKey.toString("hex"),
@@ -149,7 +150,7 @@ test("a proxy connection without answer limits runs at the proxy defaults", asyn
       native.DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
       native.DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
       native.DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
-      native.DEFAULT_PROXY_QUERY_STATEMENTS,
+      undefined,
     ],
   );
   assert.notEqual(limits.items, new QueryExecutionResourceLimits().items);
@@ -157,8 +158,8 @@ test("a proxy connection without answer limits runs at the proxy defaults", asyn
 
 test("proxy connect rejects JavaScript type confusion before native work", async () => {
   await assert.rejects(
-    ProxyConnection.connect({} as QueryV2Authority, "http://proxy:8080"),
-    /QueryV2Authority/,
+    ProxyConnection.connect({} as PlanAuthority, "http://proxy:8080"),
+    /PlanAuthority/,
   );
   await assert.rejects(
     ProxyConnection.connect(authority(), "http://proxy:8080", {
@@ -171,10 +172,10 @@ test("proxy connect rejects JavaScript type confusion before native work", async
 test("a staged proxy transaction fetches the staged advertisement at open", async () => {
   const endpoint = await closedEndpoint();
   const connection = await ProxyConnection.connect(authority(), endpoint, {
-    advertisement: advertisement(),
+    advertisement: advertisement([]),
     answerLimits: new QueryExecutionResourceLimits({ timeoutMilliseconds: 5_000n }),
   });
-  // The pinned V2 advertisement does not cover `/v3/capabilities`, so an
+  // The empty bootstrap advertisement does not cover `/v3/capabilities`, so an
   // unreachable server fails the open as a redacted provider operation.
   const failure = await connection.transaction("write").then(
     () => assert.fail("staged transaction unexpectedly opened"),
@@ -192,4 +193,75 @@ test("a staged proxy transaction refuses an unknown kind before any exchange", a
     connection.transaction("bogus" as "read"),
     /unknown transaction kind 'bogus'/,
   );
+});
+
+test("admission window defaults and round-trips independently of execution", async () => {
+  const endpoint = await closedEndpoint();
+  const defaults = await ProxyConnection.connect(authority(), endpoint, { advertisement: advertisement() });
+  assert.equal(defaults.admissionWindowMilliseconds, 60_000n);
+  const configured = await ProxyConnection.connect(authority(), endpoint, {
+    advertisement: advertisement(), admissionWindowMilliseconds: 1234n,
+  });
+  assert.equal(configured.admissionWindowMilliseconds, 1234n);
+  await assert.rejects(ProxyConnection.connect(authority(), endpoint, { admissionWindowMilliseconds: 0n }));
+});
+
+test("query policy intersects independent staged server ceilings", async () => {
+  const { QueryLimits } = await import("../../typescript/runtime-projection.js");
+  const raw = JSON.parse(Buffer.from(advertisement()).toString("utf8"));
+  const { reply_key, reply_key_id, ...prefix } = raw;
+  prefix.capabilities = [...new Set([...prefix.capabilities, "query.plan.v3", "query.remote.envelope-v3"])].sort();
+  const pinned = Buffer.from(JSON.stringify({ ...prefix,
+    query_limits: { bindings: 768, boolean_terms: 300, selected_slots: 256 },
+    reply_key, reply_key_id,
+  }));
+  const connection = await ProxyConnection.connect(authority(), await closedEndpoint(), {
+    advertisement: pinned,
+    queryLimits: new QueryLimits({ bindings: 1024n, boolean_terms: 512n, input_rows: 13n }),
+  });
+  assert.equal(connection.queryLimits.get("bindings"), 768n);
+  assert.equal(connection.queryLimits.get("boolean_terms"), 300n);
+  assert.equal(connection.queryLimits.get("input_rows"), 13n);
+  assert.equal(connection.queryLimits.get("selected_slots"), 16n);
+});
+
+test("invalid staged query policy is refused before proxy I/O", async () => {
+  const { QueryLimits } = await import("../../typescript/runtime-projection.js");
+  await assert.rejects(ProxyConnection.connect(authority(), await closedEndpoint(), {
+    queryLimits: new QueryLimits({ bindings: 8n }),
+  }), /selected_slots/);
+});
+
+test("invalid staged query policy is refused before direct I/O", async () => {
+  const { QueryLimits } = await import("../../typescript/runtime-projection.js");
+  const { Database } = await import("../../typescript/index.js");
+  assert.throws(() => Database.connect("127.0.0.1:1", "app", {
+    queryLimits: new QueryLimits({ bindings: 8n }),
+  }), /selected_slots/);
+});
+
+
+test("generated managers select the registered proxy without exposing its native handle", async () => {
+  const connection = await ProxyConnection.connect(authority(), await closedEndpoint(), {
+    advertisement: advertisement(),
+  });
+  const manager = Object.freeze({});
+  let calls = 0;
+  const projection = new InstalledRuntimeProjection({
+    managerForProxy: (typeKey: string, native: unknown) => {
+      assert.equal(typeKey, "entity:person");
+      assert.ok(native);
+      calls++;
+      return manager;
+    },
+  } as never);
+  assert.equal(projection.manager("entity:person", connection), manager);
+  assert.equal(calls, 1);
+  assert.equal(projection.direct(connection), connection);
+  assert.doesNotThrow(() => projection.assertConnection(connection));
+  const forged = Object.create(ProxyConnection.prototype) as ProxyConnection;
+  assert.throws(() => projection.manager("entity:person", forged), TypeError);
+  assert.throws(() => projection.direct(forged), TypeError);
+  assert.throws(() => projection.assertConnection(forged), TypeError);
+  assert.equal(calls, 1);
 });

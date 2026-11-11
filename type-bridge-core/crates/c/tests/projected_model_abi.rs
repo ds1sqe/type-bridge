@@ -104,10 +104,10 @@ unsafe extern "C" {
     fn type_bridge_cancellation_close(
         cancellation: *mut *mut TypeBridgeCancellation,
     ) -> TypeBridgeStatus;
-    fn type_bridge_schema_package_open_v1(
+    fn type_bridge_schema_package_open(
         descriptor: *const TypeBridgeSchemaPackageDescriptorV1,
         out_package: *mut *mut TypeBridgeSchemaPackage,
-        out_diagnostics: *mut *mut type_bridge_c::TypeBridgeDiagnostics,
+        out_diagnostics: *mut *mut type_bridge_c::TypeBridgeExecutionDiagnostics,
     ) -> TypeBridgeStatus;
     fn type_bridge_schema_package_close(
         package: *mut *mut TypeBridgeSchemaPackage,
@@ -570,8 +570,8 @@ fn open_fixture(source: &str, prefix: &str, scope: &str) -> Fixture {
     let descriptor = TypeBridgeSchemaPackageDescriptorV1 {
         struct_size: u32::try_from(size_of::<TypeBridgeSchemaPackageDescriptorV1>())
             .expect("descriptor size fits u32"),
-        abi_major: 1,
-        abi_minor: 6,
+        abi_major: 2,
+        abi_minor: 0,
         schema_authority_json: bytes(&authority_json),
         declared_schema_json: bytes(&declared_json),
         runtime_projection_json: bytes(&projection_json),
@@ -585,7 +585,7 @@ fn open_fixture(source: &str, prefix: &str, scope: &str) -> Fixture {
     let mut diagnostics = ptr::null_mut();
     // SAFETY: descriptor inputs live for the call and outputs are writable.
     assert_eq!(
-        unsafe { type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics) },
+        unsafe { type_bridge_schema_package_open(&descriptor, &mut package, &mut diagnostics) },
         TypeBridgeStatus::Ok,
     );
     assert!(!package.is_null());

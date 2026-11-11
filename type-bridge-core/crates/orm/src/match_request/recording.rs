@@ -2,7 +2,7 @@
 //!
 //! This executor performs no TypeQL lowering or I/O. It accepts only an
 //! already validated request, runs schema/capability preflight before counting
-//! a provider call, answers with the V2 outcome a live executor would return
+//! a provider call, answers with the model outcome a live executor would return
 //! for its canned response, and routes that outcome through the one released
 //! result mapping every live query ends in.
 
@@ -10,20 +10,21 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use type_bridge_contract::migration_assertion::BindingId as ContractBindingId;
-use type_bridge_contract::query_plan::ModelQueryV2;
-use type_bridge_contract::query_remote_v2::{
-    HydrationGraphV2, RemoteOutcomeV2, RemoteReducedValueV2, RemoteReductionRowV2,
+use type_bridge_contract::query_model_evidence::HydrationGraph;
+use type_bridge_contract::query_model_evidence::{
+    ModelOutcome, ModelReducedValue, ModelReductionRow,
 };
+use type_bridge_contract::query_plan::ModelReductionKey;
 
+use super::descriptor_plan::{adapt_field, adapt_reducers};
 use crate::_registry::DescriptorRegistry;
-use crate::query_v2_adapter::{MatchRequestAdapterAuthority, adapt_match_request};
 
 use super::capability::CapabilitySet;
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use super::ids::BindingId;
 use super::model::{MatchOperation, Window};
 use super::result::{ReducedValue, ValidatedMatchResult};
-use super::result_validation::validated_match_result_from_v2;
+use super::result_validation::validated_match_result_from_outcome;
 use super::selected_result_executor::adapter_match_error;
 use super::validation::ValidatedMatchRequest;
 
@@ -122,13 +123,13 @@ impl RecordingMatchExecutor {
         })?;
 
         let outcome = match response {
-            RecordingMatchResponse::EmptyRows => RemoteOutcomeV2::HydratedRows {
+            RecordingMatchResponse::EmptyRows => ModelOutcome::HydratedRows {
                 graph: empty_graph()?,
                 rows: Vec::new(),
             },
             RecordingMatchResponse::EmptyPage { total } => {
                 let (root, window) = page_contract(validated);
-                RemoteOutcomeV2::HydratedPage {
+                ModelOutcome::HydratedPage {
                     entries: Vec::new(),
                     graph: empty_graph()?,
                     limit: window.limit,
@@ -137,11 +138,11 @@ impl RecordingMatchExecutor {
                     total,
                 }
             }
-            RecordingMatchResponse::Count(value) => RemoteOutcomeV2::DistinctCount {
+            RecordingMatchResponse::Count(value) => ModelOutcome::DistinctCount {
                 root: contract_binding(operation_root(validated))?,
                 value,
             },
-            RecordingMatchResponse::Exists(value) => RemoteOutcomeV2::DistinctExists {
+            RecordingMatchResponse::Exists(value) => ModelOutcome::DistinctExists {
                 root: contract_binding(operation_root(validated))?,
                 value,
             },
@@ -149,7 +150,7 @@ impl RecordingMatchExecutor {
                 &self.registry,
                 validated,
                 empty_graph()?,
-                vec![RemoteReductionRowV2::new(
+                vec![ModelReductionRow::new(
                     None,
                     values.iter().map(remote_reduced_value).collect(),
                 )],
@@ -163,29 +164,29 @@ impl RecordingMatchExecutor {
             }
         };
 
-        validated_match_result_from_v2(&self.registry, validated, outcome)
+        validated_match_result_from_outcome(&self.registry, validated, outcome)
     }
 }
 
 /// Build the model-reduction outcome a live executor returns for `validated`.
 ///
-/// The outcome echoes the root, group, and reducer contract of the adapted V2
+/// The outcome echoes the root, group, and reducer contract of the adapted model
 /// plan, obtained through the same registry authority and adapter as live
 /// execution. A request that is not a reduction echoes its own root with no
 /// contract, which the released mapping refuses as an operation mismatch.
 pub(crate) fn model_reduction_outcome(
     registry: &DescriptorRegistry,
     validated: &ValidatedMatchRequest,
-    graph: HydrationGraphV2,
-    rows: Vec<RemoteReductionRowV2>,
-) -> Result<RemoteOutcomeV2, MatchError> {
+    graph: HydrationGraph,
+    rows: Vec<ModelReductionRow>,
+) -> Result<ModelOutcome, MatchError> {
     if !matches!(
         validated.request().operation,
         MatchOperation::ReduceBy { .. }
             | MatchOperation::ReduceByField { .. }
             | MatchOperation::ReduceByFields { .. }
     ) {
-        return Ok(RemoteOutcomeV2::ModelReduction {
+        return Ok(ModelOutcome::ModelReduction {
             graph,
             root: contract_binding(operation_root(validated))?,
             group: None,
@@ -193,50 +194,69 @@ pub(crate) fn model_reduction_outcome(
             rows,
         });
     }
-    let authority =
-        MatchRequestAdapterAuthority::from_registry(registry).map_err(adapter_match_error)?;
-    let adapted = adapt_match_request(validated, registry, &authority.context())
-        .map_err(adapter_match_error)?;
-    let Some(ModelQueryV2::Reduction {
-        root,
-        group,
-        reducers,
-        ..
-    }) = adapted
-        .validated()
-        .plan()
-        .v2_compatibility()
-        .and_then(|compatibility| compatibility.model_query())
-    else {
-        return Err(MatchError::new(
-            MatchErrorCategory::ResultDecode,
-            "recording_reduction_contract_missing",
-            "adapted reduction plan lacks its model reduction contract",
-        )
-        .at(MatchErrorPathSegment::Operation));
+    let (root, group, reducers) = match &validated.request().operation {
+        MatchOperation::ReduceBy {
+            root,
+            group,
+            reducers,
+        } => (
+            *root,
+            group
+                .map(|binding| contract_binding(binding).map(ModelReductionKey::binding))
+                .transpose()?,
+            reducers,
+        ),
+        MatchOperation::ReduceByField {
+            root,
+            group,
+            reducers,
+        } => (
+            *root,
+            Some(ModelReductionKey::field(
+                adapt_field(group, validated.request(), registry).map_err(adapter_match_error)?,
+            )),
+            reducers,
+        ),
+        MatchOperation::ReduceByFields {
+            root,
+            groups,
+            reducers,
+        } => (
+            *root,
+            Some(ModelReductionKey::fields(
+                groups
+                    .iter()
+                    .map(|field| adapt_field(field, validated.request(), registry))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(adapter_match_error)?,
+            )),
+            reducers,
+        ),
+        _ => unreachable!("reduction operation checked above"),
     };
-    Ok(RemoteOutcomeV2::ModelReduction {
+    Ok(ModelOutcome::ModelReduction {
         graph,
-        root: *root,
-        group: group.clone(),
-        reducers: reducers.clone(),
+        root: contract_binding(root)?,
+        group,
+        reducers: adapt_reducers(reducers, validated.request(), registry)
+            .map_err(adapter_match_error)?,
         rows,
     })
 }
 
-fn empty_graph() -> Result<HydrationGraphV2, MatchError> {
-    HydrationGraphV2::new(Vec::new()).map_err(adapter_match_error)
+fn empty_graph() -> Result<HydrationGraph, MatchError> {
+    HydrationGraph::new(Vec::new()).map_err(adapter_match_error)
 }
 
 fn contract_binding(binding: BindingId) -> Result<ContractBindingId, MatchError> {
     ContractBindingId::new(binding.get()).map_err(adapter_match_error)
 }
 
-pub(super) fn remote_reduced_value(value: &ReducedValue) -> RemoteReducedValueV2 {
+pub(super) fn remote_reduced_value(value: &ReducedValue) -> ModelReducedValue {
     match value {
-        ReducedValue::Count(value) => RemoteReducedValueV2::Count { value: *value },
-        ReducedValue::Long(value) => RemoteReducedValueV2::Long { value: *value },
-        ReducedValue::Double(value) => RemoteReducedValueV2::DoubleBits {
+        ReducedValue::Count(value) => ModelReducedValue::Count { value: *value },
+        ReducedValue::Long(value) => ModelReducedValue::Long { value: *value },
+        ReducedValue::Double(value) => ModelReducedValue::DoubleBits {
             value: value.map(f64::to_bits),
         },
     }

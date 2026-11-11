@@ -16,7 +16,7 @@ use type_bridge_schema::{
 #[cfg(unix)]
 use type_bridge_workspace::SchemaAuthorityOutputPath;
 use type_bridge_workspace::{
-    ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
+    ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationDirectory,
     SchemaSetPath, SecretReference, SecretReferenceService, TypeBridgeConfig,
     TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace, TypeBridgeWorkspaceError,
     TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode, WorkspaceDirectoryAuthority,
@@ -243,7 +243,7 @@ fn programmatic_config<S: SchemaSourceService>(
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
         .require_capability(CapabilityId::new("schema.doc-meta").unwrap())
         .build(&TypeBridgeConfigServices::new(source, secrets, extensions))
         .unwrap()
@@ -455,7 +455,7 @@ fn configured_schema_authority_output_rejects_symlinked_parent_authority() {
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
         .schema_authority_output(
             SchemaAuthorityOutputPath::new("generated/schema-authority.json").unwrap(),
         )
@@ -656,7 +656,7 @@ fn unavailable_config_constraints_fail_before_schema_capture() {
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
         .require_extension(ExtensionRequirement::new("example.docs", "v1").unwrap())
         .build(&TypeBridgeConfigServices::new(
             &source,

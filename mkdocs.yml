@@ -124,7 +124,7 @@ nav:
       - CRUD & Transactions: guide/crud.md
       - Concurrency & Conditional Writes: guide/concurrency.md
       - 'Checkout: a Cart in One Query': guide/checkout.md
-      - Queries & Expressions: guide/queries.md
+      - Queries, Predicates & Raw TypeQL: guide/queries.md
       - Immutable Typed Queries: guide/typed-queries.md
       - Functions: guide/functions.md
     - Schema Lifecycle:
@@ -133,25 +133,26 @@ nav:
       - Migrations: guide/migrations.md
       - Code Generator: guide/generator.md
       - Schema Commands: guide/schema.md
-      - TOML Recovery: guide/toml.md
     - Operate and Upgrade:
       - Overview: guide/operations.md
       - Server Container: guide/server-container.md
+      - Debugging Plans: guide/debugging.md
+      - Worked Examples: guide/worked-examples.md
       - Logging: guide/logging.md
+      - Upgrading to 3.0: guide/upgrade-3.0.md
       - Upgrading to 2.3: guide/upgrade-2.3.md
       - Upgrading to 2.1: guide/upgrade-v2.md
-      - V2 Deprecations: guide/v2-deprecations.md
-      - 2.0.2 Expanded Notice: guide/v2.0.2-notice.md
-  - Query-plan V3: reference/query-plan-v3.md
+  - Query Plan Wire Format: reference/query-plan.md
   - Python API: reference/
   - Development:
     - development/index.md
     - Development Setup: development/setup.md
     - Testing: development/testing.md
     - C Release Procedure: development/c-release.md
+    - Releasing 3.0: development/releasing-3.0.md
     - Architecture:
       - Internals: development/internals.md
-      - Rust Backend: development/rust-backend.md
+      - Core Engine: development/core-engine.md
       - TypeDB Concepts & Compatibility: development/typedb.md
       - Abstract Type Concepts: development/abstract-types.md
     - Maintainer Contracts:

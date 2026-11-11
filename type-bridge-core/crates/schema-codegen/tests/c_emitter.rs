@@ -144,7 +144,7 @@ fn sdk_models_repository_root() -> PathBuf {
 }
 
 fn sdk_models_source_identity(root: &Path, relative: &str) -> Value {
-    let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+    let bytes = fs::read(root.join(relative)).expect("staged proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
@@ -157,7 +157,7 @@ fn publish_sdk_models_package_fragment(results: Vec<Value>) {
     };
     let destination = PathBuf::from(destination);
     assert!(destination.is_absolute() && !destination.exists());
-    let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+    let nonce = nonce.to_str().expect("staged proof nonce is UTF-8");
     assert!(
         nonce.len() == 64
             && nonce
@@ -187,17 +187,19 @@ fn publish_sdk_models_package_fragment(results: Vec<Value>) {
         "run_nonce": nonce,
         "semantic_profile": support::sdk_profile_matrix::requested("models").semantic_profile,
     });
-    let mut bytes = to_canonical_json(&fragment).expect("C V3 package fragment canonicalizes");
+    let mut bytes = to_canonical_json(&fragment).expect("C staged package fragment canonicalizes");
     bytes.push(b'\n');
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
-        .expect("C V3 package fragment creates once");
+        .expect("C staged package fragment creates once");
     output
         .write_all(&bytes)
-        .expect("C V3 package fragment writes");
-    output.sync_all().expect("C V3 package fragment is durable");
+        .expect("C staged package fragment writes");
+    output
+        .sync_all()
+        .expect("C staged package fragment is durable");
 }
 
 fn projected(resources: &[CodeResourceDigest]) -> (RuntimeProjection, VerifiedSchemaAuthority) {
@@ -233,7 +235,7 @@ fn ordered_successor_projected() -> (RuntimeProjection, VerifiedSchemaAuthority)
     let projection = project(
         &resolved,
         BindingTarget::C,
-        &ProjectionConfig::c(CSymbolPrefix::new("acme_v3").expect("test prefix is valid")),
+        &ProjectionConfig::c(CSymbolPrefix::new("acme_nominal").expect("test prefix is valid")),
         &emitter.generator_handlers_for(&resolved),
         &emitter
             .code_resources_for(&resolved)
@@ -413,7 +415,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
         .emit(&projection, &authority)
-        .expect("ordered C-v3 package emits");
+        .expect("ordered C package emits");
     assert_eq!(
         package
             .files()
@@ -422,38 +424,41 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([
             "CMakeLists.txt",
-            "acme_v3.pc.in",
-            "acme_v3Config.cmake.in",
-            "include/acme_v3/models.h",
+            "acme_nominal.pc.in",
+            "acme_nominalConfig.cmake.in",
+            "include/acme_nominal/models.h",
             "src/models.c",
         ]),
     );
 
-    let header = std::str::from_utf8(package.get("include/acme_v3/models.h").unwrap()).unwrap();
+    let header =
+        std::str::from_utf8(package.get("include/acme_nominal/models.h").unwrap()).unwrap();
     let source = std::str::from_utf8(package.get("src/models.c").unwrap()).unwrap();
     let cmake = std::str::from_utf8(package.get("CMakeLists.txt").unwrap()).unwrap();
     let package_config =
-        std::str::from_utf8(package.get("acme_v3Config.cmake.in").unwrap()).unwrap();
-    let pkg_config = std::str::from_utf8(package.get("acme_v3.pc.in").unwrap()).unwrap();
+        std::str::from_utf8(package.get("acme_nominalConfig.cmake.in").unwrap()).unwrap();
+    let pkg_config = std::str::from_utf8(package.get("acme_nominal.pc.in").unwrap()).unwrap();
 
     assert!(header.contains("#include <typebridge/type_bridge.h>"));
-    assert!(header.contains("ACME_V3_MIGRATION_HISTORY_RESOURCE"));
-    assert!(header.contains("acme_v3_migration_catalog_open("));
+    assert!(header.contains("ACME_NOMINAL_MIGRATION_HISTORY_RESOURCE"));
+    assert!(header.contains("acme_nominal_migration_catalog_open("));
     assert!(
         source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  7u,"),
-        "ordered descriptor must require literal ABI 1.7",
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  2u,\n  0u,"),
+        "ordered descriptor must require literal ABI 2.0",
     );
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
-    assert!(source.contains("type_bridge_schema_package_open_chunked_v1("));
-    assert!(source.contains("type_bridge_schema_package_open_chunked_v2("));
+    assert!(source.contains("type_bridge_schema_package_open_chunked("));
+    assert!(source.contains("type_bridge_schema_package_open_chunked("));
     assert!(source.contains("type_bridge_migration_catalog_open("));
-    assert!(header.contains("acme_v3_schema_package_open("));
-    assert!(header.contains("acme_v3_schema_package_open_v2("));
+    assert_eq!(
+        header.matches("acme_nominal_schema_package_open(").count(),
+        1
+    );
     assert!(header.contains("type_bridge_execution_diagnostics_t **out_diagnostics"));
-    assert!(cmake.contains("find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)"));
-    assert!(package_config.contains("find_dependency(TypeBridge 1.7.0 EXACT CONFIG)"));
-    assert!(pkg_config.contains("Requires: type-bridge-abi >= 1.7.0"));
+    assert!(cmake.contains("find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)"));
+    assert!(package_config.contains("find_dependency(TypeBridge 2.0.0 EXACT CONFIG)"));
+    assert!(pkg_config.contains("Requires: type-bridge-abi >= 2.0.0"));
     assert!(!cmake.contains("TypeBridge 1.3"));
     assert!(!package_config.contains("TypeBridge 1.3"));
     assert!(!pkg_config.contains("type-bridge >= 1.3.0"));
@@ -472,7 +477,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     ] {
         let mut ordinal = 0_u32;
         while projection.projected_token_identity(kind, ordinal).is_some() {
-            let symbol = format!("acme_v3_projected_{kind_name}_token_{ordinal}");
+            let symbol = format!("acme_nominal_projected_{kind_name}_token_{ordinal}");
             assert!(header.contains(&symbol));
             assert!(source.contains(&format!("\n  {}u,\n  {ordinal}u,", kind.as_u32())));
             ordinal += 1;
@@ -480,12 +485,12 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     }
 
     for nominal in [
-        "acme_v3_keyed_insert_batch_builder",
-        "acme_v3_keyed_insert_batch",
-        "acme_v3_keyed_insert_batch_result",
-        "acme_v3_membership_put_batch_builder",
-        "acme_v3_unkeyed_delete_batch_result",
-        "acme_v3_gathering_update_batch",
+        "acme_nominal_keyed_insert_batch_builder",
+        "acme_nominal_keyed_insert_batch",
+        "acme_nominal_keyed_insert_batch_result",
+        "acme_nominal_membership_put_batch_builder",
+        "acme_nominal_unkeyed_delete_batch_result",
+        "acme_nominal_gathering_update_batch",
     ] {
         assert!(
             header.contains(&format!("typedef struct {nominal} {nominal};")),
@@ -493,25 +498,25 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
         );
     }
     for wrapper in [
-        "acme_v3_keyed_database_insert_v2",
-        "acme_v3_keyed_database_put_v2",
-        "acme_v3_keyed_read_transaction_get_by_iid_v2",
-        "acme_v3_keyed_write_transaction_update_v2",
-        "acme_v3_membership_write_transaction_delete_by_iid_v2",
-        "acme_v3_membership_database_count_v2",
-        "acme_v3_keyed_insert_batch_builder_open",
-        "acme_v3_keyed_insert_batch_builder_add",
-        "acme_v3_keyed_insert_batch_builder_finish",
-        "acme_v3_keyed_insert_batch_builder_close",
-        "acme_v3_keyed_insert_batch_close",
-        "acme_v3_keyed_database_insert_batch_execute",
-        "acme_v3_keyed_write_transaction_insert_batch_execute",
-        "acme_v3_keyed_insert_batch_result_count",
-        "acme_v3_keyed_insert_batch_result_thing_at",
-        "acme_v3_keyed_insert_batch_result_close",
-        "acme_v3_gathering_delete_batch_builder_add",
-        "acme_v3_gathering_delete_batch_result_count",
-        "acme_v3_gathering_delete_batch_result_close",
+        "acme_nominal_keyed_database_insert",
+        "acme_nominal_keyed_database_put",
+        "acme_nominal_keyed_read_transaction_get_by_iid",
+        "acme_nominal_keyed_write_transaction_update",
+        "acme_nominal_membership_write_transaction_delete_by_iid",
+        "acme_nominal_membership_database_count",
+        "acme_nominal_keyed_insert_batch_builder_open",
+        "acme_nominal_keyed_insert_batch_builder_add",
+        "acme_nominal_keyed_insert_batch_builder_finish",
+        "acme_nominal_keyed_insert_batch_builder_close",
+        "acme_nominal_keyed_insert_batch_close",
+        "acme_nominal_keyed_database_insert_batch_execute",
+        "acme_nominal_keyed_write_transaction_insert_batch_execute",
+        "acme_nominal_keyed_insert_batch_result_count",
+        "acme_nominal_keyed_insert_batch_result_thing_at",
+        "acme_nominal_keyed_insert_batch_result_close",
+        "acme_nominal_gathering_delete_batch_builder_add",
+        "acme_nominal_gathering_delete_batch_result_count",
+        "acme_nominal_gathering_delete_batch_result_close",
     ] {
         assert!(
             header.contains(&format!("TYPE_BRIDGE_CALL {wrapper}(")),
@@ -524,17 +529,25 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
             "successor wrapper {wrapper} does not have header-local static-inline linkage",
         );
     }
+    assert!(header.contains(
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_nominal_unkeyed_database_put("
+    ));
+    assert!(header.contains(
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_nominal_unkeyed_write_transaction_put("
+    ));
+    assert!(header.contains(
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_nominal_gathering_database_put("
+    ));
+    assert!(header.contains("static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_nominal_gathering_write_transaction_put("));
     for forbidden in [
-        "acme_v3_unkeyed_database_put_v2",
-        "acme_v3_unkeyed_write_transaction_put_v2",
-        "acme_v3_unkeyed_put_batch",
-        "acme_v3_gathering_database_put_v2",
-        "acme_v3_gathering_write_transaction_put_v2",
-        "acme_v3_gathering_put_batch",
-        "acme_v3_keyed_delete_batch_result_thing_at",
-        "acme_v3_unkeyed_delete_batch_result_thing_at",
-        "acme_v3_membership_delete_batch_result_thing_at",
-        "acme_v3_gathering_delete_batch_result_thing_at",
+        "acme_nominal_unkeyed_put_batch_builder",
+        "acme_nominal_unkeyed_database_put_batch_execute",
+        "acme_nominal_gathering_put_batch_builder",
+        "acme_nominal_gathering_database_put_batch_execute",
+        "acme_nominal_keyed_delete_batch_result_thing_at",
+        "acme_nominal_unkeyed_delete_batch_result_thing_at",
+        "acme_nominal_membership_delete_batch_result_thing_at",
+        "acme_nominal_gathering_delete_batch_result_thing_at",
     ] {
         assert!(
             !header.contains(forbidden),
@@ -542,9 +555,9 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
         );
     }
     for generic in [
-        "type_bridge_database_entity_insert_v2(",
-        "type_bridge_read_transaction_entity_count_v2(",
-        "type_bridge_write_transaction_relation_update_v2(",
+        "type_bridge_database_entity_insert(",
+        "type_bridge_read_transaction_entity_count(",
+        "type_bridge_write_transaction_relation_update(",
         "type_bridge_projected_batch_builder_open_v1(",
         "type_bridge_projected_batch_builder_add_v1(",
         "type_bridge_projected_batch_builder_finish(",
@@ -560,12 +573,12 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
         );
     }
     assert!(
-        !source.contains("acme_v3_keyed_database_insert_v2(")
-            && !source.contains("acme_v3_keyed_insert_batch_builder_open("),
+        !source.contains("acme_nominal_keyed_database_insert(")
+            && !source.contains("acme_nominal_keyed_insert_batch_builder_open("),
         "nominal CRUD and batch successors must not add generated source exports",
     );
 
-    let crud_insert = emitted_function_definition(header, "acme_v3_keyed_database_insert_v2");
+    let crud_insert = emitted_function_definition(header, "acme_nominal_keyed_database_insert");
     for input in [
         "TYPE_BRIDGE_GENERATED_INPUT_DATABASE",
         "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN",
@@ -578,12 +591,16 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
             "CRUD preflight omitted {input}"
         );
     }
-    assert!(crud_insert.contains("type_bridge_projected_thing_t *generic_entity = NULL;"));
+    assert!(crud_insert.contains("type_bridge_projected_batch_result_t *generic_entity = NULL;"));
     assert!(crud_insert.contains("&generic_entity, out_diagnostics);"));
-    assert!(crud_insert.contains("*out_entity = (acme_v3_keyed *)generic_entity;"));
-    assert!(!crud_insert.contains("(type_bridge_projected_thing_t **)out_entity"));
+    assert!(
+        crud_insert
+            .contains("*out_entity = (acme_nominal_keyed_insert_batch_result *)generic_entity;")
+    );
+    assert!(!crud_insert.contains("(type_bridge_projected_batch_result_t **)out_entity"));
 
-    let batch_open = emitted_function_definition(header, "acme_v3_keyed_insert_batch_builder_open");
+    let batch_open =
+        emitted_function_definition(header, "acme_nominal_keyed_insert_batch_builder_open");
     for input in [
         "TYPE_BRIDGE_GENERATED_INPUT_SCHEMA_PACKAGE",
         "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN",
@@ -599,16 +616,17 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(batch_open.contains("&generic_builder, out_diagnostics);"));
     assert!(!batch_open.contains("(type_bridge_projected_batch_builder_t **)out_builder"));
 
-    let batch_add = emitted_function_definition(header, "acme_v3_keyed_insert_batch_builder_add");
+    let batch_add =
+        emitted_function_definition(header, "acme_nominal_keyed_insert_batch_builder_add");
     assert!(batch_add.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER"));
     assert!(batch_add.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CREATE"));
-    assert!(batch_add.contains("acme_v3_generated_alias_preflight_v1("));
+    assert!(batch_add.contains("acme_nominal_generated_alias_preflight_v1("));
 
     let batch_finish =
-        emitted_function_definition(header, "acme_v3_keyed_insert_batch_builder_finish");
+        emitted_function_definition(header, "acme_nominal_keyed_insert_batch_builder_finish");
     assert_eq!(
         batch_finish
-            .matches("acme_v3_generated_alias_preflight_v1(")
+            .matches("acme_nominal_generated_alias_preflight_v1(")
             .count(),
         2,
         "three finish outputs require the frozen two-call alias fence",
@@ -625,7 +643,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     );
     assert!(batch_finish.contains("type_bridge_projected_batch_t *generic_batch = NULL;"));
     let assign_builder = batch_finish
-        .find("*builder = (acme_v3_keyed_insert_batch_builder *)generic_builder;")
+        .find("*builder = (acme_nominal_keyed_insert_batch_builder *)generic_builder;")
         .expect("finish assigns generic ownership state back to the nominal builder slot");
     let success_branch = batch_finish
         .find("if (status == TYPE_BRIDGE_STATUS_OK)")
@@ -638,7 +656,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(!batch_finish.contains("(type_bridge_projected_batch_t **)out_batch"));
 
     let batch_execute =
-        emitted_function_definition(header, "acme_v3_keyed_database_insert_batch_execute");
+        emitted_function_definition(header, "acme_nominal_keyed_database_insert_batch_execute");
     assert!(batch_execute.contains("TYPE_BRIDGE_GENERATED_INPUT_DATABASE"));
     assert!(batch_execute.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH"));
     assert!(batch_execute.contains("TYPE_BRIDGE_GENERATED_INPUT_BYTES, limits, sizeof(*limits)"));
@@ -646,30 +664,30 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(!batch_execute.contains("(type_bridge_projected_batch_result_t **)out_result"));
 
     let result_count =
-        emitted_function_definition(header, "acme_v3_keyed_insert_batch_result_count");
+        emitted_function_definition(header, "acme_nominal_keyed_insert_batch_result_count");
     assert!(result_count.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT"));
     assert!(result_count.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_TOKEN"));
     assert!(result_count.contains("TYPE_BRIDGE_PROJECTED_BATCH_OPERATION_INSERT"));
 
     let thing_at =
-        emitted_function_definition(header, "acme_v3_keyed_insert_batch_result_thing_at");
+        emitted_function_definition(header, "acme_nominal_keyed_insert_batch_result_thing_at");
     assert!(thing_at.contains("TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT"));
     assert!(thing_at.contains("type_bridge_projected_thing_t *generic_entity = NULL;"));
     assert!(!thing_at.contains("(type_bridge_projected_thing_t **)out_entity"));
 
     for (wrapper, input_kind, generic_type) in [
         (
-            "acme_v3_keyed_insert_batch_builder_close",
+            "acme_nominal_keyed_insert_batch_builder_close",
             "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_BUILDER",
             "type_bridge_projected_batch_builder_t *generic_builder",
         ),
         (
-            "acme_v3_keyed_insert_batch_close",
+            "acme_nominal_keyed_insert_batch_close",
             "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH",
             "type_bridge_projected_batch_t *generic_batch",
         ),
         (
-            "acme_v3_keyed_insert_batch_result_close",
+            "acme_nominal_keyed_insert_batch_result_close",
             "TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_BATCH_RESULT",
             "type_bridge_projected_batch_result_t *generic_result",
         ),
@@ -683,7 +701,7 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
             body.contains(generic_type),
             "{wrapper} omitted local ownership marshalling"
         );
-        assert!(body.contains("acme_v3_generated_alias_preflight_v1("));
+        assert!(body.contains("acme_nominal_generated_alias_preflight_v1("));
     }
 
     let names = emitted_function_names(header);
@@ -706,12 +724,12 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
 
 #[cfg(unix)]
 #[test]
-fn ordered_c_v3_nominal_successors_compile_strictly_and_reject_cross_model_or_omitted_names() {
+fn ordered_c_nominal_successors_compile_strictly_and_reject_cross_model_or_omitted_names() {
     let emitter = CEmitter::new();
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
         .emit(&projection, &authority)
-        .expect("ordered C-v3 package emits");
+        .expect("ordered C package emits");
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
     let runtime_include = runtime_include();
@@ -844,17 +862,18 @@ fn ordered_c_v3_nominal_successors_compile_strictly_and_reject_cross_model_or_om
 
 #[cfg(unix)]
 #[test]
-fn ordered_c_v3_nominal_alias_and_recovery_wrappers_execute_provider_free() {
+fn ordered_c_nominal_alias_and_recovery_wrappers_execute_provider_free() {
     let emitter = CEmitter::new();
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
         .emit(&projection, &authority)
-        .expect("ordered C-v3 package emits");
+        .expect("ordered C package emits");
     let stage = TempDirectory::new();
     write_package(&package, stage.path());
     let runtime_include = runtime_include();
-    let header = std::str::from_utf8(package.get("include/acme_v3/models.h").unwrap()).unwrap();
-    let model_token = emitted_function_model_token(header, "acme_v3_keyed_database_insert_v2");
+    let header =
+        std::str::from_utf8(package.get("include/acme_nominal/models.h").unwrap()).unwrap();
+    let model_token = emitted_function_model_token(header, "acme_nominal_keyed_database_insert");
     let probe = include_str!("c_crud/recovery.c").replace("@MODEL_TOKEN@", model_token);
     assert!(!probe.contains("@MODEL_TOKEN@"));
     fs::write(stage.path().join("recovery.c"), probe).expect("recovery probe is written");
@@ -930,26 +949,26 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
     );
 
     let cmake = std::str::from_utf8(first.get("CMakeLists.txt").unwrap()).unwrap();
-    assert!(cmake.contains("find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)"));
+    assert!(cmake.contains("find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)"));
     assert!(cmake.contains("RELATIVE_PATH TYPE_BRIDGE_PC_PREFIX_FROM_PCDIR"));
     assert!(cmake.contains("CMAKE_INSTALL_LIBDIR must be a non-empty relative path"));
     assert!(cmake.contains("PROPERTIES EXPORT_NAME schema POSITION_INDEPENDENT_CODE ON"));
     assert!(cmake.contains("configure_package_config_file("));
     assert!(cmake.contains("install(\n  EXPORT acmeTargets"));
     let package_config = std::str::from_utf8(first.get("acmeConfig.cmake.in").unwrap()).unwrap();
-    assert!(package_config.contains("find_dependency(TypeBridge 1.7.0 EXACT CONFIG)"));
+    assert!(package_config.contains("find_dependency(TypeBridge 2.0.0 EXACT CONFIG)"));
     assert!(package_config.contains("acmeTargets.cmake"));
     let pkg_config = std::str::from_utf8(first.get("acme.pc.in").unwrap()).unwrap();
     assert!(pkg_config.contains("prefix=${pcfiledir}/@TYPE_BRIDGE_PC_PREFIX_FROM_PCDIR@"));
     assert!(pkg_config.contains("includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@"));
-    assert!(pkg_config.contains("Requires: type-bridge-abi >= 1.7.0"));
+    assert!(pkg_config.contains("Requires: type-bridge-abi >= 2.0.0"));
     assert!(pkg_config.contains("Libs: -L${libdir} -lacme_schema"));
 
     let source = std::str::from_utf8(first.get("src/models.c").expect("C source is emitted"))
         .expect("generated C source is UTF-8");
     assert!(
         source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  7u,")
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  2u,\n  0u,")
     );
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MAJOR"));
     assert!(!source.contains("TYPE_BRIDGE_C_ABI_MINOR"));
@@ -1023,8 +1042,8 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
         "static inline acme_query_function_integer_argument_v1_t TYPE_BRIDGE_CALL acme_query_function_integer_argument_from_input(",
         "static inline acme_query_function_integer_argument_v1_t TYPE_BRIDGE_CALL acme_query_function_integer_argument_from_call(",
         "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_score_query_function_input_open(",
-        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_qualifyingzhscore_query_call_greater_than_or_equal_field(",
-        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_query_function_integer_field_less_than_call(",
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_qualifyingzhscore_query_call_ge_field(",
+        "static inline type_bridge_status_t TYPE_BRIDGE_CALL acme_query_function_integer_field_lt_call(",
     ] {
         assert!(
             header.contains(declaration),
@@ -1099,7 +1118,7 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
         Some(4),
         "generated create open must retain its frozen four-parameter surface",
     );
-    assert!(source.contains("type_bridge_schema_package_open_chunked_v1("));
+    assert!(source.contains("type_bridge_schema_package_open_chunked("));
     assert!(source.contains("acme_schema_package_chunks_v1"));
     for parameter in [
         "const acme_displayzhname *field_displayzhname;",
@@ -1186,13 +1205,15 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
             "generated header omitted typed relation CRUD wrapper {suffix}",
         );
     }
-    assert!(source.contains("status = type_bridge_database_entity_insert("));
-    assert!(source.contains("owner, &acme_projected_model_token_"));
-    assert!(source.contains("(const type_bridge_projected_create_t *)create, cancellation,"));
-    assert!(source.contains("status = type_bridge_read_transaction_entity_get_by_iid("));
-    assert!(source.contains("status = type_bridge_database_relation_insert("));
-    assert!(source.contains("status = type_bridge_read_transaction_relation_get_by_iid("));
-    assert!(source.contains("status = type_bridge_write_transaction_relation_update("));
+    assert!(header.contains("status = type_bridge_database_entity_insert("));
+    assert!(header.contains("owner, &acme_projected_model_token_"));
+    assert!(
+        header.contains("(const type_bridge_projected_create_t *)create, limits, cancellation,")
+    );
+    assert!(header.contains("status = type_bridge_read_transaction_entity_get_by_iid("));
+    assert!(header.contains("status = type_bridge_database_relation_insert("));
+    assert!(header.contains("status = type_bridge_read_transaction_relation_get_by_iid("));
+    assert!(header.contains("status = type_bridge_write_transaction_relation_update("));
     assert!(source.contains("status = type_bridge_projected_reference_validate_role("));
     assert!(
         source
@@ -1815,10 +1836,20 @@ fn large_embedded_resources_are_byte_exact_portable_chunks() {
     );
 }
 
+/// True only for GNU GCC; `gcc` may be a clang alias (macOS).
+fn is_real_gcc(compiler: &str) -> bool {
+    Command::new(compiler)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| {
+            String::from_utf8_lossy(&output.stdout).contains("Free Software Foundation")
+        })
+}
+
 #[test]
 fn high_variant_role_union_keeps_constant_alias_stack() {
     // Keep the wide union within the identifier budget of the complete ABI header.
-    const PLAYER_COUNT: usize = 144;
+    const PLAYER_COUNT: usize = 40;
 
     let mut source = String::from("format: typebridge.schema/v2\nentities:\n");
     for index in 0..PLAYER_COUNT {
@@ -1880,16 +1911,27 @@ fn high_variant_role_union_keeps_constant_alias_stack() {
             continue;
         }
         invocations += 1;
-        let output = Command::new(compiler)
-            .args([
-                "-std=c17",
-                "-Wall",
-                "-Wextra",
-                "-Werror",
-                "-Wframe-larger-than=3072",
-                "-pedantic-errors",
-                "-fsyntax-only",
-            ])
+        let mut command = Command::new(compiler);
+        command.args([
+            "-std=c17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Wframe-larger-than=3072",
+            "-pedantic-errors",
+        ]);
+        // Only real GCC on Linux (the supported C target ABI) measures frames:
+        // emit unused header inlines and keep scoped locals apart, as MSVC's
+        // stack analysis does. Apple's `gcc` is clang and rejects these flags,
+        // and -fsyntax-only never measures a frame.
+        if cfg!(target_os = "linux") && is_real_gcc(compiler) {
+            command
+                .args(["-fkeep-inline-functions", "-fstack-reuse=none", "-c", "-o"])
+                .arg(stage.path().join("high-variant.o"));
+        } else {
+            command.arg("-fsyntax-only");
+        }
+        let output = command
             .arg("-I")
             .arg(&runtime_include)
             .arg("-I")
@@ -1927,7 +1969,10 @@ fn high_variant_role_union_keeps_constant_alias_stack() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(output.status.success() && !diagnostics.contains("C6262"));
+        assert!(
+            output.status.success() && !diagnostics.contains("C6262"),
+            "MSVC rejected the constant-frame high-variant C:\n{diagnostics}"
+        );
     }
     assert!(
         invocations > 0,
@@ -2527,7 +2572,7 @@ fn supported_c_preprocessors_fit_the_frozen_implementation_macro_reserve() {
     let runtime_macros = runtime_header_macro_names();
     assert_eq!(
         runtime_macros.len(),
-        337,
+        361,
         "runtime-header macro reserve drifted"
     );
     let mut invocations = 0;
@@ -2641,15 +2686,34 @@ fn generated_header_and_source_are_strict_c11_and_c17_for_installed_compilers() 
         &consumer,
         r#"#include <acme/models.h>
 
-_Static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "C ABI major changed");
-_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 7u, "C ABI minor changed");
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
+
+_Static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 2u, "C ABI major changed");
+_Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 0u, "C ABI minor changed");
 _Static_assert(sizeof(acme_membership_member_player_kind_t) == sizeof(uint32_t),
                "role-player kind ABI is not fixed-width");
 
 int main(void) {
+  type_bridge_status_t write_status;
+  acme_membership_insert_batch_result *acme_membership_insert_result = NULL;
+  acme_membership_put_batch_result *acme_membership_put_result = NULL;
+  acme_membership_update_batch_result *acme_membership_update_result = NULL;
+  acme_personzhrecord_insert_batch_result *acme_personzhrecord_insert_result = NULL;
+  acme_personzhrecord_put_batch_result *acme_personzhrecord_put_result = NULL;
+  acme_personzhrecord_update_batch_result *acme_personzhrecord_update_result = NULL;
   const type_bridge_schema_package_t *package = 0;
   type_bridge_schema_package_t *opened_package = 0;
-  type_bridge_diagnostics_t *package_diagnostics = 0;
+  type_bridge_execution_diagnostics_t *package_diagnostics = 0;
   const type_bridge_database_t *database = 0;
   const type_bridge_read_transaction_t *read_tx = 0;
   const type_bridge_write_transaction_t *write_tx = 0;
@@ -2682,6 +2746,7 @@ int main(void) {
   acme_ratiozhvalue *ratio_value = 0;
   acme_zzonedzhvalue *zoned_value = 0;
   type_bridge_byte_view_t text = {0};
+  const type_bridge_iid_t *iid = 0;
   int64_t scalar = 0;
   size_t field_count = 0;
   uint64_t entity_count = 0;
@@ -2743,64 +2808,64 @@ int main(void) {
       membership, &membership_reference, &diagnostics);
   (void)acme_membership_member(membership, &member_player, &diagnostics);
 
-  (void)acme_personzhrecord_database_insert(
-      database, create, cancellation, &person, &diagnostics);
-  (void)acme_personzhrecord_database_put(
-      database, create, cancellation, &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_database_insert(
+      database, create, NULL,  cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, put, acme_personzhrecord_database_put(
+      database, create, NULL,  cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_database_get_by_iid(
-      database, text, cancellation, &person, &diagnostics);
-  (void)acme_personzhrecord_database_update(
-      database, text, create, cancellation, &person, &diagnostics);
+      database, iid, NULL,  cancellation, &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, update, acme_personzhrecord_database_update(
+      database, iid, create, NULL,  cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_database_delete_by_iid(
-      database, text, cancellation, &diagnostics);
+      database, iid, NULL,  cancellation, &diagnostics);
   (void)acme_personzhrecord_database_count(
-      database, cancellation, &entity_count, &diagnostics);
+      database, NULL,  cancellation, &entity_count, &diagnostics);
   (void)acme_personzhrecord_read_transaction_get_by_iid(
-      read_tx, text, cancellation, &person, &diagnostics);
+      read_tx, iid, NULL,  cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_read_transaction_count(
-      read_tx, cancellation, &entity_count, &diagnostics);
-  (void)acme_personzhrecord_write_transaction_insert(
-      write_tx, create, cancellation, &person, &diagnostics);
-  (void)acme_personzhrecord_write_transaction_put(
-      write_tx, create, cancellation, &person, &diagnostics);
+      read_tx, NULL,  cancellation, &entity_count, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_write_transaction_insert(
+      write_tx, create, NULL,  cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, put, acme_personzhrecord_write_transaction_put(
+      write_tx, create, NULL,  cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_get_by_iid(
-      write_tx, text, cancellation, &person, &diagnostics);
-  (void)acme_personzhrecord_write_transaction_update(
-      write_tx, text, create, cancellation, &person, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, update, acme_personzhrecord_write_transaction_update(
+      write_tx, iid, create, NULL,  cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_delete_by_iid(
-      write_tx, text, cancellation, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &diagnostics);
   (void)acme_personzhrecord_write_transaction_count(
-      write_tx, cancellation, &entity_count, &diagnostics);
-  (void)acme_membership_database_insert(
-      database, membership_create, cancellation, &membership, &diagnostics);
-  (void)acme_membership_database_put(
-      database, membership_create, cancellation, &membership, &diagnostics);
+      write_tx, NULL,  cancellation, &entity_count, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_database_insert(
+      database, membership_create, NULL,  cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, put, acme_membership_database_put(
+      database, membership_create, NULL,  cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
   (void)acme_membership_database_get_by_iid(
-      database, text, cancellation, &membership, &diagnostics);
-  (void)acme_membership_database_update(
-      database, text, membership_create, cancellation, &membership,
-      &diagnostics);
+      database, iid, NULL,  cancellation, &membership, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, update, acme_membership_database_update(
+      database, iid, membership_create, NULL,  cancellation,&acme_membership_update_result,
+      &diagnostics), &membership, &diagnostics);
   (void)acme_membership_database_delete_by_iid(
-      database, text, cancellation, &diagnostics);
+      database, iid, NULL,  cancellation, &diagnostics);
   (void)acme_membership_database_count(
-      database, cancellation, &entity_count, &diagnostics);
+      database, NULL,  cancellation, &entity_count, &diagnostics);
   (void)acme_membership_read_transaction_get_by_iid(
-      read_tx, text, cancellation, &membership, &diagnostics);
+      read_tx, iid, NULL,  cancellation, &membership, &diagnostics);
   (void)acme_membership_read_transaction_count(
-      read_tx, cancellation, &entity_count, &diagnostics);
-  (void)acme_membership_write_transaction_insert(
-      write_tx, membership_create, cancellation, &membership, &diagnostics);
-  (void)acme_membership_write_transaction_put(
-      write_tx, membership_create, cancellation, &membership, &diagnostics);
+      read_tx, NULL,  cancellation, &entity_count, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_write_transaction_insert(
+      write_tx, membership_create, NULL,  cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, put, acme_membership_write_transaction_put(
+      write_tx, membership_create, NULL,  cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
   (void)acme_membership_write_transaction_get_by_iid(
-      write_tx, text, cancellation, &membership, &diagnostics);
-  (void)acme_membership_write_transaction_update(
-      write_tx, text, membership_create, cancellation, &membership,
-      &diagnostics);
+      write_tx, iid, NULL,  cancellation, &membership, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, update, acme_membership_write_transaction_update(
+      write_tx, iid, membership_create, NULL,  cancellation,&acme_membership_update_result,
+      &diagnostics), &membership, &diagnostics);
   (void)acme_membership_write_transaction_delete_by_iid(
-      write_tx, text, cancellation, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &diagnostics);
   (void)acme_membership_write_transaction_count(
-      write_tx, cancellation, &entity_count, &diagnostics);
+      write_tx, NULL,  cancellation, &entity_count, &diagnostics);
   (void)acme_container_item_player_close(&item_player);
   (void)acme_membership_member_player_close(&member_player);
   (void)acme_membership_ref_close(&membership_reference);
@@ -2809,11 +2874,11 @@ int main(void) {
   (void)acme_personzhrecord_ref_close(&reference);
   (void)acme_personzhrecord_create_close(&create);
   (void)acme_personzhrecord_close(&person);
-  (void)type_bridge_diagnostics_close(&package_diagnostics);
+  (void)type_bridge_execution_diagnostics_close(&package_diagnostics);
   (void)type_bridge_schema_package_close(&opened_package);
 
   return person != 0 || display_name != 0 || text.length != 0 ||
-      TYPE_BRIDGE_C_ABI_MAJOR != 1u;
+      TYPE_BRIDGE_C_ABI_MAJOR != 2u;
 }
 "#,
     )
@@ -2967,7 +3032,7 @@ fn generated_header_source_and_frame_are_strict_msvc_c17() {
 }
 
 #[cfg(unix)]
-fn assert_generated_cmake_runtime_floor(package: &GeneratedPackage, cases: &[(&str, bool)]) {
+fn assert_generated_runtime_floor(package: &GeneratedPackage, cases: &[(&str, bool)]) {
     let stage = TempDirectory::new();
     let generated = stage.path().join("generated");
     fs::create_dir(&generated).expect("generated package root is created");
@@ -2988,7 +3053,7 @@ fn assert_generated_cmake_runtime_floor(package: &GeneratedPackage, cases: &[(&s
                  if(PACKAGE_FIND_VERSION VERSION_GREATER PACKAGE_VERSION)\n\
                    set(PACKAGE_VERSION_COMPATIBLE FALSE)\n\
                    set(PACKAGE_VERSION_UNSUITABLE TRUE)\n\
-                 elseif(PACKAGE_FIND_VERSION_MAJOR STREQUAL \"1\")\n\
+                 elseif(PACKAGE_FIND_VERSION_MAJOR STREQUAL \"2\")\n\
                    set(PACKAGE_VERSION_COMPATIBLE TRUE)\n\
                  if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)\n\
                    set(PACKAGE_VERSION_EXACT TRUE)\n\
@@ -2999,6 +3064,33 @@ fn assert_generated_cmake_runtime_floor(package: &GeneratedPackage, cases: &[(&s
             ),
         )
         .expect("fake runtime version config is written");
+        if ["1.10.0", "2.0.0"].contains(version) {
+            let (_, template) = package
+                .files()
+                .iter()
+                .find(|(name, _)| name.ends_with(".pc.in"))
+                .expect("generated pkg-config template");
+            fs::write(
+                runtime.join("generated.pc"),
+                String::from_utf8(template.clone())
+                    .unwrap()
+                    .replace("@PROJECT_VERSION@", "1.0.0"),
+            )
+            .unwrap();
+            fs::write(runtime.join("type-bridge.pc"), format!("Name: TypeBridge\nDescription: test runtime\nVersion: 1.6.0\nProvides: type-bridge-abi = {version}\n")).unwrap();
+            let output = Command::new("pkg-config")
+                .args(["--exists", "generated"])
+                .env("PKG_CONFIG_PATH", &runtime)
+                .env("PKG_CONFIG_LIBDIR", &runtime)
+                .output()
+                .expect("generated package's pkg-config requirement runs");
+            assert_eq!(
+                output.status.success(),
+                *should_succeed,
+                "generated 2.0 package pkg-config runtime floor for {version}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         let build = stage.path().join(format!("build-{version}"));
         let output = Command::new("cmake")
             .arg("-S")
@@ -3031,9 +3123,17 @@ fn generated_cmake_requires_the_current_abi() {
     let package = emitter
         .emit(&projection, &authority)
         .expect("C package emits");
-    assert_generated_cmake_runtime_floor(
+    assert_generated_runtime_floor(
         &package,
-        &[("1.6.0", false), ("1.7.0", true), ("1.8.0", false)],
+        &[
+            ("1.6.0", false),
+            ("1.7.0", false),
+            ("1.8.0", false),
+            ("1.9.0", false),
+            ("1.10.0", false),
+            ("2.0.0", true),
+            ("1.12.0", false),
+        ],
     );
 }
 
@@ -3048,10 +3148,17 @@ fn ordered_generated_cmake_requires_the_current_abi() {
     let (projection, authority) = ordered_successor_projected();
     let package = emitter
         .emit(&projection, &authority)
-        .expect("ordered C-v3 package emits");
-    assert_generated_cmake_runtime_floor(
+        .expect("ordered C package emits");
+    assert_generated_runtime_floor(
         &package,
-        &[("1.6.0", false), ("1.7.0", true), ("1.9.0", false)],
+        &[
+            ("1.6.0", false),
+            ("1.8.0", false),
+            ("1.9.0", false),
+            ("1.10.0", false),
+            ("2.0.0", true),
+            ("1.12.0", false),
+        ],
     );
 }
 
@@ -3194,7 +3301,7 @@ int main(void) {
   (void)acme_person_query_exact_binding_open(
       session, &function_person, &diagnostics);
   (void)acme_personzhrecord_query_exact_binding_iid(
-      person, output_name, &predicate, &diagnostics);
+      person, NULL, &predicate, &diagnostics);
   (void)acme_personzhrecord_countzhvalue_query_field_from_exact(
       person, &count_field, &diagnostics);
   (void)acme_personzhrecord_ratiozhvalue_query_field_from_exact(
@@ -3223,7 +3330,7 @@ int main(void) {
         acme_membership_query_reachable_endpoint_v1_t_from_member(player);
     acme_membership_query_reachable_endpoint_v1_t target =
         acme_membership_query_reachable_endpoint_v1_t_from_member(other);
-    (void)acme_membership_member_query_role_connects(
+    (void)acme_membership_member_query_role_links(
         member_role, player, &role_predicate, &diagnostics);
     (void)acme_membership_query_reachable(
         session, source, target, 1u, 4u, &reachable, &diagnostics);
@@ -3261,7 +3368,7 @@ int main(void) {
       actor_output_name, acme_actor_query_subtypes_collect_selection_ref(actor_many),
       &named_query, &diagnostics);
   (void)acme_query_where(named_query, combined, &filtered, &diagnostics);
-  (void)acme_query_add_hidden(
+  (void)acme_query_match(
       filtered, acme_dualzhkeyzhrecord_query_exact_binding_ref(dual),
       &hidden, &diagnostics);
   (void)acme_query_allow_cross_join(
@@ -3275,10 +3382,10 @@ int main(void) {
   {
     acme_query_root_v1_t root =
         acme_personzhrecord_query_exact_binding_root(query, person);
-    (void)acme_query_page(
+    (void)acme_query_page_by(
         root, orders, 1u, 0u, 16u, 1u, &page_terminal, &diagnostics);
-    (void)acme_query_count(root, &count_terminal, &diagnostics);
-    (void)acme_query_exists(root, &exists_terminal, &diagnostics);
+    (void)acme_query_count_by(root, &count_terminal, &diagnostics);
+    (void)acme_query_exists_by(root, &exists_terminal, &diagnostics);
     reducers[0] = acme_query_reducer_count();
     reducers[1] =
         acme_personzhrecord_countzhvalue_query_field_reduce_sum_long(count_field);
@@ -3562,7 +3669,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_session_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_binding_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_binding_open(
     const type_bridge_query_session_t *session,
     const type_bridge_projected_token_v1_t *model,
     type_bridge_query_match_mode_t mode,
@@ -3626,7 +3733,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_role_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_role_connects(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_role_links(
     const type_bridge_query_role_t *role,
     const type_bridge_projected_token_v1_t *expected_role,
     const type_bridge_query_binding_t *player,
@@ -3690,7 +3797,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_predicate_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_selection_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_selection_open(
     const type_bridge_query_selection_descriptor_v1_t *descriptor,
     type_bridge_query_selection_t **out_selection,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
@@ -3701,8 +3808,8 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_selection_open_v1(
       descriptor->expected_model != person_model ||
       descriptor->expected_mode != TYPE_BRIDGE_QUERY_MATCH_EXACT ||
       descriptor->kind != TYPE_BRIDGE_QUERY_SELECTION_ONE ||
-      descriptor->distinct != 0u || descriptor->orders != NULL ||
-      descriptor->order_count != 0u || out_selection == NULL) {
+      descriptor->distinct != 0u || descriptor->sorts != NULL ||
+      descriptor->sort_count != 0u || out_selection == NULL) {
     valid = 0;
   } else {
     *out_selection = HANDLE(type_bridge_query_selection_t, 40u);
@@ -3721,7 +3828,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_selection_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_open(
     const type_bridge_query_session_t *session,
     const type_bridge_query_descriptor_v1_t *descriptor,
     type_bridge_query_t **out_query,
@@ -3795,7 +3902,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_terminal_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_terminal_open(
     const type_bridge_query_t *query,
     const type_bridge_query_terminal_descriptor_v1_t *descriptor,
     type_bridge_query_terminal_t **out_terminal,
@@ -3840,7 +3947,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_terminal_open_v1(
         descriptor->root != HANDLE(type_bridge_query_binding_t, 12u) ||
         descriptor->expected_root_model != person_model ||
         descriptor->expected_root_mode != TYPE_BRIDGE_QUERY_MATCH_EXACT ||
-        descriptor->orders != NULL || descriptor->order_count != 0u ||
+        descriptor->sorts != NULL || descriptor->sort_count != 0u ||
         descriptor->offset != 0u || descriptor->limit != 0u ||
         descriptor->include_total != 0u || descriptor->group_binding != NULL ||
         descriptor->expected_group_model != NULL ||
@@ -3922,7 +4029,7 @@ int main(void) {
         acme_membership_query_reachable_endpoint_v1_t_from_member(player);
     acme_membership_query_reachable_endpoint_v1_t target =
         acme_membership_query_reachable_endpoint_v1_t_from_member(target_player);
-    status |= acme_membership_member_query_role_connects(
+    status |= acme_membership_member_query_role_links(
         role, player, &predicate, &diagnostics);
     status |= acme_membership_query_reachable(
         session, source, target, 1u, 4u, &reachable, &diagnostics);
@@ -3944,9 +4051,9 @@ int main(void) {
   {
     acme_query_root_v1_t root =
         acme_personzhrecord_query_exact_binding_root(positional, sibling);
-    status |= acme_query_page(
+    status |= acme_query_page_by(
         root, NULL, 0u, 2u, 4u, 1u, &page, &diagnostics);
-    status |= acme_query_count(root, &count, &diagnostics);
+    status |= acme_query_count_by(root, &count, &diagnostics);
     reducer = acme_query_reducer_count();
     status |= acme_query_reduce(
         root, &reducer, 1u, &reduction, &diagnostics);
@@ -4223,7 +4330,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_session_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_binding_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_binding_open(
     const type_bridge_query_session_t *session,
     const type_bridge_projected_token_v1_t *model,
     type_bridge_query_match_mode_t mode,
@@ -4330,7 +4437,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_function_value_close(
   return TYPE_BRIDGE_STATUS_OK;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_function_call_open_v1(
+type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_query_function_call_open(
     const type_bridge_query_function_t *function,
     const type_bridge_projected_token_v1_t *expected_function,
     const type_bridge_query_function_arguments_graph_v1_t *graph,
@@ -4539,24 +4646,24 @@ int main(void) {
           function, &arguments, &nested, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
     return 3;
   }
-  if (acme_qualifyingzhscore_query_call_equal_field(
+  if (acme_qualifyingzhscore_query_call_eq_field(
           call, acme_person_score_query_field_function_field(score_field),
           &predicate, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
     return 4;
   }
   (void)acme_query_predicate_close(&predicate);
-  if (acme_qualifyingzhscore_query_call_less_than_value(
+  if (acme_qualifyingzhscore_query_call_lt_value(
           call, minimum, &predicate, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
     return 5;
   }
   (void)acme_query_predicate_close(&predicate);
-  if (acme_qualifyingzhscore_query_call_greater_than_call(
+  if (acme_qualifyingzhscore_query_call_gt_call(
           nested, acme_qualifyingzhscore_query_call_ref(call),
           &predicate, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
     return 6;
   }
   (void)acme_query_predicate_close(&predicate);
-  if (acme_query_function_integer_field_less_than_or_equal_call(
+  if (acme_query_function_integer_field_le_call(
           acme_person_score_query_field_function_field(score_field),
           acme_qualifyingzhscore_query_call_ref(nested),
           &predicate, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
@@ -4878,15 +4985,34 @@ fn generated_header_is_strict_cpp17_for_installed_compilers() {
         &consumer,
         r#"#include <acme/models.h>
 
-static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "C ABI major changed");
-static_assert(TYPE_BRIDGE_C_ABI_MINOR == 7u, "C ABI minor changed");
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
+
+static_assert(TYPE_BRIDGE_C_ABI_MAJOR == 2u, "C ABI major changed");
+static_assert(TYPE_BRIDGE_C_ABI_MINOR == 0u, "C ABI minor changed");
 static_assert(sizeof(acme_membership_member_player_kind_t) == sizeof(uint32_t),
               "role-player kind ABI is not fixed-width");
 
 int main() {
+  type_bridge_status_t write_status;
+  acme_membership_insert_batch_result *acme_membership_insert_result = NULL;
+  acme_membership_put_batch_result *acme_membership_put_result = NULL;
+  acme_membership_update_batch_result *acme_membership_update_result = NULL;
+  acme_personzhrecord_insert_batch_result *acme_personzhrecord_insert_result = NULL;
+  acme_personzhrecord_put_batch_result *acme_personzhrecord_put_result = NULL;
+  acme_personzhrecord_update_batch_result *acme_personzhrecord_update_result = NULL;
   const type_bridge_schema_package_t *package = nullptr;
   type_bridge_schema_package_t *opened_package = nullptr;
-  type_bridge_diagnostics_t *package_diagnostics = nullptr;
+  type_bridge_execution_diagnostics_t *package_diagnostics = nullptr;
   const type_bridge_database_t *database = nullptr;
   const type_bridge_read_transaction_t *read_tx = nullptr;
   const type_bridge_write_transaction_t *write_tx = nullptr;
@@ -4919,6 +5045,7 @@ int main() {
   acme_ratiozhvalue *ratio_value = nullptr;
   acme_zzonedzhvalue *zoned_value = nullptr;
   type_bridge_byte_view_t text{};
+  const type_bridge_iid_t *iid = nullptr;
   int64_t scalar = 0;
   size_t field_count = 0;
   uint64_t thing_count = 0;
@@ -4948,8 +5075,8 @@ int main() {
       reference, &display_name, &diagnostics);
   (void)acme_personzhrecord_iid(person, &text, &diagnostics);
   (void)acme_personzhrecord_reference(person, &reference, &diagnostics);
-  (void)acme_personzhrecord_database_insert(
-      database, create, cancellation, &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_database_insert(
+      database, create, NULL,  cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_countzhvalue(person, &count_value, &diagnostics);
   (void)acme_personzhrecord_ratiozhvalue(person, &ratio_value, &diagnostics);
   (void)acme_personzhrecord_aliases_count(person, &field_count, &diagnostics);
@@ -4972,72 +5099,72 @@ int main() {
   membership_args.role_member = member_player;
   (void)acme_membership_create_open(
       package, &membership_args, &membership_create, &diagnostics);
-  (void)acme_membership_database_insert(
-      database, membership_create, cancellation, &membership, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_database_insert(
+      database, membership_create, NULL,  cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
   (void)acme_membership_iid(membership, &text, &diagnostics);
   (void)acme_membership_reference(
       membership, &membership_reference, &diagnostics);
   (void)acme_membership_member(membership, &member_player, &diagnostics);
 
-  (void)acme_personzhrecord_database_insert(
-      database, create, cancellation, &person, &diagnostics);
-  (void)acme_personzhrecord_database_put(
-      database, create, cancellation, &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_database_insert(
+      database, create, NULL,  cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, put, acme_personzhrecord_database_put(
+      database, create, NULL,  cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_database_get_by_iid(
-      database, text, cancellation, &person, &diagnostics);
-  (void)acme_personzhrecord_database_update(
-      database, text, create, cancellation, &person, &diagnostics);
+      database, iid, NULL,  cancellation, &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, update, acme_personzhrecord_database_update(
+      database, iid, create, NULL,  cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_database_delete_by_iid(
-      database, text, cancellation, &diagnostics);
+      database, iid, NULL,  cancellation, &diagnostics);
   (void)acme_personzhrecord_database_count(
-      database, cancellation, &thing_count, &diagnostics);
+      database, NULL,  cancellation, &thing_count, &diagnostics);
   (void)acme_personzhrecord_read_transaction_get_by_iid(
-      read_tx, text, cancellation, &person, &diagnostics);
+      read_tx, iid, NULL,  cancellation, &person, &diagnostics);
   (void)acme_personzhrecord_read_transaction_count(
-      read_tx, cancellation, &thing_count, &diagnostics);
-  (void)acme_personzhrecord_write_transaction_insert(
-      write_tx, create, cancellation, &person, &diagnostics);
-  (void)acme_personzhrecord_write_transaction_put(
-      write_tx, create, cancellation, &person, &diagnostics);
+      read_tx, NULL,  cancellation, &thing_count, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_write_transaction_insert(
+      write_tx, create, NULL,  cancellation,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, put, acme_personzhrecord_write_transaction_put(
+      write_tx, create, NULL,  cancellation,&acme_personzhrecord_put_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_get_by_iid(
-      write_tx, text, cancellation, &person, &diagnostics);
-  (void)acme_personzhrecord_write_transaction_update(
-      write_tx, text, create, cancellation, &person, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &person, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_personzhrecord, update, acme_personzhrecord_write_transaction_update(
+      write_tx, iid, create, NULL,  cancellation,&acme_personzhrecord_update_result, &diagnostics), &person, &diagnostics);
   (void)acme_personzhrecord_write_transaction_delete_by_iid(
-      write_tx, text, cancellation, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &diagnostics);
   (void)acme_personzhrecord_write_transaction_count(
-      write_tx, cancellation, &thing_count, &diagnostics);
+      write_tx, NULL,  cancellation, &thing_count, &diagnostics);
 
-  (void)acme_membership_database_insert(
-      database, membership_create, cancellation, &membership, &diagnostics);
-  (void)acme_membership_database_put(
-      database, membership_create, cancellation, &membership, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_database_insert(
+      database, membership_create, NULL,  cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, put, acme_membership_database_put(
+      database, membership_create, NULL,  cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
   (void)acme_membership_database_get_by_iid(
-      database, text, cancellation, &membership, &diagnostics);
-  (void)acme_membership_database_update(
-      database, text, membership_create, cancellation, &membership,
-      &diagnostics);
+      database, iid, NULL,  cancellation, &membership, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, update, acme_membership_database_update(
+      database, iid, membership_create, NULL,  cancellation,&acme_membership_update_result,
+      &diagnostics), &membership, &diagnostics);
   (void)acme_membership_database_delete_by_iid(
-      database, text, cancellation, &diagnostics);
+      database, iid, NULL,  cancellation, &diagnostics);
   (void)acme_membership_database_count(
-      database, cancellation, &thing_count, &diagnostics);
+      database, NULL,  cancellation, &thing_count, &diagnostics);
   (void)acme_membership_read_transaction_get_by_iid(
-      read_tx, text, cancellation, &membership, &diagnostics);
+      read_tx, iid, NULL,  cancellation, &membership, &diagnostics);
   (void)acme_membership_read_transaction_count(
-      read_tx, cancellation, &thing_count, &diagnostics);
-  (void)acme_membership_write_transaction_insert(
-      write_tx, membership_create, cancellation, &membership, &diagnostics);
-  (void)acme_membership_write_transaction_put(
-      write_tx, membership_create, cancellation, &membership, &diagnostics);
+      read_tx, NULL,  cancellation, &thing_count, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_write_transaction_insert(
+      write_tx, membership_create, NULL,  cancellation,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, put, acme_membership_write_transaction_put(
+      write_tx, membership_create, NULL,  cancellation,&acme_membership_put_result, &diagnostics), &membership, &diagnostics);
   (void)acme_membership_write_transaction_get_by_iid(
-      write_tx, text, cancellation, &membership, &diagnostics);
-  (void)acme_membership_write_transaction_update(
-      write_tx, text, membership_create, cancellation, &membership,
-      &diagnostics);
+      write_tx, iid, NULL,  cancellation, &membership, &diagnostics);
+  (void)TEST_SINGLE_WRITE(acme_membership, update, acme_membership_write_transaction_update(
+      write_tx, iid, membership_create, NULL,  cancellation,&acme_membership_update_result,
+      &diagnostics), &membership, &diagnostics);
   (void)acme_membership_write_transaction_delete_by_iid(
-      write_tx, text, cancellation, &diagnostics);
+      write_tx, iid, NULL,  cancellation, &diagnostics);
   (void)acme_membership_write_transaction_count(
-      write_tx, cancellation, &thing_count, &diagnostics);
+      write_tx, NULL,  cancellation, &thing_count, &diagnostics);
 
   (void)acme_container_item_player_close(&item_player);
   (void)acme_membership_member_player_close(&member_player);
@@ -5047,10 +5174,10 @@ int main() {
   (void)acme_personzhrecord_ref_close(&reference);
   (void)acme_personzhrecord_create_close(&create);
   (void)acme_personzhrecord_close(&person);
-  (void)type_bridge_diagnostics_close(&package_diagnostics);
+  (void)type_bridge_execution_diagnostics_close(&package_diagnostics);
   (void)type_bridge_schema_package_close(&opened_package);
   return person != nullptr || display_name != nullptr || text.length != 0u ||
-      TYPE_BRIDGE_C_ABI_MAJOR != 1u;
+      TYPE_BRIDGE_C_ABI_MAJOR != 2u;
 }
 "#,
     )
@@ -5179,26 +5306,54 @@ int main(void) {
         (
             "wrong-transaction.c",
             r#"#include <acme/models.h>
+
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
 int main(void) {
+  type_bridge_status_t write_status;
+  acme_personzhrecord_insert_batch_result *acme_personzhrecord_insert_result = NULL;
   const type_bridge_read_transaction_t *read_tx = 0;
   const acme_personzhrecord_create *create = 0;
   acme_personzhrecord *person = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
-  return acme_personzhrecord_write_transaction_insert(
-      read_tx, create, 0, &person, &diagnostics);
+  return TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_write_transaction_insert(
+      read_tx, create, NULL,  0,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
 }
 "#,
         ),
         (
             "wrong-create.c",
             r#"#include <acme/models.h>
+
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
 int main(void) {
+  type_bridge_status_t write_status;
+  acme_personzhrecord_insert_batch_result *acme_personzhrecord_insert_result = NULL;
   const type_bridge_database_t *database = 0;
   acme_dualzhkeyzhrecord_create *wrong = 0;
   acme_personzhrecord *person = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
-  return acme_personzhrecord_database_insert(
-      database, wrong, 0, &person, &diagnostics);
+  return TEST_SINGLE_WRITE(acme_personzhrecord, insert, acme_personzhrecord_database_insert(
+      database, wrong, NULL,  0,&acme_personzhrecord_insert_result, &diagnostics), &person, &diagnostics);
 }
 "#,
         ),
@@ -5245,26 +5400,54 @@ int main(void) {
         (
             "wrong-relation-transaction.c",
             r#"#include <acme/models.h>
+
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
 int main(void) {
+  type_bridge_status_t write_status;
+  acme_membership_insert_batch_result *acme_membership_insert_result = NULL;
   const type_bridge_read_transaction_t *read_tx = 0;
   const acme_membership_create *create = 0;
   acme_membership *membership = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
-  return acme_membership_write_transaction_insert(
-      read_tx, create, 0, &membership, &diagnostics);
+  return TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_write_transaction_insert(
+      read_tx, create, NULL,  0,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
 }
 "#,
         ),
         (
             "wrong-relation-create.c",
             r#"#include <acme/models.h>
+
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
 int main(void) {
+  type_bridge_status_t write_status;
+  acme_membership_insert_batch_result *acme_membership_insert_result = NULL;
   const type_bridge_database_t *database = 0;
   const acme_container_create *wrong = 0;
   acme_membership *membership = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
-  return acme_membership_database_insert(
-      database, wrong, 0, &membership, &diagnostics);
+  return TEST_SINGLE_WRITE(acme_membership, insert, acme_membership_database_insert(
+      database, wrong, NULL,  0,&acme_membership_insert_result, &diagnostics), &membership, &diagnostics);
 }
 "#,
         ),
@@ -5379,7 +5562,7 @@ int main(void) {
   const acme_personzhrecord_query_exact_binding *wrong = 0;
   acme_query_page_terminal *terminal = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
-  return acme_query_page(
+  return acme_query_page_by(
       wrong, 0, 0u, 0u, 1u, 0u, &terminal, &diagnostics);
 }
 "#,
@@ -5570,7 +5753,7 @@ int main(void) {
   const acme_actor_displayzhname_query_field *wrong = 0;
   acme_query_predicate *predicate = 0;
   type_bridge_execution_diagnostics_t *diagnostics = 0;
-  return acme_qualifyingzhscore_query_call_equal_field(
+  return acme_qualifyingzhscore_query_call_eq_field(
       call, acme_actor_displayzhname_query_field_function_field(wrong),
       &predicate, &diagnostics);
 }
@@ -5718,19 +5901,19 @@ int main(void) {
 #[test]
 fn sdk_models_generated_package_integrity() {
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("models.yaml").expect("V3 document ID is valid"),
+        DocumentId::new("models.yaml").expect("staged document ID is valid"),
         SDK_MODELS_SOURCE,
     )])
-    .expect("V3 schema parses");
-    let declared = normalize_documents(&documents).expect("V3 schema normalizes");
+    .expect("staged schema parses");
+    let declared = normalize_documents(&documents).expect("staged schema normalizes");
     let identity = support::sdk_profile_matrix::requested("models");
     let profile =
         SemanticProfileId::new(&identity.semantic_profile).expect("test profile is valid");
-    let resolved = resolve(&declared, &profile).expect("V3 schema resolves");
+    let resolved = resolve(&declared, &profile).expect("staged schema resolves");
     let emitter = CEmitter::new();
     let resources = emitter
         .code_resources_for(&resolved)
-        .expect("V3 C resources hash");
+        .expect("staged C resources hash");
     let projection = project(
         &resolved,
         BindingTarget::C,
@@ -5738,12 +5921,12 @@ fn sdk_models_generated_package_integrity() {
         &emitter.generator_handlers_for(&resolved),
         &resources,
     )
-    .expect("V3 schema projects to C");
+    .expect("staged schema projects to C");
     let authority =
         support::authority_for_declared(&declared, "models-c", &identity.semantic_profile);
     let package = emitter
         .emit(&projection, &authority)
-        .expect("V3 C package emits");
+        .expect("staged C package emits");
     let emitted = package
         .files()
         .values()
@@ -5751,7 +5934,10 @@ fn sdk_models_generated_package_integrity() {
             text.push_str(&String::from_utf8_lossy(bytes));
             text
         });
-    assert!(!projection.models().is_empty(), "V3 projection has models");
+    assert!(
+        !projection.models().is_empty(),
+        "staged projection has models"
+    );
     assert!(
         emitted.contains("fixture_"),
         "generated C package has the requested namespace"
@@ -5760,12 +5946,12 @@ fn sdk_models_generated_package_integrity() {
     let root = sdk_models_repository_root();
     let journey: Value = serde_json::from_slice(
         &fs::read(root.join("tests/contracts/sdk_conformance/models/journey.json"))
-            .expect("V3 journey reads"),
+            .expect("staged journey reads"),
     )
-    .expect("V3 journey parses");
+    .expect("staged journey parses");
     let expected = journey["expected_observations"]
         .as_object()
-        .expect("V3 expected observations are an object");
+        .expect("staged expected observations are an object");
     let test_id = "c_emitter::sdk_models_generated_package_integrity";
     publish_sdk_models_package_fragment(vec![
         json!({"observation": expected["projected_constraint_validation"], "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": test_id}),

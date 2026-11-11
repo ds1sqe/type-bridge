@@ -53,7 +53,7 @@ come from `app_models`, the generated package. Connection primitives come from
 - `schema check` reports reserved labels, invalid cardinality, ownership, and
   role-player errors before generation.
 
-Change Split-YAML, review and apply a V2 migration, then regenerate. Do not edit
+Change Split-YAML, review and apply a migration, then regenerate. Do not edit
 the generated packages or recreate their descriptors in application code.
 
 ## One staged program in four languages
@@ -66,9 +66,11 @@ the proxy. It runs on packages generated from
 conformance suite builds and runs all four and compares their plan bytes and
 results (see that directory's README).
 
-## Historical TOML
+## Trace each call end to end
 
-[`advanced/toml_migration`](advanced/toml_migration/) and
-[`basic/schema.toml`](basic/schema.toml) are frozen recovery inputs. They may be
-read by the retained TOML-to-TypeQL converter; they are not active schema or
-model-generation examples.
+[`walkthrough/`](walkthrough) runs purchase, subtype deletion, a 10,000-row
+bulk insert, manager calls and a dependent staged transaction in all four
+SDKs. Set `TYPEDB_ADDRESS` and `TYPEDB_HTTP_PORT`, then run
+`bash scripts/walkthrough.sh` from the repository root. The runner creates
+and removes its own databases, compares plans and results, and checks the
+[worked examples page](../docs/guide/worked-examples.md) against live output.

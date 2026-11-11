@@ -10,16 +10,20 @@
 //! tests/contracts/sdk_conformance/writes/purchase.
 
 use models::{
-    Account, AccountType, AppSchema, Doctor, DoctorType, Item, ItemType, Purchase, PurchaseType,
+    Account, AccountType, AppSchema, Doctor, DoctorType, Item, ItemType, Plan, Purchase,
+    PurchaseType,
 };
 use serde_json::{Map, Value as Json, json};
-use type_bridge::plan::{Plan, PlanBuilder};
+use type_bridge::plan::recording::Argument;
+use type_bridge::plan::{FetchRole, PlanBuilder, Recording};
 use type_bridge::staged::{PlanAnswer, Transaction, TransactionKind, TransactionOptions};
 use type_bridge::{
     ConnectionOptions, Database, ProxyConnectionPolicy, ProxyDatabase, ProxyEndpoint, Result,
 };
 
-type Built = Plan<AppSchema>;
+type Built = Plan<PlanAnswer>;
+
+mod main_explicit;
 
 /// One item in stock, one funded account and one on-call doctor.
 fn seed() -> Result<Built> {
@@ -56,48 +60,39 @@ fn seed() -> Result<Built> {
 // --8<-- [start:purchase]
 /// The one-query purchase: take one item and its price, record the order.
 fn purchase() -> Result<Built> {
-    let mut plan = Plan::builder();
-    let item = plan.exact::<Item>();
-    let buyer = plan.exact::<Account>();
-    let order_input = plan.input::<String>("order_id");
-    let item_input = plan.input::<String>("item_id");
-    let account_input = plan.input::<String>("account_id");
-    let item_key = plan.field(item, ItemType::item_id);
-    let buyer_key = plan.field(buyer, AccountType::account_id);
-    let stock = plan.field(item, ItemType::stock);
-    let price = plan.field(item, ItemType::price);
-    let balance = plan.field(buyer, AccountType::balance);
-    plan.where_(item_key.eq(item_input))
-        .where_(buyer_key.eq(account_input))
-        .where_(stock.gt(0_i64))
-        .where_(balance.ge(price));
-    let next_stock = plan.let_("next_stock", stock - 1_i64);
-    let next_balance = plan.let_("next_balance", balance - price);
-    plan.update(item, ItemType::stock, next_stock).update(
-        buyer,
-        AccountType::balance,
-        next_balance,
-    );
-    plan.insert::<Purchase>()
-        .field(PurchaseType::order_id, order_input)
-        .player(PurchaseType::buyer, buyer)
-        .player(PurchaseType::item, item);
-    plan.row([
-        order_input.value("O1".to_owned()),
-        item_input.value("I1".to_owned()),
-        account_input.value("A1".to_owned()),
-    ]);
-    plan.build(&models::SCHEMA)
+    let mut p = Recording::new(type_bridge::QueryLimits::CANONICAL);
+    // Handles share the recording, so they must drop before `build`.
+    {
+        let item = Item::matching_by(&mut p)
+            .item_id("I1".to_owned())
+            .handle()
+            .where_(ItemType::stock.gt(0_i64));
+        let buyer = Account::matching_by(&mut p)
+            .account_id("A1".to_owned())
+            .handle();
+        let buyer = buyer.clone().where_(item.price().le(buyer.balance()));
+        item.set(&mut p).stock(item.stock() - 1_i64);
+        buyer.set(&mut p).balance(buyer.balance() - item.price());
+        Purchase::insert(
+            &mut p,
+            models::PurchaseInsert {
+                order_id: Argument::from("O1").into(),
+                buyer: Some(&buyer),
+                item: Some(&item),
+            },
+        );
+    }
+    p.build(&models::SCHEMA)
 }
 // --8<-- [end:purchase]
 
 /// Rewrite every doctor's on-call value with itself, taking its lock.
 fn touch() -> Result<Built> {
-    let mut plan = Plan::builder();
-    let doctor = plan.exact::<Doctor>();
-    let on_call = plan.field(doctor, DoctorType::on_call);
-    plan.update(doctor, DoctorType::on_call, on_call);
-    plan.build(&models::SCHEMA)
+    let mut p = Recording::new(type_bridge::QueryLimits::CANONICAL);
+    let doctor = Doctor::matching_by(&mut p).handle();
+    doctor.set(&mut p).on_call(doctor.on_call());
+    drop(doctor);
+    p.build(&models::SCHEMA)
 }
 
 /// Fifty orders of the item by the account, one given row each.
@@ -209,6 +204,24 @@ fn remove() -> Result<Built> {
     plan.build(&models::SCHEMA)
 }
 
+// --8<-- [start:read_back]
+fn read_back() -> Result<Built> {
+    let mut plan = Plan::builder(); // PlanBuilder<AppSchema>
+    let purchase = plan.exact::<Purchase>(); // Thing<Purchase>
+    let key = plan.field(purchase, PurchaseType::order_id);
+    let order = plan.input::<String>("order_id");
+    plan.where_(key.eq(order)).fetch(
+        purchase,
+        [
+            FetchRole::new(PurchaseType::buyer, true),
+            FetchRole::new(PurchaseType::item, true),
+        ],
+    );
+    plan.row([order.value("R1".to_owned())]);
+    plan.build(&models::SCHEMA)
+}
+// --8<-- [end:read_back]
+
 fn doctors_on_call() -> Result<Built> {
     let mut plan = Plan::builder();
     let doctor = plan.exact::<Doctor>();
@@ -260,20 +273,28 @@ fn kept() -> Result<Built> {
 
 /// The doctor whose name the constraints suite inserts twice.
 fn seed_doctor() -> Result<Built> {
-    let mut plan = Plan::builder();
-    plan.insert::<Doctor>()
-        .field(DoctorType::name, "D1".to_owned())
-        .field(DoctorType::on_call, true);
-    plan.build(&models::SCHEMA)
+    let mut p = Recording::new(type_bridge::QueryLimits::CANONICAL);
+    Doctor::insert(
+        &mut p,
+        models::DoctorInsert {
+            name: Argument::from("D1").into(),
+            on_call: Some(true.into()),
+        },
+    );
+    p.build(&models::SCHEMA)
 }
 
 /// A second doctor named D1: the key rejects the commit.
 fn duplicate_doctor() -> Result<Built> {
-    let mut plan = Plan::builder();
-    plan.insert::<Doctor>()
-        .field(DoctorType::name, "D1".to_owned())
-        .field(DoctorType::on_call, false);
-    plan.build(&models::SCHEMA)
+    let mut p = Recording::new(type_bridge::QueryLimits::CANONICAL);
+    Doctor::insert(
+        &mut p,
+        models::DoctorInsert {
+            name: Argument::from("D1").into(),
+            on_call: Some(false.into()),
+        },
+    );
+    p.build(&models::SCHEMA)
 }
 
 type Steps = &'static [(&'static str, &'static [&'static str])];
@@ -283,6 +304,7 @@ const PURCHASE_STEPS: Steps = &[
     ("program", &["purchase", "touch", "batch"]),
     ("read", &["sold_out", "charged", "orders", "on_call"]),
     ("journeys", &["put_doctor", "returns", "refer", "remove"]),
+    ("read_back", &["read_back"]),
     ("after", &["doctors_on_call", "referred", "removed"]),
     ("rollback", &["kept"]),
 ];
@@ -306,12 +328,13 @@ fn answer(value: &PlanAnswer) -> Json {
         PlanAnswer::Count(count) => json!(["count", count]),
         PlanAnswer::Exists(exists) => json!(["exists", u8::from(*exists)]),
         PlanAnswer::Rows(rows) => json!(["rows", rows.len()]),
+        PlanAnswer::Documents(documents) => json!(["documents", documents.len()]),
         other => panic!("unknown answer {other:?}"),
     }
 }
 
 fn kind(step: &str) -> TransactionOptions {
-    TransactionOptions::default().with_kind(if matches!(step, "read" | "after") {
+    TransactionOptions::default().with_kind(if matches!(step, "read" | "after" | "read_back") {
         TransactionKind::Read
     } else {
         TransactionKind::Write
@@ -326,6 +349,7 @@ async fn run(
     plans: &[(&str, Built)],
     names: &[&str],
     discarded: &[&str],
+    snapshot: &mut Json,
 ) -> Result<Json> {
     let built = |name: &str| {
         plans
@@ -365,7 +389,29 @@ async fn run(
     }
     let mut answers = Map::new();
     for (name, item) in pending {
-        answers.insert(name.to_owned(), answer(&*item.get()?));
+        let value = item.get()?;
+        if name == "read_back" {
+            let PlanAnswer::Documents(documents) = value.as_ref() else {
+                panic!("expected documents")
+            };
+            assert_eq!(documents.len(), 1);
+            let doc = &documents[0];
+            let scalar = |attributes: &Json, key: &str| {
+                let value = &attributes[key];
+                value
+                    .as_array()
+                    .map_or_else(|| value.clone(), |values| values[0].clone())
+            };
+            *snapshot = json!({ "type": doc["_type"], "order_id": scalar(&doc["attributes"], "order-id"),
+                "buyer": scalar(&doc["_role_0_attributes"], "account-id"), "item": scalar(&doc["_role_1_attributes"], "item-id") });
+            assert_eq!(doc["_role_0_type"], "account");
+            assert_eq!(doc["_role_1_type"], "item");
+            assert_eq!(
+                *snapshot,
+                json!({"type":"purchase", "order_id":"R1", "buyer":"A2", "item":"I2"})
+            );
+        }
+        answers.insert(name.to_owned(), answer(&value));
     }
     Ok(Json::Object(answers))
 }
@@ -389,6 +435,7 @@ async fn main() -> Result<()> {
                 ("returns", returns()?),
                 ("refer", refer()?),
                 ("remove", remove()?),
+                ("read_back", read_back()?),
                 ("doctors_on_call", doctors_on_call()?),
                 ("referred", referred()?),
                 ("removed", removed()?),
@@ -405,6 +452,16 @@ async fn main() -> Result<()> {
         ),
         other => panic!("unknown writes suite {other}"),
     };
+    for (name, oracle) in [
+        ("purchase", main_explicit::purchase()?),
+        ("touch", main_explicit::touch()?),
+        ("seed_doctor", main_explicit::doctor(true)?),
+        ("duplicate_doctor", main_explicit::doctor(false)?),
+    ] {
+        if let Some((_, plan)) = plans.iter().find(|(key, _)| *key == name) {
+            assert_eq!(plan.canonical_bytes()?, oracle.canonical_bytes()?, "{name}");
+        }
+    }
     let mut encoded = Map::new();
     for (name, plan) in &plans {
         let bytes = plan.canonical_bytes()?;
@@ -412,6 +469,7 @@ async fn main() -> Result<()> {
         encoded.insert((*name).to_owned(), Json::String(hex));
     }
     let mut results = Map::new();
+    let mut snapshots = Map::new();
     if let Some(database) = std::env::var("TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE")
         .ok()
         .filter(|name| !name.is_empty())
@@ -432,14 +490,16 @@ async fn main() -> Result<()> {
             .await?
             .with_schema(models::SCHEMA)?;
         let mut steps = Map::new();
+        let mut snapshot = Json::Null;
         for &(step, names) in suite_steps {
             let tx = db.transaction(kind(step));
             steps.insert(
                 step.to_owned(),
-                run(tx, &plans, names, rolled_back(step)).await?,
+                run(tx, &plans, names, rolled_back(step), &mut snapshot).await?,
             );
         }
         results.insert("direct".to_owned(), Json::Object(steps));
+        snapshots.insert("direct".to_owned(), snapshot);
     }
     if let Some(endpoint) = std::env::var("TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT")
         .ok()
@@ -450,16 +510,24 @@ async fn main() -> Result<()> {
                 .await?
                 .with_schema(models::SCHEMA)?;
         let mut steps = Map::new();
+        let mut snapshot = Json::Null;
         for &(step, names) in suite_steps {
             let tx = proxy.transaction(kind(step)).await?;
             steps.insert(
                 step.to_owned(),
-                run(tx, &plans, names, rolled_back(step)).await?,
+                run(tx, &plans, names, rolled_back(step), &mut snapshot).await?,
             );
         }
         results.insert("proxy".to_owned(), Json::Object(steps));
+        snapshots.insert("proxy".to_owned(), snapshot);
     }
-    let report = json!({"binding": "rust", "plans": encoded, "results": results});
+    let mut report = json!({"binding": "rust", "plans": encoded, "results": results});
+    if suite == "purchase" {
+        report["read_back"] = Json::Object(snapshots);
+    }
+    if let Some((_, plan)) = plans.iter().find(|(name, _)| *name == "purchase") {
+        report["explanation"] = json!(plan.explain()?);
+    }
     println!("{report}");
     Ok(())
 }

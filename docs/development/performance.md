@@ -14,7 +14,7 @@ Every producer writes one `perf-result/v1` JSON file per run: a `run` block
 `python -m perf.harness.validate FILE...` checks a file.
 
 A metric id is a stable dotted name that starts with its family, for
-example `micro.core.compilation.insert_entity`. Build ids with
+example `micro.core.validation.identifier`. Build ids with
 `perf.harness.schema.metric_id`. Keep ids stable: the history is keyed by
 id.
 
@@ -28,10 +28,10 @@ of the core and ORM bench targets. Instruction counts need valgrind and
 ```bash
 cd type-bridge-core
 CRITERION_HOME=../tmp/perf/criterion/core cargo bench -p type-bridge-core-lib \
-  --bench validation --bench compilation --bench schema -- --noplot
+  --bench validation --bench schema -- --noplot
 GUNGRAUN_SAVE_SUMMARY=json GUNGRAUN_HOME=../tmp/perf/iai/core \
   cargo bench -p type-bridge-core-lib \
-  --bench validation_iai --bench compilation_iai --bench schema_iai
+  --bench validation_iai --bench schema_iai
 cd ..
 uv run python -m perf.harness.micro \
   --criterion-dir tmp/perf/criterion --iai-dir tmp/perf/iai --out tmp/perf/micro.json
@@ -164,7 +164,7 @@ header of `perf/drivers/node/pipelines.cjs`.
 
 The C driver compiles against the C schema package that `create` generates
 into `DIR/workspace/generated/c`, links a `type-bridge-c` built with
-`--features perf-stages`, and stages each iteration's plans on one ABI 1.7
+`--features perf-stages`, and stages each iteration's plans on one ABI 2.0
 staged transaction:
 
 ```bash
@@ -224,7 +224,7 @@ six CRUD ops as every other compared version: `insert_one`, `fetch_by_key`
 (one of 1,000 seeded items), `fetch_filtered` (stock of at least 900, 100
 items), `update`, `delete` and `batch_insert_1k`. The compared versions are
 the newest patch of every line from 2.0 that PyPI and npm both serve (today
-2.0.2, 2.1.0 and 2.2.6) and `head`, on one TypeDB 3.12.3 at semantic profile
+2.0.2, 2.1.0, 2.2.6 and 2.3.3) and `head`, on one TypeDB 3.12.3 at semantic profile
 `typedb-3.12.1/v1`, which all of them accept. `python -m perf.harness.versions`
 prints that list. A release is installed from
 PyPI into its own venv under the run's temp directory; `head` installs this
@@ -256,7 +256,7 @@ docker run -d --name perf-typedb --tmpfs /var/lib/typedb/data:rw \
   -p 1729:1729 -p 8000:8000 typedb/typedb:3.12.3
 (cd type-bridge-core && uvx --from maturin==1.14.1 maturin build --release \
   -o ../tmp/perf/core-wheel)
-for version in 2.0.2 2.1.0 2.2.6 head; do
+for version in 2.0.2 2.1.0 2.2.6 2.3.3 head; do
   TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password uv run python -m perf.harness.released \
     --version $version --typedb 3.12.3 --core-wheel tmp/perf/core-wheel/type_bridge_core-*.whl \
     --out tmp/perf/release-python-$version.json
@@ -286,9 +286,9 @@ where a version has no call for the op.
 
 ## Run the Python binding benchmarks locally
 
-`benchmarks/` is a pytest-benchmark suite over the Python binding: native
-query compilation, clause-to-dict marshalling and validation through
-`type_bridge_core`. Build the native module in release mode first (as
+`benchmarks/` measures native validation through the Python
+`type_bridge_core` binding. Legacy raw-query compilation and marshalling
+benchmarks were removed in 3.0 together with their implementation. Build the native module in release mode first (as
 `uv sync` does), then:
 
 ```bash
@@ -384,7 +384,7 @@ The run records the Rust toolchain and the wheel builder's Python interpreter.
 ```bash
 python -m perf.harness.build --target-dir tmp/perf-cold --out tmp/perf/build.json
 # A smaller local smoke; the target directory must still be fresh.
-python -m perf.harness.build --group public --package type-bridge-toml-transpiler \
+python -m perf.harness.build --group public --package type-bridge-contract \
   --target-dir tmp/perf-smoke --out tmp/perf/build-smoke.json
 ```
 
@@ -402,8 +402,8 @@ reports `size.wheel.bytes`, `size.npm.bytes`, `size.cli_unstripped.bytes`,
 release; the unstripped CLI provides a separate baseline. Available Python, Node and C
 compiler versions are recorded for the wheel, npm and C measurements.
 
-The C metric is a perf-only archive of the current CMake install tree: ABI 1.7
-and release package metadata are reconciled separately in 2.3.0 release prep.
+The C metric is a perf-only archive of the current CMake install tree: ABI 2.0
+and release package metadata are reconciled separately by release validation.
 It uses the release Cargo flags and normalized tar metadata; it is not a
 published C release candidate. Release helpers and policy are unchanged.
 
@@ -461,6 +461,14 @@ primary signal; Criterion wall times are noisier. The advisory job-summary table
 lists regressions first and uploads both raw result files. It never comments on
 the PR or writes history, and uses a read-only token without checkout credentials.
 A base predating the perf harness is skipped with a notice.
+
+The 3.0 baseline retires `micro.core.compilation.*`,
+`binding.python.compilation.*` and `binding.python.marshalling.*` with the
+removed raw-query compiler and binding bridges. Keep their historical rows;
+do not rename or map them onto plan execution, or fill missing results with
+zero. Other ids whose producer was removed are likewise retired. The comparison
+lists them under "Only in base"; new plan-path ids start independent baselines.
+Compare retained ids only when their units and measured operation still agree.
 
 Markers apply only beyond these noise thresholds: instructions and bytes 1%,
 nanoseconds 10%, seconds 15%, and throughput (`ops_per_s`, higher is better) 10%.

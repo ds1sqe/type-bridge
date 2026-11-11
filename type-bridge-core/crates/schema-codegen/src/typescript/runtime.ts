@@ -1,10 +1,13 @@
 import {
+  type BatchWriteResult,
+  type WriteResult,
   installGeneratedSchemaAuthority,
   installRuntimeProjection,
   projectedManagerNativeCall,
   type InstalledRuntimeProjection,
   type CanonicalCodecOptions,
   type NativeProjectedManager,
+  type NativeProjectedValueEnvelope,
   type RuntimeProjectionConnection,
   type RuntimeProjectionMatchBinding,
   type RuntimeProjectionMatchField,
@@ -15,6 +18,7 @@ import {
   type RuntimeProjectionMatchPredicate,
   type RuntimeProjectionMatchQuery,
   type RuntimeProjectionMatchResult,
+  type RuntimeProjectionQueryResult,
   type RuntimeProjectionReduction,
   type RuntimeProjectionMatchSelection,
   type RuntimeProjectionMatchSession,
@@ -26,8 +30,11 @@ import {
   QueryCancellation,
   QueryExecutionResourceLimits,
   QueryLimits,
+  projectedBatchDeleted,
 } from "@type-bridge/node/runtime-projection";
 export {
+  type BatchWriteResult,
+  type WriteResult,
   ProxyConnection,
   QueryCancellation,
   QueryExecutionResourceLimits,
@@ -35,8 +42,11 @@ export {
   type ProxyConnectionOptions,
   type ProxyTlsMode,
 } from "@type-bridge/node/runtime-projection";
-import type { QueryV2Authority } from "@type-bridge/node/query-v2";
-import type { RustDatabase } from "@type-bridge/node";
+import type { PlanAuthority } from "@type-bridge/node";
+import type { Database } from "@type-bridge/node";
+import { Iid, Pending, StagedTransaction } from "@type-bridge/node";
+import { Plan, Handle as PlanHandle, Value as PlanValue, Expr as PlanExpr, PlanInput, planFieldToken, planMatch, planInsert, planInsertMany, type FieldToken as AuthoringFieldToken, type PlanModelAuthoring } from "@type-bridge/node";
+export { Iid, Plan, PlanHandle, PlanValue, PlanExpr, PlanInput, planMatch, planInsertMany };
 
 const COMPLETE_BRAND: unique symbol = Symbol("typebridge.complete");
 const REFERENCE_BRAND: unique symbol = Symbol("typebridge.reference");
@@ -75,7 +85,8 @@ export interface ModelUse {
 export interface CompleteFacet<Id extends string> {
   readonly __typebridgeModel: Id;
   readonly __typebridgeForm: "complete";
-  readonly iid: string | null;
+  readonly iid: Iid | null;
+  readonly deleted: boolean;
   readonly [COMPLETE_BRAND]: Id;
 }
 
@@ -85,21 +96,40 @@ export type ProjectedManagerFilterValue =
   | number
   | boolean
   | null
+  | Iid
   | CompleteFacet<string>
   | ReferenceFacet<string>
   | readonly ProjectedManagerFilterValue[];
 
+export type ProjectedManagerKeywords = Readonly<Record<string, ProjectedManagerFilterValue>> & {
+  readonly iid?: Iid;
+  readonly _iid?: Iid;
+  readonly iid__eq?: Iid;
+  readonly _iid__eq?: Iid;
+  readonly iid__in?: readonly Iid[];
+  readonly _iid__in?: readonly Iid[];
+};
+
 export interface ProjectedModelManager<Complete> {
-  insert(instance: Complete): Complete;
-  insertMany(instances: readonly Complete[]): readonly Complete[];
-  put(instance: Complete): Complete;
-  putMany(instances: readonly Complete[]): readonly Complete[];
-  update(iid: string, replacement: Complete): Complete;
-  delete(instanceOrIid: Complete | string): void;
+  insert(instance: Complete): WriteResult<Complete>;
+  insertMany(instances: readonly Complete[]): BatchWriteResult<Complete>;
+  put(instance: Complete): WriteResult<Complete>;
+  putMany(instances: readonly Complete[]): BatchWriteResult<Complete>;
+  /** Replace every match of an explicit keyword filter. */
+  update(replacement: Complete): WriteResult<Complete>;
+  /** Permanent redirect to `filter({ iid }).update(replacement)`. */
+  update(iid: Iid, replacement: Complete): WriteResult<Complete>;
+  /** Delete every match of an explicit keyword filter. */
+  delete(): void;
+  /** Permanent IID redirect to `filter({ iid }).delete()`. */
+  delete(instanceOrIid: Complete | Iid): void;
+  deleteReturning(iid: Iid): WriteResult<Complete>;
+  deleteManyReturning(iids: readonly Iid[]): BatchWriteResult<Complete>;
   filter(
-    filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
+    filters: ProjectedManagerKeywords,
   ): ProjectedModelManager<Complete>;
-  getByIid(iid: string): Complete | null;
+  /** Permanent redirect to `filter({ iid }).first()`. */
+  getByIid(iid: Iid): Complete | null;
   all(): readonly Complete[];
   first(): Complete | null;
   count(): bigint;
@@ -109,7 +139,8 @@ export interface ProjectedModelManager<Complete> {
 export interface ReferenceFacet<Id extends string> {
   readonly __typebridgeModel: Id;
   readonly __typebridgeForm: "reference";
-  readonly iid: string | null;
+  readonly iid: Iid | null;
+  readonly deleted: boolean;
   readonly [REFERENCE_BRAND]: Id;
 }
 
@@ -129,7 +160,8 @@ export interface FieldToken<
   Owner extends string,
   Attribute extends string,
   Value,
-> {
+  Scalar = unknown,
+> extends AuthoringFieldToken<Scalar> {
   readonly kind: "field";
   readonly owner: Owner;
   readonly attribute: Attribute;
@@ -226,7 +258,7 @@ export class FunctionCall<out Domain> {
   ): Predicate {
     return this.#compareField("less_than", field);
   }
-  lteField<Value extends { readonly value: Domain }>(
+  leField<Value extends { readonly value: Domain }>(
     field: BoundField<Value>,
   ): Predicate {
     return this.#compareField("less_than_or_equal", field);
@@ -236,7 +268,7 @@ export class FunctionCall<out Domain> {
   ): Predicate {
     return this.#compareField("greater_than", field);
   }
-  gteField<Value extends { readonly value: Domain }>(
+  geField<Value extends { readonly value: Domain }>(
     field: BoundField<Value>,
   ): Predicate {
     return this.#compareField("greater_than_or_equal", field);
@@ -251,13 +283,13 @@ export class FunctionCall<out Domain> {
   ltValue(value: FunctionInput<Domain>): Predicate {
     return this.#compareValue("less_than", value);
   }
-  lteValue(value: FunctionInput<Domain>): Predicate {
+  leValue(value: FunctionInput<Domain>): Predicate {
     return this.#compareValue("less_than_or_equal", value);
   }
   gtValue(value: FunctionInput<Domain>): Predicate {
     return this.#compareValue("greater_than", value);
   }
-  gteValue(value: FunctionInput<Domain>): Predicate {
+  geValue(value: FunctionInput<Domain>): Predicate {
     return this.#compareValue("greater_than_or_equal", value);
   }
 
@@ -270,13 +302,13 @@ export class FunctionCall<out Domain> {
   ltCall(other: FunctionCall<Domain>): Predicate {
     return this.#compareCall("less_than", other);
   }
-  lteCall(other: FunctionCall<Domain>): Predicate {
+  leCall(other: FunctionCall<Domain>): Predicate {
     return this.#compareCall("less_than_or_equal", other);
   }
   gtCall(other: FunctionCall<Domain>): Predicate {
     return this.#compareCall("greater_than", other);
   }
-  gteCall(other: FunctionCall<Domain>): Predicate {
+  geCall(other: FunctionCall<Domain>): Predicate {
     return this.#compareCall("greater_than_or_equal", other);
   }
 
@@ -494,6 +526,8 @@ interface RuntimeModelToken {
 }
 
 interface RuntimeModelDefinition {
+  readonly fields: object;
+  readonly roles: object;
   readonly valueType: ScalarValueType | null;
   readonly createMembers: readonly CreateMemberDefinition[];
   readonly completeMembers: readonly CreateMemberDefinition[];
@@ -520,6 +554,12 @@ interface ProjectedWire {
 }
 
 const runtimeModels = new Map<string, RuntimeModelEntry>();
+const attributeTypeKeys = new Map<string, string>();
+type ProjectedFacadeProof = NonNullable<
+  Parameters<NativeProjectedManager["insertProjected"]>[1][number]
+>;
+const projectedFacadeProofs = new WeakMap<object, ProjectedFacadeProof>();
+
 const fieldTokenStates = new WeakMap<
   object,
   FieldTokenDefinition<string, string>
@@ -529,7 +569,7 @@ const roleTokenStates = new WeakMap<
   RoleTokenDefinition<string, string>
 >();
 let installedProjection: InstalledRuntimeProjection | null = null;
-let installedQueryAuthority: QueryV2Authority | null = null;
+let installedQueryAuthority: PlanAuthority | null = null;
 
 interface StructFieldDefinition {
   readonly name: string;
@@ -626,13 +666,15 @@ export function defineFieldToken<
   Owner extends string,
   Attribute extends string,
   Value,
+  Scalar = unknown,
 >(
   definition: FieldTokenDefinition<Owner, Attribute>,
-): FieldToken<Owner, Attribute, Value> {
-  const token = { kind: "field", ...definition } as FieldToken<
+): FieldToken<Owner, Attribute, Value, Scalar> {
+  const token = planFieldToken<Scalar, typeof definition & { kind: "field" }>({ kind: "field", ...definition }) as FieldToken<
     Owner,
     Attribute,
-    Value
+    Value,
+    Scalar
   >;
   fieldTokenStates.set(token, definition);
   return Object.freeze(token);
@@ -663,9 +705,11 @@ export function defineModel<
   ReferenceFactory,
   Fields extends object,
   Roles extends object,
+  Authoring extends object = {},
 >(
   definition: ModelDefinition<Id, Fields, Roles>,
-): ModelToken<Id, Complete, CreateFactory, ReferenceFactory, Fields, Roles> {
+  authoring?: (token: ModelToken<Id, Complete, CreateFactory, ReferenceFactory, Fields, Roles>) => Authoring,
+): ModelToken<Id, Complete, CreateFactory, ReferenceFactory, Fields, Roles> & Authoring {
   const materializeComplete = (
     input: unknown,
     iid: string | null,
@@ -679,7 +723,7 @@ export function defineModel<
     const result: Record<string | symbol, unknown> = {
       __typebridgeModel: definition.typeKey,
       __typebridgeForm: "complete",
-      iid,
+      iid: iid === null ? null : new Iid(iid),
     };
     if (definition.valueType !== null) {
       validateScalar(`${context} value`, input, definition.valueType);
@@ -719,6 +763,7 @@ export function defineModel<
     Object.defineProperty(result, COMPLETE_BRAND, {
       value: definition.typeKey,
     });
+    defineDeletedState(result);
     return Object.freeze(result) as Complete;
   };
   const create = definition.createEnabled
@@ -731,10 +776,10 @@ export function defineModel<
         )
     : undefined;
   const reference = definition.referenceEnabled
-    ? (iid: string | null, keys: unknown): unknown => {
-        if (iid !== null && (typeof iid !== "string" || iid.length === 0)) {
+    ? (iid: Iid | null, keys: unknown): unknown => {
+        if (iid !== null && !(iid instanceof Iid)) {
           throw new TypeError(
-            `${definition.name}.reference iid must be a non-empty string`,
+            `${definition.name}.reference iid must be an Iid`,
           );
         }
         assertRecord(keys, `${definition.name}.reference keys`);
@@ -762,6 +807,7 @@ export function defineModel<
         Object.defineProperty(result, REFERENCE_BRAND, {
           value: definition.typeKey,
         });
+        defineDeletedState(result);
         return Object.freeze(result);
       }
     : undefined;
@@ -939,7 +985,7 @@ export function defineModel<
         if (typeof reference !== "function") {
           throw new TypeError(`${definition.name} has no reference projection`);
         }
-        return reference(wire.iid, keys) as FactoryResult<ReferenceFactory>;
+        return reference(wire.iid === null ? null : new Iid(wire.iid), keys) as FactoryResult<ReferenceFactory>;
       },
       encodeSnapshot: (
         value: Complete,
@@ -1036,8 +1082,17 @@ export function defineModel<
     );
   }
   runtimeModels.set(definition.typeKey, { token: modelToken, definition });
+  if (definition.valueType !== null) {
+    assertRecord(definition.id, "ordered attribute definition identity");
+    const label = definition.id["label"];
+    if (definition.id["kind"] !== "attribute" || typeof label !== "string") {
+      throw new TypeError("ordered attribute definition has an invalid identity");
+    }
+    attributeTypeKeys.set(JSON.stringify(label), definition.typeKey);
+  }
+  if (authoring !== undefined) Object.assign(modelToken, authoring(modelToken));
   Object.freeze(modelToken);
-  return modelToken;
+  return modelToken as typeof modelToken & Authoring;
 }
 
 // The core decides the cardinality rule; a refusal is its structured error.
@@ -1087,47 +1142,233 @@ function validateOwnedMember(
   }
 }
 
-/** @internal Install exact native evidence after every generated model token is linked. */
-export function __installRuntimeProjectionPackage(
-  projectionJson: string,
-  semanticFingerprintJson: string,
-  projectionFingerprintJson: string,
-  tokens: readonly object[],
-  schemaAuthorityJson: string,
+function validateProjectedBatchField(
+  definition: RuntimeModelDefinition,
+  name: string,
+  value: unknown,
 ): void {
-  if (installedProjection !== null) {
-    throw new TypeError("generated runtime projection is already installed");
+  if (value === null) {
+    return;
   }
-  const entries = tokens.map((token) => {
-    const entry = [...runtimeModels.values()].find(
-      (candidate) => candidate.token === token,
-    );
-    if (entry === undefined) {
-      throw new TypeError(
-        "runtime projection registration contains an unknown model token",
-      );
+  const token = (definition.fields as Readonly<Record<string, unknown>>)[name];
+  if (token === null || typeof token !== "object") {
+    throw new TypeError(`native projected wire has no field definition for ${name}`);
+  }
+  const field = fieldTokenStates.get(token);
+  if (field === undefined) {
+    throw new TypeError(`native projected wire has an invalid field token for ${name}`);
+  }
+  const attributeTypeKey = attributeTypeKeys.get(field.attribute);
+  if (attributeTypeKey === undefined) {
+    throw new TypeError(`native projected wire has no attribute model for ${name}`);
+  }
+  const values: readonly unknown[] = Array.isArray(value) ? value : [value];
+  for (const candidate of values) {
+    assertRecord(candidate, name);
+    if (
+      candidate["__typebridgeModel"] !== attributeTypeKey ||
+      candidate["__typebridgeForm"] !== "complete" ||
+      Object.getOwnPropertyDescriptor(candidate, COMPLETE_BRAND)?.value !==
+        attributeTypeKey
+    ) {
+      throw new TypeError(`${name} is not the field's exact attribute value`);
     }
-    return entry;
-  });
-  const authority = installGeneratedSchemaAuthority({
-    schemaAuthorityJson,
-    semanticFingerprintJson,
-  });
-  const projection = installRuntimeProjection({
-    schemaAuthorityJson,
-    projectionJson,
-    semanticFingerprintJson,
-    projectionFingerprintJson,
-    bindings: entries.map(({ token }) => ({
-      typeKey: token.typeKey,
-      targetName: token.name,
-      create: typeof token.create === "function",
-      reference: typeof token.reference === "function",
-    })),
-  });
-  installedProjection = projection;
-  installedQueryAuthority = authority;
+  }
 }
+
+function hydrateProjectedBatchValue(
+  wire: ProjectedWire,
+  expectedTypeKey?: string,
+): object {
+  if (expectedTypeKey !== undefined && wire.typeKey !== expectedTypeKey) {
+    throw new TypeError(
+      "native projected wire returned a different concrete type",
+    );
+  }
+  const definition = runtimeModels.get(wire.typeKey)?.definition;
+  if (definition === undefined) {
+    throw new TypeError(
+      "native projected wire references an unregistered model",
+    );
+  }
+  if (definition.valueType !== null) {
+    if (
+      wire.form !== "complete" ||
+      wire.iid !== null ||
+      wire.value === null ||
+      wire.value.valueType !== definition.valueType ||
+      Object.keys(wire.values).length !== 0
+    ) {
+      throw new TypeError("native attribute wire has an invalid shape");
+    }
+    const scalar = scalarFromWire(wire.value);
+    validateScalar("native projected attribute", scalar, definition.valueType);
+    const result: Record<string | symbol, unknown> = {
+      __typebridgeModel: wire.typeKey,
+      __typebridgeForm: "complete",
+      iid: null,
+      value: scalar,
+    };
+    Object.defineProperty(result, COMPLETE_BRAND, {
+      value: wire.typeKey,
+    });
+    defineDeletedState(result);
+    return Object.freeze(result);
+  }
+  if (wire.value !== null) {
+    throw new TypeError("native thing wire has an invalid scalar value");
+  }
+  const names =
+    wire.form === "complete"
+      ? definition.completeMembers.map((member) => member.name)
+      : definition.referenceKeys;
+  const receivedNames = Object.keys(wire.values);
+  if (
+    receivedNames.length !== names.length ||
+    names.some((name) => !Object.hasOwn(wire.values, name))
+  ) {
+    throw new TypeError("native projected wire has an inexact member set");
+  }
+  const values: Record<string, unknown> = {};
+  for (const name of names) {
+    values[name] = hydrateProjectedBatchMember(wire.values[name]);
+  }
+  if (wire.form === "reference") {
+    if (wire.iid === null) {
+      throw new TypeError("native reference wire has no IID");
+    }
+    for (const name of definition.referenceKeys) {
+      const value = values[name];
+      if (value === null || Array.isArray(value)) {
+        throw new TypeError(`native reference key ${name} is not scalar`);
+      }
+      validateProjectedBatchField(definition, name, value);
+    }
+    const result: Record<string | symbol, unknown> = {
+      __typebridgeModel: wire.typeKey,
+      __typebridgeForm: "reference",
+      iid: new Iid(wire.iid),
+      ...values,
+    };
+    Object.defineProperty(result, REFERENCE_BRAND, {
+      value: wire.typeKey,
+    });
+    defineDeletedState(result);
+    return Object.freeze(result);
+  }
+  if (wire.iid === null) {
+    throw new TypeError("native complete thing wire has no IID");
+  }
+  const result: Record<string | symbol, unknown> = {
+    __typebridgeModel: wire.typeKey,
+    __typebridgeForm: "complete",
+    iid: new Iid(wire.iid),
+  };
+  for (const member of definition.completeMembers) {
+    const value = values[member.name];
+    validateMultiplicity(member.name, value, member.multiplicity);
+    if (member.accepted !== undefined) {
+      validateAccepted(member.name, value, member.accepted);
+    }
+    if (Object.hasOwn(definition.fields, member.name)) {
+      validateProjectedBatchField(definition, member.name, value);
+    }
+    result[member.name] =
+      value === null
+        ? member.multiplicity.container === "sequence"
+          ? Object.freeze([])
+          : null
+        : Array.isArray(value)
+          ? Object.freeze([...value])
+          : value;
+  }
+  Object.defineProperty(result, COMPLETE_BRAND, {
+    value: wire.typeKey,
+  });
+  defineDeletedState(result);
+  return Object.freeze(result);
+}
+
+function hydrateProjectedBatchMember(value: unknown): unknown {
+  if (value === null) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    return Object.freeze(
+      value.map((item) =>
+        hydrateProjectedBatchValue(parseProjectedWire(item)),
+      ),
+    );
+  }
+  return hydrateProjectedBatchValue(parseProjectedWire(value));
+}
+
+function hydrateProjectedBatchWire<Complete>(
+  wire: ProjectedWire,
+  expectedTypeKey: string,
+  rootProof: () => ProjectedFacadeProof,
+  roleProof: (roleName: string, playerIndex: number) => ProjectedFacadeProof,
+): Complete {
+  return retainProjectedProofs(
+    wire,
+    hydrateProjectedBatchValue(wire, expectedTypeKey),
+    rootProof,
+    roleProof,
+  ) as Complete;
+}
+
+function retainProjectedProofs(
+  wire: ProjectedWire,
+  hydrated: unknown,
+  rootProof: () => ProjectedFacadeProof,
+  roleProof: (roleName: string, playerIndex: number) => ProjectedFacadeProof,
+): object {
+  assertRecord(hydrated, "ordered projected hydration");
+  const entry = runtimeModels.get(wire.typeKey);
+  if (entry === undefined || wire.form !== "complete") {
+    throw new TypeError("ordered projected result has no complete root model");
+  }
+  const retained: [object, ProjectedFacadeProof][] = [];
+  for (const member of entry.definition.completeMembers) {
+    if (member.accepted === undefined) continue;
+    const nested = hydrated[member.name];
+    if (nested === undefined || nested === null) continue;
+    const values: readonly unknown[] = Array.isArray(nested) ? nested : [nested];
+    values.forEach((candidate, index) => {
+      assertRecord(candidate, `ordered hydrated role ${member.name}`);
+      retained.push([candidate, roleProof(member.name, index)]);
+    });
+  }
+  retained.push([hydrated, rootProof()]);
+  for (const [facade, proof] of retained) {
+    projectedFacadeProofs.set(facade, proof);
+  }
+  return hydrated;
+}
+
+const materializeProjectedBatch: NonNullable<
+  Parameters<typeof installRuntimeProjection>[0]["projectedBatchMaterializer"]
+> = (typeKey, ordinal, json, authority): object => {
+  const wire = parseProjectedWire(JSON.parse(json) as unknown);
+  return hydrateProjectedBatchWire<object>(
+    wire,
+    typeKey,
+    () => Object.freeze({
+      kind: "root" as const,
+      authority,
+      row: ordinal,
+    }),
+    (roleName, playerIndex) => Object.freeze({
+      kind: "role" as const,
+      authority,
+      row: ordinal,
+      roleName,
+      playerIndex,
+    }),
+  );
+};
+
+/** @internal Install exact native evidence after every generated model token is linked. */
 
 function projectedManager<Complete>(
   typeKey: string,
@@ -1137,143 +1378,45 @@ function projectedManager<Complete>(
   if (projection === null) {
     throw new TypeError("generated runtime projection is not installed");
   }
-  return projectedManagerForNative(
+  return orderedProjectedManagerForNative(
     typeKey,
-    projection.manager(typeKey, connection),
+    projectedManagerNativeCall(() => projection.manager(typeKey, connection)),
   );
 }
 
-function projectedManagerForNative<Complete>(
-  typeKey: string,
-  native: NativeProjectedManager,
-): ProjectedModelManager<Complete> {
-  return Object.freeze({
-    insert(instance: Complete): Complete {
-      const wire = lowerProjectedValue(instance);
-      if (wire.typeKey !== typeKey || wire.form !== "complete") {
-        throw new TypeError(
-          "projected insert requires the manager's exact complete model",
-        );
-      }
-      return hydrateNativeResult(
-        native.insertJson(JSON.stringify(wire)),
-        typeKey,
-      );
-    },
-    insertMany(instances: readonly Complete[]): readonly Complete[] {
-      const wires = lowerManagerBatch(instances, typeKey, "insertMany");
-      return hydrateNativeResults(
-        native.insertManyJson(JSON.stringify(wires)),
-        typeKey,
-      );
-    },
-    put(instance: Complete): Complete {
-      const wire = lowerProjectedValue(instance);
-      if (wire.typeKey !== typeKey || wire.form !== "complete") {
-        throw new TypeError(
-          "projected put requires the manager's exact complete model",
-        );
-      }
-      return hydrateNativeResult(native.putJson(JSON.stringify(wire)), typeKey);
-    },
-    putMany(instances: readonly Complete[]): readonly Complete[] {
-      const wires = lowerManagerBatch(instances, typeKey, "putMany");
-      return hydrateNativeResults(
-        native.putManyJson(JSON.stringify(wires)),
-        typeKey,
-      );
-    },
-    update(iid: string, replacement: Complete): Complete {
-      if (typeof iid !== "string" || iid.length === 0) {
-        throw new TypeError(
-          "projected manager update requires a non-empty TypeDB IID",
-        );
-      }
-      const wire = lowerProjectedValue(replacement);
-      if (wire.typeKey !== typeKey || wire.form !== "complete") {
-        throw new TypeError(
-          "projected update requires the manager's exact complete model",
-        );
-      }
-      return hydrateNativeResult(
-        native.updateJson(iid, JSON.stringify(wire)),
-        typeKey,
-      );
-    },
-    delete(instanceOrIid: Complete | string): void {
-      if (typeof instanceOrIid === "string") {
-        native.deleteByIid(instanceOrIid);
-        return;
-      }
-      const wire = lowerProjectedValue(instanceOrIid);
-      if (wire.typeKey !== typeKey || wire.form !== "complete") {
-        throw new TypeError(
-          "projected delete requires the manager's exact complete model",
-        );
-      }
-      if (wire.iid === null) {
-        throw new TypeError(
-          "projected manager delete requires an attached TypeDB IID",
-        );
-      }
-      native.deleteByIid(wire.iid);
-    },
-    filter(
-      filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
-    ): ProjectedModelManager<Complete> {
-      if (
-        filters === null ||
-        typeof filters !== "object" ||
-        Array.isArray(filters)
-      ) {
-        throw new TypeError(
-          "projected manager filters require a string-keyed object",
-        );
-      }
-      const lowered: Record<string, unknown> = {};
-      for (const [name, value] of Object.entries(filters)) {
-        lowered[name] = lowerManagerFilterValue(value);
-      }
-      return projectedManagerForNative(
-        typeKey,
-        projectedManagerNativeCall(() =>
-          native.filterJson(JSON.stringify(lowered)),
-        ),
-      );
-    },
-    getByIid(iid: string): Complete | null {
-      const value = JSON.parse(native.getByIidJson(iid)) as unknown;
-      if (value === null) {
-        return null;
-      }
-      return hydrateProjectedValue(
-        parseProjectedWire(value),
-        typeKey,
-      ) as Complete;
-    },
-    all(): readonly Complete[] {
-      return hydrateNativeResults(native.allJson(), typeKey);
-    },
-    first(): Complete | null {
-      const value = JSON.parse(native.firstJson()) as unknown;
-      if (value === null) {
-        return null;
-      }
-      return hydrateProjectedValue(
-        parseProjectedWire(value),
-        typeKey,
-      ) as Complete;
-    },
-    count(): bigint {
-      return native.count();
-    },
-    exists(): boolean {
-      return native.exists();
-    },
-  });
+const deletedSnapshotProofs = new WeakMap<object, NativeProjectedValueEnvelope>();
+function snapshotDeleted(value: object): boolean {
+  const envelope = deletedSnapshotProofs.get(value);
+  if (envelope !== undefined) return envelope.deleted;
+  const proof = projectedFacadeProofs.get(value);
+  if (proof === undefined || !("kind" in proof)) return false;
+  return proof.kind === "root" ? projectedBatchDeleted(proof.authority, proof.row)
+    : projectedBatchDeleted(proof.authority, proof.row, proof.roleName, proof.playerIndex);
+}
+
+function defineDeletedState(value: Record<string | symbol, unknown>): void {
+  Object.defineProperty(value, "deleted", { enumerable: true, get: () => snapshotDeleted(value) });
+}
+
+function retainDeletedSnapshot<Complete>(value: Complete, envelope: NativeProjectedValueEnvelope): Complete {
+  assertRecord(value, "deleted snapshot");
+  deletedSnapshotProofs.set(value, envelope);
+  return value;
+}
+
+function requireLiveSnapshot(value: unknown): void {
+  if (value !== null && typeof value === "object" && snapshotDeleted(value)) {
+    throw new TypeError("thing_deleted: a deleted snapshot cannot be mutated");
+  }
+}
+
+function iidText(iid: Iid): string {
+  if (!(iid instanceof Iid)) throw new TypeError("IID arguments require Iid values");
+  return iid.toString();
 }
 
 function lowerManagerFilterValue(value: unknown): unknown {
+  if (value instanceof Iid) return iidText(value);
   if (Array.isArray(value)) {
     return value.map(lowerManagerFilterValue);
   }
@@ -1295,60 +1438,9 @@ function lowerManagerFilterValue(value: unknown): unknown {
   );
 }
 
-function lowerManagerBatch<Complete>(
-  instances: readonly Complete[],
-  typeKey: string,
-  operation: string,
-): readonly ProjectedWire[] {
-  if (!Array.isArray(instances)) {
-    throw new TypeError(`projected manager ${operation} requires an array`);
-  }
-  return instances.map((instance) => {
-    const wire = lowerProjectedValue(instance);
-    if (wire.typeKey !== typeKey || wire.form !== "complete") {
-      throw new TypeError(
-        `projected ${operation} requires the manager's exact complete model`,
-      );
-    }
-    return wire;
-  });
-}
-
 function isProjectedModelValue(value: unknown): value is object {
   return (
     typeof value === "object" && value !== null && "__typebridgeModel" in value
-  );
-}
-
-function hydrateNativeResult<Complete>(
-  json: string,
-  expectedTypeKey: string,
-): Complete {
-  const value = JSON.parse(json) as unknown;
-  return hydrateProjectedValue(
-    parseProjectedWire(value),
-    expectedTypeKey,
-  ) as Complete;
-}
-
-function hydrateNativeResults<Complete>(
-  json: string,
-  expectedTypeKey: string,
-): readonly Complete[] {
-  const values = JSON.parse(json) as unknown;
-  if (!Array.isArray(values)) {
-    throw new TypeError(
-      "native projected manager returned a non-sequence result",
-    );
-  }
-  return Object.freeze(
-    values.map(
-      (value) =>
-        hydrateProjectedValue(
-          parseProjectedWire(value),
-          expectedTypeKey,
-        ) as Complete,
-    ),
   );
 }
 
@@ -1384,10 +1476,8 @@ function lowerProjectedValue(value: unknown): ProjectedWire {
       "reference value does not carry the generated nominal brand",
     );
   }
-  const iid = value["iid"];
-  if (iid !== null && (typeof iid !== "string" || iid.length === 0)) {
-    throw new TypeError("projected IID must be null or a non-empty string");
-  }
+  const identity = value["iid"];
+  const iid = identity === null ? null : iidText(identity as Iid);
   if (entry.definition.valueType !== null) {
     if (form !== "complete") {
       throw new TypeError("attribute values cannot use a reference projection");
@@ -1550,7 +1640,7 @@ function hydrateProjectedValue(
       "native reference wire has no IID or reference factory",
     );
   }
-  return entry.token.reference(wire.iid, values);
+  return entry.token.reference(wire.iid === null ? null : new Iid(wire.iid), values);
 }
 
 function hydrateMemberValue(value: unknown): unknown {
@@ -1680,22 +1770,22 @@ export interface BoundField<Value> {
   gtField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate;
-  gte(value: Value | BoundField<Value>): Predicate;
-  gteField<Other extends { readonly value: AttributeDomain<Value> }>(
+  ge(value: Value | BoundField<Value>): Predicate;
+  geField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate;
   lt(value: Value | BoundField<Value>): Predicate;
   ltField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate;
-  lte(value: Value | BoundField<Value>): Predicate;
-  lteField<Other extends { readonly value: AttributeDomain<Value> }>(
+  le(value: Value | BoundField<Value>): Predicate;
+  leField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate;
   contains(value: Value): Predicate;
   startsWith(value: Value): Predicate;
   endsWith(value: Value): Predicate;
-  regex(value: Value): Predicate;
+  like(value: Value): Predicate;
   isPresent(): Predicate;
   isMissing(): Predicate;
   asc(missing?: "reject" | "first" | "last"): QueryOrder;
@@ -1715,11 +1805,7 @@ export interface BoundRole<
     player: Player,
     subtypeRoot: SubtypeRoot,
   ) => readonly [Player, SubtypeRoot];
-  connects<Actual extends object, Mode extends QueryMatchMode>(
-    player: BoundVar<Actual, Mode> &
-      RoleBindingCompatibility<Actual, Mode, Player, SubtypeRoot>,
-  ): Predicate;
-  is<Actual extends object, Mode extends QueryMatchMode>(
+  links<Actual extends object, Mode extends QueryMatchMode>(
     player: BoundVar<Actual, Mode> &
       RoleBindingCompatibility<Actual, Mode, Player, SubtypeRoot>,
   ): Predicate;
@@ -1744,8 +1830,8 @@ export interface BoundVar<
     token: RoleToken<Owner, Role, Player, SubtypeRoot> &
       (Owner extends ModelTypeKey<Model> ? object : never),
   ): BoundRole<Player, SubtypeRoot>;
-  iid(iid: string): Predicate;
-  iidIn(iids: readonly string[]): Predicate;
+  iid(iid: Iid): Predicate;
+  iidIn(iids: readonly Iid[]): Predicate;
   collect(): Collected<Model>;
 }
 
@@ -1754,11 +1840,11 @@ export interface Collected<in out Model extends object> extends Selection<
   readonly Model[]
 > {
   distinct(distinct?: boolean): Collected<Model>;
-  orderBy(order: QueryOrder): Collected<Model>;
+  sort(order: QueryOrder): Collected<Model>;
 }
 
 export interface RowsOptions {
-  readonly orderBy?: readonly QueryOrder[];
+  readonly sort?: readonly QueryOrder[];
   readonly offset?: bigint;
   readonly limit: bigint;
 }
@@ -1776,7 +1862,7 @@ export interface Page<out Item> {
 }
 
 export interface FirstOptions {
-  readonly orderBy?: readonly QueryOrder[];
+  readonly sort?: readonly QueryOrder[];
 }
 
 type AttributeScalar<Value> = Value extends { readonly value: infer Scalar }
@@ -2012,6 +2098,103 @@ function requireProjection(): InstalledRuntimeProjection {
   return installedProjection;
 }
 
+const planDefinitions = new WeakMap<object, PlanModelAuthoring<unknown>>();
+
+function encodePlanScalar(kind: ScalarValueType | "iid", value: unknown): unknown {
+  if (kind === "iid") {
+    iidText(value as Iid);
+    return value;
+  }
+  const wire = scalarToWire(kind, value);
+  return kind === "long" || kind === "double" ? value : wire.value;
+}
+
+/** @internal Reuse the installed model's identities and scalar codec. */
+function hydrateAuthoredPlanModel<Model>(envelope: NativeProjectedValueEnvelope): Model {
+  const wire = parseProjectedWire(JSON.parse(envelope.json) as unknown);
+  const value = hydrateProjectedBatchWire<Model>(wire, wire.typeKey, () => envelope.rootProof(), (role, index) => envelope.roleProof(role, index));
+  return retainDeletedSnapshot(value, envelope);
+}
+
+export function planDefinition<Model>(token: object): PlanModelAuthoring<Model> {
+  const cached = planDefinitions.get(token);
+  if (cached !== undefined) return cached as PlanModelAuthoring<Model>;
+  const entry = [...runtimeModels.values()].find((entry) => entry.token === token);
+  if (entry === undefined) throw new TypeError("plan model is not registered by this package");
+  const fields: Record<string, PlanModelAuthoring<Model>["fields"][string]> = {};
+  for (const [name, issued] of Object.entries(entry.definition.fields) as [string, object][]) {
+    const field = fieldTokenStates.get(issued);
+    if (field === undefined) throw new TypeError("plan field is not issued by this package");
+    const label: unknown = JSON.parse(field.attribute);
+    if (typeof label !== "string") throw new TypeError("plan field has no attribute identity");
+    const kind = runtimeModels.get(JSON.stringify({ kind: "attribute", label }))?.definition.valueType;
+    if (kind === undefined || kind === null) throw new TypeError("plan field has no scalar domain");
+    fields[name] = { token: issued as FieldToken<string, string, unknown>, kind, site: label, encode: (value) => encodePlanScalar(kind, value) };
+  }
+  const roles = (Object.entries(entry.definition.roles) as [string, object][]).map(([name, issued]) => {
+    const role = roleTokenStates.get(issued);
+    if (role === undefined) throw new TypeError("plan role is not issued by this package");
+    return { name, token: issued as RoleToken<string, string, unknown>, role: role.role, required: false };
+  });
+  const definition: PlanModelAuthoring<Model> = {
+    model: entry.token,
+    projection: requireProjection,
+    isFieldToken: (token) => fieldTokenStates.has(token),
+    fields,
+    roles,
+    authority: () => {
+      if (installedQueryAuthority === null) throw new TypeError("generated schema authority is not installed");
+      return installedQueryAuthority;
+    },
+    decode: (_plan, _json, projection) => {
+      if (projection?.models === undefined || projection.models === null) throw new TypeError("model results require the core's committed projection proof");
+      return projection.models.map((envelope) => hydrateAuthoredPlanModel<Model>(envelope));
+    },
+    decodeRows: (projection) => {
+      if (projection.rows === undefined || projection.rows === null) throw new TypeError("model tuples require the core's committed projection proof");
+      return projection.rows.map((row) => row.map((cell) => {
+        if (cell.model !== undefined && cell.model !== null) return hydrateAuthoredPlanModel(cell.model);
+        if (cell.scalar !== undefined && cell.scalar !== null) return scalarFromWire(JSON.parse(cell.scalar) as ScalarWire);
+        throw new TypeError("the core projection returned no tuple cell");
+      }));
+    },
+    decodeScalars: (plan, json) => (JSON.parse(plan.scalarRowsJson(json)) as ScalarWire[][]).map((row) => row.map(scalarFromWire)),
+    encodeScalar: encodePlanScalar,
+  };
+  planDefinitions.set(token, definition);
+  return definition;
+}
+
+/** @internal Resolve the two generated match overloads without schema inference. */
+export function planModelMatch<Model, H extends PlanHandle<Model>>(
+  definition: PlanModelAuthoring<Model>,
+  HandleClass: new (recording: ConstructorParameters<typeof PlanHandle<Model>>[0], thing: ConstructorParameters<typeof PlanHandle<Model>>[1], definition: PlanModelAuthoring<Model>) => H,
+  key: string | null,
+  input: unknown,
+  subtypes: boolean,
+): H {
+  if (input === undefined) return planMatch(definition, HandleClass, {}, { subtypes });
+  if (input !== null && typeof input === "object" && !(input instanceof Date) && !(input instanceof PlanInput) && !(input instanceof PlanValue)) {
+    assertRecord(input, "plan match fields");
+    return planMatch(definition, HandleClass, input, { subtypes });
+  }
+  if (key === null) throw new TypeError("this model requires named match fields");
+  return planMatch(definition, HandleClass, {}, { subtypes, key: [key, input] });
+}
+
+/** @internal Separate scalar ownership inputs from nominal role handles. */
+export function planModelInsert<Model>(definition: PlanModelAuthoring<Model>, input: object, put: boolean): Plan<Model[]> {
+  assertRecord(input, "plan insert fields and players");
+  const fields: Record<string, unknown> = {};
+  const players: Record<string, PlanHandle<unknown> | readonly PlanHandle<unknown>[] | undefined> = {};
+  for (const [name, value] of Object.entries(input)) {
+    if (Object.hasOwn(definition.fields, name)) fields[name] = value;
+    else if (definition.roles.some((role) => role.name === name)) players[name] = value as PlanHandle<unknown> | readonly PlanHandle<unknown>[] | undefined;
+    else throw new TypeError(`unknown plan member ${name}`);
+  }
+  return planInsert(definition, fields, players, put);
+}
+
 /** Compose exact-package canonical records into one deterministic archive. */
 export function encodeArchive(records: readonly Uint8Array[]): Uint8Array {
   return requireProjection().encodeArchive(records);
@@ -2050,6 +2233,7 @@ export interface DirectConnectionPolicyOptions {
   readonly tlsRootCa?: string;
   readonly connectionLimits?: QueryExecutionResourceLimits;
   readonly answerLimits?: QueryExecutionResourceLimits;
+  readonly queryLimits?: QueryLimits;
 }
 
 /** Immutable package-owned direct connection policy with redacted credentials. */
@@ -2063,6 +2247,7 @@ export class DirectConnectionPolicy {
   readonly #tlsRootCa: string | undefined;
   readonly #connectionLimits: QueryExecutionResourceLimits | undefined;
   readonly #answerLimits: QueryExecutionResourceLimits | undefined;
+  readonly #queryLimits: QueryLimits | undefined;
 
   constructor(
     endpoint: string,
@@ -2078,6 +2263,7 @@ export class DirectConnectionPolicy {
     this.#tlsRootCa = options.tlsRootCa;
     this.#connectionLimits = options.connectionLimits;
     this.#answerLimits = options.answerLimits;
+    this.#queryLimits = options.queryLimits;
     Object.freeze(this);
   }
 
@@ -2085,7 +2271,7 @@ export class DirectConnectionPolicy {
   __connect(
     projection: InstalledRuntimeProjection,
     cancellation?: QueryCancellation,
-  ): RustDatabase {
+  ): Database {
     return projection.connectDirect({
       endpoint: this.endpoint,
       database: this.database,
@@ -2100,6 +2286,7 @@ export class DirectConnectionPolicy {
       ...(this.#answerLimits === undefined
         ? {}
         : { answerLimits: this.#answerLimits }),
+      ...(this.#queryLimits === undefined ? {} : { queryLimits: this.#queryLimits }),
       ...(cancellation === undefined ? {} : { cancellation }),
     });
   }
@@ -2113,14 +2300,14 @@ export class DirectConnectionPolicy {
 export function connect(
   policy: DirectConnectionPolicy,
   cancellation?: QueryCancellation,
-): RustDatabase {
+): Database {
   if (!(policy instanceof DirectConnectionPolicy)) {
     throw new TypeError("connect requires this generated package's DirectConnectionPolicy");
   }
   return policy.__connect(requireProjection(), cancellation);
 }
 
-function requireQueryAuthority(): QueryV2Authority {
+function requireQueryAuthority(): PlanAuthority {
   if (installedQueryAuthority === null) {
     throw new TypeError("generated schema authority is not installed");
   }
@@ -2234,10 +2421,10 @@ class BoundFieldValue<Value> implements BoundField<Value> {
   ): Predicate {
     return this.#compareField("greater_than", field);
   }
-  gte(value: Value | BoundField<Value>): Predicate {
+  ge(value: Value | BoundField<Value>): Predicate {
     return this.#compare("greater_than_or_equal", value);
   }
-  gteField<Other extends { readonly value: AttributeDomain<Value> }>(
+  geField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate {
     return this.#compareField("greater_than_or_equal", field);
@@ -2250,10 +2437,10 @@ class BoundFieldValue<Value> implements BoundField<Value> {
   ): Predicate {
     return this.#compareField("less_than", field);
   }
-  lte(value: Value | BoundField<Value>): Predicate {
+  le(value: Value | BoundField<Value>): Predicate {
     return this.#compare("less_than_or_equal", value);
   }
-  lteField<Other extends { readonly value: AttributeDomain<Value> }>(
+  leField<Other extends { readonly value: AttributeDomain<Value> }>(
     field: BoundField<Other>,
   ): Predicate {
     return this.#compareField("less_than_or_equal", field);
@@ -2267,7 +2454,7 @@ class BoundFieldValue<Value> implements BoundField<Value> {
   endsWith(value: Value): Predicate {
     return this.#compare("ends_with", value);
   }
-  regex(value: Value): Predicate {
+  like(value: Value): Predicate {
     return this.#compare("regex", value);
   }
   isPresent(): Predicate {
@@ -2387,7 +2574,7 @@ class BoundRoleValue<
     Object.freeze(this);
   }
 
-  connects<Actual extends object, Mode extends QueryMatchMode>(
+  links<Actual extends object, Mode extends QueryMatchMode>(
     player: BoundVar<Actual, Mode> &
       RoleBindingCompatibility<Actual, Mode, Player, SubtypeRoot>,
   ): Predicate {
@@ -2409,12 +2596,6 @@ class BoundRoleValue<
     );
   }
 
-  is<Actual extends object, Mode extends QueryMatchMode>(
-    player: BoundVar<Actual, Mode> &
-      RoleBindingCompatibility<Actual, Mode, Player, SubtypeRoot>,
-  ): Predicate {
-    return this.connects(player);
-  }
 }
 
 class BoundVarValue<
@@ -2478,14 +2659,14 @@ class BoundVarValue<
     });
   }
 
-  iid(iid: string): Predicate {
+  iid(iid: Iid): Predicate {
     const own = boundVarState(this);
-    return new PredicateValue(own.binding.iid(iid), own.projection);
+    return new PredicateValue(own.binding.iid(iidText(iid)), own.projection);
   }
 
-  iidIn(iids: readonly string[]): Predicate {
+  iidIn(iids: readonly Iid[]): Predicate {
     const own = boundVarState(this);
-    return new PredicateValue(own.binding.iidIn([...iids]), own.projection);
+    return new PredicateValue(own.binding.iidIn(iids.map(iidText)), own.projection);
   }
 
   collect(): Collected<Model> {
@@ -2514,7 +2695,7 @@ class CollectedValue<Model extends object> implements Collected<Model> {
     });
   }
 
-  orderBy(order: QueryOrder): Collected<Model> {
+  sort(order: QueryOrder): Collected<Model> {
     const own = selectionState(this);
     const term = orderState(order);
     requireSameProjection(own.projection, term.projection, "generated order");
@@ -2529,7 +2710,7 @@ interface QueryState {
   readonly handle: RuntimeProjectionMatchQuery;
   readonly projection: InstalledRuntimeProjection;
   /** The session's executor, chosen once from its connection kind. */
-  readonly executor: RuntimeProjectionRemote;
+  readonly executor: RuntimeProjectionRemote<RuntimeProjectionQueryResult>;
 }
 const queryStates = new WeakMap<object, QueryState>();
 
@@ -2537,7 +2718,7 @@ const queryStates = new WeakMap<object, QueryState>();
  * Immutable generated query. Composition is synchronous; every terminal
  * returns a promise on every connection kind.
  */
-export class Query<out Output> {
+export class Query<out Output, Connection extends QueryConnection = DirectQueryConnection> {
   private constructor(state: QueryState) {
     queryStates.set(this, state);
     Object.freeze(this);
@@ -2554,14 +2735,14 @@ export class Query<out Output> {
   }
 
   /** Create an independently closable value-equivalent query. */
-  clone(): Query<Output> {
+  clone(): Query<Output, Connection> {
     const state = queryState(this);
-    return createQuery({ ...state, handle: state.handle.fork() });
+    return createQuery<Output, Connection>({ ...state, handle: state.handle.fork() });
   }
 
   match<const Models extends readonly [object, ...object[]]>(
     ...bindings: { readonly [Index in keyof Models]: BoundVar<Models[Index]> }
-  ): Query<Output> {
+  ): Query<Output, Connection> {
     const state = queryState(this);
     let handle = state.handle;
     for (const binding of bindings) {
@@ -2573,10 +2754,10 @@ export class Query<out Output> {
       );
       handle = handle.addHidden(item.binding);
     }
-    return createQuery({ ...state, handle });
+    return createQuery<Output, Connection>({ ...state, handle });
   }
 
-  where(...predicates: readonly [Predicate, ...Predicate[]]): Query<Output> {
+  where(...predicates: readonly [Predicate, ...Predicate[]]): Query<Output, Connection> {
     const state = queryState(this);
     let handle = state.handle;
     for (const predicate of predicates) {
@@ -2588,13 +2769,13 @@ export class Query<out Output> {
       );
       handle = handle.wherePredicate(item.handle);
     }
-    return createQuery({ ...state, handle });
+    return createQuery<Output, Connection>({ ...state, handle });
   }
 
   allowCrossJoin<Left extends object, Right extends object>(
     left: BoundVar<Left>,
     right: BoundVar<Right>,
-  ): Query<Output> {
+  ): Query<Output, Connection> {
     const state = queryState(this);
     const leftState = boundVarState(left);
     const rightState = boundVarState(right);
@@ -2608,7 +2789,7 @@ export class Query<out Output> {
       rightState.projection,
       "generated binding",
     );
-    return createQuery({
+    return createQuery<Output, Connection>({
       ...state,
       handle: state.handle.allowCrossJoin(
         leftState.binding,
@@ -2617,7 +2798,7 @@ export class Query<out Output> {
     });
   }
 
-  async one(): Promise<Output> {
+  async one(): Promise<QueryResult<Connection, Output>> {
     const state = queryState(this);
     const result = await state.executor.rows(
       state.handle,
@@ -2626,37 +2807,37 @@ export class Query<out Output> {
       1n,
       "exactly_one",
     );
-    return materializeRows(state, result)[0] as Output;
+    return decodeQueryResult<Connection, Output>(state, result, decodeOne);
   }
 
-  async first(options: FirstOptions = {}): Promise<Output | null> {
+  async first(options: FirstOptions = {}): Promise<QueryResult<Connection, Output | null>> {
     const state = queryState(this);
     const result = await state.executor.rows(
       state.handle,
-      nativeOrders(options.orderBy ?? [], state.projection),
+      nativeOrders(options.sort ?? [], state.projection),
       0n,
       1n,
       "bounded_many",
     );
-    return (materializeRows(state, result)[0] as Output | undefined) ?? null;
+    return decodeQueryResult<Connection, Output | null>(state, result, decodeFirst);
   }
 
-  async rows(options: RowsOptions): Promise<readonly Output[]> {
+  async rows(options: RowsOptions): Promise<QueryResult<Connection, readonly Output[]>> {
     const state = queryState(this);
     const result = await state.executor.rows(
       state.handle,
-      nativeOrders(options.orderBy ?? [], state.projection),
+      nativeOrders(options.sort ?? [], state.projection),
       options.offset ?? 0n,
       options.limit,
       "bounded_many",
     );
-    return Object.freeze(materializeRows(state, result)) as readonly Output[];
+    return decodeQueryResult<Connection, readonly Output[]>(state, result, decodeRows);
   }
 
   async pageBy<Root extends object>(
     root: BoundVar<Root>,
     options: PageOptions,
-  ): Promise<Page<Output>> {
+  ): Promise<QueryResult<Connection, Page<Output>>> {
     const state = queryState(this);
     const rootState = boundVarState(root);
     requireSameProjection(
@@ -2667,22 +2848,15 @@ export class Query<out Output> {
     const result = await state.executor.page(
       state.handle,
       rootState.binding,
-      nativeOrders(options.orderBy ?? [], state.projection),
+      nativeOrders(options.sort ?? [], state.projection),
       options.offset ?? 0n,
       options.limit,
       options.includeTotal ?? false,
     );
-    return Object.freeze({
-      items: Object.freeze(
-        materializePageRows(state, result),
-      ) as readonly Output[],
-      offset: result.pageOffset(state.handle),
-      limit: result.pageLimit(state.handle),
-      total: result.pageTotal(state.handle),
-    });
+return decodeQueryResult<Connection, Page<Output>>(state, result, decodePage);
   }
 
-  async countBy<Root extends object>(root: BoundVar<Root>): Promise<bigint> {
+  async countBy<Root extends object>(root: BoundVar<Root>): Promise<QueryResult<Connection, bigint>> {
     const state = queryState(this);
     const item = boundVarState(root);
     requireSameProjection(
@@ -2691,10 +2865,10 @@ export class Query<out Output> {
       "generated count root",
     );
     const result = await state.executor.count(state.handle, item.binding);
-    return result.countValue(state.handle);
+    return decodeQueryResult<Connection, bigint>(state, result, decodeCount);
   }
 
-  async existsBy<Root extends object>(root: BoundVar<Root>): Promise<boolean> {
+  async existsBy<Root extends object>(root: BoundVar<Root>): Promise<QueryResult<Connection, boolean>> {
     const state = queryState(this);
     const item = boundVarState(root);
     requireSameProjection(
@@ -2703,16 +2877,16 @@ export class Query<out Output> {
       "generated exists root",
     );
     const result = await state.executor.exists(state.handle, item.binding);
-    return result.existsValue(state.handle);
+    return decodeQueryResult<Connection, boolean>(state, result, decodeExists);
   }
 
-  async aggregate<
+  async reduce<
     Root extends object,
     const Terms extends readonly [Aggregate<unknown>, ...Aggregate<unknown>[]],
   >(
     root: BoundVar<Root>,
     terms: Terms & AtMostSixteen<Terms>,
-  ): Promise<AggregateOutputs<Terms>> {
+  ): Promise<QueryResult<Connection, AggregateOutputs<Terms>>> {
     const state = queryState(this);
     const rootState = boundVarState(root);
     requireSameProjection(
@@ -2728,21 +2902,17 @@ export class Query<out Output> {
       prepared.reducers,
       prepared.inputs,
     );
-    return materializeUngroupedReduction(
-      state,
-      result,
-      prepared.outputs,
-    ) as AggregateOutputs<Terms>;
+    return decodeQueryResult<Connection, AggregateOutputs<Terms>>(state, result, (state, result) => materializeUngroupedReduction(state, result, prepared.outputs) as AggregateOutputs<Terms>);
   }
 
   groupBy<Root extends object, Group extends object>(
     root: BoundVar<Root>,
     group: BoundVar<Group>,
-  ): GroupedQuery<Group>;
+  ): GroupedQuery<Group, Connection>;
   groupBy<Root extends object, Group extends object>(
     root: BoundVar<Root>,
     group: BoundField<Group>,
-  ): GroupedQuery<Group>;
+  ): GroupedQuery<Group, Connection>;
   groupBy<
     Root extends object,
     const Groups extends readonly [object, object, ...object[]],
@@ -2751,11 +2921,11 @@ export class Query<out Output> {
     ...groups: AtMostSixteen<{
       readonly [Index in keyof Groups]: BoundField<Groups[Index]>;
     }>
-  ): GroupedQuery<Groups>;
+  ): GroupedQuery<Groups, Connection>;
   groupBy<Root extends object>(
     root: BoundVar<Root>,
     ...groups: readonly object[]
-  ): GroupedQuery<object> {
+  ): GroupedQuery<object, Connection> {
     const state = queryState(this);
     const rootState = boundVarState(root);
     requireSameProjection(
@@ -2764,14 +2934,14 @@ export class Query<out Output> {
       "generated aggregate root",
     );
     const group = runtimeReductionGroup(groups, state.projection);
-    // The core refuses too many group fields here, not at aggregate().
+    // The core refuses too many group fields here, not at reduce().
     if (group.kind !== "binding") {
       const fields =
         group.kind === "field" ? [group.handle] : [...group.handles];
       coreCall(() => state.handle.checkGroupFields(fields));
     }
-    return createGroupedQuery<object>(
-      createQuery({ ...state, handle: state.handle.fork() }),
+    return createGroupedQuery<object, Connection>(
+      createQuery<Output, Connection>({ ...state, handle: state.handle.fork() }),
       rootState.binding,
       group,
     );
@@ -2841,14 +3011,14 @@ function runtimeReductionGroup(
 }
 
 interface GroupedQueryState {
-  readonly query: Query<unknown>;
+  readonly query: Query<unknown, QueryConnection>;
   readonly root: RuntimeProjectionMatchBinding;
   readonly group: RuntimeReductionGroup;
 }
 const groupedQueryStates = new WeakMap<object, GroupedQueryState>();
 
 /** Immutable generated grouped-reduction query. */
-export class GroupedQuery<out Group extends object> {
+export class GroupedQuery<out Group extends object, Connection extends QueryConnection = DirectQueryConnection> {
   private constructor(state: GroupedQueryState) {
     groupedQueryStates.set(this, Object.freeze(state));
     Object.freeze(this);
@@ -2863,20 +3033,20 @@ export class GroupedQuery<out Group extends object> {
 
   match<const Models extends readonly [object, ...object[]]>(
     ...bindings: { readonly [Index in keyof Models]: BoundVar<Models[Index]> }
-  ): GroupedQuery<Group> {
+  ): GroupedQuery<Group, Connection> {
     const state = groupedQueryState(this);
     let query = state.query;
     for (const binding of bindings) {
       query = query.match(binding);
     }
-    return createGroupedQuery(query, state.root, state.group);
+    return createGroupedQuery<Group, Connection>(query, state.root, state.group);
   }
 
   where(
     ...predicates: readonly [Predicate, ...Predicate[]]
-  ): GroupedQuery<Group> {
+  ): GroupedQuery<Group, Connection> {
     const state = groupedQueryState(this);
-    return createGroupedQuery(
+    return createGroupedQuery<Group, Connection>(
       state.query.where(...predicates),
       state.root,
       state.group,
@@ -2886,20 +3056,20 @@ export class GroupedQuery<out Group extends object> {
   allowCrossJoin<Left extends object, Right extends object>(
     left: BoundVar<Left>,
     right: BoundVar<Right>,
-  ): GroupedQuery<Group> {
+  ): GroupedQuery<Group, Connection> {
     const state = groupedQueryState(this);
-    return createGroupedQuery(
+    return createGroupedQuery<Group, Connection>(
       state.query.allowCrossJoin(left, right),
       state.root,
       state.group,
     );
   }
 
-  async aggregate<
+  async reduce<
     const Terms extends readonly [Aggregate<unknown>, ...Aggregate<unknown>[]],
   >(
     terms: Terms & AtMostSixteen<Terms>,
-  ): Promise<readonly (readonly [Group, AggregateOutputs<Terms>])[]> {
+  ): Promise<QueryResult<Connection, readonly (readonly [Group, AggregateOutputs<Terms>])[]>> {
     const grouped = groupedQueryState(this);
     const state = queryState(grouped.query);
     const prepared = prepareAggregateTerms(terms, state.projection);
@@ -2927,12 +3097,7 @@ export class GroupedQuery<out Group extends object> {
               prepared.reducers,
               prepared.inputs,
             );
-    return materializeGroupedReduction(
-      state,
-      result,
-      grouped.group,
-      prepared.outputs,
-    ) as readonly (readonly [Group, AggregateOutputs<Terms>])[];
+    return decodeQueryResult<Connection, readonly (readonly [Group, AggregateOutputs<Terms>])[]>(state, result, (state, result) => materializeGroupedReduction(state, result, grouped.group, prepared.outputs) as readonly (readonly [Group, AggregateOutputs<Terms>])[]);
   }
 }
 
@@ -2992,10 +3157,13 @@ export class ExchangeConnection {
 }
 
 /** Every connection a {@link QuerySession} runs on. */
-export type QueryConnection =
+export type DirectQueryConnection =
   | RuntimeProjectionConnection
   | ProxyConnection
   | ExchangeConnection;
+
+export type QueryConnection = DirectQueryConnection | StagedTransaction;
+type QueryResult<Connection, Output> = Connection extends StagedTransaction ? Pending<Output> : Output;
 
 /**
  * Open a connection to a TypeBridge server's HTTP routes for this package.
@@ -3018,7 +3186,10 @@ function queryExecutor(
   connection: QueryConnection,
   resources: QueryExecutionResourceLimits,
   cancellation: QueryCancellation,
-): RuntimeProjectionRemote {
+): RuntimeProjectionRemote<RuntimeProjectionQueryResult> {
+  if (connection instanceof StagedTransaction) {
+    return projection.staged(connection);
+  }
   if (connection instanceof ExchangeConnection) {
     return projection.remote(
       requireQueryAuthority(),
@@ -3034,7 +3205,7 @@ function queryExecutor(
   }
   if (typeof connection !== "object" || connection === null) {
     throw new TypeError(
-      "generated QuerySession requires a RustDatabase, RustTransactionContext, ProxyConnection, or ExchangeConnection",
+      "generated QuerySession requires a Database, TransactionContext, ProxyConnection, or ExchangeConnection",
     );
   }
   return projection.direct(connection);
@@ -3043,18 +3214,18 @@ function queryExecutor(
 /**
  * Author and run queries over one connection.
  *
- * The connection is a direct `RustDatabase` or transaction, a
+ * The connection is a direct `Database` or transaction, a
  * `ProxyConnection` from `connectProxy`, or an `ExchangeConnection`. The
  * session, its queries, and their results are the same on every kind;
  * terminals return promises on all of them.
  */
-export class QuerySession {
-  readonly #executor: RuntimeProjectionRemote;
+export class QuerySession<Connection extends QueryConnection = DirectQueryConnection> {
+  readonly #executor: RuntimeProjectionRemote<RuntimeProjectionQueryResult>;
   readonly #projection: InstalledRuntimeProjection;
   readonly #session: RuntimeProjectionMatchSession;
 
   constructor(
-    connection: QueryConnection,
+    connection: Connection,
     options: Readonly<{
       resources?: QueryExecutionResourceLimits;
       cancellation?: QueryCancellation;
@@ -3292,12 +3463,12 @@ export class QuerySession {
     ],
   >(
     ...selections: Selections & AtMostSixteen<Selections>
-  ): Query<PositionalOutput<Selections>> {
+  ): Query<PositionalOutput<Selections>, Connection> {
     const states = querySelections(selections, this.#projection);
     const shape = coreCall(() =>
       this.#session.positional(states.map((state) => state.handle)),
     );
-    return createQuery({
+    return createQuery<PositionalOutput<Selections>, Connection>({
       handle: this.#session.query(shape),
       projection: this.#projection,
       executor: this.#executor,
@@ -3306,7 +3477,7 @@ export class QuerySession {
 
   queryNamed<const Shape extends Readonly<Record<string, Selection<unknown>>>>(
     selections: NamedSelectionInput<Shape>,
-  ): Query<NamedOutput<Shape>> {
+  ): Query<NamedOutput<Shape>, Connection> {
     const entries = Object.entries(selections) as [
       string,
       Selection<unknown>,
@@ -3321,7 +3492,7 @@ export class QuerySession {
         states.map((state) => state.handle),
       ),
     );
-    return createQuery({
+    return createQuery<NamedOutput<Shape>, Connection>({
       handle: this.#session.query(shape),
       projection: this.#projection,
       executor: this.#executor,
@@ -3329,85 +3500,44 @@ export class QuerySession {
   }
 }
 
-// Deprecated 2.2 remote-session names, removed in 3.0. Each builds the 2.3
-// type it names; none adds behaviour.
-
-/** @deprecated Use {@link Query}; removed in 3.0. */
-export type RemoteQuery<Output> = Query<Output>;
-/** @deprecated Use {@link Query}; removed in 3.0. */
-export const RemoteQuery = Query;
-
-/** @deprecated Use {@link GroupedQuery}; removed in 3.0. */
-export type RemoteGroupedQuery<Group extends object> = GroupedQuery<Group>;
-/** @deprecated Use {@link GroupedQuery}; removed in 3.0. */
-export const RemoteGroupedQuery = GroupedQuery;
-
-/**
- * @deprecated Use the `exchange` parameter type of {@link ExchangeConnection};
- * removed in 3.0.
- */
-export type RemoteQueryExchange = RuntimeProjectionRemoteExchange;
-
-/**
- * @deprecated Use {@link QueryExecutionResourceLimits}; removed in 3.0. The
- * 2.2 field shape, converted to `QueryExecutionResourceLimits` by
- * {@link RemoteQuerySession}; `deadlineMs` left out takes the default
- * timeout.
- */
-export type RemoteQueryLimits =
-  | Readonly<{
-      maxItems: bigint;
-      maxBytes: bigint;
-      maxCollectionMembers: bigint;
-      maxGraphNodes: bigint;
-      maxAttributeValues: bigint;
-      maxRolePlayers: bigint;
-      deadlineMs?: bigint | null;
-    }>
-  | QueryExecutionResourceLimits;
-
-/**
- * @deprecated Use
- * `new QuerySession(new ExchangeConnection(advertisement, exchange), { resources })`;
- * removed in 3.0.
- */
-export class RemoteQuerySession extends QuerySession {
-  constructor(
-    advertisement: Uint8Array,
-    exchange: RemoteQueryExchange,
-    limits: RemoteQueryLimits,
-    cancellation?: QueryCancellation,
-  ) {
-    const resources =
-      limits instanceof QueryExecutionResourceLimits
-        ? limits
-        : new QueryExecutionResourceLimits({
-            ...(limits.deadlineMs === undefined || limits.deadlineMs === null
-              ? {}
-              : { timeoutMilliseconds: limits.deadlineMs }),
-            items: limits.maxItems,
-            bytes: limits.maxBytes,
-            collectionMembers: limits.maxCollectionMembers,
-            graphNodes: limits.maxGraphNodes,
-            attributeValues: limits.maxAttributeValues,
-            rolePlayers: limits.maxRolePlayers,
-          });
-    super(new ExchangeConnection(advertisement, exchange), {
-      resources,
-      ...(cancellation === undefined ? {} : { cancellation }),
-    });
-  }
-}
-
-/** Run a native composition call; a core refusal surfaces as `QueryV2Error`. */
+/** Run a native composition call; a core refusal surfaces as `PlanError`. */
 function coreCall<Result>(operation: () => Result): Result {
   return projectedManagerNativeCall(operation);
 }
 
-function createQuery<Output>(state: QueryState): Query<Output> {
+function decodeQueryResult<Connection, Output>(
+  state: QueryState,
+  result: RuntimeProjectionQueryResult,
+  decode: (state: QueryState, result: RuntimeProjectionMatchResult) => Output,
+): QueryResult<Connection, Output> {
+  const value = "getQueryResult" in result
+    ? new Pending<Output>(result, (_json, _projection, typed) => {
+        if (typed === undefined) throw new Error("typed query pending has no validated proof");
+        return decode(state, typed);
+      }, true)
+    : decode(state, result);
+  return value as QueryResult<Connection, Output>;
+}
+
+function decodeOne<Output>(state: QueryState, result: RuntimeProjectionMatchResult): Output {
+  return materializeRows(state, result)[0] as Output;
+}
+function decodeFirst<Output>(state: QueryState, result: RuntimeProjectionMatchResult): Output | null {
+  return (materializeRows(state, result)[0] as Output | undefined) ?? null;
+}
+function decodeRows<Output>(state: QueryState, result: RuntimeProjectionMatchResult): readonly Output[] {
+  return Object.freeze(materializeRows(state, result)) as readonly Output[];
+}
+function decodePage<Output>(state: QueryState, result: RuntimeProjectionMatchResult): Page<Output> {
+  return Object.freeze({ items: Object.freeze(materializePageRows(state, result)) as readonly Output[], offset: result.pageOffset(state.handle), limit: result.pageLimit(state.handle), total: result.pageTotal(state.handle) });
+}
+function decodeCount(state: QueryState, result: RuntimeProjectionMatchResult): bigint { return result.countValue(state.handle); }
+function decodeExists(state: QueryState, result: RuntimeProjectionMatchResult): boolean { return result.existsValue(state.handle); }
+
+function createQuery<Output, Connection extends QueryConnection = DirectQueryConnection>(state: QueryState): Query<Output, Connection> {
   const Constructor = Query as unknown as new (
     state: QueryState,
-  ) => Query<Output>;
+  ) => Query<Output, Connection>;
   return new Constructor(state);
 }
 
@@ -3422,14 +3552,14 @@ function queryStateUnchecked(query: object): QueryState {
   return state;
 }
 
-function createGroupedQuery<Group extends object>(
-  query: Query<unknown>,
+function createGroupedQuery<Group extends object, Connection extends QueryConnection = DirectQueryConnection>(
+  query: Query<unknown, QueryConnection>,
   root: RuntimeProjectionMatchBinding,
   group: RuntimeReductionGroup,
-): GroupedQuery<Group> {
+): GroupedQuery<Group, Connection> {
   const Constructor = GroupedQuery as unknown as new (
     state: GroupedQueryState,
-  ) => GroupedQuery<Group>;
+  ) => GroupedQuery<Group, Connection>;
   return new Constructor({ query, root, group });
 }
 
@@ -3660,9 +3790,8 @@ function materializeThing(
   state: QueryState,
   thing: RuntimeProjectionMatchThing,
 ): unknown {
-  const encoded = state.projection.materializeMatchThingJson(thing);
-  return hydrateProjectedValue(
-    parseProjectedWire(JSON.parse(encoded) as unknown),
+  return hydrateOrderedProjectedEnvelope(
+    state.projection.materializeMatchThingProjected(thing),
   );
 }
 
@@ -4052,3 +4181,789 @@ export function defineFunctionToken<
   functionTokenStates.set(token, { id: definition.id });
   return token as FunctionToken<Id, Arguments, Result>;
 }
+
+
+/** Canonical collection semantics shared by every generated package. */
+export interface Multiplicity {
+  readonly collection_mode?: "ordered_list";
+}
+
+const TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 4 as const;
+
+/** One exact IID plus its immutable complete replacement. */
+export type ProjectedBatchUpdate<Complete> = readonly [
+  iid: Iid,
+  replacement: Complete,
+];
+
+/** Closed comparison vocabulary for canonical generated-manager filters. */
+export type ProjectedManagerComparison =
+  | "eq"
+  | "ne"
+  | "lt"
+  | "lte"
+  | "gt"
+  | "gte";
+
+/** Immutable canonical exact-model field-token filter. */
+export interface ProjectedModelFilter<Complete, Owner extends string = string> {
+  where(): ProjectedModelFilter<Complete, Owner>;
+  where<Attribute extends string, Value>(
+    field: FieldToken<Owner, Attribute, Value>,
+    comparison: ProjectedManagerComparison,
+    value: Value,
+  ): ProjectedModelFilter<Complete, Owner>;
+  all(): readonly Complete[];
+  first(): Complete | null;
+  count(): bigint;
+  exists(): boolean;
+  /** Delete every match through the shared native mutation path. */
+  delete(): void;
+  /** Replace every match through the shared native mutation path. */
+  update(replacement: Complete): WriteResult<Complete>;
+}
+
+/** Native batch-complete manager surface for every generated package. */
+export interface OrderedProjectedModelManager<
+  Complete,
+  Owner extends string = string,
+>
+  extends ProjectedModelManager<Complete> {
+  updateMany(
+    updates: readonly ProjectedBatchUpdate<Complete>[],
+  ): BatchWriteResult<Complete>;
+  /** Permanent redirect to `filter({ iid__in: iids }).delete()`. */
+  deleteMany(iids: readonly Iid[]): void;
+  filter(
+    filters: ProjectedManagerKeywords,
+  ): OrderedProjectedModelManager<Complete, Owner>;
+  where(): ProjectedModelFilter<Complete, Owner>;
+  where<Attribute extends string, Value>(
+    field: FieldToken<Owner, Attribute, Value>,
+    comparison: ProjectedManagerComparison,
+    value: Value,
+  ): ProjectedModelFilter<Complete, Owner>;
+}
+
+/** Model token whose manager retains the ordered successor batch surface. */
+export type OrderedModelToken<
+  Id extends string,
+  Complete,
+  CreateFactory,
+  ReferenceFactory,
+  Fields extends object,
+  Roles extends object,
+> = Omit<
+  ModelToken<Id, Complete, CreateFactory, ReferenceFactory, Fields, Roles>,
+  "manager"
+> & {
+  readonly manager: (
+    connection: RuntimeProjectionConnection,
+  ) => OrderedProjectedModelManager<Complete, Id>;
+};
+
+type OrderedProjectedEnvelope = NativeProjectedValueEnvelope;
+retainDecodedSnapshot = <Complete>(
+  projection: InstalledRuntimeProjection,
+  value: Complete,
+): Complete => {
+  projectedFacadeProofs.set(value as object, projection.detachedSnapshotProof());
+  return value;
+};
+const orderedModelDefinitions = new Map<
+  string,
+  ModelDefinition<string, object, object>
+>();
+
+type OrderedPackagePathSegment =
+  | { readonly kind: "type"; readonly typeKey: string }
+  | { readonly kind: "field"; readonly name: string }
+  | { readonly kind: "role"; readonly name: string }
+  | { readonly kind: "index"; readonly value: number };
+
+function orderedMemberKind(
+  member: CreateMemberDefinition,
+): "field" | "role" {
+  return member.accepted === undefined ? "field" : "role";
+}
+
+function rejectForeignOrderedValue(
+  value: unknown,
+  path: readonly OrderedPackagePathSegment[],
+  completeRead = false,
+): void {
+  assertRecord(value, "ordered generated member");
+  const typeKey = value["__typebridgeModel"];
+  const form = value["__typebridgeForm"];
+  const entry = typeof typeKey === "string" ? runtimeModels.get(typeKey) : undefined;
+  const localBrand =
+    form === "complete"
+      ? Object.getOwnPropertyDescriptor(value, COMPLETE_BRAND)?.value
+      : form === "reference"
+        ? Object.getOwnPropertyDescriptor(value, REFERENCE_BRAND)?.value
+        : undefined;
+  if (
+    typeof typeKey !== "string" ||
+    entry === undefined ||
+    localBrand !== typeKey
+  ) {
+    requireProjection().rejectGeneratedTokenPackageMismatch(
+      JSON.stringify(path),
+    );
+    return;
+  }
+  if (entry.definition.valueType !== null) {
+    return;
+  }
+  const members =
+    form === "complete"
+      ? completeRead
+        ? entry.definition.completeMembers
+        : entry.definition.createMembers
+      : entry.definition.referenceKeys.map((name) => ({
+          name,
+          multiplicity: {
+            cardinality: { kind: "cardinality" as const, min: "1", max: "1" },
+            required: true,
+            container: "scalar" as const,
+          },
+        }));
+  for (const member of members) {
+    const nested = value[member.name];
+    if (nested === undefined || nested === null) {
+      continue;
+    }
+    const values: readonly unknown[] = Array.isArray(nested) ? nested : [nested];
+    values.forEach((candidate, index) =>
+      rejectForeignOrderedValue(
+        candidate,
+        [
+          ...path,
+          { kind: "type", typeKey },
+          { kind: orderedMemberKind(member), name: member.name },
+          { kind: "index", value: index },
+        ],
+        completeRead,
+      ),
+    );
+  }
+}
+
+function validateOrderedMemberPackages(
+  definition: ModelDefinition<string, object, object>,
+  input: unknown,
+  completeRead = false,
+): void {
+  if (definition.valueType !== null) {
+    return;
+  }
+  assertRecord(input, `${definition.name}.create result`);
+  for (const member of definition.createMembers) {
+    const value = input[member.name];
+    if (value === undefined || value === null) {
+      continue;
+    }
+    const values: readonly unknown[] = Array.isArray(value) ? value : [value];
+    values.forEach((candidate, index) =>
+      rejectForeignOrderedValue(
+        candidate,
+        [
+          { kind: "type", typeKey: definition.typeKey },
+          { kind: orderedMemberKind(member), name: member.name },
+          { kind: "index", value: index },
+        ],
+        completeRead,
+      ),
+    );
+  }
+}
+
+function canonicalOrderedTemporalIso(iso: string): string {
+  if (
+    (iso.startsWith("+") || iso.startsWith("-")) &&
+    iso.length > 7 &&
+    iso[7] === "-"
+  ) {
+    const sign = iso.slice(0, 1);
+    const magnitude = iso.slice(1, 7).replace(/^0+(?=\d)/, "");
+    const year = sign === "-" ? magnitude.padStart(4, "0") : magnitude;
+    return `${sign}${year}${iso.slice(7)}`;
+  }
+  return iso;
+}
+
+function orderedScalarToWire(
+  valueType: ScalarValueType,
+  value: unknown,
+): ScalarWire {
+  if (
+    valueType !== "date" &&
+    valueType !== "datetime" &&
+    valueType !== "datetime_tz"
+  ) {
+    return scalarToWire(valueType, value);
+  }
+  validateScalar("projected attribute value", value, valueType);
+  const iso = canonicalOrderedTemporalIso((value as Date).toISOString());
+  if (valueType === "date") {
+    if (!iso.endsWith("T00:00:00.000Z")) {
+      throw new TypeError("date attributes require UTC midnight");
+    }
+    return { valueType, value: iso.slice(0, iso.indexOf("T")) };
+  }
+  return {
+    valueType,
+    value: canonicalDateTime(iso, valueType === "datetime_tz"),
+  };
+}
+
+function lowerOrderedProjectedValue(value: unknown): ProjectedWire {
+  const wire = lowerProjectedValue(value);
+  if (wire.value !== null) {
+    assertRecord(value, "ordered projected attribute");
+    return {
+      ...wire,
+      value: orderedScalarToWire(wire.value.valueType, value["value"]),
+    };
+  }
+  assertRecord(value, "ordered projected thing");
+  const values: Record<string, unknown> = {};
+  for (const name of Object.keys(wire.values)) {
+    const nested = value[name];
+    values[name] = Array.isArray(nested)
+      ? nested.map(lowerOrderedProjectedValue)
+      : nested === null || nested === undefined
+        ? null
+        : lowerOrderedProjectedValue(nested);
+  }
+  return { ...wire, values };
+}
+
+function lowerOrderedHydratedValue(value: unknown): ProjectedWire {
+  assertRecord(value, "ordered hydrated value");
+  const typeKey = value["__typebridgeModel"];
+  const form = value["__typebridgeForm"];
+  if (typeof typeKey !== "string" || (form !== "complete" && form !== "reference")) {
+    throw new TypeError("ordered hydrated value is not a generated projected model");
+  }
+  const entry = runtimeModels.get(typeKey);
+  if (entry === undefined) {
+    throw new TypeError("ordered hydrated value belongs to a different runtime projection");
+  }
+  if (form === "reference" || entry.definition.valueType !== null) {
+    return lowerOrderedProjectedValue(value);
+  }
+  if (Object.getOwnPropertyDescriptor(value, COMPLETE_BRAND)?.value !== typeKey) {
+    throw new TypeError("ordered hydrated value has no complete nominal brand");
+  }
+  const identity = value["iid"];
+  const iid = identity === null ? null : iidText(identity as Iid);
+  const values: Record<string, unknown> = {};
+  for (const member of entry.definition.completeMembers) {
+    const nested = value[member.name];
+    values[member.name] = Array.isArray(nested)
+      ? nested.map(lowerOrderedHydratedValue)
+      : nested === null || nested === undefined
+        ? null
+        : lowerOrderedHydratedValue(nested);
+  }
+  return { typeKey, form, iid, value: null, values };
+}
+
+function orderedRoleProofs(
+  typeKey: string,
+  value: unknown,
+): (ProjectedFacadeProof | null)[] {
+  assertRecord(value, "ordered projected create");
+  const entry = runtimeModels.get(typeKey);
+  if (entry === undefined) {
+    throw new TypeError("ordered projected manager has no model definition");
+  }
+  const proofs: (ProjectedFacadeProof | null)[] = [];
+  for (const member of entry.definition.createMembers) {
+    if (member.accepted === undefined) continue;
+    const nested = value[member.name];
+    if (nested === undefined || nested === null) continue;
+    const values: readonly unknown[] = Array.isArray(nested) ? nested : [nested];
+    for (const candidate of values) {
+      assertRecord(candidate, `ordered role ${member.name}`);
+      proofs.push(projectedFacadeProofs.get(candidate) ?? null);
+    }
+  }
+  return proofs;
+}
+
+function hydrateOrderedProjectedEnvelope<Complete>(
+  envelope: OrderedProjectedEnvelope,
+  expectedTypeKey?: string,
+): Complete {
+  const wire = parseProjectedWire(JSON.parse(envelope.json) as unknown);
+  const value = hydrateOrderedProjectedWire<Complete>(
+    wire,
+    expectedTypeKey,
+    () => envelope.rootProof(),
+    (roleName, playerIndex) => envelope.roleProof(roleName, playerIndex),
+  );
+  return retainDeletedSnapshot(value, envelope);
+}
+
+function hydrateOrderedProjectedWire<Complete>(
+  wire: ProjectedWire,
+  expectedTypeKey: string | undefined,
+  rootProof: () => ProjectedFacadeProof,
+  roleProof: (roleName: string, playerIndex: number) => ProjectedFacadeProof,
+): Complete {
+  const hydrated = hydrateProjectedValue(wire, expectedTypeKey);
+  return retainProjectedProofs(
+    wire,
+    hydrated,
+    rootProof,
+    roleProof,
+  ) as Complete;
+}
+
+
+
+function orderedProjectedManager<Complete, Owner extends string>(
+  typeKey: Owner,
+  connection: RuntimeProjectionConnection,
+): OrderedProjectedModelManager<Complete, Owner> {
+  const projection = requireProjection();
+  return orderedProjectedManagerForNative(
+    typeKey,
+    projection.manager(typeKey, connection),
+  );
+}
+
+function exactOrderedModelWire(typeKey: string, instance: unknown, operation: string): ProjectedWire {
+  requireLiveSnapshot(instance);
+  const wire = lowerOrderedProjectedValue(instance);
+  if (wire.typeKey !== typeKey || wire.form !== "complete") {
+    throw new TypeError(
+      `projected ${operation} requires the manager's exact complete model`,
+    );
+  }
+  return wire;
+}
+
+function orderedProjectedManagerForNative<Complete, Owner extends string>(
+  typeKey: Owner,
+  native: NativeProjectedManager,
+  filtered = false,
+): OrderedProjectedModelManager<Complete, Owner> {
+  return Object.freeze({
+    insert(instance: Complete): WriteResult<Complete> {
+      const wire = exactOrderedModelWire(typeKey, instance, "insert");
+      return projectedManagerNativeCall(() => native.insertProjected<Complete>(
+          JSON.stringify(wire),
+          orderedRoleProofs(typeKey, instance),
+        ));
+    },
+    insertMany(instances: readonly Complete[]): BatchWriteResult<Complete> {
+      if (!Array.isArray(instances)) {
+        throw new TypeError("projected manager insertMany requires an array");
+      }
+      return projectedManagerNativeCall(() => native.insertManyProjected<Complete>(instances.length, (index) => {
+        const instance = instances[index] as Complete;
+        const wire = exactOrderedModelWire(typeKey, instance, "insertMany");
+        return {
+          instanceJson: JSON.stringify(wire),
+          proofs: orderedRoleProofs(typeKey, instance),
+        };
+      }));
+    },
+    put(instance: Complete): WriteResult<Complete> {
+      const wire = exactOrderedModelWire(typeKey, instance, "put");
+      return projectedManagerNativeCall(() => native.putProjected<Complete>(
+          JSON.stringify(wire),
+          orderedRoleProofs(typeKey, instance),
+        ));
+    },
+    putMany(instances: readonly Complete[]): BatchWriteResult<Complete> {
+      if (!Array.isArray(instances)) {
+        throw new TypeError("projected manager putMany requires an array");
+      }
+      return projectedManagerNativeCall(() => native.putManyProjected<Complete>(instances.length, (index) => {
+        const instance = instances[index] as Complete;
+        const wire = exactOrderedModelWire(typeKey, instance, "putMany");
+        return {
+          instanceJson: JSON.stringify(wire),
+          proofs: orderedRoleProofs(typeKey, instance),
+        };
+      }));
+    },
+    update(iidOrReplacement: Iid | Complete, replacement?: Complete): WriteResult<Complete> {
+      if (arguments.length === 1) {
+        if (!filtered) throw new TypeError("update(replacement) requires an explicit manager filter");
+        return orderedProjectedFilterForNative<Complete, Owner>(typeKey,
+          projectedManagerNativeCall(() => native.managerFilter())).update(iidOrReplacement as Complete);
+      }
+      const identity = iidText(iidOrReplacement as Iid);
+      if (replacement === undefined) throw new TypeError("update requires a complete replacement");
+      const wire = exactOrderedModelWire(typeKey, replacement, "update");
+      return projectedManagerNativeCall(() => native.updateProjected<Complete>(
+          identity,
+          JSON.stringify(wire),
+          orderedRoleProofs(typeKey, replacement),
+        ));
+    },
+    updateMany(
+      updates: readonly ProjectedBatchUpdate<Complete>[],
+    ): BatchWriteResult<Complete> {
+      if (!Array.isArray(updates)) {
+        throw new TypeError("projected manager updateMany requires an array");
+      }
+      return projectedManagerNativeCall(() => native.updateManyProjected<Complete>(updates.length, (index) => {
+        const update = updates[index] as ProjectedBatchUpdate<Complete>;
+        if (!Array.isArray(update) || update.length !== 2) {
+          throw new TypeError(
+            "projected manager updateMany requires [iid, replacement] rows",
+          );
+        }
+        const [iid, replacement] = update;
+        const identity = iidText(iid);
+        const wire = exactOrderedModelWire(typeKey, replacement, "updateMany");
+        return {
+          iid: identity,
+          instanceJson: JSON.stringify(wire),
+          proofs: orderedRoleProofs(typeKey, replacement),
+        };
+      }));
+    },
+    delete(instanceOrIid?: Complete | Iid): void {
+      if (arguments.length === 0) {
+        if (!filtered) throw new TypeError("delete() requires an explicit manager filter");
+        return projectedManagerNativeCall(() => native.managerFilter().delete());
+      }
+      if (instanceOrIid === undefined) throw new TypeError("delete requires an attached model or Iid");
+      requireLiveSnapshot(instanceOrIid);
+      const iid = instanceOrIid instanceof Iid
+        ? iidText(instanceOrIid)
+        : exactOrderedModelWire(typeKey, instanceOrIid, "delete").iid;
+      if (iid === null) {
+        throw new TypeError("projected manager delete requires an attached TypeDB IID");
+      }
+      projectedManagerNativeCall(() => native.deleteByIid(iid));
+    },
+    deleteReturning(iid: Iid): WriteResult<Complete> {
+      return projectedManagerNativeCall(() => native.deleteByIidReturning<Complete>(iidText(iid)));
+    },
+    deleteManyReturning(iids: readonly Iid[]): BatchWriteResult<Complete> {
+      return projectedManagerNativeCall(() => native.deleteManyReturning<Complete>(iids.map(iidText)));
+    },
+    deleteMany(iids: readonly Iid[]): void {
+      if (!Array.isArray(iids)) {
+        throw new TypeError("projected manager deleteMany requires an array");
+      }
+      projectedManagerNativeCall(() => native.deleteManyProjected(iids.length, (index) => {
+        const iid = iids[index];
+        return iidText(iid as Iid);
+      }));
+    },
+    filter(
+      filters: ProjectedManagerKeywords,
+    ): OrderedProjectedModelManager<Complete, Owner> {
+      if (
+        filters === null ||
+        typeof filters !== "object" ||
+        Array.isArray(filters)
+      ) {
+        throw new TypeError(
+          "projected manager filters require a string-keyed object",
+        );
+      }
+      const entries = Object.entries(filters);
+      const lowered: { readonly name: string; readonly value: unknown }[] = [];
+      for (const [name, value] of entries) {
+        if (["iid", "_iid", "iid__eq", "_iid__eq"].includes(name)) {
+          lowered.push({ name, value: iidText(value as Iid) });
+        } else if (["iid__in", "_iid__in"].includes(name)) {
+          if (!Array.isArray(value)) {
+            throw new TypeError("IID list filters require an array of Iid values");
+          }
+          lowered.push({ name, value: value.map(iidText) });
+        } else {
+          lowered.push({ name, value: lowerManagerFilterValue(value) });
+        }
+      }
+      return orderedProjectedManagerForNative(
+        typeKey,
+        projectedManagerNativeCall(() => native.filterEntriesJson(JSON.stringify(lowered))),
+        true,
+      );
+    },
+    where<Attribute extends string, Value>(
+      field?: FieldToken<Owner, Attribute, Value>,
+      comparison?: ProjectedManagerComparison,
+      value?: Value,
+    ): ProjectedModelFilter<Complete, Owner> {
+      const filter = orderedProjectedFilterForNative<Complete, Owner>(
+        typeKey,
+        projectedManagerNativeCall(() => native.managerFilter()),
+      );
+      if (field === undefined) {
+        if (comparison !== undefined || value !== undefined) {
+          throw new TypeError("empty manager where accepts no comparison or value");
+        }
+        return filter;
+      }
+      if (comparison === undefined || arguments.length !== 3) {
+        throw new TypeError(
+          "manager where requires a field token, comparison, and exact value",
+        );
+      }
+      return filter.where(field, comparison, value as Value);
+    },
+    getByIid(iid: Iid): Complete | null {
+      const envelope = projectedManagerNativeCall(() => native.getByIidProjected(iidText(iid)));
+      return envelope === null
+        ? null
+        : hydrateOrderedProjectedEnvelope(envelope, typeKey);
+    },
+    all(): readonly Complete[] {
+      return Object.freeze(projectedManagerNativeCall(() => native.allProjected())
+        .map((envelope) => hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey)));
+    },
+    first(): Complete | null {
+      const envelope = projectedManagerNativeCall(() => native.firstProjected());
+      return envelope === null ? null : hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey);
+    },
+    count(): bigint {
+      return projectedManagerNativeCall(() => native.count());
+    },
+    exists(): boolean {
+      return projectedManagerNativeCall(() => native.exists());
+    },
+  });
+}
+
+type OrderedNativeManagerFilter = ReturnType<
+  NativeProjectedManager["managerFilter"]
+>;
+
+function orderedProjectedFilterForNative<
+  Complete,
+  Owner extends string,
+>(
+  typeKey: Owner,
+  native: OrderedNativeManagerFilter,
+): ProjectedModelFilter<Complete, Owner> {
+  return Object.freeze({
+    where<Attribute extends string, Value>(
+      field?: FieldToken<Owner, Attribute, Value>,
+      comparison?: ProjectedManagerComparison,
+      value?: Value,
+    ): ProjectedModelFilter<Complete, Owner> {
+      if (field === undefined) {
+        if (comparison !== undefined || value !== undefined) {
+          throw new TypeError("empty manager where accepts no comparison or value");
+        }
+        return orderedProjectedFilterForNative(typeKey, native);
+      }
+      if (comparison === undefined || arguments.length !== 3) {
+        throw new TypeError(
+          "manager where requires a field token, comparison, and exact value",
+        );
+      }
+      const definition = fieldTokenStates.get(field);
+      if (definition === undefined) {
+        return projectedManagerNativeCall(() => native.rejectForeignFieldToken());
+      }
+      const wire = lowerOrderedProjectedValue(value);
+      return orderedProjectedFilterForNative(
+        typeKey,
+        projectedManagerNativeCall(() =>
+          native.andProjected(
+            definition.owner,
+            definition.attribute,
+            comparison,
+            JSON.stringify(wire),
+          ),
+        ),
+      );
+    },
+    update(replacement: Complete): WriteResult<Complete> {
+      const wire = exactOrderedModelWire(typeKey, replacement, "update");
+      return projectedManagerNativeCall(() => native.updateProjected<Complete>(
+        JSON.stringify(wire), orderedRoleProofs(typeKey, replacement)));
+    },
+    delete(): void {
+      projectedManagerNativeCall(() => native.delete());
+    },
+    all(): readonly Complete[] {
+      return Object.freeze(
+        projectedManagerNativeCall(() => native.allProjected())
+          .map((envelope) =>
+            hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey),
+          ),
+      );
+    },
+    first(): Complete | null {
+      const envelope = projectedManagerNativeCall(() => native.firstProjected());
+      return envelope === null
+        ? null
+        : hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey);
+    },
+    count(): bigint {
+      return projectedManagerNativeCall(() => native.count());
+    },
+    exists(): boolean {
+      return projectedManagerNativeCall(() => native.exists());
+    },
+  });
+}
+
+/** @internal Define an ordered model whose create facet uses common native admission. */
+export function defineOrderedModel<
+  Id extends string,
+  Complete,
+  CreateFactory,
+  ReferenceFactory,
+  Fields extends object,
+  Roles extends object,
+  Authoring extends object = {},
+>(
+  definition: ModelDefinition<Id, Fields, Roles>,
+  authoring?: (token: OrderedModelToken<Id, Complete, CreateFactory, ReferenceFactory, Fields, Roles>) => Authoring,
+): OrderedModelToken<
+  Id,
+  Complete,
+  CreateFactory,
+  ReferenceFactory,
+  Fields,
+  Roles
+> & Authoring {
+  const original = defineModel<
+    Id,
+    Complete,
+    CreateFactory,
+    ReferenceFactory,
+    Fields,
+    Roles
+  >(definition);
+  const descriptors = Object.getOwnPropertyDescriptors(original) as Record<
+    PropertyKey,
+    PropertyDescriptor
+  >;
+  if (typeof original.create === "function") {
+    const create = original.create as (input: unknown) => Complete;
+    descriptors["create"] = {
+      ...descriptors["create"],
+      value: (input: unknown): Complete => {
+        const result = create(input);
+        validateOrderedMemberPackages(definition, result);
+        if (definition.valueType === null) {
+          requireProjection().validateCreateJson(
+            definition.typeKey,
+            JSON.stringify(lowerOrderedProjectedValue(result)),
+          );
+        }
+        return result;
+      },
+    };
+  }
+  const hydrate = original[HYDRATE_COMPLETE_BRAND] as (
+    iid: string | null,
+    input: unknown,
+  ) => Complete;
+  descriptors[HYDRATE_COMPLETE_BRAND] = {
+    ...descriptors[HYDRATE_COMPLETE_BRAND],
+    value: (iid: string | null, input: unknown): Complete => {
+      if (definition.valueType !== null) {
+        requireProjection().validateHydratedAttributeValueJson(
+          definition.typeKey,
+          JSON.stringify(orderedScalarToWire(definition.valueType, input)),
+        );
+      }
+      const result = hydrate(iid, input);
+      validateOrderedMemberPackages(
+        { ...definition, createMembers: definition.completeMembers },
+        result,
+        true,
+      );
+      if (definition.valueType === null) {
+        requireProjection().validateThingJson(
+          definition.typeKey,
+          JSON.stringify(lowerOrderedHydratedValue(result)),
+        );
+      }
+      return result;
+    },
+  };
+  descriptors["manager"] = {
+    ...descriptors["manager"],
+    value: (
+      connection: RuntimeProjectionConnection,
+    ): OrderedProjectedModelManager<Complete, Id> =>
+      orderedProjectedManager(definition.typeKey, connection),
+  };
+  const token = Object.create(
+    Object.getPrototypeOf(original),
+    descriptors,
+  ) as OrderedModelToken<
+    Id,
+    Complete,
+    CreateFactory,
+    ReferenceFactory,
+    Fields,
+    Roles
+  >;
+  const entry = runtimeModels.get(definition.typeKey);
+  if (entry === undefined || entry.token !== original) {
+    throw new TypeError("ordered model token registration is inconsistent");
+  }
+  runtimeModels.set(definition.typeKey, { ...entry, token });
+  orderedModelDefinitions.set(definition.typeKey, definition);
+
+  if (authoring !== undefined) Object.assign(token, authoring(token));
+  Object.freeze(token);
+  return token as typeof token & Authoring;
+}
+
+
+
+/** @internal Install authority-backed evidence for an ordered generated package. */
+export function __installOrderedRuntimeProjectionPackage(
+  projectionJson: string,
+  semanticFingerprintJson: string,
+  projectionFingerprintJson: string,
+  tokens: readonly object[],
+  schemaAuthorityJson: string,
+): void {
+  if (installedProjection !== null) {
+    throw new TypeError("generated runtime projection is already installed");
+  }
+  const entries = tokens.map((token) => {
+    const entry = [...runtimeModels.values()].find(
+      (candidate) => candidate.token === token,
+    );
+    if (entry === undefined) {
+      throw new TypeError(
+        "runtime projection registration contains an unknown model token",
+      );
+    }
+    return entry;
+  });
+  const projection = installRuntimeProjection({
+    schemaAuthorityJson,
+    projectionJson,
+    semanticFingerprintJson,
+    projectionFingerprintJson,
+    bindings: entries.map(({ token }) => ({
+      typeKey: token.typeKey,
+      targetName: token.name,
+      create: typeof token.create === "function",
+      reference: typeof token.reference === "function",
+    })),
+    projectedBatchMaterializer: materializeProjectedBatch,
+  });
+  const authority = installGeneratedSchemaAuthority({
+    schemaAuthorityJson,
+    semanticFingerprintJson,
+  });
+  installedProjection = projection;
+  installedQueryAuthority = authority;
+}
+
+
+export { __installOrderedRuntimeProjectionPackage as __installRuntimeProjectionPackage };

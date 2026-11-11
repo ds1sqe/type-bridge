@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
-import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum, StrEnum
 from typing import (
     TYPE_CHECKING,
     Any,
+    ClassVar,
     Literal,
     Never,
     Protocol,
@@ -23,12 +24,22 @@ from typing import (
 )
 from weakref import ReferenceType, ref
 
-from type_bridge_core import canonical_enum_spelling
+from type_bridge_core import (
+    Iid,
+    QueryCancellation,
+    QueryExecutionResourceLimits,
+    QueryLimits,
+    canonical_enum_spelling,
+)
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
+from type_bridge.plan import FieldToken as _AuthoringFieldToken
+from type_bridge.write_result import BatchWriteResult, WriteResult
 
 if TYPE_CHECKING:
     from type_bridge_core import (
+        PlanAuthority,
+        ProxyConnection,
         PyProjectedManagerFilter,
         PyProjectedModelManager,
         PyRuntimeProjection,
@@ -37,6 +48,7 @@ if TYPE_CHECKING:
         QueryLimits,
     )
 
+    from type_bridge.migration import MigrationTransaction
     from type_bridge.session import Database, TransactionContext
 
     from ._query import QueryConnection, QuerySession
@@ -121,7 +133,19 @@ class FieldToken:
         self.fact = fact
 
 
-_issued_field_tokens: dict[int, tuple[ReferenceType[FieldToken], type[ModelBase], str, str]] = {}
+class _PlanFieldToken(FieldToken, _AuthoringFieldToken[object]):
+    __slots__ = ()
+
+
+def plan_authority() -> PlanAuthority:
+    from . import schema_authority
+
+    return schema_authority()
+
+
+_issued_field_tokens: dict[
+    int, tuple[ReferenceType[_PlanFieldToken], type[ModelBase], str, str]
+] = {}
 
 
 def _issue_field_token(
@@ -129,10 +153,10 @@ def _issue_field_token(
     name: str,
     fact: Mapping[str, object],
 ) -> FieldToken:
-    token = FieldToken(owner, fact)
+    token = _PlanFieldToken(owner, fact)
     token_id = id(token)
 
-    def forget(reference: ReferenceType[FieldToken]) -> None:
+    def forget(reference: ReferenceType[_PlanFieldToken]) -> None:
         issued = _issued_field_tokens.get(token_id)
         if issued is not None and issued[0] is reference:
             del _issued_field_tokens[token_id]
@@ -201,17 +225,23 @@ class ModelBase:
     __runtime_projection__: PyRuntimeProjection
     __type_id__: str
     __model_form__: str
-    _iid: str | None
+    __plan_roles__: ClassVar[Sequence[tuple[object, bool]]]
+    _iid: Iid | None
     _values: dict[str, object]
 
     @property
-    def iid(self) -> str | None:
+    def iid(self) -> Iid | None:
+        """The retained identifier; reading it does not parse or copy its text."""
         return self._iid
+
+    @property
+    def deleted(self) -> bool:
+        return self.__runtime_projection__.instance_deleted(self)
 
     @classmethod
     def manager(
         cls,
-        connection: Database | TransactionContext,
+        connection: Database | TransactionContext | MigrationTransaction | ProxyConnection,
     ) -> ProjectedModelManager[Self]:
         from type_bridge._runtime_projection import projected_manager_for
 
@@ -229,7 +259,7 @@ class ModelBase:
         resources: QueryExecutionResourceLimits | None = None,
         cancellation: QueryCancellation | None = None,
         query_limits: QueryLimits | None = None,
-    ) -> QuerySession:
+    ) -> QuerySession[bool]:
         from ._query import QuerySession
 
         return QuerySession(
@@ -273,10 +303,16 @@ class ModelBase:
         self._iid = None
         self._values = dict(values)
 
-    def attach_runtime_iid(self, iid: str) -> None:
-        if not iid:
-            raise TypeError("projected IID must be a non-empty string")
+    def attach_runtime_iid(self, iid: Iid) -> None:
+        if type(iid) is not Iid:
+            raise TypeError("projected IID must be an Iid")
         self._iid = iid
+
+
+def require_live(instance: ModelBase) -> None:
+    """Refuse mutations of a deleted generated-model snapshot."""
+    if instance.deleted:
+        raise ValueError("thing_deleted: a deleted snapshot cannot be mutated")
 
 
 class CrudEvent(Enum):
@@ -388,6 +424,14 @@ class ProjectedModelFilter[ModelT: ModelBase]:
             )
         return ProjectedModelFilter(self._model, native)
 
+    def update(self, instance: ModelT) -> WriteResult[ModelT]:
+        """Replace every match without instance hooks; return all written models."""
+        return self._native.update(instance)
+
+    def delete(self) -> None:
+        """Delete every match without instance hooks; use instance operations for hooks."""
+        self._native.delete()
+
     def all(self) -> list[ModelT]:
         return cast(list[ModelT], self._native.all())
 
@@ -424,76 +468,101 @@ class ProjectedModelManager[ModelT: ModelBase]:
     def remove_hook(self, hook: CrudHook[ModelT]) -> None:
         self._hooks.remove(hook)
 
-    def insert(self, instance: ModelT) -> ModelT:
+    def insert(self, instance: ModelT) -> WriteResult[ModelT]:
         self._run_pre(CrudEvent.PRE_INSERT, instance)
         result = self._native.insert(instance)
-        self._run_post(CrudEvent.POST_INSERT, result)
+        self._run_post_many(CrudEvent.POST_INSERT, result.items)
         return result
 
-    def insert_many(self, instances: Sequence[ModelT]) -> list[ModelT]:
+    def insert_many(self, instances: Sequence[ModelT]) -> BatchWriteResult[ModelT]:
         values = list(instances)
         self._run_pre_many(CrudEvent.PRE_INSERT, values)
         result = self._native.insert_many(values)
-        self._run_post_many(CrudEvent.POST_INSERT, result)
+        self._run_post_many(CrudEvent.POST_INSERT, result.items)
         return result
 
-    def put(self, instance: ModelT) -> ModelT:
+    def put(self, instance: ModelT) -> WriteResult[ModelT]:
         self._run_pre(CrudEvent.PRE_PUT, instance)
         result = self._native.put(instance)
-        self._run_post(CrudEvent.POST_PUT, result)
+        self._run_post_many(CrudEvent.POST_PUT, result.items)
         return result
 
-    def put_many(self, instances: Sequence[ModelT]) -> list[ModelT]:
+    def put_many(self, instances: Sequence[ModelT]) -> BatchWriteResult[ModelT]:
         values = list(instances)
         self._run_pre_many(CrudEvent.PRE_PUT, values)
         result = self._native.put_many(values)
-        self._run_post_many(CrudEvent.POST_PUT, result)
+        self._run_post_many(CrudEvent.POST_PUT, result.items)
         return result
 
-    def update(self, instance: ModelT) -> ModelT:
+    def update(self, instance: ModelT) -> WriteResult[ModelT]:
+        """Replace a filter selection, or use an instance's IID with instance hooks.
+
+        An attached instance selects ``filter(iid=instance.iid).update(instance)``.
+        Filtered updates run no instance hooks.
+        """
+        if self._filtered:
+            return self.where().update(instance)
         self._run_pre(CrudEvent.PRE_UPDATE, instance)
-        if self._resolve_instance_iid(instance):
-            result = self._native.update(instance)
-        else:
-            result = instance
-        self._run_post(CrudEvent.POST_UPDATE, result)
+        if instance.iid is None:
+            type(instance).__runtime_projection__.validate_create(type(instance), instance)
+        result = self._native.update(instance)
+        self._run_post_many(CrudEvent.POST_UPDATE, result.items)
         return result
 
-    def update_many(self, instances: Sequence[ModelT]) -> list[ModelT]:
+    def update_many(self, instances: Sequence[ModelT]) -> BatchWriteResult[ModelT]:
         values = list(instances)
         self._run_pre_many(CrudEvent.PRE_UPDATE, values)
-        resolved = [value for value in values if self._resolve_instance_iid(value)]
-        self._native.update_many(resolved)
-        self._run_post_many(CrudEvent.POST_UPDATE, values)
-        return values
+        result = self._native.update_many(values)
+        self._run_post_many(CrudEvent.POST_UPDATE, result.items)
+        return result
 
     @overload
     def delete(self, instance_or_iid: ModelT) -> ModelT: ...
 
     @overload
-    def delete(self, instance_or_iid: str) -> None: ...
+    def delete(self, instance_or_iid: Iid) -> None: ...
 
     @overload
-    def delete(self) -> int: ...
+    def delete(self) -> None: ...
 
-    def delete(self, instance_or_iid: ModelT | str | None = None) -> ModelT | None | int:
+    def delete(self, instance_or_iid: ModelT | Iid | None = None) -> ModelT | None:
+        """Delete a filter selection, or an explicit instance with hooks.
+
+        An ``Iid`` argument redirects to ``filter(iid=iid).delete()``.
+        """
         if instance_or_iid is None:
             if not self._filtered:
-                raise TypeError("generated manager delete() without an instance requires filter()")
-            instances = cast(list[ModelT], self._native.legacy_all())
-            self._run_pre_many(CrudEvent.PRE_DELETE, instances)
-            self._native.delete_many([cast(str, instance.iid) for instance in instances])
-            self._run_post_many(CrudEvent.POST_DELETE, instances)
-            return len(instances)
+                raise TypeError("delete() without an instance requires filter(...)")
+            return self.where().delete()
         if isinstance(instance_or_iid, str):
+            raise TypeError("delete IID arguments require Iid, not a plain string")
+        if isinstance(instance_or_iid, Iid):
             self._native.delete(instance_or_iid)
             return None
-        if not self._resolve_instance_iid(instance_or_iid):
-            return instance_or_iid
         self._run_pre(CrudEvent.PRE_DELETE, instance_or_iid)
         self._native.delete(instance_or_iid)
         self._run_post(CrudEvent.POST_DELETE, instance_or_iid)
         return instance_or_iid
+
+    def delete_returning(self, instance: ModelT) -> WriteResult[ModelT]:
+        """Delete an instance and return its stored pre-delete snapshot."""
+        self._run_pre(CrudEvent.PRE_DELETE, instance)
+        result = cast(
+            WriteResult[ModelT], self._native.delete_by_iid_returning(cast(Iid, instance.iid))
+        )
+        self._run_post_many(CrudEvent.POST_DELETE, result.items)
+        return result
+
+    def delete_many_returning(self, instances: Sequence[ModelT]) -> BatchWriteResult[ModelT]:
+        """Return existing deletion snapshots in input order."""
+        values = list(instances)
+        self._run_pre_many(CrudEvent.PRE_DELETE, values)
+        snapshots = cast(
+            BatchWriteResult[ModelT],
+            self._native.delete_many_returning([cast(Iid, value.iid) for value in values]),
+        )
+        self._run_post_many(CrudEvent.POST_DELETE, snapshots.items)
+        return snapshots
 
     def delete_many(
         self,
@@ -502,40 +571,10 @@ class ProjectedModelManager[ModelT: ModelBase]:
         strict: bool = False,
     ) -> list[ModelT]:
         values = list(instances)
-        resolved: list[ModelT] = []
-        missing: list[ModelT] = []
-        for value in values:
-            if self._resolve_instance_iid(value):
-                resolved.append(value)
-            else:
-                missing.append(value)
-        if strict and missing:
-            raise ProjectedModelNotFoundError("generated model(s) not found")
-        self._run_pre_many(CrudEvent.PRE_DELETE, resolved)
-        self._native.delete_many([cast(str, value.iid) for value in resolved])
-        self._run_post_many(CrudEvent.POST_DELETE, resolved)
-        return resolved
-
-    def update_with(self, function: Callable[[ModelT], None]) -> list[ModelT]:
-        """Apply ``function`` to every filtered instance and update each one.
-
-        .. deprecated:: 2.3.0
-            Removed in 3.0. Build an update plan that computes the new value
-            with ``let_()`` and stage it in a transaction.
-        """
-        warnings.warn(
-            "update_with() is deprecated since 2.3.0 and is removed in 3.0; compute "
-            "the new value with let_() in an update plan (type_bridge.plan."
-            "PlanBuilder) and stage it in a transaction",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if not self._filtered:
-            raise TypeError("generated manager update_with() requires filter()")
-        instances = cast(list[ModelT], self._native.legacy_all())
-        for instance in instances:
-            function(instance)
-        return self.update_many(instances)
+        self._run_pre_many(CrudEvent.PRE_DELETE, values)
+        self._native.delete_many([cast(Iid, value.iid) for value in values])
+        self._run_post_many(CrudEvent.POST_DELETE, values)
+        return values
 
     def filter(self, **filters: object) -> ProjectedModelManager[ModelT]:
         return ProjectedModelManager(
@@ -572,19 +611,12 @@ class ProjectedModelManager[ModelT: ModelBase]:
     def exists(self) -> bool:
         return self._native.exists()
 
-    def get_by_iid(self, iid: str) -> ModelT | None:
+    def get_by_iid(self, iid: Iid) -> ModelT | None:
+        """Permanent redirect to ``filter(iid=iid).first()``."""
         return cast(ModelT | None, self._native.get_by_iid(iid))
 
-    def _resolve_instance_iid(self, instance: ModelT) -> bool:
-        if instance.iid is not None:
-            return True
-        iid = self._native.resolve_iid(instance)
-        if iid is None:
-            return False
-        instance.attach_runtime_iid(iid)
-        return True
-
     def _run_pre(self, event: CrudEvent, instance: ModelT) -> None:
+        require_live(instance)
         for hook in self._hooks:
             if not hook.should_run(event, self._model):
                 continue
@@ -843,11 +875,12 @@ class ReferenceBase:
     __projection__: Mapping[str, object]
     __type_id__: str
     __model_form__: str
-    _iid: str | None
+    _iid: Iid | None
     _values: dict[str, object]
 
     @property
-    def iid(self) -> str | None:
+    def iid(self) -> Iid | None:
+        """The retained identifier; reading it does not parse or copy its text."""
         return self._iid
 
     def runtime_values(self) -> dict[str, object]:
@@ -869,11 +902,11 @@ class ReferenceBase:
 
     def initialize_runtime_reference(
         self,
-        iid: str | None,
+        iid: Iid | None,
         values: Mapping[str, object],
     ) -> None:
-        if iid is not None and not iid:
-            raise TypeError("projected IID must be null or a non-empty string")
+        if iid is not None and type(iid) is not Iid:
+            raise TypeError("projected IID must be null or an Iid")
         self._iid = iid
         self._values = dict(values)
 
@@ -949,6 +982,21 @@ class _ProjectedField:
         return values[self.name]
 
     def __set__(self, instance: ModelBase, value: object) -> None:
+        values = instance.runtime_values()
+        had_value = self.name in values
+        previous = values.get(self.name)
+        self.set_value(instance, value)
+        try:
+            type(instance).__runtime_projection__.validate_create(type(instance), instance)
+        except BaseException:
+            if had_value:
+                values[self.name] = previous
+            else:
+                del values[self.name]
+            raise
+
+    def set_value(self, instance: ModelBase, value: object) -> None:
+        require_live(instance)
         if self.create is None:
             raise AttributeError(f"{self.name} is read-only")
         multiplicity = _mapping(self.create["multiplicity"])
@@ -1083,12 +1131,20 @@ def initialize_model(
 ) -> None:
     instance.initialize_runtime_values({})
     for name, value in values.items():
-        setattr(instance, name, value)
+        descriptor: object | None = None
+        for owner in type(instance).__mro__:
+            if name in owner.__dict__:
+                descriptor = owner.__dict__[name]
+                break
+        if not isinstance(descriptor, _ProjectedField):
+            raise TypeError("generated model initializer requires a projected field")
+        descriptor.set_value(instance, value)
+    type(instance).__runtime_projection__.validate_create(type(instance), instance)
 
 
 def initialize_reference(
     instance: ReferenceBase,
-    iid: str,
+    iid: Iid,
     values: Mapping[str, object],
 ) -> None:
     instance.initialize_runtime_reference(iid, values)
@@ -1252,6 +1308,11 @@ def install_runtime_projection(
         install_runtime_projection_with_authority as install_native,
     )
 
+    from ._authority import SCHEMA_AUTHORITY_BYTES
+
+    if schema_authority != SCHEMA_AUTHORITY_BYTES:
+        raise ValueError("generated schema authority does not match the package authority")
+
     installed = install_native(
         projection_json,
         semantic_fingerprint_json,
@@ -1269,3 +1330,57 @@ def install_runtime_projection(
     from ._query import install_projection
 
     install_projection(installed)
+
+
+class DirectTlsMode(StrEnum):
+    DISABLED = "disabled"
+    NATIVE_ROOTS = "native_roots"
+    CUSTOM_ROOT = "custom_root"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DirectConnectionPolicy:
+    endpoint: str
+    database: str
+    username: str = "admin"
+    password: str = field(default="password", repr=False)
+    http_port: int = 8000
+    tls: DirectTlsMode = DirectTlsMode.DISABLED
+    tls_root_ca: str | None = None
+    connection_limits: QueryExecutionResourceLimits | None = None
+    answer_limits: QueryExecutionResourceLimits | None = None
+    query_limits: QueryLimits | None = None
+
+    def __repr__(self) -> str:
+        return "DirectConnectionPolicy([REDACTED])"
+
+
+def connect(
+    policy: object,
+    *,
+    cancellation: QueryCancellation | None = None,
+) -> Database:
+    """Open a database owned and verified by this generated package."""
+    if not isinstance(policy, DirectConnectionPolicy):
+        raise TypeError("connect requires this generated package's DirectConnectionPolicy")
+    projection = _package_runtime_projection
+    if projection is None:
+        raise RuntimeError("generated package runtime projection is not installed")
+    native = projection.connect_direct(
+        policy.endpoint,
+        policy.database,
+        policy.username,
+        policy.password,
+        policy.http_port,
+        policy.tls.value,
+        policy.tls_root_ca,
+        policy.connection_limits,
+        policy.answer_limits,
+        cancellation,
+        policy.query_limits,
+    )
+    from type_bridge._native import database_from_core
+
+    return database_from_core(
+        policy.endpoint, policy.database, native, query_limits=policy.query_limits
+    )

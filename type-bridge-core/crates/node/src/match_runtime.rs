@@ -32,7 +32,7 @@ use type_bridge_orm::{
 
 #[cfg(test)]
 use crate::NodeDescriptorRegistry;
-use crate::{NodeRustDatabase, NodeRustTransactionContext};
+use crate::{NodeDatabase, NodeRustTransactionContext};
 
 pub(crate) fn napi_match_error(error: MatchError) -> napi::Error {
     napi_sdk_diagnostic(lower_match_error(&error))
@@ -43,10 +43,14 @@ pub(crate) fn napi_match_error(error: MatchError) -> napi::Error {
 pub(crate) fn napi_target_error(error: QueryTargetError) -> napi::Error {
     match error {
         QueryTargetError::Direct(error) => crate::napi_orm_error(error),
+        QueryTargetError::Commit(error) => napi_sdk_diagnostic(error.diagnostic()),
         QueryTargetError::Prepare(error) | QueryTargetError::Reply(error) => {
-            crate::query_v2_model_remote_runtime::remote_model_error(error)
+            crate::plan_model_remote_runtime::remote_model_error(error)
         }
         QueryTargetError::Interrupted(diagnostic) => napi_sdk_diagnostic(diagnostic),
+        error @ QueryTargetError::Callback(_) => napi_sdk_diagnostic(
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read),
+        ),
     }
 }
 
@@ -215,6 +219,10 @@ pub struct NodeQueryLimits {
 }
 
 impl NodeQueryLimits {
+    pub(crate) const fn from_inner(inner: QueryLimits) -> Self {
+        Self { inner }
+    }
+
     pub(crate) const fn inner(&self) -> QueryLimits {
         self.inner
     }
@@ -299,18 +307,30 @@ impl NodeQueryExecutionResources {
         collection_members: Option<BigInt>,
         role_players: Option<BigInt>,
         statements: Option<BigInt>,
+        collect_phase_timestamps: Option<bool>,
     ) -> Result<Self> {
         let defaults = QueryExecutionResourceLimits::default();
         let dimension = |value: Option<BigInt>, default: u64, name: &str| {
             value.map_or(Ok(default), |value| bigint_u64(&value, name))
         };
-        let statements = dimension(statements, u64::from(defaults.statements), "statements")?;
+        let statements = statements
+            .map(|value| bigint_u64(&value, "statements"))
+            .transpose()?
+            .map(|value| u32::try_from(value).unwrap_or(u32::MAX));
         let inner = QueryExecutionResourceLimits {
-            timeout_milliseconds: dimension(
-                timeout_milliseconds,
-                defaults.timeout_milliseconds,
-                "timeoutMilliseconds",
-            )?,
+            collect_phase_timestamps: collect_phase_timestamps.unwrap_or(false),
+            timeout_milliseconds: match timeout_milliseconds {
+                None => defaults.timeout_milliseconds,
+                Some(value) => {
+                    let (milliseconds, lossless) = value.get_i64();
+                    if !lossless {
+                        return Err(invalid_arg(
+                            "timeoutMilliseconds must be a signed 64-bit bigint",
+                        ));
+                    }
+                    type_bridge_orm::QueryTimeout::from_signed_milliseconds(milliseconds)
+                }
+            },
             items: dimension(items, defaults.items, "items")?,
             bytes: dimension(bytes, defaults.bytes, "bytes")?,
             graph_nodes: dimension(graph_nodes, defaults.graph_nodes, "graphNodes")?,
@@ -325,16 +345,21 @@ impl NodeQueryExecutionResources {
                 "collectionMembers",
             )?,
             role_players: dimension(role_players, defaults.role_players, "rolePlayers")?,
-            statements: u32::try_from(statements).unwrap_or(u32::MAX),
+            statements,
         }
         .validate()
         .map_err(|refusal| invalid_arg(refusal.to_string()))?;
         Ok(Self { inner })
     }
 
+    #[napi(getter, js_name = "collectPhaseTimestamps")]
+    pub fn collect_phase_timestamps(&self) -> bool {
+        self.inner.collect_phase_timestamps
+    }
+
     #[napi(getter, js_name = "timeoutMilliseconds")]
     pub fn timeout_milliseconds(&self) -> BigInt {
-        u64_bigint(self.inner.timeout_milliseconds)
+        u64_bigint(self.inner.timeout_milliseconds.milliseconds().unwrap_or(0))
     }
 
     #[napi(getter)]
@@ -368,8 +393,10 @@ impl NodeQueryExecutionResources {
     }
 
     #[napi(getter)]
-    pub fn statements(&self) -> BigInt {
-        u64_bigint(u64::from(self.inner.statements))
+    pub fn statements(&self) -> Option<BigInt> {
+        self.inner
+            .statements
+            .map(|value| u64_bigint(u64::from(value)))
     }
 }
 
@@ -474,21 +501,6 @@ impl NodeMatchSessionHandle {
         }
         Ok(())
     }
-}
-
-fn supports_projected_query_companion(installed: &InstalledRuntimeProjection) -> bool {
-    installed.projection().models().values().any(|model| {
-        model
-            .query_tokens()
-            .fields()
-            .values()
-            .any(|field| !field.multiplicity().collection_mode().is_unordered())
-            || model
-                .query_tokens()
-                .roles()
-                .values()
-                .any(|role| !role.multiplicity().collection_mode().is_unordered())
-    })
 }
 
 #[napi]
@@ -652,11 +664,7 @@ impl NodeMatchSessionHandle {
             .query(shape.inner.clone())
             .map(|inner| NodeMatchQueryHandle {
                 inner,
-                installed: self
-                    .installed
-                    .as_ref()
-                    .filter(|installed| supports_projected_query_companion(installed))
-                    .map(Arc::clone),
+                installed: self.installed.as_ref().map(Arc::clone),
                 output: Arc::clone(&shape.output),
                 lineage: Arc::new(()),
                 resources: self.resources,
@@ -1116,10 +1124,24 @@ impl NodeMatchQueryHandle {
         target.budget(self.resources, deadline)
     }
 
+    fn stage_transaction(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        validated: ValidatedMatchRequest,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        transaction.stage_query(
+            validated,
+            self.inner.registry_arc(),
+            self.result_context(self.resources, deadline, cancellation),
+        )
+    }
+
     fn execute_owned(
         &self,
         env: &Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         validated: ValidatedMatchRequest,
         deadline: QueryExecutionDeadline,
         cancellation: AnswerCancellation,
@@ -1301,7 +1323,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_fetch_rows_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         orders: Vec<Reference<NodeMatchOrderHandle>>,
         offset: BigInt,
         limit: BigInt,
@@ -1361,7 +1383,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_page_by_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
         orders: Vec<Reference<NodeMatchOrderHandle>>,
         offset: BigInt,
@@ -1425,7 +1447,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_count_by_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
     ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
@@ -1461,7 +1483,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_exists_by_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
     ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
@@ -1560,7 +1582,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_reduce_by_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
         group: Option<&NodeMatchBindingHandle>,
         reducers: Vec<String>,
@@ -1624,7 +1646,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_reduce_by_field_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
         group: &NodeMatchFieldHandle,
         reducers: Vec<String>,
@@ -1689,7 +1711,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_reduce_by_fields_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
         groups: Vec<Reference<NodeMatchFieldHandle>>,
         reducers: Vec<String>,
@@ -1729,7 +1751,171 @@ impl NodeMatchQueryHandle {
             .map_err(crate::napi_orm_error)?;
         self.execute_borrowed(&env, transaction, validated, deadline, cancellation)
     }
+
+    #[napi(js_name = "stageFetchRows")]
+    pub fn stage_fetch_rows(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        orders: Vec<Reference<NodeMatchOrderHandle>>,
+        offset: BigInt,
+        limit: BigInt,
+        cardinality: String,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let validated = self
+            .inner
+            .validate_fetch_rows(
+                &order_handles(&orders),
+                Window {
+                    offset: bigint_u64(&offset, "offset")?,
+                    limit: bigint_u64(&limit, "limit")?,
+                },
+                parse_enum::<RowCardinality>(&cardinality)?,
+            )
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stagePageBy")]
+    pub fn stage_page_by(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+        orders: Vec<Reference<NodeMatchOrderHandle>>,
+        offset: BigInt,
+        limit: BigInt,
+        include_total: bool,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let validated = self
+            .inner
+            .validate_page_by(
+                &root.inner,
+                &order_handles(&orders),
+                Window {
+                    offset: bigint_u64(&offset, "offset")?,
+                    limit: bigint_u64(&limit, "limit")?,
+                },
+                include_total,
+            )
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stageCountBy")]
+    pub fn stage_count_by(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let validated = self
+            .inner
+            .validate_count_by(&root.inner)
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stageExistsBy")]
+    pub fn stage_exists_by(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let validated = self
+            .inner
+            .validate_exists_by(&root.inner)
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stageReduceBy")]
+    pub fn stage_reduce_by(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+        group: Option<&NodeMatchBindingHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by(&root.inner, group.map(|group| &group.inner), &terms)
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stageReduceByField")]
+    pub fn stage_reduce_by_field(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+        group: &NodeMatchFieldHandle,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_field(&root.inner, &group.inner, &terms)
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stageReduceByFields")]
+    pub fn stage_reduce_by_fields(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+        groups: Vec<Reference<NodeMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_fields(&root.inner, &groups, &terms)
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
 }
+
+#[allow(clippy::large_enum_variant)] // Keep immediate proofs in their existing allocation.
+enum MatchInvocation {
+    Owned {
+        request: ValidatedMatchRequest,
+        result: ValidatedMatchResult,
+    },
+    Shared {
+        request: Arc<ValidatedMatchRequest>,
+        result: Arc<ValidatedMatchResult>,
+    },
+}
+impl MatchInvocation {
+    fn request(&self) -> &ValidatedMatchRequest {
+        match self {
+            Self::Owned { request, .. } => request,
+            Self::Shared { request, .. } => request,
+        }
+    }
+    fn result(&self) -> &ValidatedMatchResult {
+        match self {
+            Self::Owned { result, .. } => result,
+            Self::Shared { result, .. } => result,
+        }
+    }
+}
+
+pub(crate) type NodeQueryProjectionCache = std::sync::OnceLock<Option<Arc<ProjectedQueryValue>>>;
 
 /// Opaque proof that Rust validated one FetchRows provider result.
 ///
@@ -1737,8 +1923,7 @@ impl NodeMatchQueryHandle {
 /// exact immutable query lineage that executed the request.
 #[napi]
 pub struct NodeValidatedMatchResultHandle {
-    inner: ValidatedMatchResult,
-    request: ValidatedMatchRequest,
+    invocation: MatchInvocation,
     registry: Arc<DescriptorRegistry>,
     projected: Option<Arc<ProjectedQueryValue>>,
     output: Arc<NodeOutputShape>,
@@ -1781,6 +1966,58 @@ pub(crate) struct NodeMatchResultContext {
 }
 
 impl NodeMatchResultContext {
+    pub(crate) fn execution_limits(&self) -> type_bridge_orm::MatchExecutionLimits {
+        type_bridge_orm::MatchExecutionLimits::from_policy(
+            self.resources,
+            self.cancellation.clone(),
+        )
+    }
+
+    pub(crate) fn attach_shared(
+        &self,
+        origin: ProjectedQueryOrigin,
+        request: Arc<ValidatedMatchRequest>,
+        result: Arc<ValidatedMatchResult>,
+        registry: Arc<DescriptorRegistry>,
+        cache: &NodeQueryProjectionCache,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let deadline = QueryExecutionDeadline::for_limits(self.resources);
+        if cache.get().is_none() {
+            let projected = self
+                .installed
+                .as_ref()
+                .map(|installed| {
+                    origin
+                        .materialize_borrowed_with_budget(
+                            installed,
+                            &registry,
+                            &request,
+                            &result,
+                            self.resources.projected(),
+                            &self.cancellation,
+                            Some(deadline),
+                        )
+                        .map(|(value, _)| Arc::new(value))
+                })
+                .transpose()
+                .map_err(napi_sdk_diagnostic)?;
+            let _ = cache.set(projected);
+        }
+        let projected = cache
+            .get()
+            .expect("successful query materialization")
+            .clone();
+        Ok(NodeValidatedMatchResultHandle {
+            invocation: MatchInvocation::Shared { request, result },
+            registry,
+            projected,
+            output: Arc::clone(&self.output),
+            lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation: self.cancellation.clone(),
+        })
+    }
+
     pub(crate) fn attach(
         self,
         request: ValidatedMatchRequest,
@@ -1847,8 +2084,7 @@ fn validated_result_handle(
         })
         .transpose()?;
     Ok(NodeValidatedMatchResultHandle {
-        inner: result,
-        request,
+        invocation: MatchInvocation::Owned { request, result },
         registry,
         projected,
         output,
@@ -1870,8 +2106,9 @@ impl NodeValidatedMatchResultHandle {
                 "validated result belongs to a different immutable query lineage",
             ));
         }
-        self.inner
-            .for_request(&self.request)
+        self.invocation
+            .result()
+            .for_request(self.invocation.request())
             .map_err(napi_match_error)
     }
 
@@ -2731,13 +2968,13 @@ mod tests {
     use tokio::sync::Notify;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-    use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
+    use type_bridge_contract::query_plan::query_plan_capability_vocabulary;
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-    use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
+
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_orm::ProxyQueryConnection;
-    use type_bridge_orm::query_v2_prepared::QueryAuthority;
-    use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+    use type_bridge_orm::plan_authority::QueryAuthority;
+    use type_bridge_orm::remote_signing::RemoteReplySigningKey;
     use type_bridge_orm::session::backend::{
         AnswerCancellation, BoundedAnswerLimits, BoundedAnswerReader, BoxFuture, DriverBackend,
         QueryResult, TransactionOps, TxType,
@@ -3043,9 +3280,13 @@ plays:
     }
 
     fn ordered_query_projection() -> Arc<InstalledRuntimeProjection> {
+        query_projection(ORDERED_QUERY_SCHEMA)
+    }
+
+    fn query_projection(schema: &str) -> Arc<InstalledRuntimeProjection> {
         let documents = SchemaDocumentSet::parse([(
             DocumentId::new("node-ordered-query.yaml").unwrap(),
-            ORDERED_QUERY_SCHEMA,
+            schema,
         )])
         .unwrap();
         let declared = normalize_documents(&documents).unwrap();
@@ -3078,6 +3319,29 @@ plays:
                 .unwrap()
                 .with_schema_authority(&authority),
         )
+    }
+
+    #[test]
+    fn unordered_generated_queries_retain_the_projected_materializer() {
+        let schema = ORDERED_QUERY_SCHEMA.replace("        ordered: true\n", "");
+        let installed = query_projection(&schema);
+        let registry = Arc::new(installed.match_registry().unwrap());
+        let session = NodeMatchSessionHandle::from_installed(
+            Arc::clone(&installed),
+            registry,
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+            QueryLimits::CANONICAL,
+        );
+        let person = session.inner.exact("person").unwrap();
+        let shape = NodeMatchShapeHandle {
+            inner: session.inner.positional([person.one()]).unwrap(),
+            output: Arc::new(NodeOutputShape::Positional {
+                slots: vec![NodeOutputSlotKind::One],
+            }),
+        };
+        let query = session.query(&shape).unwrap();
+        assert!(Arc::ptr_eq(query.installed.as_ref().unwrap(), &installed));
     }
 
     fn projected_query_database(
@@ -3139,23 +3403,9 @@ plays:
     }
 
     fn projected_query_responses(iid: &str) -> Vec<QueryResult> {
-        vec![
-            QueryResult::Rows(vec![serde_json::json!({
-                "bindings": [{"binding": 0, "concept_id": iid}],
-                "satisfied_role_edges": [],
-            })]),
-            QueryResult::Documents(vec![serde_json::json!({
-                "binding": 0,
-                "concept_id": iid,
-                "concrete_type": "person",
-                "kind": "entity",
-                "attributes": [
-                    {"field": "identifier", "value_type": "string", "values": ["ada"]},
-                    {"field": "tag", "value_type": "string", "values": ["engineer"]},
-                ],
-                "roles": [],
-            })]),
-        ]
+        vec![QueryResult::Documents(vec![
+            serde_json::json!({"_iid":iid,"_type":"person","attributes":{"identifier":"ada","tag":["engineer"]}}),
+        ])]
     }
 
     fn projected_membership_create(
@@ -3179,6 +3429,31 @@ plays:
     }
 
     #[test]
+    fn execution_timeline_detail_is_preserved() {
+        let timeline: type_bridge_contract::execution_timeline::ExecutionTimeline =
+            serde_json::from_value(serde_json::json!({
+                "anchor_unix_milliseconds": 1000,
+                "stamps": [
+                    {"phase": "fired", "offset_milliseconds": 0},
+                    {"phase": "failed", "offset_milliseconds": 5, "failing_phase": "fired"}
+                ]
+            }))
+            .unwrap();
+        let diagnostic = type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()
+            .try_with_detail(
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("execution_timeline").unwrap(),
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticDetailValue::ExecutionTimeline(timeline.clone()),
+            ).unwrap();
+        let expected = serde_json::to_value(diagnostic.host_json()).unwrap();
+        let error = crate::napi_orm_error(OrmError::ExecutionDiagnostic(Box::new(diagnostic)));
+        let actual: serde_json::Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(
+            actual["details"]["execution_timeline"],
+            expected["details"]["execution_timeline"]
+        );
+    }
+
+    #[test]
     fn opaque_wrapper_types_are_send_and_sync() {
         assert_send_sync::<NodeMatchSessionHandle>();
         assert_send_sync::<NodeMatchBindingHandle>();
@@ -3191,6 +3466,75 @@ plays:
         assert_send_sync::<NodeMatchQueryHandle>();
         assert_send_sync::<NodeValidatedMatchResultHandle>();
         assert_send_sync::<NodeValidatedThingHandle>();
+    }
+
+    #[tokio::test]
+    async fn staged_query_projection_retries_after_cancellation() {
+        let (query, registry) = projected_query();
+        let (database, events) = projected_query_database(projected_query_responses("0xa1"));
+        let request = Arc::new(projected_rows_request(&query));
+        let mut transaction = database.transaction(Default::default());
+        let pending = transaction
+            .stage_shared_match_with_limits(&registry, Arc::clone(&request), Default::default())
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let proof = pending.get().unwrap();
+        let mut context = query.result_context(
+            QueryExecutionResourceLimits {
+                timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
+                ..Default::default()
+            },
+            QueryExecutionDeadline::expired(),
+            AnswerCancellation::default(),
+        );
+        context.cancellation.cancel();
+        let cache = NodeQueryProjectionCache::new();
+        let failure = context
+            .attach_shared(
+                ProjectedQueryOrigin::for_database(&database),
+                Arc::clone(&request),
+                Arc::clone(&proof),
+                Arc::clone(&registry),
+                &cache,
+            )
+            .err()
+            .unwrap();
+        assert!(failure.reason.contains("provider_cancelled"));
+        assert!(cache.get().is_none());
+        context.cancellation = AnswerCancellation::default();
+        let result = context
+            .attach_shared(
+                ProjectedQueryOrigin::for_database(&database),
+                Arc::clone(&request),
+                Arc::clone(&proof),
+                Arc::clone(&registry),
+                &cache,
+            )
+            .unwrap();
+        assert!(cache.get().is_some());
+        assert_eq!(
+            result
+                .slot_thing(&query, 0, 0)
+                .unwrap()
+                .projected
+                .unwrap()
+                .iid(),
+            "0xa1"
+        );
+        let again = context
+            .attach_shared(
+                ProjectedQueryOrigin::for_database(&database),
+                request,
+                proof,
+                registry,
+                &cache,
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            result.projected.as_ref().unwrap(),
+            again.projected.as_ref().unwrap()
+        ));
+        assert_eq!(events.queries.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -3325,7 +3669,7 @@ plays:
         assert_eq!(foreign_events.rollbacks.load(Ordering::SeqCst), 0);
 
         assert_eq!(events.opens.load(Ordering::SeqCst), 3);
-        assert_eq!(events.queries.load(Ordering::SeqCst), 6);
+        assert_eq!(events.queries.load(Ordering::SeqCst), 3);
         assert_eq!(events.commits.load(Ordering::SeqCst), 0);
         assert_eq!(events.rollbacks.load(Ordering::SeqCst), 0);
         transaction.close().await.unwrap();
@@ -3398,7 +3742,7 @@ plays:
         let error = match query
             .result_context(
                 QueryExecutionResourceLimits::default(),
-                QueryExecutionDeadline::from_timeout_milliseconds(0),
+                QueryExecutionDeadline::expired(),
                 AnswerCancellation::default(),
             )
             .attach(request, inner, registry)
@@ -3410,7 +3754,7 @@ plays:
         assert_eq!(payload["code"], "transaction_deadline_exceeded");
 
         assert_eq!(events.opens.load(Ordering::SeqCst), 3);
-        assert_eq!(events.queries.load(Ordering::SeqCst), 6);
+        assert_eq!(events.queries.load(Ordering::SeqCst), 3);
     }
 
     /// A proxy connection to the ordered-query schema whose ceiling is
@@ -3428,10 +3772,7 @@ plays:
             "typedb-3.12.1/v1",
         )
         .unwrap();
-        let mut capabilities = query_plan_v2_capability_vocabulary();
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
-        }
+        let capabilities = query_plan_capability_vocabulary();
         let advertisement = RemoteCapabilities::new(
             capabilities,
             RemoteExecutorBinding::new("node-ceiling-test", "epoch-00000000001").unwrap(),
@@ -3452,7 +3793,7 @@ plays:
             ..QueryExecutionResourceLimits::default()
         };
         let ceiling = QueryExecutionResourceLimits {
-            timeout_milliseconds: 5_000,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(5_000),
             items: 0,
             ..QueryExecutionResourceLimits::default()
         };
@@ -3463,7 +3804,7 @@ plays:
             query.terminal_budget(&QueryTarget::Proxy(&connection), session_deadline);
         assert_eq!(resources, query.resources.constrained_by(ceiling));
         assert_eq!(resources.items, 0);
-        assert_eq!(resources.timeout_milliseconds, 5_000);
+        assert_eq!(resources.timeout_milliseconds.milliseconds(), Some(5_000));
         assert!(deadline.instant() < session_deadline.instant());
 
         // Hydration shares the constrained policy: the session's raised item
@@ -3506,9 +3847,9 @@ plays:
         assert!(direct.contains("proxy_connection_runtime::settle("));
         assert!(!direct.contains("execute_match_with_limits"));
         assert!(!direct.contains("direct_with_deadline"));
-        let remote = production(include_str!("query_v2_model_remote_runtime.rs"));
+        let remote = production(include_str!("plan_model_remote_runtime.rs"));
         assert!(remote.contains("ProxyQueryConnection::finish("));
-        assert!(!remote.contains("prepare_remote_model_query_v2_with_budget"));
+        assert!(!remote.contains("prepare_remote_model_query_with_budget"));
         assert!(!remote.contains("claim_reply_with_cancellation"));
         let proxy = production(include_str!("proxy_connection_runtime.rs"));
         assert!(proxy.contains("QueryTarget::Proxy(&connection)"));
@@ -3588,20 +3929,24 @@ plays:
             wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS + 1),
             wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1),
             wide(u64::from(type_bridge_orm::DEFAULT_DIRECT_QUERY_STATEMENTS)),
+            None,
         )
         .unwrap();
         let default = QueryExecutionResourceLimits::default();
         assert_eq!(
             resources.inner(),
             QueryExecutionResourceLimits {
-                timeout_milliseconds: default.timeout_milliseconds + 1,
+                collect_phase_timestamps: false,
+                timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
+                    default.timeout_milliseconds.milliseconds().unwrap() + 1
+                ),
                 items: default.items + 1,
                 bytes: default.bytes + 1,
                 graph_nodes: default.graph_nodes + 1,
                 attribute_values: default.attribute_values + 1,
                 collection_members: default.collection_members + 1,
                 role_players: default.role_players + 1,
-                statements: default.statements,
+                statements: Some(type_bridge_orm::DEFAULT_DIRECT_QUERY_STATEMENTS),
             },
             "a raised dimension keeps what the caller asked for"
         );
@@ -3615,12 +3960,12 @@ plays:
                 None,
                 None,
                 wide(statements),
+                None,
             )
             .map(|_| ())
             .map_err(|error| error.reason.clone())
         };
-        let refused = with(type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS + 1, 3).unwrap_err();
-        assert!(refused.contains("timeout_milliseconds"), "{refused}");
+        assert!(with(86_400_001, 3).is_ok());
         let refused = with(1, u64::from(type_bridge_orm::MAX_QUERY_STATEMENTS) + 1).unwrap_err();
         assert!(refused.contains("statements"), "{refused}");
 
@@ -3634,11 +3979,15 @@ plays:
             zero(),
             zero(),
             zero(),
+            None,
         )
         .unwrap();
         assert_eq!(
             resources.inner(),
-            QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0)
+            QueryExecutionResourceLimits {
+                timeout_milliseconds: type_bridge_orm::QueryTimeout::NONE,
+                ..QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0)
+            }
         );
     }
 
@@ -3696,6 +4045,32 @@ plays:
                 .reason
                 .contains("query_resource_closed")
         );
+    }
+
+    #[test]
+    fn orm_execution_diagnostic_keeps_commit_category_details_and_owned_message() {
+        use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
+        for outcome in [
+            SdkCommitFailureOutcome::DefinitelyAborted,
+            SdkCommitFailureOutcome::Unknown,
+        ] {
+            let diagnostic = type_bridge_orm::lower_classified_commit_error(
+                type_bridge_orm::ClassifiedCommitError::Driver {
+                    certainty: if outcome == SdkCommitFailureOutcome::DefinitelyAborted {
+                        type_bridge_orm::CommitFailureCertainty::DefinitelyAborted
+                    } else {
+                        type_bridge_orm::CommitFailureCertainty::Unknown
+                    },
+                    message: "SECRET_SENTINEL".into(),
+                },
+            );
+            let expected = serde_json::to_value(diagnostic.host_json()).unwrap();
+            let error = crate::napi_orm_error(OrmError::ExecutionDiagnostic(Box::new(diagnostic)));
+            let actual: Value = serde_json::from_str(&error.reason).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual["category"], "transaction");
+            assert!(!error.reason.contains("SECRET_SENTINEL"));
+        }
     }
 
     #[test]
@@ -3937,8 +4312,10 @@ plays:
         executor.push(type_bridge_orm::RecordingMatchResponse::EmptyRows);
         let inner = executor.execute(&validated).unwrap();
         let result = NodeValidatedMatchResultHandle {
-            inner,
-            request: validated,
+            invocation: MatchInvocation::Owned {
+                request: validated,
+                result: inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -3993,8 +4370,10 @@ plays:
         page_executor.push(type_bridge_orm::RecordingMatchResponse::EmptyPage { total: Some(0) });
         let page_inner = page_executor.execute(&page_request).unwrap();
         let page = NodeValidatedMatchResultHandle {
-            inner: page_inner,
-            request: page_request,
+            invocation: MatchInvocation::Owned {
+                request: page_request,
+                result: page_inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4027,8 +4406,10 @@ plays:
         count_executor.push(type_bridge_orm::RecordingMatchResponse::Count(u64::MAX));
         let count_inner = count_executor.execute(&count_request).unwrap();
         let count = NodeValidatedMatchResultHandle {
-            inner: count_inner,
-            request: count_request,
+            invocation: MatchInvocation::Owned {
+                request: count_request,
+                result: count_inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4047,8 +4428,10 @@ plays:
         exists_executor.push(type_bridge_orm::RecordingMatchResponse::Exists(true));
         let exists_inner = exists_executor.execute(&exists_request).unwrap();
         let exists = NodeValidatedMatchResultHandle {
-            inner: exists_inner,
-            request: exists_request,
+            invocation: MatchInvocation::Owned {
+                request: exists_request,
+                result: exists_inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4065,8 +4448,10 @@ plays:
         token_executor.push(type_bridge_orm::RecordingMatchResponse::Count(1));
         let inner = token_executor.execute(&original_request).unwrap();
         let mismatched = NodeValidatedMatchResultHandle {
-            inner,
-            request: foreign_request,
+            invocation: MatchInvocation::Owned {
+                request: foreign_request,
+                result: inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4164,8 +4549,10 @@ plays:
         ]));
         let inner = executor.execute(&validated).unwrap();
         let result = NodeValidatedMatchResultHandle {
-            inner,
-            request: validated,
+            invocation: MatchInvocation::Owned {
+                request: validated,
+                result: inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4253,8 +4640,10 @@ plays:
         executor.push(type_bridge_orm::RecordingMatchResponse::EmptyGroupedReduction);
         let inner = executor.execute(&validated).unwrap();
         let result = NodeValidatedMatchResultHandle {
-            inner,
-            request: validated,
+            invocation: MatchInvocation::Owned {
+                request: validated,
+                result: inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),

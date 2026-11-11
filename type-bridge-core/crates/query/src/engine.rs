@@ -49,126 +49,20 @@ pub(crate) struct EngineCodes {
     pub(crate) try_uncorrelated: EngineCode,
     pub(crate) empty_try_domain: EngineCode,
     pub(crate) try_binding_shared: EngineCode,
-    pub(crate) local_unbound: EngineCode,
-    pub(crate) local_uncorrelated: EngineCode,
-    pub(crate) empty_local_domain: EngineCode,
-    pub(crate) local_return_domain: EngineCode,
 }
 
 /// The trusted result of one root-conjunction analysis.
 pub(crate) struct PatternAnalysis {
     pub(crate) domains: BTreeMap<BindingId, BTreeSet<TypeId>>,
-    pub(crate) optional_positive: BTreeSet<BindingId>,
     pub(crate) positive: BTreeSet<BindingId>,
     pub(crate) scoped_positive: BTreeSet<BindingId>,
     pub(crate) used: BTreeSet<BindingId>,
-    pub(crate) value_bindings: BTreeMap<BindingId, ValueTypeTag>,
 }
 
 /// The validated call signature of one plan-local function.
 pub(crate) struct LocalFunctionSignature {
     pub(crate) parameters: Vec<BTreeSet<TypeId>>,
     pub(crate) returns: ValueTypeTag,
-}
-
-/// Analyze one plan-local function body and derive its call signature.
-///
-/// Parameters arrive bound: they are pre-positive in the body scope. The
-/// body must establish every other reference, reference every parameter,
-/// stay connected, and stay possible under the schema. The declared return
-/// type must match the reducer over the input binding's scalar domain.
-pub(crate) fn analyze_local_function(
-    function: &type_bridge_contract::query_plan::LocalFunction,
-    schema: &ResolvedSchema,
-    codes: &EngineCodes,
-) -> Result<LocalFunctionSignature, Diagnostic> {
-    use type_bridge_contract::query_plan::Reducer;
-
-    let all_constructible = schema
-        .types()
-        .iter()
-        .filter(|(_, resolved)| resolved.is_constructible())
-        .map(|(id, _)| id.clone())
-        .collect::<BTreeSet<_>>();
-    let binding_ids = (0..function.bindings().len())
-        .map(|index| BindingId::new(u16::try_from(index).expect("dense ordinal")))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut domains = binding_ids
-        .iter()
-        .map(|id| (*id, all_constructible.clone()))
-        .collect::<BTreeMap<_, _>>();
-    for (index, label) in function.parameters().iter().enumerate() {
-        let allowed = schema_reference_domain(label.as_str(), schema, codes)?;
-        intersect_mut(
-            domains
-                .get_mut(&binding_ids[index])
-                .expect("parameter binding"),
-            &allowed,
-        );
-    }
-    refine_positive(function.body(), &mut domains, schema, codes)?;
-
-    let parameter_count = function.parameters().len();
-    let mut positive: BTreeSet<BindingId> =
-        binding_ids[..parameter_count].iter().copied().collect();
-    let mut references = BTreeSet::new();
-    let mut topology = binding_ids
-        .iter()
-        .map(|id| (*id, BTreeSet::new()))
-        .collect::<BTreeMap<_, _>>();
-    collect_scope_topology(
-        function.body(),
-        &mut positive,
-        &mut references,
-        &mut topology,
-    );
-    if references.iter().any(|id| !positive.contains(id)) {
-        return Err(fail(codes.local_unbound));
-    }
-    if binding_ids[..parameter_count]
-        .iter()
-        .any(|id| !references.contains(id))
-    {
-        return Err(fail(codes.local_uncorrelated));
-    }
-    if positive.iter().any(|id| domains[id].is_empty()) {
-        return Err(fail(codes.empty_local_domain));
-    }
-    validate_values_shallow(
-        function.body(),
-        &domains,
-        schema,
-        &[],
-        &BTreeMap::new(),
-        codes,
-    )?;
-    retain_topology(&mut topology, &references);
-    ensure_connected(&topology, codes)?;
-
-    let returns = function.returns();
-    let derived = match returns.reducer() {
-        Reducer::Count => ValueTypeTag::Long,
-        Reducer::Sum => match uniform_value_type(&domains[&returns.input()], schema, codes)? {
-            Some(tag @ (ValueTypeTag::Long | ValueTypeTag::Double)) => tag,
-            _ => return Err(fail(codes.local_return_domain)),
-        },
-        Reducer::Max | Reducer::Min | Reducer::Mean | Reducer::Median | Reducer::Std => {
-            return Err(fail(codes.local_return_domain));
-        }
-    };
-    if derived != returns.value_type() {
-        return Err(fail(codes.local_return_domain));
-    }
-    if !references.contains(&returns.input()) {
-        return Err(fail(codes.local_unbound));
-    }
-    Ok(LocalFunctionSignature {
-        parameters: binding_ids[..parameter_count]
-            .iter()
-            .map(|id| domains[id].clone())
-            .collect(),
-        returns: returns.value_type(),
-    })
 }
 
 /// Analyze one closed root conjunction against the resolved schema.
@@ -256,11 +150,9 @@ pub(crate) fn analyze_patterns(
 
     Ok(PatternAnalysis {
         domains,
-        optional_positive,
         positive,
         scoped_positive,
         used,
-        value_bindings,
     })
 }
 
@@ -535,8 +427,13 @@ fn ensure_value_bindings_stay_scalar(
 ) -> Result<(), Diagnostic> {
     for pattern in patterns {
         let misuse = match pattern {
-            QueryPattern::Isa { binding, .. } => value_bindings.contains_key(binding),
+            QueryPattern::Isa { binding, .. } | QueryPattern::Iid { binding, .. } => {
+                value_bindings.contains_key(binding)
+            }
             QueryPattern::Has {
+                attribute, owner, ..
+            }
+            | QueryPattern::HasType {
                 attribute, owner, ..
             } => value_bindings.contains_key(attribute) || value_bindings.contains_key(owner),
             QueryPattern::Links {
@@ -637,6 +534,63 @@ fn refine_pattern(
                 domains.get_mut(binding).expect("declared binding"),
                 &allowed,
             ))
+        }
+        QueryPattern::HasType {
+            attribute,
+            attribute_id,
+            owner,
+            mode,
+        } => {
+            use type_bridge_contract::query_plan::TypeMatchMode;
+            let label = TypeId::new(TypeKind::Attribute, attribute_id.label().as_str())?;
+            let resolved = schema
+                .types()
+                .get(&label)
+                .ok_or_else(|| fail(codes.unknown_attribute))?;
+            if *mode == TypeMatchMode::IsaExact && resolved.is_abstract() {
+                return Err(fail(EngineCode {
+                    code: "query_plan_abstract_exact_ownership",
+                    message: "abstract ownership labels require isa, not isa!",
+                }));
+            }
+            let mut attributes = BTreeSet::from([label]);
+            if *mode == TypeMatchMode::Isa {
+                attributes.extend(resolved.subtypes().iter().cloned());
+            }
+            attributes.retain(|id| {
+                schema
+                    .types()
+                    .get(id)
+                    .is_some_and(|ty| ty.is_constructible())
+                    && domains[attribute].contains(id)
+            });
+            let owners = schema
+                .types()
+                .iter()
+                .filter(|(id, ty)| {
+                    ty.is_constructible()
+                        && domains[owner].contains(*id)
+                        && attributes.iter().any(|attribute| {
+                            ty.owns()
+                                .keys()
+                                .any(|owned| owned.label() == attribute.label())
+                        })
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<BTreeSet<_>>();
+            attributes.retain(|attribute| {
+                owners.iter().any(|owner| {
+                    schema.types()[owner]
+                        .owns()
+                        .keys()
+                        .any(|owned| owned.label() == attribute.label())
+                })
+            });
+            let changed = intersect_mut(domains.get_mut(owner).expect("declared owner"), &owners);
+            Ok(intersect_mut(
+                domains.get_mut(attribute).expect("declared attribute"),
+                &attributes,
+            ) || changed)
         }
         QueryPattern::Has {
             attribute,
@@ -773,7 +727,8 @@ fn refine_pattern(
             }
             Ok(changed)
         }
-        QueryPattern::Value { .. }
+        QueryPattern::Iid { .. }
+        | QueryPattern::Value { .. }
         | QueryPattern::Not { .. }
         | QueryPattern::Try { .. }
         | QueryPattern::FunctionCall { .. } => Ok(false),
@@ -794,11 +749,17 @@ fn collect_scope_topology(
 ) {
     for pattern in patterns {
         match pattern {
+            QueryPattern::Iid { binding, .. } => {
+                referenced.insert(*binding);
+            }
             QueryPattern::Isa { binding, .. } => {
                 referenced.insert(*binding);
                 positive.insert(*binding);
             }
             QueryPattern::Has {
+                attribute, owner, ..
+            }
+            | QueryPattern::HasType {
                 attribute, owner, ..
             } => {
                 referenced.extend([*owner, *attribute]);
@@ -1206,10 +1167,13 @@ fn operand_value_type(
 fn collect_references(patterns: &[QueryPattern], output: &mut BTreeSet<BindingId>) {
     for pattern in patterns {
         match pattern {
-            QueryPattern::Isa { binding, .. } => {
+            QueryPattern::Isa { binding, .. } | QueryPattern::Iid { binding, .. } => {
                 output.insert(*binding);
             }
             QueryPattern::Has {
+                attribute, owner, ..
+            }
+            | QueryPattern::HasType {
                 attribute, owner, ..
             } => {
                 output.extend([*owner, *attribute]);

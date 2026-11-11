@@ -59,9 +59,9 @@ impl type_bridge::LifecycleHook for GeneratedLifecycleHook {
 
 async fn generated_manager_mutation_parity_compiles(
     database: &type_bridge::Database<AppSchema>,
-    person_iid: String,
+    person_iid: type_bridge::Iid,
     person_input: PersonCreate,
-    employment_iid: String,
+    employment_iid: type_bridge::Iid,
     employment_input: EmploymentCreate,
 ) -> type_bridge::Result<()> {
     let mut people = database.entities::<Person>();
@@ -81,6 +81,14 @@ async fn generated_manager_mutation_parity_compiles(
     employments
         .delete_many(std::slice::from_ref(&employment_iid))
         .await
+}
+
+async fn subtype_filters_compile(
+    database: &type_bridge::Database<AppSchema>, iid: &type_bridge::Iid,
+) -> type_bridge::Result<()> {
+    let _: Option<Person> = database.entities::<Person>().subtypes().filter()?.iid(iid)?.first().await?;
+    let _: Option<MembershipFamily> = database.relations::<Membership>().subtypes().filter()?.iid(iid)?.first().await?;
+    Ok(())
 }
 
 fn selected_shapes_compile(
@@ -123,8 +131,8 @@ fn bounded_reachability_compiles(
     Ok(())
 }
 
-fn projected_function_call_compiles(
-    session: &type_bridge::QuerySession<'_, AppSchema>,
+fn projected_function_call_compiles<Target: type_bridge::query::QueryTarget>(
+    session: &type_bridge::QuerySession<'_, AppSchema, Target>,
     person: type_bridge::Binding<AppSchema, Person>,
     minimum_value: &Score,
 ) -> type_bridge::Result<()> {
@@ -143,11 +151,11 @@ fn polymorphic_role_binding_modes_compile(
     let mut session = database.query()?;
     let actor = session.subtypes::<Actor>()?;
     let interaction = session.exact::<Interaction>()?;
-    let predicate = interaction.role(InteractionType::actor).connects(actor)
+    let predicate = interaction.role(InteractionType::actor).links(actor)
         & actor.field(ActorType::nickname).is_present();
     let _ = session
         .query(interaction)?
-        .match_(actor)?
+        .matching(actor)?
         .where_(predicate)?;
     Ok(())
 }
@@ -161,17 +169,17 @@ async fn reusable_read_context_compiles(
     let _ = session
         .query(person)?
         .where_(person.field(PersonType::score).is_present())?;
-    let _ = session.query(person)?.where_(person.iid("0x1"))?;
+    let _ = session.query(person)?.where_(person.iid(&type_bridge::Iid::new("0x1").unwrap()))?;
     let _ = session
         .query(person)?
-        .where_(person.iid_in(["0x1", "0x2"]))?;
+        .where_(person.iid_in([&type_bridge::Iid::new("0x1").unwrap(), &type_bridge::Iid::new("0x2").unwrap()]))?;
     let query = session.query(person)?;
     let tuple_field_grouped = query.group_by_fields((
         person.field(PersonType::val_bool),
         person.field(PersonType::score),
     ))?;
     let _: Vec<((ValBool, Score), (u64,))> = tuple_field_grouped
-        .aggregate((type_bridge::aggregate::count(),))
+        .reduce((type_bridge::aggregate::count(),))
         .await?;
     let _ = query.count().await?;
     let _ = query.exists().await?;
@@ -279,64 +287,6 @@ async fn remote_generated_outputs_compile() -> type_bridge::Result<()> {
     );
     let remote: type_bridge::ProxyDatabase<AppSchema> =
         type_bridge::ProxyDatabase::connect(options)
-            .await?
-            .with_schema(SCHEMA)?;
-    let mut session = remote.query()?;
-    let person = session.exact::<Person>()?;
-    let event = session.exact::<Event>()?;
-    let tuple = session.query((person, event))?;
-    let tuple = tuple.allow_cross_join(person, event)?;
-    let _rows: Vec<(Person, Event)> = tuple.rows(type_bridge::RowsOptions::new(10)).await?;
-    let graph = PersonGraph::select(person, event.collect())?;
-    let page: type_bridge::Page<PersonGraph> = session
-        .query(graph)?
-        .page_by(person, type_bridge::PageOptions::new(10))
-        .await?;
-    let _ = page.items();
-    Ok(())
-}
-
-// The 2.2.4 proxy example, unchanged, against the deprecated 2.2 names.
-struct LegacyRemoteTransport;
-
-#[allow(deprecated)]
-impl type_bridge::RemoteQueryTransport for LegacyRemoteTransport {
-    fn capabilities(
-        &self,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>,
-    > {
-        Box::pin(async {
-            Err(type_bridge::Error::Other {
-                message: "compile-only transport".into(),
-                source: None,
-            })
-        })
-    }
-
-    fn exchange<'a>(
-        &'a self,
-        _request: &'a [u8],
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>,
-    > {
-        Box::pin(async {
-            Err(type_bridge::Error::Other {
-                message: "compile-only transport".into(),
-                source: None,
-            })
-        })
-    }
-}
-
-#[allow(deprecated)]
-async fn remote_2_2_names_compile() -> type_bridge::Result<()> {
-    let options = type_bridge::RemoteConnectionOptions::generated(
-        type_bridge::RemoteQueryLimits::new(100, 1 << 20, 100, 1000, 1000, 1000),
-        LegacyRemoteTransport,
-    );
-    let remote: type_bridge::RemoteDatabase<AppSchema> =
-        type_bridge::RemoteDatabase::connect(options)
             .await?
             .with_schema(SCHEMA)?;
     let mut session = remote.query()?;
@@ -520,15 +470,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
         vec![],
     );
+    let invalid_iid_row = HydratedRow::new(
+        Counter::TYPE_ID_JSON, "not-an-iid".to_owned(),
+        vec![(CounterType::counter_value.owns_id_json(), vec![1i64.into_encoded_scalar()])], vec![],
+    );
+    let invalid_iid = materialize_model_for_test::<Counter>(&invalid_iid_row).unwrap_err();
+    assert_eq!((invalid_iid.code(), invalid_iid.field()), ("invalid_iid", "iid"));
     let person: Person = materialize_model_for_test(&person_row)?;
-    assert_eq!(person.iid(), "0x1");
+    let _: &type_bridge::Iid = person.iid();
+    assert!(std::ptr::eq(person.iid(), person.iid()));
+    assert_eq!(person.iid().as_str(), "0x1");
     let person_debug = format!("{person:?}");
     assert!(person_debug.starts_with("Person { iid:"));
     assert!(!person_debug.contains("__tb_origin"));
     assert!(!person_debug.contains("ReferenceOrigin"));
     let person_snapshot_bytes = SCHEMA.encode_snapshot(person.clone())?;
     let decoded_person: Person = SCHEMA.decode_snapshot(&person_snapshot_bytes)?;
-    assert_eq!(decoded_person.iid(), "0x1");
+    assert_eq!(decoded_person.iid().as_str(), "0x1");
     assert_eq!(decoded_person.identifier().value(), "person-1");
     assert!(
         SCHEMA
@@ -537,7 +495,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let person_ref = person.reference();
-    assert_eq!(person_ref.iid(), Some("0x1"));
+    assert_eq!(person_ref.iid().map(type_bridge::Iid::as_str), Some("0x1"));
     let person_ref_debug = format!("{person_ref:?}");
     assert!(person_ref_debug.starts_with("PersonRef { iid:"));
     assert!(!person_ref_debug.contains("__tb_origin"));
@@ -556,7 +514,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let event_row = HydratedRow::new(
         Event::TYPE_ID_JSON,
-        "event-iid-1".to_owned(),
+        "0xa113".to_owned(),
         vec![],
         vec![(
             EventType::subject.role_id_json(),
@@ -564,9 +522,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )],
     );
     let event: Event = materialize_model_for_test(&event_row)?;
-    assert_eq!(event.iid(), "event-iid-1");
+    assert_eq!(event.iid().as_str(), "0xa113");
 
-    let event_reference = EventRef::from_iid("event-iid")?;
+    let event_reference = EventRef::from_iid(type_bridge::Iid::new("0xa114")?)?;
     let container = ContainerCreate::new(vec![event_reference])?;
     assert_eq!(container.item().len(), 1);
 
@@ -587,7 +545,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let emp_row = HydratedRow::new(
         Employment::TYPE_ID_JSON,
-        "emp-iid-1".to_owned(),
+        "0xa115".to_owned(),
         vec![],
         vec![(
             EmploymentType::employee.role_id_json(),
@@ -596,7 +554,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let emp_read: Employment = materialize_model_for_test(&emp_row)?;
     let family = MembershipFamily::Employment(emp_read);
-    assert_eq!(family.iid(), "emp-iid-1");
+    assert_eq!(family.iid().as_str(), "0xa115");
+    assert_eq!(family.exact_type(), "employment");
+    let membership_row = HydratedRow::new(Membership::TYPE_ID_JSON, "0xa116".to_owned(), vec![], vec![(MembershipType::member.role_id_json(), emp_row.roles()[0].1.clone())]);
+    let membership = MembershipFamily::Membership(materialize_model_for_test(&membership_row)?);
+    assert_eq!(membership.exact_type(), "membership");
     assert!(family.as_employment().is_some());
 
     let role: RoleToken<Container, ContainerItemPlayer> = ContainerType::item;
@@ -646,4 +608,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .any(|component| component.len() > 1)
     );
     Ok(())
+}
+
+
+async fn staged_query_terminals_keep_their_output_types(
+    tx: &mut type_bridge::staged::Transaction<AppSchema>,
+) -> type_bridge::Result<()> {
+    let pending: type_bridge::query::Pending<Person> = {
+        let mut session = tx.query()?;
+        let person = session.exact::<Person>()?;
+        projected_function_call_compiles(&session, person, &Score::new(1).unwrap())?;
+        session.query(person)?.one().await?
+    };
+    tx.commit().await?;
+    let _: Person = pending.result()?;
+    Ok(())
+}
+
+fn nominal_iid_authoring_compiles(iid: type_bridge::Iid) {
+    let mut plan = type_bridge::plan::PlanBuilder::<AppSchema>::new();
+    let _ = plan.by_iid::<Person>(&iid);
+    let column = plan.input::<type_bridge::Iid>("iid");
+    let _ = plan.by_iid_input::<Person>(column);
+    let _ = column.value(iid.clone());
+    let _ = column.result_ref::<Person>(0, 0).unwrap();
+    let mut recording = type_bridge::plan::recording::Recording::<AppSchema>::new(Default::default());
+    let _ = Person::by_iid(&mut recording, &iid);
 }

@@ -1,0 +1,14 @@
+format: typebridge.schema/v2
+attributes:
+  doc-id: {value: string}
+  status: {value: string}
+entities:
+  document:
+    abstract: true
+    owns:
+      doc-id: {key: true}
+      status: {card: 1}
+  report:
+    sub: document
+  memo:
+    sub: document

@@ -186,41 +186,41 @@
       "path": "type-bridge-core/crates/orm/src/dynamic.rs",
       "symbol": "pub enum DynamicExpr"
     },
-    "query_pattern_v2": {
-      "path": "type-bridge-core/crates/contract/src/query_plan_v2.rs",
-      "symbol": "pub enum QueryPatternV2"
+    "model_predicate": {
+      "path": "type-bridge-core/crates/contract/src/query_model.rs",
+      "symbol": "pub enum ModelPredicate"
     },
-    "hydration_projection_v2": {
-      "path": "type-bridge-core/crates/contract/src/query_plan_v2.rs",
-      "symbol": "pub struct HydrationProjectionV2"
+    "hydration_projection": {
+      "path": "type-bridge-core/crates/contract/src/query_model.rs",
+      "symbol": "pub struct HydrationProjection"
     },
-    "query_plan_v2_compatibility": {
-      "path": "type-bridge-core/crates/contract/src/query_plan_v2.rs",
-      "symbol": "pub struct QueryPlanV2Compatibility"
+    "native_query_pattern": {
+      "path": "type-bridge-core/crates/contract/src/query_plan_types.rs",
+      "symbol": "pub enum QueryPattern"
     },
-    "query_model_output_v2": {
-      "path": "type-bridge-core/crates/contract/src/query_plan_v2.rs",
-      "symbol": "pub enum QueryModelOutputV2"
+    "model_output": {
+      "path": "type-bridge-core/crates/contract/src/query_model.rs",
+      "symbol": "pub enum ModelOutput"
     },
-    "model_query_v2": {
-      "path": "type-bridge-core/crates/contract/src/query_plan_v2.rs",
-      "symbol": "pub enum ModelQueryV2"
+    "native_model_query": {
+      "path": "type-bridge-core/crates/orm/src/match_request/plan_adapter.rs",
+      "symbol": "pub(crate) struct AdaptedMatchRequest"
     },
     "direct_query_execution": {
-      "path": "type-bridge-core/crates/orm/src/query_v2.rs",
-      "symbol": "pub async fn execute_validated_query"
+      "path": "type-bridge-core/crates/orm/src/query_plan_exec.rs",
+      "symbol": "pub(crate) fn execute_plan_stack_counted"
     },
     "remote_query_prepare": {
-      "path": "type-bridge-core/crates/orm/src/query_v2_model_remote.rs",
-      "symbol": "pub fn prepare_remote_model_query_v2"
+      "path": "type-bridge-core/crates/orm/src/plan_model_remote.rs",
+      "symbol": "pub fn prepare_remote_model_query"
     },
     "remote_query_decode": {
-      "path": "type-bridge-core/crates/orm/src/query_v2_model_remote.rs",
-      "symbol": "impl ClaimedRemoteModelReplyV2"
+      "path": "type-bridge-core/crates/orm/src/plan_model_remote.rs",
+      "symbol": "impl ClaimedRemoteModelReply"
     },
     "remote_structured_failure": {
-      "path": "type-bridge-core/crates/contract/src/query_remote_v2.rs",
-      "symbol": "pub struct RemoteQueryFailureV2"
+      "path": "type-bridge-core/crates/contract/src/query_remote_failure.rs",
+      "symbol": "pub struct StagedFailure"
     },
     "canonical_value": {
       "path": "type-bridge-core/crates/contract/src/value.rs",
@@ -239,7 +239,7 @@
       "symbol": "pub enum SchemaFact"
     },
     "query_pattern": {
-      "path": "type-bridge-core/crates/contract/src/query_plan.rs",
+      "path": "type-bridge-core/crates/contract/src/query_plan_types.rs",
       "symbol": "pub enum QueryPattern"
     },
     "secure_connect_options": {
@@ -285,6 +285,14 @@
     "database": {
       "path": "type-bridge-core/crates/orm/src/session/database.rs",
       "symbol": "pub struct Database"
+    },
+    "typed_plan_parity": {
+      "path": "scripts/ci/sdk_plan_parity.py",
+      "symbol": "def compare_twins"
+    },
+    "typed_answer_capture_parity": {
+      "path": "scripts/ci/sdk_plan_parity.py",
+      "symbol": "def compare_oracle_answers"
     }
   },
   "capabilities": [
@@ -300,13 +308,13 @@
     {"code": "C10", "id": "transaction.borrowed-read-write-lifecycle", "classification": "canonical", "origin": "seed_inventory", "owner": "transaction_context", "proof_profile": "direct_data", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.transaction.borrowed"], "seed_operations": ["borrowed_write_commit_rollback_and_reusable_read"]},
     {"code": "C11", "id": "manager.single-type-filter", "classification": "canonical", "origin": "seed_inventory", "owner": "dynamic_expression", "proof_profile": "direct_data", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.manager.filter"], "seed_operations": ["concise_single_type_filters_and_dunder_field_names"]},
     {"code": "C12", "id": "projection.field-name-identity", "classification": "canonical", "origin": "seed_inventory", "owner": "schema_projection", "proof_profile": "generated_package", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.projection.field-name-identity"], "seed_operations": ["concise_single_type_filters_and_dunder_field_names"]},
-    {"code": "C13", "id": "query.owner-iid-set-predicates", "classification": "canonical", "origin": "seed_inventory", "owner": "query_pattern_v2", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.owner-iid-set"], "seed_operations": ["optional_ownership_and_iid_set_predicates"]},
-    {"code": "C14", "id": "query.exact-subtype-hydration", "classification": "canonical", "origin": "seed_inventory", "owner": "hydration_projection_v2", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.exact-subtypes"], "seed_operations": ["exact_subtype_binding_and_concrete_hydration"]},
-    {"code": "C15", "id": "query.scalar-boolean-predicates", "classification": "canonical", "origin": "seed_inventory", "owner": "query_pattern_v2", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.scalar-boolean-predicates"], "seed_operations": ["comparison_string_boolean_and_field_predicates", "scalar_domain_equality_and_ordered_domain_predicates"]},
-    {"code": "C16", "id": "query.role-traversal-and-relation-references", "classification": "canonical", "origin": "seed_inventory", "owner": "query_pattern_v2", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.roles"], "seed_operations": ["role_player_constraints_and_relation_references"]},
-    {"code": "C17", "id": "query.reachability-and-explicit-cross-join", "classification": "canonical", "origin": "seed_inventory", "owner": "query_plan_v2_compatibility", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.topology"], "seed_operations": ["bounded_reachability_and_explicit_cross_join"]},
-    {"code": "C18", "id": "query.selected-output-shapes", "classification": "canonical", "origin": "seed_inventory", "owner": "query_model_output_v2", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.selection-shapes"], "seed_operations": ["positional_named_collected_distinct_and_ordered_shapes"]},
-    {"code": "C19", "id": "query.ordered-windowed-model-terminals", "classification": "canonical", "origin": "seed_inventory", "owner": "model_query_v2", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.terminals"], "seed_operations": ["ordered_windowed_one_first_rows_page_count_and_exists", "unkeyed_entity_iid_lifecycle_and_singular_query"]},
+    {"code": "C13", "id": "query.owner-iid-set-predicates", "classification": "canonical", "origin": "seed_inventory", "owner": "model_predicate", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.owner-iid-set"], "seed_operations": ["optional_ownership_and_iid_set_predicates"]},
+    {"code": "C14", "id": "query.exact-subtype-hydration", "classification": "canonical", "origin": "seed_inventory", "owner": "hydration_projection", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.exact-subtypes"], "seed_operations": ["exact_subtype_binding_and_concrete_hydration"]},
+    {"code": "C15", "id": "query.scalar-boolean-predicates", "classification": "canonical", "origin": "seed_inventory", "owner": "model_predicate", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.scalar-boolean-predicates"], "seed_operations": ["comparison_string_boolean_and_field_predicates", "scalar_domain_equality_and_ordered_domain_predicates"]},
+    {"code": "C16", "id": "query.role-traversal-and-relation-references", "classification": "canonical", "origin": "seed_inventory", "owner": "model_predicate", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.roles"], "seed_operations": ["role_player_constraints_and_relation_references"]},
+    {"code": "C17", "id": "query.reachability-and-explicit-cross-join", "classification": "canonical", "origin": "seed_inventory", "owner": "native_query_pattern", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.topology"], "seed_operations": ["bounded_reachability_and_explicit_cross_join"]},
+    {"code": "C18", "id": "query.selected-output-shapes", "classification": "canonical", "origin": "seed_inventory", "owner": "model_output", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.selection-shapes"], "seed_operations": ["positional_named_collected_distinct_and_ordered_shapes"]},
+    {"code": "C19", "id": "query.ordered-windowed-model-terminals", "classification": "canonical", "origin": "seed_inventory", "owner": "native_model_query", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.terminals"], "seed_operations": ["ordered_windowed_one_first_rows_page_count_and_exists", "unkeyed_entity_iid_lifecycle_and_singular_query"]},
     {"code": "C20", "id": "query.direct-reducers-and-grouping", "classification": "canonical", "origin": "seed_inventory", "owner": "direct_query_execution", "proof_profile": "direct_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.reducers-direct"], "seed_operations": ["direct_reducers_and_grouping"]},
     {"code": "C21", "id": "query.remote-model-terminals-one-exchange", "classification": "canonical", "origin": "seed_inventory", "owner": "remote_query_prepare", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.remote-one-exchange"], "seed_operations": ["remote_rows_terminals_and_identical_materialization"]},
     {"code": "C22", "id": "query.remote-reply-verification-and-hydration", "classification": "canonical", "origin": "seed_inventory", "owner": "remote_query_decode", "proof_profile": "direct_remote_query", "binding_profile": "current_and_c_live_future_planned", "case_ids": ["sdk.query.remote-hydration"], "seed_operations": ["remote_rows_terminals_and_identical_materialization"]},
@@ -360,7 +368,6 @@
     {"id": "remote_rows_terminals_and_identical_materialization", "classification": "canonical", "capabilities": ["query.remote-model-terminals-one-exchange", "query.remote-reply-verification-and-hydration"]},
     {"id": "authenticated_remote_structured_diagnostics", "classification": "canonical", "capabilities": ["diagnostic.remote-structured"]},
     {"id": "remote_reducers_and_grouping", "classification": "canonical", "capabilities": ["query.remote-reducers-and-grouping"]},
-    {"id": "python_retained_raw_query_builder_generated_models", "classification": "non_normative", "capabilities": [], "reason": "the retained root QueryBuilder is a V1/raw compatibility surface"},
     {"id": "integer_keys_polymorphic_roles_and_optional_role_survival", "classification": "canonical", "capabilities": ["model.integer-key-polymorphic-role-optionality"]},
     {"id": "plain_inherited_abstract_relation_role_lifecycle", "classification": "canonical", "capabilities": ["model.inherited-relation-role-lifecycle", "crud.relation.unkeyed-iid-lifecycle"]},
     {"id": "unkeyed_entity_iid_lifecycle_and_singular_query", "classification": "canonical", "capabilities": ["crud.entity.unkeyed-iid-lifecycle", "query.ordered-windowed-model-terminals"]},

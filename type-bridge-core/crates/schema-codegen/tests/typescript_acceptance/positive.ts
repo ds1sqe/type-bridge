@@ -1,4 +1,6 @@
+import { Iid } from "@type-bridge/node";
 import {
+  type BatchWriteResult,
   Actor,
   Aliases,
   Container,
@@ -40,17 +42,13 @@ import {
   type Query,
   QuerySession,
   ExchangeConnection,
-  RemoteQuerySession,
-  type RemoteQuery,
-  type RemoteQueryExchange,
-  type RemoteQueryLimits,
   type ProxyConnection,
   type QueryConnection,
   QueryExecutionResourceLimits,
   connectProxy,
   schemaAuthority,
-} from "./generated_v2/src/index.js";
-import { Plan, type PendingPlanAnswer, type RustDatabase } from "@type-bridge/node";
+} from "./generated_package/src/index.js";
+import { Plan, type Pending, type Database, type StagedTransaction } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
 const identifierBytes: Uint8Array = Identifier.encodeAttribute(identifier);
@@ -82,8 +80,8 @@ const interaction: Interaction = Interaction.create({
   target: person,
 });
 const plainActivity: PlainActivity = PlainActivity.create({ participant: person });
-const reference: PersonRef = Person.reference("person-iid", { identifier });
-const eventReference: EventRef = Event.reference("event-iid", {});
+const reference: PersonRef = Person.reference(new Iid("0xa1"), { identifier });
+const eventReference: EventRef = Event.reference(new Iid("0xe1"), {});
 
 Employment.create({ employee: person });
 Container.create({ item: [eventReference] });
@@ -97,16 +95,22 @@ Membership.create({
 const stats: PlayerStats = PlayerStats({ wins: 3n, nickname: null });
 const identifierValue: string = identifier.value;
 const scoreValue: bigint = score.value;
-const completeIid: string | null = person.iid;
-declare const database: RustDatabase;
+const completeIid: Iid | null = person.iid;
+declare const database: Database;
 const personManager: ProjectedModelManager<Person> = Person.manager(database);
 personManager.insert(person);
 personManager.put(person);
-const insertedPeople: readonly Person[] = personManager.insertMany([person]);
-const putPeople: readonly Person[] = personManager.putMany([person]);
-personManager.update("0x1", person);
+const insertedPeople: BatchWriteResult<Person> = personManager.insertMany([person]);
+const putPeople: BatchWriteResult<Person> = personManager.putMany([person]);
+const nativePersonManager = Person.manager(database);
+const updatedPeople: BatchWriteResult<Person> = nativePersonManager.updateMany([[new Iid("0xa1"), person]]);
+nativePersonManager.deleteMany([new Iid("0xa1")]);
+const ordinaryCanonicalFilter = nativePersonManager.where();
+void ordinaryCanonicalFilter;
+void updatedPeople;
+personManager.update(new Iid("0x1"), person);
 personManager.delete(person);
-personManager.delete("0x1");
+personManager.delete(new Iid("0x1"));
 const filteredPersonManager = personManager.filter({ score__gte: Score.create(3n) });
 const inPersonManager: ProjectedModelManager<Person> = personManager.filter({
   score__in: [Score.create(3n), Score.create(4n)],
@@ -115,7 +119,7 @@ const missingPersonManager: ProjectedModelManager<Person> = personManager.filter
   aliases__isnull: true,
 });
 const iidPersonManager: ProjectedModelManager<Person> = personManager.filter({
-  iid__in: ["0x1", "0x2"],
+  iid__in: [new Iid("0x1"), new Iid("0x2")],
 });
 const filteredPeople: readonly Person[] = filteredPersonManager.all();
 const firstFilteredPerson: Person | null = filteredPersonManager.first();
@@ -130,9 +134,9 @@ const querySession = new QuerySession(database);
 const personVar = querySession.exact(Person);
 const minimum: IntegerInput = integerInput(querySession, Score.create(2n));
 const qualifying: IntegerCall = qualifyingScore(querySession, personVar, minimum);
-const qualifyingPredicate: Predicate = qualifying.gteField(personVar.field(Person.score));
+const qualifyingPredicate: Predicate = qualifying.geField(personVar.field(Person.score));
 const nestedQualifying: IntegerCall = qualifyingScore(querySession, personVar, qualifying);
-const nestedPredicate: Predicate = qualifying.gteCall(nestedQualifying);
+const nestedPredicate: Predicate = qualifying.geCall(nestedQualifying);
 const eventVar = querySession.var(Event);
 const employmentVar = querySession.var(Employment);
 const partyVar = querySession.subtypes(Party);
@@ -141,10 +145,10 @@ const interactionVar = querySession.exact(Interaction);
 const identifierPredicate = personVar.field(Person.identifier).eq(identifier);
 const presentPredicate: Predicate = personVar.field(Person.score).isPresent();
 const missingPredicate: Predicate = personVar.field(Person.score).isMissing();
-const iidPredicate: Predicate = personVar.iid("0x1");
-const iidSetPredicate: Predicate = personVar.iidIn(["0x1", "0x2"]);
-const employeePredicate = employmentVar.role(Employment.employee).connects(personVar);
-const actorPredicate = interactionVar.role(Interaction.actor).connects(actorVar);
+const iidPredicate: Predicate = personVar.iid(new Iid("0x1"));
+const iidSetPredicate: Predicate = personVar.iidIn([new Iid("0x1"), new Iid("0x2")]);
+const employeePredicate = employmentVar.role(Employment.employee).links(personVar);
+const actorPredicate = interactionVar.role(Interaction.actor).links(actorVar);
 const actorInteractionQuery: Query<Interaction> = querySession
   .query(interactionVar)
   .match(actorVar)
@@ -182,7 +186,7 @@ const personCount: bigint = await personQuery.countBy(personVar);
 const personExists: boolean = await personQuery.existsBy(personVar);
 const scoreField = personVar.field(Person.score);
 const boolField = personVar.field(Person.valBool);
-const personAggregate: readonly [bigint, bigint, number | null] = await personQuery.aggregate(
+const personAggregate: readonly [bigint, bigint, number | null] = await personQuery.reduce(
   personVar,
   [aggregate.count(), aggregate.sum(scoreField), aggregate.mean(scoreField)] as const,
 );
@@ -192,17 +196,17 @@ const groupedAggregate: readonly (
   .query(personVar, employmentVar)
   .where(employeePredicate)
   .groupBy(personVar, employmentVar)
-  .aggregate([aggregate.count(), aggregate.max(scoreField)] as const);
+  .reduce([aggregate.count(), aggregate.max(scoreField)] as const);
 const fieldGroupedAggregate: readonly (
   readonly [ValBool, readonly [bigint, bigint]]
 )[] = await personQuery
   .groupBy(personVar, boolField)
-  .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const);
+  .reduce([aggregate.count(), aggregate.sum(scoreField)] as const);
 const tupleFieldGroupedAggregate: readonly (
   readonly [readonly [ValBool, Score], readonly [bigint]]
 )[] = await personQuery
   .groupBy(personVar, boolField, scoreField)
-  .aggregate([aggregate.count()] as const);
+  .reduce([aggregate.count()] as const);
 declare const advertisement: Uint8Array;
 declare const exchange: (
   request: Uint8Array,
@@ -223,28 +227,6 @@ const proxyRows: readonly Person[] = await proxySession
 const remoteSession = new QuerySession(exchangeConnection, {
   resources: new QueryExecutionResourceLimits({ items: 100n }),
 });
-// The 2.2.4 guide's remote example still compiles against the deprecated
-// aliases.
-const advertisementBytes: Uint8Array = advertisement;
-const legacyExchange: RemoteQueryExchange = exchange;
-const legacyLimits: RemoteQueryLimits = {
-  maxItems: 100n,
-  maxBytes: 8_388_608n,
-  maxCollectionMembers: 1_000n,
-  maxGraphNodes: 1_000n,
-  maxAttributeValues: 1_000n,
-  maxRolePlayers: 1_000n,
-  deadlineMs: 30_000n,
-};
-const remote = new RemoteQuerySession(
-  advertisementBytes,
-  legacyExchange,
-  legacyLimits,
-);
-const legacyPerson = remote.exact(Person);
-const legacyQuery: RemoteQuery<Person> = remote.query(legacyPerson);
-const legacyRows: readonly Person[] = await legacyQuery.rows({ limit: 50n });
-const legacySession: QuerySession = remote;
 const remotePersonVar = remoteSession.var(Person);
 const remotePartyVar = remoteSession.subtypes(Party);
 const remoteMinimum: IntegerInput = integerInput(remoteSession, Score.create(2n));
@@ -278,7 +260,7 @@ const remoteCount: Promise<bigint> = remotePersonQuery.countBy(remotePersonVar);
 const remoteExists: Promise<boolean> = remotePersonQuery.existsBy(remotePersonVar);
 const remoteFirst: Promise<Person | null> = remotePersonQuery.first();
 const remoteScoreField = remotePersonVar.field(Person.score);
-const remoteAggregate: Promise<readonly [bigint, bigint]> = remotePersonQuery.aggregate(
+const remoteAggregate: Promise<readonly [bigint, bigint]> = remotePersonQuery.reduce(
   remotePersonVar,
   [aggregate.count(), aggregate.sum(remoteScoreField)] as const,
 );
@@ -286,7 +268,7 @@ const remoteGroupedAggregate: Promise<readonly (
   readonly [Person, readonly [number | null]]
 )[]> = remotePersonQuery
   .groupBy(remotePersonVar, remotePersonVar)
-  .aggregate([aggregate.mean(remoteScoreField)] as const);
+  .reduce([aggregate.mean(remoteScoreField)] as const);
 
 void reference;
 void event;
@@ -337,11 +319,9 @@ void remoteGroupedAggregate;
 void Employment.employee;
 void Event.subject;
 void Person.identifier;
-void legacyRows;
-void legacySession;
 
 // Staged plans take generated model, field and role tokens.
-async function stagedScore(db: RustDatabase): Promise<PendingPlanAnswer> {
+async function stagedScore(db: Database): Promise<Pending> {
   const plan = Plan.builder();
   const planPerson = plan.exact(Person);
   const planEmployment = plan.subtypes(Employment);
@@ -358,3 +338,34 @@ async function stagedScore(db: RustDatabase): Promise<PendingPlanAnswer> {
   }
 }
 void stagedScore;
+
+// The same authoring lineage selects pending outputs on a staged target.
+declare const stagedTransaction: StagedTransaction;
+const stagedSession = new QuerySession(stagedTransaction);
+const stagedRoot = stagedSession.exact(Person);
+const stagedQuery = stagedSession.query(stagedRoot).clone().where(stagedRoot.field(Person.score).ge(Score.create(0n)));
+const stagedOne: Promise<Pending<Person>> = stagedQuery.one();
+const stagedFirst: Promise<Pending<Person | null>> = stagedQuery.first();
+const stagedRows: Promise<Pending<readonly Person[]>> = stagedQuery.rows({ limit: 2n });
+const stagedPage: Promise<Pending<Page<Person>>> = stagedQuery.pageBy(stagedRoot, { limit: 2n });
+const stagedCount: Promise<Pending<bigint>> = stagedQuery.countBy(stagedRoot);
+const stagedExists: Promise<Pending<boolean>> = stagedQuery.existsBy(stagedRoot);
+const stagedAggregate: Promise<Pending<readonly [bigint]>> = stagedQuery.reduce(stagedRoot, [aggregate.count()] as const);
+const stagedGrouped: Promise<Pending<readonly (readonly [Score, readonly [bigint]])[]>> = stagedQuery.groupBy(stagedRoot, stagedRoot.field(Person.score)).reduce([aggregate.count()] as const);
+const stagedMinimum: IntegerInput = integerInput(stagedSession, Score.create(2n));
+const stagedFunction: IntegerCall = qualifyingScore(stagedSession, stagedRoot, stagedMinimum);
+void [stagedOne, stagedFirst, stagedRows, stagedPage, stagedCount, stagedExists, stagedAggregate, stagedGrouped, stagedFunction];
+
+const batchCount: number = insertedPeople.count;
+const batchIndexes: readonly number[] = insertedPeople.inputIndexes;
+const batchItems: readonly Person[] = insertedPeople.items;
+void batchCount;
+void batchIndexes;
+void batchItems;
+
+// Canonical and keyword filters expose mutation terminals.
+nativePersonManager.filter({ iid: new Iid("0xa1") }).delete();
+nativePersonManager.where(Person.identifier, "eq", Identifier.create("alice")).delete();
+
+nativePersonManager.filter({ iid: new Iid("0xa1") }).update(person);
+nativePersonManager.where(Person.identifier, "eq", identifier).update(person);

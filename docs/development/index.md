@@ -13,8 +13,9 @@ for the working agreement and command map.
   the local workflow
 - [Testing](testing.md) -- offline, live TypeDB, cross-language, packaging, and
   release-artifact tiers
-- [Internals](internals.md) -- Python model metadata and architecture
-- [Rust backend](rust-backend.md) -- shared ORM execution path and binding
+- [Internals](internals.md) -- shared-engine architecture, transactions, and
+  release closure
+- [Core engine](core-engine.md) -- shared ORM execution path and binding
   boundary
 - [TypeDB concepts and compatibility](typedb.md) -- driver bands, supported
   versions, and TypeQL behavior

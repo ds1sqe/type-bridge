@@ -874,9 +874,9 @@ async fn direct_schema_function_execution_uses_one_canonical_given_row() {
     let [(typeql, rows)] = given.as_slice() else {
         panic!("direct function execution must dispatch exactly one given statement")
     };
-    assert!(typeql.starts_with("given $g0: integer; match "));
-    assert!(typeql.contains("let $c0 = qualifying-score($b0, $g0)"));
-    assert_eq!(rows.variables, ["g0"]);
+    assert!(typeql.starts_with("given $input0: integer; match "));
+    assert!(typeql.contains("let $b1 = qualifying-score($b0, $input0)"));
+    assert_eq!(rows.variables, ["input0"]);
     assert_eq!(rows.rows, [vec![GivenValue::Integer(40)]]);
     assert!(events.plain.lock().unwrap().is_empty());
 }
@@ -908,7 +908,7 @@ async fn direct_model_only_schema_function_keeps_empty_inputs_but_requires_full_
         panic!("model-only function execution dispatches one ordinary typed statement")
     };
     assert!(typeql.starts_with("match "));
-    assert!(typeql.contains("let $c0 = person-score($b0)"));
+    assert!(typeql.contains("let $b1 = person-score($b0)"));
 }
 
 #[tokio::test]
@@ -1083,14 +1083,18 @@ async fn borrowed_schema_function_server_version_uses_the_same_structured_reject
 }
 
 #[test]
-fn owner_qualified_handles_reject_aliases_and_preserve_inherited_owners() {
+fn owner_qualified_handles_reject_aliases_and_preserve_inherited_identity() {
     let session = SessionHandle::new(registry());
     let person = session.exact("person").unwrap();
     let employee = session.exact("employee").unwrap();
     let special = session.exact("special-association").unwrap();
 
     let inherited_name = employee.field_owned_by("party", "name").unwrap();
-    assert_eq!(inherited_name.field_id().owner.as_str(), "entity:party");
+    assert_eq!(
+        inherited_name.field_id(),
+        employee.field("name").unwrap().field_id()
+    );
+    assert_eq!(inherited_name.field_id().owner.as_str(), "entity:employee");
     assert_match_code(
         person.field_owned_by("company", "name"),
         "cross_owner_field",
@@ -1130,8 +1134,75 @@ fn owner_qualified_handles_reject_aliases_and_preserve_inherited_owners() {
         .unwrap();
     let diagnostic = UnvalidatedMatchRequest::from_request(validated.request().clone()).unwrap();
     let encoded = String::from_utf8(diagnostic.to_canonical_bytes().unwrap()).unwrap();
-    assert!(encoded.contains("entity:party"));
+    assert!(encoded.contains("entity:employee"));
     assert!(encoded.contains("relation:association"));
+}
+
+#[test]
+fn owner_qualified_inherited_field_still_rejects_a_shadowed_field() {
+    let registry = registry();
+    registry
+        .register_entity(EntityDescriptor {
+            type_name: "shadow-employee".into(),
+            is_abstract: false,
+            parent_type: Some("party".into()),
+            owned_attributes: vec![OwnedAttributeDescriptor {
+                annotations: vec![Annotation::Key],
+                ..attribute("name", "shadow-name", ValueType::String)
+            }],
+            doc: None,
+            meta: Default::default(),
+        })
+        .unwrap();
+    let session = SessionHandle::new(registry);
+    let employee = session.exact("shadow-employee").unwrap();
+    assert_match_code(
+        employee.field_owned_by("party", "name"),
+        "cross_owner_field",
+    );
+}
+
+#[test]
+fn inherited_key_order_has_one_canonical_descriptor_identity_and_declaring_fact() {
+    let installed = installed_function_projection();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let session = SessionHandle::new(registry);
+    let employee = session.exact("employee").unwrap();
+    let direct = employee.field("name").unwrap();
+    let qualified = employee.field_owned_by("person", "name").unwrap();
+    assert_eq!(qualified.field_id(), direct.field_id());
+    let query = session
+        .query(session.positional([employee.one()]).unwrap())
+        .unwrap();
+    let window = Window {
+        offset: 0,
+        limit: 2,
+    };
+    let a = query
+        .validate_fetch_rows(
+            &[direct.order(SortDirection::Ascending, MissingOrder::Reject)],
+            window,
+            RowCardinality::BoundedMany,
+        )
+        .unwrap();
+    let b = query
+        .validate_fetch_rows(
+            &[qualified.order(SortDirection::Ascending, MissingOrder::Reject)],
+            window,
+            RowCardinality::BoundedMany,
+        )
+        .unwrap();
+    assert_eq!(a.stable_order().terms().len(), 1);
+    assert_eq!(b.stable_order().terms().len(), 1);
+    assert_eq!(a.request().plan, b.request().plan);
+    let employee_id = TypeId::new(TypeKind::Entity, "employee").unwrap();
+    let fact = installed.projection().models()[&employee_id]
+        .query_tokens()
+        .fields()
+        .values()
+        .find(|field| field.id().attribute().label().as_str() == "name")
+        .unwrap();
+    assert_eq!(fact.declaring_id().owner().label().as_str(), "person");
 }
 
 #[test]

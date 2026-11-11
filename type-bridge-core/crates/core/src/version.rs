@@ -9,9 +9,9 @@
 //!
 //! | Item | Role |
 //! |------|------|
-//! | [`MIN_SUPPORTED`](crate::version::MIN_SUPPORTED) | Floor of the support window (`3.11.0`) |
+//! | [`MIN_SUPPORTED`](crate::version::MIN_SUPPORTED) | Floor of the support window (`3.12.0`) |
 //! | [`MAX_SUPPORTED_LINE`](crate::version::MAX_SUPPORTED_LINE) | Newest measured line as `(major, minor)` (`3.14`) |
-//! | [`window_contains`](crate::version::window_contains) | Admission predicate: at least `3.11.0` |
+//! | [`window_contains`](crate::version::window_contains) | Admission predicate: at least `3.12.0` |
 //! | [`semantic_profile_id`](crate::version::semantic_profile_id) | Map any supported patch release to its frozen schema semantic profile |
 //! | [`GeneratedPackageRelease`](crate::version::GeneratedPackageRelease) | TypeDB patch floors a generated package's profile connects to |
 //! | [`band`](crate::version::band) | Band a driver natively speaks (data; measured against live servers) |
@@ -64,8 +64,8 @@ use serde::{Deserialize, Serialize};
 
 /// A three-component TypeDB version number (`major.minor.patch`).
 ///
-/// Supports both two-component (`"3.11"` → `patch = 0`) and three-component
-/// (`"3.11.5"`) string representations.  Pre-release / build suffixes are
+/// Supports both two-component (`"3.12"` → `patch = 0`) and three-component
+/// (`"3.12.3"`) string representations.  Pre-release / build suffixes are
 /// **not** accepted — `FromStr` is intentionally strict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Version {
@@ -153,20 +153,17 @@ const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 // Window constants (SSOT — declared exactly once, here)
 // ---------------------------------------------------------------------------
 
-/// Floor of the TypeDB support window (`3.11.0`, inclusive).
+/// Floor of the TypeDB support window (`3.12.0`, inclusive).
 ///
 /// Anything below this version is unsupported and must fail fast at connect.
-pub const MIN_SUPPORTED: Version = Version::new(3, 11, 0);
+pub const MIN_SUPPORTED: Version = Version::new(3, 12, 0);
 
 /// Newest measured TypeDB line as `(major, minor)`, inclusive.
 ///
-/// Since 2.3.3 this is not an admission ceiling. Newer lines are admitted
+/// Since 2.3.2 this is not an admission ceiling. Newer lines are admitted
 /// using this line's protocol and semantic assumptions, with a warning that
 /// they are not tested or supported by this TypeBridge release.
 pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 14);
-
-/// Frozen schema semantic profile for every supported TypeDB 3.11 patch.
-pub const TYPEDB_3_11_SEMANTIC_PROFILE_ID: &str = "typedb-3.11.5/v1";
 
 /// Frozen schema semantic profile for every supported TypeDB 3.12 patch.
 pub const TYPEDB_3_12_SEMANTIC_PROFILE_ID: &str = "typedb-3.12.1/v1";
@@ -203,7 +200,6 @@ pub fn semantic_profile_id(v: &Version) -> Option<&'static str> {
         return None;
     }
     match (v.major, v.minor).min(MAX_SUPPORTED_LINE) {
-        (3, 11) => Some(TYPEDB_3_11_SEMANTIC_PROFILE_ID),
         (3, 12) => Some(TYPEDB_3_12_SEMANTIC_PROFILE_ID),
         (3, 13 | 14) => Some(TYPEDB_3_13_SEMANTIC_PROFILE_ID),
         _ => None,
@@ -301,62 +297,32 @@ impl fmt::Display for GeneratedPackageRelease {
 ///
 /// | Minor line | Band |
 /// |-----------|------|
-/// | 3.11 | `8` (protocol 8) |
 /// | 3.12 | `9` (protocol 3.12.0-rc0) |
 /// | 3.13 | `9` (protocol 3.13.4; wire-compatible with 3.12, measured live) |
 /// | 3.14 | `9` (protocol 3.14.0; drivers 3.13.6 and 3.14.0 measured live) |
 /// | newer lines | newest measured line's band (unmeasured assumption) |
-/// | below 3.11 | `None` |
+/// | below 3.12 | `None` |
 ///
 /// When TypeDB ships a new minor line, measure it live and extend **both**
 /// this map and [`server_accepted_bands`] — together they are the only data
 /// the gate needs to cover the new version.
 pub fn band(v: &Version) -> Option<u8> {
     match (v.major, v.minor).min(MAX_SUPPORTED_LINE) {
-        (3, 11) => Some(8),
         (3, 12..=14) => Some(9),
         _ => None,
     }
 }
 
-/// Return the measured or assumed server protocol bands, native band first.
-/// Newer lines reuse the newest measured set; below-floor versions return empty.
+/// Return the supported protocol bands for a server, native band first.
 ///
-/// Band acceptance is asymmetric starting with 3.12: server 3.12 retains
-/// backward compatibility with band-8 drivers (a 3.11.5 driver completes a
-/// full round trip against a 3.12.0 server), while a 3.12 driver's native
-/// band-9 protocol is rejected by a 3.11 server at connect.  A single
-/// per-version band cannot express that, so servers carry an accepted *set*
-/// and drivers keep their single native [`band`].
-///
-/// Server 3.13 is listed as band 9 only: drivers 3.12.3 and 3.13.6 were
-/// measured against it, a band-8 (3.11.5) driver was not, so band 8 is not
-/// claimed. The default build embeds band 9, so it serves 3.13 natively.
-///
-/// Server 3.14 accepts bands 9 and 8: drivers 3.13.6, 3.14.0 (band 9) and
-/// 3.11.5 (band 8) each completed connect, version, schema, write and fetch
-/// against 3.14.0, so band-8 version discovery works there too.
-///
-/// HAZARD (measured live on 3.11.5): a band-9 connection attempt does not
-/// just fail against a 3.11 server — it crashes the server process.  Never
-/// probe band 9 against a server of unknown version; discover through
-/// band 8 first (the embedded runtime's gRPC fallback does exactly that).
-///
-/// Measured live (see [`band`] for the measurement grid):
-///
-/// | Server line | Accepts |
-/// |-------------|---------|
-/// | 3.11 | `[8]` |
-/// | 3.12 | `[9, 8]` |
-/// | 3.13 | `[9]` |
-/// | 3.14 | `[9, 8]` |
-/// | newer lines | newest measured line's set (unmeasured assumption) |
-/// | below 3.11 | `[]` |
+/// Measured 3.12-3.14 servers use the native protocol band `9`. Newer lines
+/// reuse that measured assumption; below-floor versions return an empty set.
+/// Discover the version through HTTP or an exact caller declaration before
+/// constructing a driver: probing an unknown version with a newer protocol
+/// can crash a retired server.
 pub fn server_accepted_bands(v: &Version) -> &'static [u8] {
     match (v.major, v.minor).min(MAX_SUPPORTED_LINE) {
-        (3, 11) => &[8],
-        (3, 12 | 14) => &[9, 8],
-        (3, 13) => &[9],
+        (3, 12..=14) => &[9],
         _ => &[],
     }
 }
@@ -386,10 +352,6 @@ pub fn negotiate_server_band(server: &Version, embedded_bands: &[u8]) -> Option<
 /// 1. Each endpoint is within the support window (`window_contains`).
 /// 2. The server accepts the driver's native protocol band
 ///    (`band(driver) ∈ server_accepted_bands(server)`).
-///
-/// The membership test (rather than band equality) carries the measured
-/// asymmetry: driver 3.11 ↔ server 3.12 is compatible, driver 3.12 ↔
-/// server 3.11 is not.
 ///
 /// # Errors
 ///
@@ -430,16 +392,11 @@ pub fn check_supported(driver: &Version, server: &Version) -> Result<(), Version
 ///
 /// This is the gate the embedded driver (the wheel / server binary / Node
 /// binding) uses, as opposed to [`check_supported`], which gates an externally
-/// **installed** single-band Python driver.  The embedded runtime may carry
-/// several protocol bands simultaneously (the default build embeds them all),
-/// so this gate tests **set intersection**: the server is served when any band
-/// it accepts is present in `embedded_bands`. A 3.12 server accepts `[9, 8]`,
-/// so a reduced build embedding only band 8 can still serve it; the default
-/// build embeds band 9 and negotiates that native band first.
+/// **installed** single-band Python driver. The server is served when its
+/// supported protocol band is present in `embedded_bands`.
 ///
-/// `embedded_bands` is supplied by the caller and is cfg-derived from the
-/// `band8` / `band9` features compiled into that crate — core
-/// declares no band features and never hardcodes the set.
+/// The caller supplies `embedded_bands` from its compiled driver features;
+/// core declares no band features and never hardcodes the embedded set.
 ///
 /// # Errors
 ///
@@ -1383,6 +1340,13 @@ pub(crate) fn native_root_store() -> Result<rustls::RootCertStore, TlsConfigurat
 pub(crate) fn tls_agent(
     roots: rustls::RootCertStore,
 ) -> Result<ureq::Agent, TlsConfigurationError> {
+    tls_agent_with_handshake_timeout(roots, None)
+}
+
+pub(crate) fn tls_agent_with_handshake_timeout(
+    roots: rustls::RootCertStore,
+    handshake_timeout: Option<std::time::Duration>,
+) -> Result<ureq::Agent, TlsConfigurationError> {
     // ureq's default rustls feature uses webpki roots.  Build the client
     // explicitly so `NativeRoots` means the operating-system store and a
     // custom mode trusts only the supplied PEM bundle.
@@ -1394,7 +1358,10 @@ pub(crate) fn tls_agent(
     .with_root_certificates(roots)
     .with_no_client_auth();
     Ok(ureq::builder()
-        .tls_connector(Arc::new(RustlsConnector(Arc::new(config))))
+        .tls_connector(Arc::new(RustlsConnector(
+            Arc::new(config),
+            handshake_timeout,
+        )))
         .redirects(0)
         .try_proxy_from_env(false)
         .build())
@@ -1404,7 +1371,7 @@ pub(crate) fn tls_agent(
 ///
 /// ureq's own rustls support is its `tls` feature, which also links
 /// webpki-roots; this connector keeps the root store the caller chose.
-struct RustlsConnector(Arc<rustls::ClientConfig>);
+struct RustlsConnector(Arc<rustls::ClientConfig>, Option<std::time::Duration>);
 
 impl ureq::TlsConnector for RustlsConnector {
     fn connect(
@@ -1422,10 +1389,77 @@ impl ureq::TlsConnector for RustlsConnector {
             .to_owned();
         let mut connection = rustls::ClientConnection::new(Arc::clone(&self.0), name)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        connection.complete_io(&mut io)?;
+        if let Some(timeout) = self.1 {
+            let socket = io
+                .socket()
+                .ok_or_else(|| std::io::Error::other("TLS handshake requires a bounded socket"))?;
+            let read_timeout = socket.read_timeout()?;
+            let write_timeout = socket.write_timeout()?;
+            let result = connection.complete_io(&mut HandshakeIo {
+                io: &mut io,
+                deadline: std::time::Instant::now() + timeout,
+                read_timeout,
+                write_timeout,
+            });
+            if let Some(socket) = io.socket() {
+                socket.set_read_timeout(read_timeout)?;
+                socket.set_write_timeout(write_timeout)?;
+            }
+            result?;
+        } else {
+            connection.complete_io(&mut io)?;
+        }
         Ok(Box::new(RustlsStream(rustls::StreamOwned::new(
             connection, io,
         ))))
+    }
+}
+
+// Apply the remaining absolute handshake budget to each read/write, so a
+// peer that trickles TLS records cannot restart the connection timeout.
+struct HandshakeIo<'a> {
+    io: &'a mut Box<dyn ureq::ReadWrite>,
+    deadline: std::time::Instant,
+    read_timeout: Option<std::time::Duration>,
+    write_timeout: Option<std::time::Duration>,
+}
+impl HandshakeIo<'_> {
+    fn remaining(
+        &self,
+        previous: Option<std::time::Duration>,
+    ) -> std::io::Result<std::time::Duration> {
+        let remaining = self
+            .deadline
+            .checked_duration_since(std::time::Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "TLS handshake deadline exceeded",
+                )
+            })?;
+        Ok(previous.map_or(remaining, |previous| previous.min(remaining)))
+    }
+}
+impl std::io::Read for HandshakeIo<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let timeout = self.remaining(self.read_timeout)?;
+        if let Some(socket) = self.io.socket() {
+            socket.set_read_timeout(Some(timeout))?;
+        }
+        self.io.read(buffer)
+    }
+}
+impl std::io::Write for HandshakeIo<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let timeout = self.remaining(self.write_timeout)?;
+        if let Some(socket) = self.io.socket() {
+            socket.set_write_timeout(Some(timeout))?;
+        }
+        self.io.write(buffer)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.io.flush()
     }
 }
 
@@ -1748,7 +1782,7 @@ pub fn server_version(address: &str, http_port: u16, tls: bool) -> Result<Versio
 pub enum VersionError {
     /// One endpoint is below the minimum admitted version.
     ///
-    /// Since 2.3.3 this existing variant is no longer produced for versions
+    /// Since 2.3.2 this existing variant is no longer produced for versions
     /// above the newest measured line; those are admitted with a warning.
     Unsupported {
         /// Which endpoint (`"driver"` or `"server"`).
@@ -1795,7 +1829,7 @@ pub enum VersionError {
 
 /// Human-readable admission range used consistently in error messages.
 /// Kept in step with [`MIN_SUPPORTED`] by a test; there is no upper refusal.
-const WINDOW_HUMAN: &str = "3.11.0 or newer";
+const WINDOW_HUMAN: &str = "3.12.0 or newer";
 
 impl VersionError {
     /// Retain fixed HTTP probe diagnoses and locally authored version evidence.
@@ -2090,14 +2124,14 @@ mod tests {
 
     #[test]
     fn parse_three_component() {
-        let v: Version = "3.11.5".parse().unwrap();
-        assert_eq!(v, Version::new(3, 11, 5));
+        let v: Version = "3.12.3".parse().unwrap();
+        assert_eq!(v, Version::new(3, 12, 3));
     }
 
     #[test]
     fn parse_two_component_patch_zero() {
-        let v: Version = "3.11".parse().unwrap();
-        assert_eq!(v, Version::new(3, 11, 0));
+        let v: Version = "3.12".parse().unwrap();
+        assert_eq!(v, Version::new(3, 12, 0));
     }
 
     #[test]
@@ -2120,26 +2154,26 @@ mod tests {
     fn display_round_trips() {
         let v = Version::new(3, 12, 1);
         assert_eq!(v.to_string(), "3.12.1");
-        let v2 = Version::new(3, 11, 0);
-        assert_eq!(v2.to_string(), "3.11.0");
+        let v2 = Version::new(3, 12, 0);
+        assert_eq!(v2.to_string(), "3.12.0");
     }
 
     // -- window_contains -----------------------------------------------------
 
     #[test]
-    fn window_rejects_versions_below_3_11() {
+    fn window_rejects_versions_below_floor() {
         assert!(!window_contains(&Version::new(3, 8, 0)));
         assert!(!window_contains(&Version::new(3, 10, 99)));
     }
 
     #[test]
-    fn window_accepts_3_11_0_floor() {
-        assert!(window_contains(&Version::new(3, 11, 0)));
+    fn window_rejects_previous_line_first_patch() {
+        assert!(!window_contains(&Version::new(3, 11, 0)));
     }
 
     #[test]
-    fn window_accepts_3_11_99() {
-        assert!(window_contains(&Version::new(3, 11, 99)));
+    fn window_rejects_previous_line_last_patch() {
+        assert!(!window_contains(&Version::new(3, 11, 99)));
     }
 
     #[test]
@@ -2155,18 +2189,17 @@ mod tests {
     }
 
     #[test]
-    fn server_3_14_accepts_bands_9_and_8_and_shares_the_3_13_profile() {
-        // Measured live: drivers 3.13.6, 3.14.0 (band 9) and 3.11.5 (band 8)
-        // each completed connect, version, schema, write and fetch on 3.14.0.
+    fn server_3_14_uses_native_band_and_shares_the_3_13_profile() {
+        // The remaining native drivers complete the measured server journey.
         let server = Version::new(3, 14, 0);
-        assert_eq!(server_accepted_bands(&server), &[9, 8]);
-        assert_eq!(negotiate_server_band(&server, &[8, 9]), Some(9));
-        assert_eq!(negotiate_server_band(&server, &[8]), Some(8));
+        assert_eq!(server_accepted_bands(&server), &[9]);
+        assert_eq!(negotiate_server_band(&server, &[9]), Some(9));
+        assert_eq!(negotiate_server_band(&server, &[1]), None);
         assert_eq!(
             semantic_profile_id(&server),
             Some(TYPEDB_3_13_SEMANTIC_PROFILE_ID)
         );
-        check_server_supported(&server, &[8, 9]).expect("3.14 is in window");
+        check_server_supported(&server, &[9]).expect("3.14 is in window");
     }
 
     #[test]
@@ -2189,8 +2222,8 @@ mod tests {
                 server_accepted_bands(&version),
                 server_accepted_bands(&measured)
             );
-            assert_eq!(negotiate_server_band(&version, &[8, 9]), Some(9));
-            check_server_supported(&version, &[8, 9]).unwrap();
+            assert_eq!(negotiate_server_band(&version, &[9]), Some(9));
+            check_server_supported(&version, &[9]).unwrap();
             check_supported(&measured, &version).unwrap();
         }
     }
@@ -2203,10 +2236,7 @@ mod tests {
     #[test]
     fn every_supported_patch_maps_to_its_frozen_semantic_profile() {
         for patch in [0, 1, 4, 5, 99] {
-            assert_eq!(
-                semantic_profile_id(&Version::new(3, 11, patch)),
-                Some(TYPEDB_3_11_SEMANTIC_PROFILE_ID)
-            );
+            assert_eq!(semantic_profile_id(&Version::new(3, 11, patch)), None);
             assert_eq!(
                 semantic_profile_id(&Version::new(3, 12, patch)),
                 Some(TYPEDB_3_12_SEMANTIC_PROFILE_ID)
@@ -2227,6 +2257,7 @@ mod tests {
 
     #[test]
     fn generated_packages_admit_patch_floors_per_profile() {
+        let retired_profile = format!("typedb-{}/v1", Version::new(3, 11, 5));
         let servers =
             |profile| GeneratedPackageRelease::for_profile(profile).map(|r| r.servers().to_vec());
         assert_eq!(
@@ -2237,7 +2268,7 @@ mod tests {
             servers(TYPEDB_3_13_SEMANTIC_PROFILE_ID),
             Some(vec![Version::new(3, 13, 6), Version::new(3, 14, 0)])
         );
-        assert_eq!(servers(TYPEDB_3_11_SEMANTIC_PROFILE_ID), None);
+        assert_eq!(servers(&retired_profile), None);
         assert_eq!(servers("typedb-3.14.0/v1"), None);
 
         let r313 = GeneratedPackageRelease::for_profile(TYPEDB_3_13_SEMANTIC_PROFILE_ID).unwrap();
@@ -2301,8 +2332,8 @@ mod tests {
     }
 
     #[test]
-    fn band_3_11_is_8() {
-        assert_eq!(band(&Version::new(3, 11, 5)), Some(8));
+    fn retired_previous_line_has_no_band() {
+        assert_eq!(band(&Version::new(3, 11, 5)), None);
     }
 
     #[test]
@@ -2342,46 +2373,40 @@ mod tests {
     }
 
     #[test]
-    fn server_3_11_accepts_band8_only() {
-        assert_eq!(server_accepted_bands(&Version::new(3, 11, 5)), &[8]);
+    fn retired_previous_server_has_no_active_band() {
+        assert!(server_accepted_bands(&Version::new(3, 11, 5)).is_empty());
     }
 
     #[test]
-    fn server_3_12_accepts_bands_9_and_8_native_first() {
-        // Measured: server 3.12.0 completes full round trips with both a
-        // 3.12.0 (band-9) and a 3.11.5 (band-8) driver.
-        assert_eq!(server_accepted_bands(&Version::new(3, 12, 0)), &[9, 8]);
+    fn server_3_12_accepts_native_band() {
+        // The supported runtime uses the native driver.
+        assert_eq!(server_accepted_bands(&Version::new(3, 12, 0)), &[9]);
     }
 
     #[test]
     fn server_3_13_accepts_band9_only() {
         // Measured: drivers 3.12.3 and 3.13.6 round-trip against 3.13.6.
-        // Band 8 is unmeasured on 3.13 and therefore not claimed.
         assert_eq!(server_accepted_bands(&Version::new(3, 13, 6)), &[9]);
     }
 
     #[test]
     fn newer_server_uses_the_measured_set_and_retired_servers_remain_unmapped() {
-        assert_eq!(server_accepted_bands(&Version::new(3, 15, 0)), &[9, 8]);
+        assert_eq!(server_accepted_bands(&Version::new(3, 15, 0)), &[9]);
         assert!(server_accepted_bands(&Version::new(2, 28, 0)).is_empty());
     }
 
     // -- negotiate_server_band -------------------------------------------------
 
     #[test]
-    fn negotiate_3_12_without_band9_picks_band8() {
-        // A reduced band-8 build uses the server's compatible fallback.
-        assert_eq!(
-            negotiate_server_band(&Version::new(3, 12, 0), &[8]),
-            Some(8)
-        );
+    fn negotiate_3_12_without_native_band_refuses() {
+        assert_eq!(negotiate_server_band(&Version::new(3, 12, 0), &[1]), None);
     }
 
     #[test]
     fn negotiate_prefers_native_band_when_embedded() {
         // A build embedding band 9 connects to a 3.12 server natively.
         assert_eq!(
-            negotiate_server_band(&Version::new(3, 12, 0), &[8, 9]),
+            negotiate_server_band(&Version::new(3, 12, 0), &[9]),
             Some(9)
         );
     }
@@ -2389,10 +2414,10 @@ mod tests {
     #[test]
     fn negotiate_3_13_requires_band9() {
         assert_eq!(
-            negotiate_server_band(&Version::new(3, 13, 6), &[8, 9]),
+            negotiate_server_band(&Version::new(3, 13, 6), &[9]),
             Some(9)
         );
-        assert_eq!(negotiate_server_band(&Version::new(3, 13, 6), &[8]), None);
+        assert_eq!(negotiate_server_band(&Version::new(3, 13, 6), &[1]), None);
     }
 
     #[test]
@@ -2404,7 +2429,7 @@ mod tests {
 
     #[test]
     fn check_retired_server_rejects_as_unsupported() {
-        let err = check_supported(&Version::new(3, 11, 5), &Version::new(3, 10, 4)).unwrap_err();
+        let err = check_supported(&Version::new(3, 12, 0), &Version::new(3, 10, 4)).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2419,7 +2444,7 @@ mod tests {
 
     #[test]
     fn check_retired_driver_rejects_as_unsupported() {
-        let err = check_supported(&Version::new(3, 10, 0), &Version::new(3, 11, 5)).unwrap_err();
+        let err = check_supported(&Version::new(3, 10, 0), &Version::new(3, 12, 0)).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2433,9 +2458,21 @@ mod tests {
     }
 
     #[test]
-    fn check_driver_3115_server_3120_accept() {
-        // Measured: server 3.12 retains band-8 compatibility.
-        assert!(check_supported(&Version::new(3, 11, 5), &Version::new(3, 12, 0)).is_ok());
+    fn retired_driver_refuses_against_supported_servers() {
+        for server in [
+            Version::new(3, 12, 0),
+            Version::new(3, 13, 6),
+            Version::new(3, 14, 0),
+        ] {
+            let error = check_supported(&Version::new(3, 11, 5), &server).unwrap_err();
+            assert!(matches!(
+                error,
+                VersionError::Unsupported {
+                    component: "driver",
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]
@@ -2444,14 +2481,20 @@ mod tests {
     }
 
     #[test]
-    fn check_driver_3120_server_3115_reject_band_mismatch() {
-        // Measured: a band-9 driver is rejected by a 3.11 server at connect —
-        // the asymmetric direction the accepted-set model exists for.
-        let err = check_supported(&Version::new(3, 12, 0), &Version::new(3, 11, 5)).unwrap_err();
-        assert!(
-            matches!(err, VersionError::BandMismatch { .. }),
-            "expected BandMismatch, got {err:?}"
-        );
+    fn retired_servers_refuse_before_band_negotiation() {
+        for driver in [
+            Version::new(3, 12, 0),
+            Version::new(3, 13, 6),
+            Version::new(3, 14, 0),
+        ] {
+            for patch in [0, 5, 99] {
+                let server = Version::new(3, 11, patch);
+                let error = check_supported(&driver, &server).unwrap_err();
+                assert!(
+                    matches!(error, VersionError::Unsupported { component: "server", found } if found == server)
+                );
+            }
+        }
     }
 
     #[test]
@@ -2465,24 +2508,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn check_driver_3115_server_3136_reject_band_mismatch() {
-        let err = check_supported(&Version::new(3, 11, 5), &Version::new(3, 13, 6)).unwrap_err();
-        assert!(
-            matches!(err, VersionError::BandMismatch { .. }),
-            "expected BandMismatch, got {err:?}"
-        );
-    }
-
-    #[test]
-    fn check_driver_3136_server_3115_reject_band_mismatch() {
-        let err = check_supported(&Version::new(3, 13, 6), &Version::new(3, 11, 5)).unwrap_err();
-        assert!(
-            matches!(err, VersionError::BandMismatch { .. }),
-            "expected BandMismatch, got {err:?}"
-        );
     }
 
     #[test]
@@ -2509,7 +2534,7 @@ mod tests {
 
     #[test]
     fn check_server_2_28_reject_window() {
-        let err = check_supported(&Version::new(3, 11, 5), &Version::new(2, 28, 0)).unwrap_err();
+        let err = check_supported(&Version::new(3, 12, 0), &Version::new(2, 28, 0)).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2525,14 +2550,22 @@ mod tests {
     // -- check_server_supported ----------------------------------------------
 
     #[test]
-    fn server_3115_retained_bands_accept() {
-        assert!(check_server_supported(&Version::new(3, 11, 5), &[8, 9]).is_ok());
+    fn retired_servers_refuse_with_any_embedded_driver() {
+        for patch in [0, 5, 99] {
+            let server = Version::new(3, 11, patch);
+            for embedded in [&[9][..], &[1][..], &[][..]] {
+                let error = check_server_supported(&server, embedded).unwrap_err();
+                assert!(
+                    matches!(error, VersionError::Unsupported { component: "server", found } if found == server)
+                );
+            }
+        }
     }
 
     #[test]
     fn server_373_reject_window() {
         // Below the floor — window class, never a band/embedded message.
-        let err = check_server_supported(&Version::new(3, 7, 3), &[8, 9]).unwrap_err();
+        let err = check_server_supported(&Version::new(3, 7, 3), &[9]).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2550,10 +2583,8 @@ mod tests {
     }
 
     #[test]
-    fn server_3120_both_bands_accept() {
-        // Dual-band server: accepts [9, 8]; the default build's band-8 driver
-        // serves it (measured live).
-        assert!(check_server_supported(&Version::new(3, 12, 0), &[8, 9]).is_ok());
+    fn server_3120_native_band_accepts() {
+        assert!(check_server_supported(&Version::new(3, 12, 0), &[9]).is_ok());
     }
 
     #[test]
@@ -2567,13 +2598,13 @@ mod tests {
 
     #[test]
     fn server_3136_band9_accepts() {
-        assert!(check_server_supported(&Version::new(3, 13, 0), &[8, 9]).is_ok());
+        assert!(check_server_supported(&Version::new(3, 13, 0), &[9]).is_ok());
         assert!(check_server_supported(&Version::new(3, 13, 6), &[9]).is_ok());
     }
 
     #[test]
-    fn server_3136_band8_only_build_is_unavailable() {
-        let err = check_server_supported(&Version::new(3, 13, 6), &[8]).unwrap_err();
+    fn server_3136_without_native_driver_is_unavailable() {
+        let err = check_server_supported(&Version::new(3, 13, 6), &[1]).unwrap_err();
         assert!(
             matches!(err, VersionError::EmbeddedUnavailable { .. }),
             "expected EmbeddedUnavailable, got {err:?}"
@@ -2582,13 +2613,13 @@ mod tests {
 
     #[test]
     fn newer_servers_are_admitted_with_measured_protocol_assumptions() {
-        check_server_supported(&Version::new(3, 15, 0), &[8, 9]).unwrap();
-        check_server_supported(&Version::new(4, 0, 0), &[8, 9]).unwrap();
+        check_server_supported(&Version::new(3, 15, 0), &[9]).unwrap();
+        check_server_supported(&Version::new(4, 0, 0), &[9]).unwrap();
     }
 
     #[test]
     fn retired_server_is_unsupported_even_with_retained_bands() {
-        let err = check_server_supported(&Version::new(3, 10, 4), &[8, 9]).unwrap_err();
+        let err = check_server_supported(&Version::new(3, 10, 4), &[9]).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2602,23 +2633,17 @@ mod tests {
     }
 
     #[test]
-    fn server_3115_band9_only_unavailable() {
-        let err = check_server_supported(&Version::new(3, 11, 5), &[9]).unwrap_err();
-        assert!(
-            matches!(err, VersionError::EmbeddedUnavailable { .. }),
-            "expected EmbeddedUnavailable, got {err:?}"
-        );
-    }
-
-    #[test]
     fn embedded_unavailable_message_names_server_no_forbidden_tokens() {
         let err = VersionError::EmbeddedUnavailable {
             server: Version::new(3, 11, 5),
         };
         let msg = err.to_string();
-        assert!(msg.contains("3.11.5"), "missing server version: {msg}");
+        assert!(
+            msg.contains(&Version::new(3, 11, 5).to_string()),
+            "missing server version: {msg}"
+        );
         // The forbidden tokens must never appear in any gate message.
-        for forbidden in ["band 8", "band 9", "0.0.0"] {
+        for forbidden in ["band", "0.0.0"] {
             assert!(
                 !msg.contains(forbidden),
                 "embedded-unavailable message leaked forbidden token {forbidden:?}: {msg}"
@@ -2629,9 +2654,9 @@ mod tests {
     #[test]
     fn check_server_supported_window_reject_no_forbidden_tokens() {
         // The window-class rejection from the embedded gate must also be clean.
-        let err = check_server_supported(&Version::new(3, 7, 3), &[8, 9]).unwrap_err();
+        let err = check_server_supported(&Version::new(3, 7, 3), &[9]).unwrap_err();
         let msg = err.to_string();
-        for forbidden in ["band 8", "band 9", "0.0.0"] {
+        for forbidden in ["band", "0.0.0"] {
             assert!(
                 !msg.contains(forbidden),
                 "window rejection leaked forbidden token {forbidden:?}: {msg}"
@@ -2649,7 +2674,7 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("2.28.0"), "missing detected version: {msg}");
-        assert!(msg.contains("3.11.0"), "missing window floor: {msg}");
+        assert!(msg.contains("3.12.0"), "missing window floor: {msg}");
         assert!(
             msg.contains("or newer"),
             "unexpected admission ceiling: {msg}"
@@ -2664,17 +2689,20 @@ mod tests {
     #[test]
     fn band_mismatch_message_contains_versions_and_remediation() {
         let err = VersionError::BandMismatch {
-            driver: Version::new(3, 12, 0),
-            server: Version::new(3, 11, 5),
-            driver_band: 9,
-            server_band: 8,
+            driver: Version::new(4, 0, 0),
+            server: Version::new(3, 12, 0),
+            driver_band: 10,
+            server_band: 9,
         };
         let msg = err.to_string();
         assert!(msg.contains("3.12.0"), "missing driver version: {msg}");
-        assert!(msg.contains("3.11.5"), "missing server version: {msg}");
+        assert!(
+            msg.contains(&Version::new(3, 12, 0).to_string()),
+            "missing server version: {msg}"
+        );
         // Remediation must mention the server line.
         assert!(
-            msg.contains("3.11"),
+            msg.contains("3.12"),
             "missing server line in remediation: {msg}"
         );
         // Must not expose bare band numbers as the primary explanation.
@@ -2685,16 +2713,16 @@ mod tests {
     }
 
     #[test]
-    fn band9_to_band8_mismatch_does_not_prescribe_an_unavailable_driver() {
+    fn future_mismatch_does_not_prescribe_an_unavailable_driver() {
         let err = VersionError::BandMismatch {
-            driver: Version::new(3, 12, 0),
-            server: Version::new(3, 11, 5),
-            driver_band: 9,
-            server_band: 8,
+            driver: Version::new(4, 0, 0),
+            server: Version::new(3, 12, 0),
+            driver_band: 10,
+            server_band: 9,
         };
         let msg = err.to_string();
-        assert!(msg.contains("3.12.0") && msg.contains("3.11.5"));
-        assert!(!msg.contains("~3.11"), "unsafe driver prescription: {msg}");
+        assert!(msg.contains("4.0.0") && msg.contains("3.12.0"));
+        assert!(!msg.contains("~3.12"), "unsafe driver prescription: {msg}");
         assert!(msg.contains("interpreter") && msg.contains("server"));
     }
 
@@ -3417,7 +3445,7 @@ mod tests {
         }
         let message = err.to_string();
         assert!(message.contains("3.12"));
-        assert!(message.contains("3.11.5"));
+        assert!(message.contains(&Version::new(3, 11, 5).to_string()));
         assert!(message.contains("upgrade the server"));
     }
 

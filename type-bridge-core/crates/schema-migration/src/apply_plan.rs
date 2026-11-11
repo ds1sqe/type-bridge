@@ -35,6 +35,11 @@ pub enum MigrationApplyTarget {
 /// One trusted step aligned to its independently verified execution evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VerifiedMigrationApplyStep {
+    /// One atomic data program bound to its historical schema.
+    Data {
+        /// Constructor-validated data step.
+        step: MigrationStep,
+    },
     /// A state-preserving typed assertion retained at its exact manifest position.
     Assertion {
         /// The constructor-validated binding-neutral migration step.
@@ -62,7 +67,8 @@ impl VerifiedMigrationApplyStep {
         match self {
             Self::Assertion { step, .. }
             | Self::SchemaDelta { step, .. }
-            | Self::Backfill { step } => step,
+            | Self::Backfill { step }
+            | Self::Data { step } => step,
         }
     }
 
@@ -70,14 +76,14 @@ impl VerifiedMigrationApplyStep {
     pub fn validated_assertion(&self) -> Option<&ValidatedMigrationAssertionPlan> {
         match self {
             Self::Assertion { validated, .. } => Some(validated),
-            Self::SchemaDelta { .. } | Self::Backfill { .. } => None,
+            Self::Data { .. } | Self::SchemaDelta { .. } | Self::Backfill { .. } => None,
         }
     }
 
     /// Return provider lowering only for a schema-delta step.
     pub fn lowering(&self) -> Option<&SchemaLoweringPlan> {
         match self {
-            Self::Assertion { .. } | Self::Backfill { .. } => None,
+            Self::Data { .. } | Self::Assertion { .. } | Self::Backfill { .. } => None,
             Self::SchemaDelta { lowering, .. } => Some(lowering),
         }
     }
@@ -128,7 +134,10 @@ pub fn partition_transaction_groups(
         if matches!(step, VerifiedMigrationApplyStep::Assertion { .. }) {
             continue;
         }
-        if matches!(step, VerifiedMigrationApplyStep::Backfill { .. }) {
+        if matches!(
+            step,
+            VerifiedMigrationApplyStep::Backfill { .. } | VerifiedMigrationApplyStep::Data { .. }
+        ) {
             if first_step_index != step_index {
                 return Err(contract_failure(
                     DiagnosticCategory::InvalidContract,
@@ -205,6 +214,7 @@ pub struct VerifiedMigrationApplyManifest {
     steps: Vec<VerifiedMigrationApplyStep>,
     transaction_groups: Vec<VerifiedMigrationTransactionGroup>,
     backfill_step_indices: Vec<usize>,
+    data_step_indices: Vec<usize>,
 }
 
 impl VerifiedMigrationApplyManifest {
@@ -232,11 +242,17 @@ impl VerifiedMigrationApplyManifest {
     pub fn backfill_step_indices(&self) -> &[usize] {
         &self.backfill_step_indices
     }
+
+    /// Return indices of atomic data steps in manifest order.
+    pub fn data_step_indices(&self) -> &[usize] {
+        &self.data_step_indices
+    }
 }
 
 /// An opaque, deterministic, pre-I/O migration apply plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedMigrationApplyPlan {
+    schema_authorities: Vec<DeclaredSchema>,
     applied_migrations: Vec<MigrationId>,
     applied_frontier: Vec<MigrationId>,
     migrations: Vec<VerifiedMigrationApplyManifest>,
@@ -250,6 +266,12 @@ pub struct VerifiedMigrationApplyPlan {
 }
 
 impl VerifiedMigrationApplyPlan {
+    /// Return replay-authoritative schemas at every planned data/schema boundary.
+    /// Providers use these declared domains without rediscovering schema during data execution.
+    pub fn schema_authorities(&self) -> &[DeclaredSchema] {
+        &self.schema_authorities
+    }
+
     /// Return every migration identity supplied as applied, in canonical order.
     pub fn applied_migrations(&self) -> &[MigrationId] {
         &self.applied_migrations
@@ -420,6 +442,7 @@ fn build_verified_migration_apply_plan_inner(
     let source_from_applied = current_schema.clone();
     let state_from_applied = current_state.clone();
     let mut migrations = Vec::with_capacity(ordered_ids.len());
+    let mut schema_authorities = Vec::new();
     let mut required_capabilities = CapabilitySet::new();
 
     for id in ordered_ids {
@@ -510,12 +533,25 @@ fn build_verified_migration_apply_plan_inner(
         let mut replayed = current_schema
             .clone()
             .expect("a planned manifest establishes a source schema");
+        schema_authorities.push(replayed.clone());
         let mut verified_steps = Vec::with_capacity(manifest.steps().len());
         let mut pending_assertions = Vec::new();
         for step in manifest.steps() {
             step.validate()?;
             step.required_capabilities()
                 .ensure_supported_by(lowering_binding.available_capabilities())?;
+            if step.as_data().is_some() {
+                if !pending_assertions.is_empty() {
+                    return Err(contract_failure(
+                        DiagnosticCategory::InvalidContract,
+                        "migration_apply_assertion_before_data",
+                        "assertion evidence cannot precede a data step",
+                    )
+                    .into());
+                }
+                verified_steps.push(VerifiedMigrationApplyStep::Data { step: step.clone() });
+                continue;
+            }
             if step.as_backfill().is_some() {
                 if !pending_assertions.is_empty() {
                     return Err(contract_failure(
@@ -562,6 +598,7 @@ fn build_verified_migration_apply_plan_inner(
                 lowering: Box::new(lowering),
             });
             replayed = target_schema;
+            schema_authorities.push(replayed.clone());
         }
         if !pending_assertions.is_empty() {
             return Err(contract_failure(
@@ -589,12 +626,20 @@ fn build_verified_migration_apply_plan_inner(
                 matches!(step, VerifiedMigrationApplyStep::Backfill { .. }).then_some(index)
             })
             .collect();
+        let data_step_indices = verified_steps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| {
+                matches!(step, VerifiedMigrationApplyStep::Data { .. }).then_some(index)
+            })
+            .collect();
         migrations.push(VerifiedMigrationApplyManifest {
             digest: verified_manifest_digest(manifest)?,
             manifest: manifest.clone(),
             steps: verified_steps,
             transaction_groups,
             backfill_step_indices,
+            data_step_indices,
         });
         current_schema = Some(manifest.target_schema().clone());
         current_state = Some(manifest.target_state().clone());
@@ -624,6 +669,7 @@ fn build_verified_migration_apply_plan_inner(
     resulting_applied.extend(migrations.iter().map(|entry| entry.manifest().id().clone()));
     let target_frontier = graph.applied_frontier(&resulting_applied)?;
     Ok(VerifiedMigrationApplyPlan {
+        schema_authorities,
         applied_migrations: applied.iter().cloned().collect(),
         applied_frontier,
         migrations,

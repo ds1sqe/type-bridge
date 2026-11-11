@@ -1,13 +1,12 @@
-//! Successor-runtime adapters for binding-neutral projected mutation batches.
+//! staged adapters for binding-neutral projected mutation batches.
 
 use type_bridge_contract::id::TypeId;
-use type_bridge_contract::projection::ProjectionHandler;
 use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticCategory, SdkExecutionDiagnostic};
 use type_bridge_orm::session::context::TransactionContext;
 use type_bridge_orm::{
-    AnswerCancellation, Database, InstalledRuntimeProjection, ProjectedBatch,
-    ProjectedBatchExecutor, ProjectedBatchInvocationControl, ProjectedBatchOperation,
-    ProjectedBatchResult, ProjectedBatchRow, QueryExecutionResourceLimits,
+    AnswerCancellation, InstalledRuntimeProjection, ProjectedBatch, ProjectedBatchExecutor,
+    ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
+    ProjectedBatchRow, QueryExecutionResourceLimits, QueryTarget, QueryTargetError,
 };
 
 use crate::__codegen::{CompleteModel, EncodedCreate, IntoEncodedCreate};
@@ -16,11 +15,135 @@ use crate::entity_codec::map_validation_error;
 use crate::error::{Error, ModelValidationPhase};
 use crate::projected_codec::{materialize_projected, project_create, project_encoded_create};
 
+pub(crate) fn map_target_execution_error(error: QueryTargetError) -> Error {
+    match error {
+        QueryTargetError::Interrupted(error) => map_execution_error(error),
+        QueryTargetError::Commit(error)
+            if error.diagnostic().category() == SdkDiagnosticCategory::Integrity =>
+        {
+            Error::from_sdk_execution_with_source(
+                error.diagnostic(),
+                ModelValidationPhase::Hydration,
+                Some(error),
+            )
+        }
+        other => crate::remote::target_error(other),
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
-pub(crate) fn uses_successor_batch_runtime(installed: &InstalledRuntimeProjection) -> bool {
-    installed.projection().generator_handlers() == [ProjectionHandler::rust_v2()]
+pub(crate) async fn execute_transaction_single<M: CompleteModel>(
+    transaction: &TransactionContext,
+    installed: &InstalledRuntimeProjection,
+    create: type_bridge_orm::ProjectedCreate,
+    operation: crate::hooks::CrudOperation,
+    iid: Option<&str>,
+    kind: crate::hooks::ModelKind,
+) -> Result<crate::WriteResult<M>> {
+    let control = transaction_control(transaction);
+    let executor = type_bridge_orm::ProjectedCrudExecutor::new(installed);
+    let batch = prepare_single(installed, create, operation, iid, &control)?;
+    let binding_error = std::sync::Mutex::new(None);
+    let result = executor
+        .execute_single_write_in_transaction_with_compatibility(
+            transaction,
+            &batch,
+            control,
+            |things| {
+                crate::projected_codec::materialize_write_result(things, installed).map_err(
+                    |error| {
+                        *binding_error
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+                        ProjectedBatchExecutor::binding_materialization_failure(0)
+                    },
+                )
+            },
+        )
+        .await;
+    if let Some(error) = binding_error
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        return Err(error);
+    }
+    result.map_err(|error| Error::from_projected_crud(error, kind, Some(operation)))
+}
+
+fn prepare_single(
+    installed: &InstalledRuntimeProjection,
+    create: type_bridge_orm::ProjectedCreate,
+    operation: crate::hooks::CrudOperation,
+    iid: Option<&str>,
+    control: &ProjectedBatchInvocationControl,
+) -> Result<ProjectedBatch> {
+    use crate::hooks::CrudOperation;
+    let model = create.type_id().clone();
+    let (batch_operation, row) = match operation {
+        CrudOperation::Insert => (
+            ProjectedBatchOperation::Insert,
+            ProjectedBatchRow::Create(create),
+        ),
+        CrudOperation::Put => (
+            ProjectedBatchOperation::Put,
+            ProjectedBatchRow::Create(create),
+        ),
+        CrudOperation::Update => (
+            ProjectedBatchOperation::Update,
+            ProjectedBatchRow::Update {
+                iid: iid
+                    .expect("single update requires its validated IID")
+                    .to_owned(),
+                replacement: create,
+            },
+        ),
+        CrudOperation::Delete => unreachable!("a create payload cannot select deletion"),
+    };
+    type_bridge_orm::ProjectedCrudExecutor::new(installed)
+        .single_controlled_write_batch(&model, batch_operation, row, control)
+        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))
+}
+
+pub(crate) async fn execute_target_single<M: CompleteModel>(
+    target: QueryTarget<'_>,
+    installed: &InstalledRuntimeProjection,
+    create: type_bridge_orm::ProjectedCreate,
+    operation: crate::hooks::CrudOperation,
+    iid: Option<&str>,
+) -> Result<crate::WriteResult<M>> {
+    let control = control(target.answer_limits().unwrap_or_default());
+    let batch = prepare_single(installed, create, operation, iid, &control)?;
+    let binding_error = std::sync::Mutex::new(None);
+    let result = type_bridge_orm::ProjectedCrudExecutor::new(installed)
+        .execute_single_write_on_target(target, &batch, control, |things| {
+            crate::projected_codec::materialize_write_result(things, installed).map_err(|error| {
+                *binding_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+                ProjectedBatchExecutor::binding_materialization_failure(0)
+            })
+        })
+        .await;
+    let original = binding_error
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    result.map_err(|error| match (error, original) {
+        (QueryTargetError::Commit(error), Some(original)) => {
+            Error::from(error.with_binding_source(Box::new(original)))
+        }
+        (_, Some(original)) => original,
+        (error, None) => map_target_execution_error(error),
+    })
+}
+
+pub(crate) fn create_operation(put: bool) -> ProjectedBatchOperation {
+    if put {
+        ProjectedBatchOperation::Put
+    } else {
+        ProjectedBatchOperation::Insert
+    }
 }
 
 pub(crate) fn validate_binding_row_count(row_count: usize) -> Result<()> {
@@ -73,12 +196,12 @@ pub(crate) fn project_encoded_batch_create(
 pub(crate) fn update_rows<T: IntoEncodedCreate>(
     installed: &InstalledRuntimeProjection,
     model: &TypeId,
-    inputs: Vec<(String, T)>,
+    inputs: Vec<(crate::Iid, T)>,
 ) -> Result<Vec<ProjectedBatchRow>> {
     let mut rows = reserved_binding_vec(inputs.len())?;
     for (ordinal, (iid, input)) in inputs.into_iter().enumerate() {
         rows.push(ProjectedBatchRow::Update {
-            iid,
+            iid: iid.into_string(),
             replacement: project_batch_create(input, model, installed, ordinal)?,
         });
     }
@@ -95,77 +218,81 @@ pub(crate) fn project_batch_create<T: IntoEncodedCreate>(
         .map_err(|error| error.with_projected_batch_row(checked_batch_ordinal(ordinal)))
 }
 
-pub(crate) fn delete_rows(iids: &[String]) -> Result<Vec<ProjectedBatchRow>> {
+pub(crate) fn delete_rows(iids: &[crate::Iid]) -> Result<Vec<ProjectedBatchRow>> {
     let mut rows = reserved_binding_vec(iids.len())?;
     for iid in iids {
-        rows.push(ProjectedBatchRow::Delete { iid: iid.clone() });
+        rows.push(ProjectedBatchRow::Delete {
+            iid: iid.as_str().to_owned(),
+        });
     }
     Ok(rows)
 }
 
 pub(crate) async fn execute_owned_things<M: CompleteModel>(
-    database: &Database,
+    target: QueryTarget<'_>,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
-) -> Result<Vec<M>> {
+) -> Result<crate::BatchWriteResult<M>> {
     ProjectedBatchExecutor::new(installed)
-        .execute_mapped(
-            database,
+        .execute_on_target_mapped(
+            target,
             batch,
-            database_control(database),
-            Vec::new(),
+            control(target.answer_limits().unwrap_or_default()),
+            crate::BatchWriteResult::default(),
             |result| materialize_result(result, installed),
         )
         .await
-        .map_err(map_execution_error)
+        .map_err(map_target_execution_error)
+}
+
+pub(crate) async fn execute_owned_deleted_things<M: CompleteModel>(
+    target: QueryTarget<'_>,
+    installed: &InstalledRuntimeProjection,
+    batch: &ProjectedBatch,
+) -> Result<crate::BatchWriteResult<M>> {
+    ProjectedBatchExecutor::new(installed)
+        .returning_deleted()
+        .execute_on_target_mapped(
+            target,
+            batch,
+            control(target.answer_limits().unwrap_or_default()),
+            crate::BatchWriteResult::default(),
+            |result| materialize_result(result, installed),
+        )
+        .await
+        .map_err(map_target_execution_error)
 }
 
 pub(crate) async fn execute_borrowed_things<M: CompleteModel>(
     transaction: &TransactionContext,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
-) -> Result<Vec<M>> {
+) -> Result<crate::BatchWriteResult<M>> {
     ProjectedBatchExecutor::new(installed)
         .execute_in_transaction_mapped(
             transaction,
             batch,
             transaction_control(transaction),
-            Vec::new(),
+            crate::BatchWriteResult::default(),
             |result| materialize_result(result, installed),
         )
         .await
         .map_err(map_execution_error)
 }
 
-pub(crate) async fn execute_owned_delete(
-    database: &Database,
-    installed: &InstalledRuntimeProjection,
-    batch: &ProjectedBatch,
-) -> Result<()> {
-    ProjectedBatchExecutor::new(installed)
-        .execute_mapped(
-            database,
-            batch,
-            database_control(database),
-            (),
-            deleted_result,
-        )
-        .await
-        .map_err(map_execution_error)
-}
-
-pub(crate) async fn execute_borrowed_delete(
+pub(crate) async fn execute_borrowed_deleted_things<M: CompleteModel>(
     transaction: &TransactionContext,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
-) -> Result<()> {
+) -> Result<crate::BatchWriteResult<M>> {
     ProjectedBatchExecutor::new(installed)
+        .returning_deleted()
         .execute_in_transaction_mapped(
             transaction,
             batch,
             transaction_control(transaction),
-            (),
-            deleted_result,
+            crate::BatchWriteResult::default(),
+            |result| materialize_result(result, installed),
         )
         .await
         .map_err(map_execution_error)
@@ -184,7 +311,7 @@ pub(crate) fn prepare_batch(
 fn materialize_result<M: CompleteModel>(
     result: ProjectedBatchResult,
     installed: &InstalledRuntimeProjection,
-) -> std::result::Result<Vec<M>, SdkExecutionDiagnostic> {
+) -> std::result::Result<crate::BatchWriteResult<M>, SdkExecutionDiagnostic> {
     materialize_result_inner(result, installed, false)
 }
 
@@ -192,26 +319,18 @@ fn materialize_result_inner<M: CompleteModel>(
     result: ProjectedBatchResult,
     installed: &InstalledRuntimeProjection,
     fail_reservation: bool,
-) -> std::result::Result<Vec<M>, SdkExecutionDiagnostic> {
+) -> std::result::Result<crate::BatchWriteResult<M>, SdkExecutionDiagnostic> {
     let ProjectedBatchResult::Things(things) = result else {
         return Err(SdkExecutionDiagnostic::internal_failure());
     };
-    let mut output = Vec::new();
-    if fail_reservation || output.try_reserve_exact(things.len()).is_err() {
+    if fail_reservation {
         return Err(ProjectedBatch::binding_allocation_failure());
     }
-    for (ordinal, thing) in things.into_iter().enumerate() {
-        match materialize_projected(thing, installed) {
-            Ok(model) => output.push(model),
-            Err(_) => {
-                let ordinal = checked_batch_ordinal(ordinal);
-                return Err(ProjectedBatchExecutor::binding_materialization_failure(
-                    ordinal,
-                ));
-            }
-        }
-    }
-    Ok(output)
+    things.try_map(|ordinal, thing| {
+        materialize_projected(thing, installed).map_err(|_| {
+            ProjectedBatchExecutor::binding_materialization_failure(checked_batch_ordinal(ordinal))
+        })
+    })
 }
 
 fn reserved_binding_vec_inner<T>(capacity: usize, fail_reservation: bool) -> Result<Vec<T>> {
@@ -226,20 +345,8 @@ fn reserved_binding_vec_inner<T>(capacity: usize, fail_reservation: bool) -> Res
     Ok(rows)
 }
 
-fn deleted_result(result: ProjectedBatchResult) -> std::result::Result<(), SdkExecutionDiagnostic> {
-    match result {
-        ProjectedBatchResult::Deleted => Ok(()),
-        ProjectedBatchResult::Things(_) => Err(SdkExecutionDiagnostic::internal_failure()),
-        _ => Err(SdkExecutionDiagnostic::internal_failure()),
-    }
-}
-
 fn control(limits: QueryExecutionResourceLimits) -> ProjectedBatchInvocationControl {
     ProjectedBatchInvocationControl::capture(limits, AnswerCancellation::default())
-}
-
-fn database_control(database: &Database) -> ProjectedBatchInvocationControl {
-    control(database.answer_limits().unwrap_or_default())
 }
 
 fn transaction_control(transaction: &TransactionContext) -> ProjectedBatchInvocationControl {

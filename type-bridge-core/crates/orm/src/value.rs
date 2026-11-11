@@ -1,14 +1,11 @@
 //! Typed attribute values corresponding to TypeDB value types.
 
-#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use serde::{Deserialize, Serialize};
-use type_bridge_core_lib::ast::{LiteralValue, Value};
 
 /// A typed TypeDB attribute value.
 ///
-/// Each variant corresponds to a TypeDB value type. The ORM converts
-/// these to [`Value::Literal`] for query compilation and parses
-/// TypeDB JSON results back into these variants during hydration.
+/// Each variant corresponds to a TypeDB value type. Native plans consume
+/// these values and hydration parses provider JSON into these variants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttributeValue {
     /// TypeDB `string` value.
@@ -32,23 +29,18 @@ pub enum AttributeValue {
 }
 
 impl AttributeValue {
-    /// Convert to a core AST [`Value::Literal`].
-    pub fn to_ast_value(&self) -> Value {
-        let (json_val, type_name) = match self {
-            Self::String(s) => (serde_json::Value::String(s.clone()), "string"),
-            Self::Long(n) => (serde_json::json!(*n), "long"),
-            Self::Double(n) => (serde_json::json!(*n), "double"),
-            Self::Boolean(b) => (serde_json::Value::Bool(*b), "boolean"),
-            Self::Date(s) => (serde_json::Value::String(s.clone()), "date"),
-            Self::DateTime(s) => (serde_json::Value::String(s.clone()), "datetime"),
-            Self::DateTimeTZ(s) => (serde_json::Value::String(s.clone()), "datetime-tz"),
-            Self::Decimal(s) => (serde_json::Value::String(s.clone()), "decimal"),
-            Self::Duration(s) => (serde_json::Value::String(s.clone()), "duration"),
-        };
-        Value::Literal(LiteralValue {
-            value: json_val,
-            value_type: type_name.to_string(),
-        })
+    pub(crate) fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::String(value)
+            | Self::Date(value)
+            | Self::DateTime(value)
+            | Self::DateTimeTZ(value)
+            | Self::Decimal(value)
+            | Self::Duration(value) => value.clone().into(),
+            Self::Long(value) => (*value).into(),
+            Self::Double(value) => serde_json::json!(value),
+            Self::Boolean(value) => (*value).into(),
+        }
     }
 
     /// The TypeQL value type name (e.g. `"string"`, `"long"`, `"double"`).
@@ -136,13 +128,6 @@ mod tests {
     fn string_roundtrip() {
         let val = AttributeValue::String("hello".into());
         assert_eq!(val.value_type_name(), "string");
-        let ast = val.to_ast_value();
-        if let Value::Literal(lit) = ast {
-            assert_eq!(lit.value_type, "string");
-            assert_eq!(lit.value, serde_json::json!("hello"));
-        } else {
-            panic!("expected Literal");
-        }
     }
 
     #[test]
@@ -225,17 +210,6 @@ mod tests {
             let json = serde_json::to_string(&val).unwrap();
             let parsed: AttributeValue = serde_json::from_str(&json).unwrap();
             assert_eq!(val, parsed);
-        }
-    }
-
-    #[test]
-    fn boolean_value() {
-        let val = AttributeValue::Boolean(true);
-        let ast = val.to_ast_value();
-        if let Value::Literal(lit) = ast {
-            assert_eq!(lit.value, serde_json::Value::Bool(true));
-        } else {
-            panic!("expected Literal");
         }
     }
 }

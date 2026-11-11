@@ -618,7 +618,16 @@ fn field_token_observation() -> ProducerResult<Value> {
     }))
 }
 
+fn plan_mark(name: &str) {
+    if let Some(path) = env::var_os("TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL") {
+        fs::write(path, name).expect("write conformance plan call label");
+    }
+}
+
 async fn manager_observation(database: &GeneratedDatabase<AppSchema>) -> ProducerResult<Value> {
+    if env::var_os("TYPE_BRIDGE_TEST_PLAN_CAPTURE").is_some() {
+        drop(type_bridge::plan::PlanBuilder::<AppSchema>::new());
+    }
     let (rejections, nonsingular_rejection) = pre_io_observations(database).await?;
     let read = live(database.read().await, "open reusable borrowed read")?;
     let journey = async {
@@ -634,6 +643,7 @@ async fn manager_observation(database: &GeneratedDatabase<AppSchema>) -> Produce
             ("lt", ProjectedManagerComparison::Lt),
             ("lte", ProjectedManagerComparison::Lte),
         ] {
+            plan_mark(&format!("manager_field_token_filter.operator.{name}"));
             let selected = live(
                 live(
                     manager.where_(PersonType::foo__bar, comparison, &seven),
@@ -662,10 +672,14 @@ async fn manager_observation(database: &GeneratedDatabase<AppSchema>) -> Produce
             conjunction.where_(PersonType::score, ProjectedManagerComparison::Gt, &forty),
             "compose conjunction second predicate",
         )?;
+        plan_mark("manager_field_token_filter.conjunction");
         let conjunction_keys = person_keys(&live(conjunction.all().await, "execute conjunction")?)?;
 
+        plan_mark("manager_field_token_filter.all");
         let all_keys = person_keys(&live(root.all().await, "root all")?)?;
+        plan_mark("manager_field_token_filter.count");
         let count = live(root.count().await, "root count")?;
+        plan_mark("manager_field_token_filter.exists");
         let exists = live(root.exists().await, "root exists")?;
         if all_keys != ["data-ada", "data-dana"] || count != 2 || !exists {
             return Err(ProducerError::new(
@@ -675,6 +689,7 @@ async fn manager_observation(database: &GeneratedDatabase<AppSchema>) -> Produce
         }
 
         let ada_key = generated(Identifier::new("data-ada"), "identity literal")?;
+        plan_mark("manager_field_token_filter.first");
         let first = live(
             live(
                 manager.where_(
@@ -707,6 +722,7 @@ async fn manager_observation(database: &GeneratedDatabase<AppSchema>) -> Produce
             ),
             "filter sibling query person",
         )?;
+        plan_mark("manager_field_token_filter.sibling_query_count");
         if live(
             sibling_query.count_by(person).await,
             "execute sibling query count",
@@ -725,6 +741,7 @@ async fn manager_observation(database: &GeneratedDatabase<AppSchema>) -> Produce
             manager.where_(PersonType::foo__bar, ProjectedManagerComparison::Eq, &nine),
             "compose sibling manager filter",
         )?;
+        plan_mark("manager_field_token_filter.sibling_filter");
         if person_keys(&live(
             sibling.all().await,
             "execute sibling manager filter",
@@ -736,6 +753,7 @@ async fn manager_observation(database: &GeneratedDatabase<AppSchema>) -> Produce
             ));
         }
 
+        plan_mark("");
         Ok(json!({
             "borrowed_read": {
                 "final_state": "active",
@@ -830,20 +848,22 @@ async fn run_database(
         let database = live(unbound.with_schema(SCHEMA), "bind generated package")?;
         let ada = person_input(&authority.journey, "data-ada")?;
         let dana = person_input(&authority.journey, "data-dana")?;
-        let ada = live(
+        let ada_result = live(
             database
                 .entities::<Person>()
                 .insert(person_create(&ada)?)
                 .await,
             "insert Ada",
         )?;
-        let dana = live(
+        let ada = ada_result.item().ok_or_else(|| ProducerError::new("seed_mismatch", "single-person insert did not return exactly one item"))?;
+        let dana_result = live(
             database
                 .entities::<Person>()
                 .insert(person_create(&dana)?)
                 .await,
             "insert Dana",
         )?;
+        let dana = dana_result.item().ok_or_else(|| ProducerError::new("seed_mismatch", "single-person insert did not return exactly one item"))?;
         let observation = manager_observation(&database).await?;
         live(
             database.entities::<Person>().delete(dana.iid()).await,

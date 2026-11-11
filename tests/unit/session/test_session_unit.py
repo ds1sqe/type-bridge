@@ -4,12 +4,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from type_bridge._rust_runtime import database_from_rust
+from type_bridge._native import database_from_core
 from type_bridge.session import (
     Connection,
-    ConnectionExecutor,
     Database,
-    Transaction,
     TransactionContext,
 )
 from type_bridge.typedb_driver import TransactionType
@@ -48,18 +46,18 @@ class TestDatabaseConfiguration:
     def test_package_owned_rust_database_is_registered_and_closes_once(self):
         """The generated facade owns one native handle and close is idempotent."""
         native = MagicMock()
-        database = database_from_rust("localhost:1729", "generated", native)
+        database = database_from_core("localhost:1729", "generated", native)
 
         assert database.address == "localhost:1729"
         assert database.database_name == "generated"
-        assert getattr(database, "_rust_backend_database") is native
+        assert getattr(database, "_native_database") is native
         assert database._transport_committed is True
 
         database.close()
         database.close()
 
         native.close.assert_called_once_with()
-        assert not hasattr(database, "_rust_backend_database")
+        assert not hasattr(database, "_native_database")
         assert database._transport_committed is False
 
     def test_package_owned_rust_database_exposes_pair_administration(self):
@@ -72,7 +70,7 @@ class TestDatabaseConfiguration:
         native.plan_database_delete.return_value = deletion
         native.plan_database_delete_controlled.return_value = controlled_deletion
         cancellation = object()
-        database = database_from_rust("localhost:1729", "generated", native)
+        database = database_from_core("localhost:1729", "generated", native)
 
         assert database.inspect_database_pair() == "owned_pair"
         assert (
@@ -145,126 +143,6 @@ class TestTransactionContext:
         assert ctx.database is db
 
 
-class TestConnectionExecutor:
-    """Tests for ConnectionExecutor class."""
-
-    def test_executor_with_database_stores_database(self):
-        """Executor created with Database should store it."""
-        db = Database()
-        executor = ConnectionExecutor(db)
-        assert executor._database is db
-        assert executor._transaction is None
-
-    def test_executor_with_transaction_stores_transaction(self):
-        """Executor created with Transaction should store it."""
-        # Create a mock TypeDB transaction
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        executor = ConnectionExecutor(tx)
-        assert executor._transaction is tx
-        assert executor._database is None
-
-    def test_executor_with_context_extracts_transaction(self):
-        """Executor created with TransactionContext should extract transaction."""
-        # Create mock context with transaction
-        db = Database()
-        ctx = TransactionContext(db, TransactionType.READ)
-        # Manually set a mock transaction
-        mock_tx = MagicMock()
-        ctx._tx = Transaction(mock_tx)
-
-        executor = ConnectionExecutor(ctx)
-        assert executor._transaction is ctx._tx
-        assert executor._database is None
-
-    def test_has_transaction_property_true(self):
-        """has_transaction should be True when using transaction."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        executor = ConnectionExecutor(tx)
-        assert executor.has_transaction is True
-
-    def test_has_transaction_property_false(self):
-        """has_transaction should be False when using database."""
-        db = Database()
-        executor = ConnectionExecutor(db)
-        assert executor.has_transaction is False
-
-    def test_database_property_when_using_database(self):
-        """Database property should return Database when initialized with it."""
-        db = Database()
-        executor = ConnectionExecutor(db)
-        assert executor.database is db
-
-    def test_database_property_when_using_transaction(self):
-        """Database property should return None when initialized with transaction."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        executor = ConnectionExecutor(tx)
-        assert executor.database is None
-
-    def test_transaction_property_when_using_transaction(self):
-        """Transaction property should return Transaction when initialized with it."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        executor = ConnectionExecutor(tx)
-        assert executor.transaction is tx
-
-    def test_transaction_property_when_using_database(self):
-        """Transaction property should return None when initialized with database."""
-        db = Database()
-        executor = ConnectionExecutor(db)
-        assert executor.transaction is None
-
-
-class TestTransaction:
-    """Tests for Transaction wrapper class."""
-
-    def test_transaction_init_stores_raw_tx(self):
-        """Transaction should store the raw TypeDB transaction."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        assert tx._tx is mock_tx
-
-    def test_commit_calls_underlying_commit(self):
-        """commit() should call underlying transaction commit."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        tx.commit()
-        mock_tx.commit.assert_called_once()
-
-    def test_rollback_calls_underlying_rollback(self):
-        """rollback() should call underlying transaction rollback."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        tx.rollback()
-        mock_tx.rollback.assert_called_once()
-
-    def test_is_open_delegates_to_underlying(self):
-        """is_open should delegate to underlying transaction."""
-        mock_tx = MagicMock()
-        mock_tx.is_open.return_value = True
-        tx = Transaction(mock_tx)
-        assert tx.is_open is True
-        mock_tx.is_open.assert_called_once()
-
-    def test_close_when_open(self):
-        """close() should close an open transaction."""
-        mock_tx = MagicMock()
-        mock_tx.is_open.return_value = True
-        tx = Transaction(mock_tx)
-        tx.close()
-        mock_tx.close.assert_called_once()
-
-    def test_close_when_already_closed(self):
-        """close() should not call close on already closed transaction."""
-        mock_tx = MagicMock()
-        mock_tx.is_open.return_value = False
-        tx = Transaction(mock_tx)
-        tx.close()
-        mock_tx.close.assert_not_called()
-
-
 class TestDatabaseTransactionCreation:
     """Tests for Database.transaction() method."""
 
@@ -317,14 +195,6 @@ class TestConnectionTypeAlias:
         # Type checking - Connection should accept Database
         conn: Connection = db
         assert isinstance(conn, Database)
-
-    def test_connection_accepts_transaction(self):
-        """Connection type should accept Transaction."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        # Type checking - Connection should accept Transaction
-        conn: Connection = tx
-        assert isinstance(conn, Transaction)
 
     def test_connection_accepts_transaction_context(self):
         """Connection type should accept TransactionContext."""
@@ -402,13 +272,13 @@ class TestDriverInjection:
 
         driver = FalseyDriver()
         db = Database(driver=driver)  # type: ignore[arg-type]
-        setattr(db, "_rust_backend_database", object())
+        setattr(db, "_native_database", object())
 
         db.close()
 
         assert db._driver is driver
         assert driver.close_calls == 0
-        assert not hasattr(db, "_rust_backend_database")
+        assert not hasattr(db, "_native_database")
 
     def test_close_preserves_released_truth_probe_error_order(self):
         """A driver truth-probe error precedes every close-time mutation."""
@@ -420,34 +290,34 @@ class TestDriverInjection:
         driver = ExplodingDriver()
         rust_database = object()
         db = Database(driver=driver)  # type: ignore[arg-type]
-        setattr(db, "_rust_backend_database", rust_database)
+        setattr(db, "_native_database", rust_database)
 
         with pytest.raises(ValueError, match="driver truth probe failed"):
             db.close()
 
         assert db._driver is driver
-        assert getattr(db, "_rust_backend_database") is rust_database
+        assert getattr(db, "_native_database") is rust_database
 
     def test_close_closes_cached_rust_database_before_releasing_it(self):
         """close() should explicitly stop a cached Rust provider connection."""
         db = Database()
         rust_database = MagicMock()
-        setattr(db, "_rust_backend_database", rust_database)
+        setattr(db, "_native_database", rust_database)
         retained_reference = rust_database
 
         db.close()
 
         retained_reference.close.assert_called_once_with()
-        assert not hasattr(db, "_rust_backend_database")
+        assert not hasattr(db, "_native_database")
 
     def test_close_releases_legacy_rust_database_double_without_close(self):
         """Older Rust-handle stand-ins remain compatible with close()."""
         db = Database()
-        setattr(db, "_rust_backend_database", object())
+        setattr(db, "_native_database", object())
 
         db.close()
 
-        assert not hasattr(db, "_rust_backend_database")
+        assert not hasattr(db, "_native_database")
 
     def test_close_failure_retains_python_transport_for_released_style_retry(self):
         """A transient Python-driver close failure remains retryable."""
@@ -477,7 +347,7 @@ class TestDriverInjection:
         snapshot.cleanup.side_effect = lambda: events.append("snapshot")
         db._driver = python_driver
         db._owns_driver = True
-        setattr(db, "_rust_backend_database", rust_database)
+        setattr(db, "_native_database", rust_database)
         db._tls_root_ca_snapshot = snapshot
         db._tls_root_ca_snapshot_path = "/retained/root.pem"
         prepared = MagicMock()
@@ -490,7 +360,7 @@ class TestDriverInjection:
         assert raised.value is python_error
         assert events == ["python"]
         assert db._driver is python_driver
-        assert getattr(db, "_rust_backend_database") is rust_database
+        assert getattr(db, "_native_database") is rust_database
         assert db._tls_root_ca_snapshot is snapshot
         assert db._tls_root_ca_snapshot_path == "/retained/root.pem"
         assert db._prepared_connection is prepared
@@ -499,7 +369,7 @@ class TestDriverInjection:
         db.close()
         assert events == ["python", "python", "rust", "snapshot"]
         assert db._driver is None
-        assert not hasattr(db, "_rust_backend_database")
+        assert not hasattr(db, "_native_database")
         assert db._tls_root_ca_snapshot is None
         assert db._tls_root_ca_snapshot_path is None
         assert db._prepared_connection is None
@@ -523,7 +393,7 @@ class TestDriverInjection:
         snapshot.cleanup.side_effect = lambda: events.append("snapshot")
         db._driver = python_driver
         db._owns_driver = True
-        setattr(db, "_rust_backend_database", rust_database)
+        setattr(db, "_native_database", rust_database)
         db._tls_root_ca_snapshot = snapshot
 
         with caplog.at_level("WARNING", logger="type_bridge.session"):
@@ -531,9 +401,9 @@ class TestDriverInjection:
 
         assert events == ["python", "rust", "snapshot"]
         assert db._driver is None
-        assert not hasattr(db, "_rust_backend_database")
+        assert not hasattr(db, "_native_database")
         assert db._tls_root_ca_snapshot is None
-        assert "Embedded Rust backend cleanup failed" in caplog.text
+        assert "Native database cleanup failed" in caplog.text
         assert "rust backend close failed" not in caplog.text
 
         db.close()
@@ -674,15 +544,26 @@ class TestDriverInjection:
         assert db.delete_database_outcome() == "deleted"
 
 
-def test_rust_context_rollback_remains_open_for_work_and_commit() -> None:
+def test_rust_context_rollback_remains_open_for_commit() -> None:
     context = TransactionContext(Database(), TransactionType.WRITE)
     native = MagicMock()
-    context._rust_tx = native
+    context._native_tx = native
     context.rollback()
     assert context.transaction.is_open
-    context.execute("insert $x isa marker;")
     context.commit()
     native.rollback.assert_called_once()
-    native.execute.assert_called_once_with("insert $x isa marker;")
     native.commit.assert_called_once()
     assert not context.transaction.is_open
+
+
+def test_raw_query_surface_has_only_the_explicit_pair() -> None:
+    import type_bridge_core
+
+    assert not hasattr(Database, "execute_with_rows")
+    assert not hasattr(TransactionContext, "execute")
+    assert not hasattr(TransactionContext, "execute_with_rows")
+    assert not hasattr(type_bridge_core.PyDatabase, "execute_with_rows")
+    assert not hasattr(type_bridge_core.PyTransactionContext, "execute")
+    assert not hasattr(type_bridge_core.PyTransactionContext, "execute_with_rows")
+    assert hasattr(Database, "execute_query")
+    assert hasattr(type_bridge_core.RawTransaction, "execute_query")

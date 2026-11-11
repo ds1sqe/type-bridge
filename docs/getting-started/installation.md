@@ -1,20 +1,5 @@
 # Installation
 
-**Security update:** Upgrade to TypeBridge 2.2.5. Its prebuilt distributions
-use rustls 0.23.46, which fixes RUSTSEC-2026-0346 through RUSTSEC-2026-0349
-and the earlier
-[RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
-Its server image also installs Debian's fixed Bookworm PCRE2 and Perl
-packages. The 2.2.5 lockfile moves quinn-proto to 0.11.19 for
-RUSTSEC-2026-0338 through RUSTSEC-2026-0342; no prebuilt distribution
-includes it.
-In 2.2.5, write queries ending in `fetch` return commit failures instead of
-documents for writes that were never stored, and the new
-`TypeDBClient::execute_classified` tells rejected commits from indeterminate
-outcomes.
-The [2.2.1 post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
-records the affected earlier release.
-
 Install the TypeBridge surface used by your application. Python, Node, Rust,
 C, the CLI, and the server are separate distribution identities backed by the same Rust
 semantic engine.
@@ -22,8 +7,8 @@ semantic engine.
 ## TypeDB versions
 
 Run the newest supported TypeDB, currently 3.14.0. Supported lines are the
-measured 3.11–3.14 lines with profile patch floors. General version admission
-accepts >=3.11.0. Newer lines are admitted with one warning per connection:
+measured 3.12–3.14 lines with profile patch floors. General version admission
+accepts >=3.12.0. Newer lines are admitted with one warning per connection:
 "not tested or supported by this TypeBridge release". They reuse the newest
 measured profile and protocol assumptions without a compatibility guarantee.
 Verified tags, protocol bands, and migration pairs are in
@@ -31,8 +16,10 @@ Verified tags, protocol bands, and migration pairs are in
 
 | TypeBridge | TypeDB servers | Protocol bands |
 | --- | --- | --- |
+| 3.0.0 | Admits >=3.12.0; supported lines 3.12–3.14; newer lines warn | 9 |
 | 2.3.3 | Admits >=3.11.0; supported lines 3.11–3.14; newer lines warn | 8, 9 (newer lines reuse measured assumptions) |
-| 2.3.1–2.3.2 | 3.11–3.14 | 8, 9 (3.14 shares profile `typedb-3.13.6/v1`) |
+| 2.3.2 | Admits >=3.11.0; supported lines 3.11–3.14; newer lines warn | 8, 9 (newer lines reuse measured assumptions) |
+| 2.3.1 | 3.11–3.14 | 8, 9 (3.14 shares profile `typedb-3.13.6/v1`) |
 | 2.3.0 | 3.11–3.13 | 8, 9 |
 | 2.1.0–2.2.6 | 3.11–3.12 | 8, 9 (3.8 and 3.10 removed in 2.1.0) |
 | 2.0.0–2.0.2 | 3.8–3.12 | 7, 8, 9 (3.8 and 3.10 with a deprecation notice) |
@@ -45,7 +32,7 @@ Verified tags, protocol bands, and migration pairs are in
 Requirements:
 
 - CPython 3.12–3.14
-- TypeDB >=3.11.0 is admitted; supported lines are the measured 3.11–3.14
+- TypeDB >=3.12.0 is admitted; supported lines are the measured 3.12–3.14
   lines. Connected migrations also enforce the workspace profile floors:
   3.12.3+ on 3.12, or 3.13.6+/3.14.0+ and newer lines on the newest profile.
 
@@ -83,30 +70,27 @@ selecting a deployment target.
 
 ## Rust
 
-The TypeBridge Rust SDK requires Rust 1.88+. Releases starting with 2.0.1 are
-distributed through crates.io:
+The TypeBridge Rust SDK requires Rust 1.88+ and is distributed through
+crates.io:
 
 ```toml
 [dependencies]
-type-bridge = "2"
+type-bridge = "3"
 ```
 
-TypeBridge 2.0.0 predates Cargo distribution and remains available from the
-exact source/Git revision recorded in its GitHub release.
-
 Follow [Rust distribution](../guide/rust.md#distribution) for generated-crate
-setup and the historical 2.0.0 Git declaration.
+setup.
 
 ## C
 
-The [2.2.5 GitHub release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.5)
-provides the ABI 1.6.0 shared runtime, standalone CLI, and generated C example
-for Ubuntu 24.04 on x86_64 GNU/Linux. Verify the signed archives before
-installation. C17 and C++17 applications use CMake or pkg-config; application
-execution does not require Python or Cargo.
+TypeBridge 3.0 uses the ABI 2.0 shared runtime. Install the runtime and CLI
+from the same product release, then regenerate your C package. C17 and C++17
+applications use CMake or pkg-config; application execution does not require
+Python or Cargo. The 3.0 release is in preparation.
 
-Follow the [C SDK guide](../guide/c.md) for archive names, generation, linking,
-and the exact supported runtime matrix.
+Follow the [C SDK guide](../guide/c.md) for generation, linking, and the
+supported runtime matrix, and [upgrade to 3.0](../guide/upgrade-3.0.md) for
+changes from ABI 1.x.
 
 ## CLI and code generation
 
@@ -120,14 +104,14 @@ type-bridge --help
 It validates Split-YAML workspaces, creates and applies migrations, and
 generates configured Python, TypeScript, Rust, and C projections. Split-YAML
 workspace generation is the only active model-generation path. A standalone
-CLI archive for Ubuntu 24.04 x86_64 is also available from the 2.2.5 release.
+CLI archive for Ubuntu 24.04 x86_64 is also published with each release.
 
 ## Server container
 
-The standalone V2 query server is published separately:
+The standalone staged query server is published separately:
 
 ```bash
-docker pull ghcr.io/ds1sqe/type-bridge-server:2.2.5
+docker pull ghcr.io/ds1sqe/type-bridge-server:3.0.0
 ```
 
 Production deployments should use the immutable digest recorded in the release

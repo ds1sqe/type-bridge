@@ -15,8 +15,10 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -62,6 +64,16 @@ const AUTHORITIES: [(&str, &str, &str); 3] = [
 struct EmittedFixture {
     local: GeneratedPackage,
     foreign: GeneratedPackage,
+    authority: Vec<u8>,
+}
+
+struct ManagerHttpServer(Child);
+
+impl Drop for ManagerHttpServer {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 fn emitted_fixture(profile: &SdkProfile) -> EmittedFixture {
@@ -71,7 +83,7 @@ fn emitted_fixture(profile: &SdkProfile) -> EmittedFixture {
     let (local_schema, local_authority) = profiled_authority(
         SOURCE,
         "models.yaml",
-        "models-c-manager",
+        support::TEST_SCOPE,
         &profile.semantic_profile,
     );
     let (foreign_schema, foreign_authority) = profiled_authority(
@@ -109,7 +121,11 @@ fn emitted_fixture(profile: &SdkProfile) -> EmittedFixture {
         local_fingerprint, foreign_fingerprint,
         "foreign selected-field metadata retains distinct authority",
     );
-    EmittedFixture { local, foreign }
+    EmittedFixture {
+        local,
+        foreign,
+        authority: type_bridge_schema::encode_schema_authority(&local_authority),
+    }
 }
 
 fn assert_wrong_owner_compile_negative(compiler: &str, stage: &Path, local: &Path) {
@@ -281,7 +297,7 @@ fn c_manager_live_producer_is_bounded_and_expectation_independent() {
     assert!(CONSUMER.len() <= MAX_PRODUCER_BYTES);
     for required in [
         "manager_person_manager_filter_foozuzubar_eq",
-        "manager_person_manager_filter_foozuzubar_gte",
+        "manager_person_manager_filter_foozuzubar_ge",
         "manager_person_manager_read_transaction_all",
         "manager_first_requires_identity",
         "manager_read_transaction_query_execute_count",
@@ -290,8 +306,8 @@ fn c_manager_live_producer_is_bounded_and_expectation_independent() {
     }
     assert!(CONSUMER.contains("TYPE_BRIDGE_STATUS_INVALID_ARGUMENT"));
     assert!(CONSUMER.contains("cross_owner_field"));
-    assert!(CONSUMER.contains("c_query_nominal_contract_mismatch"));
-    assert!(CONSUMER.contains("not rebranded as observed manager diagnostics"));
+    assert!(CONSUMER.contains("wrong_scalar_domain"));
+    assert!(CONSUMER.contains("not rebranded as observed manager"));
     assert!(
         WRONG_OWNER_COMPILE_FAIL.contains("manager_person_foozuzubar_query_field_from_exact(robot")
     );
@@ -396,9 +412,61 @@ fn c_manager_live_runs_when_explicitly_configured() {
         .collect::<Vec<_>>();
     let mut database = stage_setup(stage.path(), environment.clone());
     database.setup();
+    let mut server = None;
+    let mut remote_port = None;
+    let server_log_path = stage.path().join("manager-http-server.log");
+    if let Some(binary) = env::var_os("TYPE_BRIDGE_SMOKE_SERVER") {
+        let port = env::var("SMOKE_PORT")
+            .ok()
+            .map(|value| value.parse::<u16>().expect("SMOKE_PORT is a valid port"))
+            .unwrap_or_else(support::free_port);
+        let log = fs::File::create(&server_log_path).expect("server log opens");
+        let child = Command::new(binary)
+            .env("SMOKE_ALLOW_STAGED_WRITES", "true")
+            .env("SMOKE_ALLOW_RAW", "true")
+            .env("SMOKE_TYPEDB_ADDRESS", required_environment(ADDRESS_ENV))
+            .env(
+                "SMOKE_TYPEDB_HTTP_PORT",
+                required_environment(HTTP_PORT_ENV),
+            )
+            .env(
+                "SMOKE_TYPEDB_USERNAME",
+                env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into()),
+            )
+            .env(
+                "SMOKE_TYPEDB_PASSWORD",
+                env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into()),
+            )
+            .env("SMOKE_DATABASE", required_environment(DATABASE_ENV))
+            .env("SMOKE_AUTHORITY_B64", support::base64(&fixture.authority))
+            .env("SMOKE_PORT", port.to_string())
+            .stdout(Stdio::from(log.try_clone().expect("server log clones")))
+            .stderr(Stdio::from(log))
+            .spawn()
+            .expect("manager HTTP server starts");
+        let mut owned = ManagerHttpServer(child);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(
+                owned.0.try_wait().unwrap().is_none(),
+                "manager HTTP server exited: {}",
+                fs::read_to_string(&server_log_path).unwrap_or_default()
+            );
+            assert!(
+                Instant::now() < deadline,
+                "manager HTTP server did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        remote_port = Some(port);
+        server = Some(owned);
+    }
     let mut command = Command::new(executable);
     for (name, value) in &environment {
         command.env(name, value);
+    }
+    if let Some(port) = remote_port {
+        command.env("TYPE_BRIDGE_C_MANAGER_REMOTE_PORT", port.to_string());
     }
     let output = command.output().expect("C manager producer launches");
     let primary = output.status.success();
@@ -408,6 +476,7 @@ fn c_manager_live_runs_when_explicitly_configured() {
         None
     };
     database.cleanup();
+    drop(server);
     assert!(
         primary,
         "C Manager producer failed:\nstdout:\n{}\nstderr:\n{}",

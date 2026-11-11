@@ -96,6 +96,8 @@ pub enum ModelValidationPhase {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ErrorDetail {
+    /// One process clock and ordered execution phase timestamps.
+    ExecutionTimeline(type_bridge_contract::execution_timeline::ExecutionTimeline),
     /// Textual context.
     Text(String),
     /// A signed integer.
@@ -452,6 +454,11 @@ impl Error {
             if let Some(error) = error.downcast_ref::<type_bridge_orm::OrmError>() {
                 return error.failure();
             }
+            if let Some(error) =
+                error.downcast_ref::<type_bridge_orm::session::staged::CommitError>()
+            {
+                return error.failure.as_deref().cloned();
+            }
             source = error.source();
         }
         None
@@ -484,6 +491,14 @@ impl Error {
     pub(crate) fn from_sdk_execution(
         error: SdkExecutionDiagnostic,
         model_phase: ModelValidationPhase,
+    ) -> Self {
+        Self::from_sdk_execution_with_source(error, model_phase, None)
+    }
+
+    pub(crate) fn from_sdk_execution_with_source(
+        error: SdkExecutionDiagnostic,
+        model_phase: ModelValidationPhase,
+        source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     ) -> Self {
         let code = error.code().as_str().to_owned();
         let message = error.message().as_str().to_owned();
@@ -521,7 +536,7 @@ impl Error {
                 path,
                 Some(diagnostic),
                 message,
-                Some(Box::new(error)),
+                Some(source.unwrap_or_else(|| Box::new(error))),
             );
         }
         match error.category() {
@@ -531,16 +546,16 @@ impl Error {
                     code,
                     path,
                     message,
-                    source: Some(Box::new(error)),
+                    source: Some(source.unwrap_or_else(|| Box::new(error))),
                 }
             }
             SdkDiagnosticCategory::Provider => Self::QueryExecution {
                 message,
-                source: Some(Box::new(error)),
+                source: Some(source.unwrap_or_else(|| Box::new(error))),
             },
             SdkDiagnosticCategory::Transaction => Self::Transaction {
                 message,
-                source: Some(Box::new(error)),
+                source: Some(source.unwrap_or_else(|| Box::new(error))),
             },
             SdkDiagnosticCategory::UnsupportedCapability => Self::classified_with_diagnostic(
                 ErrorCategory::Capability,
@@ -549,7 +564,7 @@ impl Error {
                 path,
                 Some(diagnostic),
                 message,
-                Some(Box::new(error)),
+                Some(source.unwrap_or_else(|| Box::new(error))),
             ),
             SdkDiagnosticCategory::ResourceLimit => Self::classified_with_diagnostic(
                 ErrorCategory::ResourceLimit,
@@ -558,7 +573,7 @@ impl Error {
                 path,
                 Some(diagnostic),
                 message,
-                Some(Box::new(error)),
+                Some(source.unwrap_or_else(|| Box::new(error))),
             ),
             SdkDiagnosticCategory::Cancelled => Self::classified_with_diagnostic(
                 ErrorCategory::Cancelled,
@@ -567,7 +582,7 @@ impl Error {
                 path,
                 Some(diagnostic),
                 message,
-                Some(Box::new(error)),
+                Some(source.unwrap_or_else(|| Box::new(error))),
             ),
             SdkDiagnosticCategory::Internal => Self::classified_with_diagnostic(
                 ErrorCategory::Other,
@@ -576,11 +591,11 @@ impl Error {
                 path,
                 Some(diagnostic),
                 message,
-                Some(Box::new(error)),
+                Some(source.unwrap_or_else(|| Box::new(error))),
             ),
             _ => Self::Other {
                 message,
-                source: Some(Box::new(error)),
+                source: Some(source.unwrap_or_else(|| Box::new(error))),
             },
         }
     }
@@ -937,6 +952,9 @@ impl Error {
         // Typed provider failures stay in their released variants; the
         // retained OrmError source still answers `Error::failure()`.
         match err {
+            type_bridge_orm::OrmError::ExecutionDiagnostic(error) => {
+                Self::from_projected_batch(*error, ModelValidationPhase::Input)
+            }
             type_bridge_orm::OrmError::Match(error) => {
                 Self::from_match(error, ModelValidationPhase::Input)
             }
@@ -995,8 +1013,8 @@ impl Error {
         }
     }
 
-    /// Return the exact common SDK diagnostic category, when this error
-    /// directly retains one.
+    /// Return the exact common SDK diagnostic category retained by this error
+    /// or its staged commit source.
     ///
     /// This is an additive, lossless view for generated manager and projected
     /// batch diagnostics. [`Self::category`] remains the released Rust
@@ -1004,9 +1022,13 @@ impl Error {
     /// `invalid_input` to [`ErrorCategory::ModelValidation`].
     #[must_use]
     pub fn sdk_category(&self) -> Option<&'static str> {
-        StdError::source(self)
-            .and_then(|source| source.downcast_ref::<SdkExecutionDiagnostic>())
-            .map(|diagnostic| diagnostic.category().as_str())
+        let source = StdError::source(self)?;
+        if let Some(diagnostic) = source.downcast_ref::<SdkExecutionDiagnostic>() {
+            return Some(diagnostic.category().as_str());
+        }
+        source
+            .downcast_ref::<type_bridge_orm::session::staged::CommitError>()
+            .map(|error| error.diagnostic().category().as_str())
     }
 
     /// Return the error message string.
@@ -1226,6 +1248,9 @@ fn append_generated_path_segment(path: &mut Vec<ErrorPathSegment>, segment: &str
 
 fn flatten_sdk_detail(value: &SdkDiagnosticDetailValue) -> ErrorDetail {
     match value {
+        SdkDiagnosticDetailValue::ExecutionTimeline(value) => {
+            ErrorDetail::ExecutionTimeline(value.clone())
+        }
         SdkDiagnosticDetailValue::Boolean(value) => ErrorDetail::Boolean(*value),
         SdkDiagnosticDetailValue::Count(value) | SdkDiagnosticDetailValue::ByteCount(value) => {
             i64::try_from(*value)
@@ -1312,6 +1337,68 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_timeline_detail_is_preserved() {
+        let timeline: type_bridge_contract::execution_timeline::ExecutionTimeline =
+            serde_json::from_value(serde_json::json!({
+                "anchor_unix_milliseconds": 1000,
+                "stamps": [
+                    {"phase": "fired", "offset_milliseconds": 0},
+                    {"phase": "failed", "offset_milliseconds": 5, "failing_phase": "fired"}
+                ]
+            }))
+            .unwrap();
+        let diagnostic = type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()
+            .try_with_detail(
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("execution_timeline").unwrap(),
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticDetailValue::ExecutionTimeline(timeline.clone()),
+            ).unwrap();
+        let error = Error::from_sdk_execution(diagnostic, ModelValidationPhase::Input);
+        assert_eq!(
+            error.details().unwrap().get("execution_timeline"),
+            Some(&ErrorDetail::ExecutionTimeline(timeline))
+        );
+    }
+
+    #[test]
+    fn orm_execution_diagnostic_keeps_commit_category_details_and_owned_message() {
+        use type_bridge_contract::sdk_diagnostic::{
+            SdkCommitFailureOutcome, SdkDiagnosticCategory,
+        };
+        for outcome in [
+            SdkCommitFailureOutcome::DefinitelyAborted,
+            SdkCommitFailureOutcome::Unknown,
+        ] {
+            let diagnostic = type_bridge_orm::lower_classified_commit_error(
+                type_bridge_orm::ClassifiedCommitError::Driver {
+                    certainty: if outcome == SdkCommitFailureOutcome::DefinitelyAborted {
+                        type_bridge_orm::CommitFailureCertainty::DefinitelyAborted
+                    } else {
+                        type_bridge_orm::CommitFailureCertainty::Unknown
+                    },
+                    message: "SECRET_SENTINEL".into(),
+                },
+            );
+            let error = Error::from_orm(type_bridge_orm::OrmError::ExecutionDiagnostic(Box::new(
+                diagnostic.clone(),
+            )));
+            assert_eq!(error.category(), ErrorCategory::Transaction);
+            assert_eq!(
+                error.sdk_category(),
+                Some(SdkDiagnosticCategory::Transaction.as_str())
+            );
+            assert_eq!(error.code(), Some(diagnostic.code().as_str()));
+            assert!(error.details().unwrap().contains_key("commit_outcome"));
+            assert_eq!(
+                StdError::source(&error)
+                    .unwrap()
+                    .downcast_ref::<SdkExecutionDiagnostic>(),
+                Some(&diagnostic)
+            );
+            assert!(!format!("{error} {error:?}").contains("SECRET_SENTINEL"));
+        }
+    }
 
     #[test]
     fn typed_failure_keeps_the_released_variant_and_structural_outcome() {

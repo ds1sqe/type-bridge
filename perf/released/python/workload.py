@@ -288,7 +288,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         samples = run(db, models, iterations=arguments.iterations, warmup=arguments.warmup)
     finally:
         db.close()
-        for name in (arguments.database, f"{arguments.database}__tbv2_journal"):
+        for name in (
+            arguments.database,
+            f"{arguments.database}__tb_journal",
+            f"{arguments.database}__tbv2_journal",
+        ):
             cleanup = Database(database=name, **options)
             cleanup.connect()
             try:

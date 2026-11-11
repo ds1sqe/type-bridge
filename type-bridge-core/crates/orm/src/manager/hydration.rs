@@ -15,6 +15,58 @@ use crate::error::{OrmError, Result};
 use crate::session::backend::QueryResult;
 use crate::value::AttributeValue;
 
+fn dynamic_document(row: DynamicEntityRow) -> serde_json::Map<String, serde_json::Value> {
+    let mut document = serde_json::Map::new();
+    for (name, value) in row.attributes {
+        match document.entry(name) {
+            serde_json::map::Entry::Vacant(entry) => {
+                entry.insert(value.to_json());
+            }
+            serde_json::map::Entry::Occupied(mut entry) => {
+                let previous = entry.get_mut();
+                if let serde_json::Value::Array(values) = previous {
+                    values.push(value.to_json());
+                } else {
+                    *previous = serde_json::json!([previous.take(), value.to_json()]);
+                }
+            }
+        }
+    }
+    if let Some(type_name) = row.type_name {
+        document.insert("_type".into(), type_name.into());
+    }
+    document
+}
+
+pub(crate) fn materialize_entity_row<T: TypeBridgeEntity>(row: DynamicEntityRow) -> Result<T> {
+    let iid = row.iid.clone();
+    let mut entity = T::from_document(&dynamic_document(row))?;
+    if let Some(iid) = iid {
+        entity.set_iid(iid);
+    }
+    Ok(entity)
+}
+
+pub(crate) fn materialize_relation_row<R: TypeBridgeRelation>(
+    row: DynamicRelationRow,
+) -> Result<R> {
+    let iid = row.iid;
+    let mut document = dynamic_document(DynamicEntityRow {
+        iid: None,
+        type_name: row.type_name,
+        attributes: row.attributes,
+    });
+    document.insert(
+        "role_players".into(),
+        serde_json::to_value(row.role_players)?,
+    );
+    let mut relation = R::from_document(&document)?;
+    if let Some(iid) = iid {
+        relation.set_iid(iid);
+    }
+    Ok(relation)
+}
+
 /// Hydrate a single entity from a TypeDB fetch document.
 ///
 /// Expected document shape from a polymorphic fetch:
@@ -28,7 +80,7 @@ use crate::value::AttributeValue;
 ///     }
 /// }
 /// ```
-#[tracing::instrument(skip(doc), fields(entity_type = T::TYPE_NAME))]
+#[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.hydrate", skip(doc), fields(model = T::TYPE_NAME))]
 pub fn hydrate_entity<T: TypeBridgeEntity>(doc: &serde_json::Value) -> Result<T> {
     let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
         type_name: T::TYPE_NAME.to_string(),
@@ -64,7 +116,7 @@ pub fn hydrate_entity<T: TypeBridgeEntity>(doc: &serde_json::Value) -> Result<T>
 ///
 /// Uses the same document shape as entity hydration since relations
 /// also own attributes and have IIDs.
-#[tracing::instrument(skip(doc), fields(relation_type = R::TYPE_NAME))]
+#[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.hydrate", skip(doc), fields(model = R::TYPE_NAME))]
 pub fn hydrate_relation<R: TypeBridgeRelation>(doc: &serde_json::Value) -> Result<R> {
     let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
         type_name: R::TYPE_NAME.to_string(),
@@ -93,7 +145,7 @@ pub fn hydrate_relation<R: TypeBridgeRelation>(doc: &serde_json::Value) -> Resul
 }
 
 /// Hydrate a dynamic entity row from a TypeDB fetch document.
-#[tracing::instrument(skip(doc, descriptor), fields(entity_type = %descriptor.type_name))]
+#[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.hydrate", skip(doc, descriptor), fields(model = %descriptor.type_name))]
 pub fn hydrate_dynamic_entity(
     descriptor: &EntityDescriptor,
     doc: &serde_json::Value,
@@ -178,38 +230,6 @@ pub fn hydrate_dynamic_relation_identity(
     Ok(DynamicRelationIdentity { iid, type_name })
 }
 
-pub(crate) fn extract_scalar_identity(root: &str, doc: &serde_json::Value) -> Result<String> {
-    let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
-        type_name: root.into(),
-        message: "Player resolution returned a non-object".into(),
-    })?;
-    let value = obj.get("iid").ok_or_else(|| OrmError::Hydration {
-        type_name: root.into(),
-        message: "Player resolution omitted its IID".into(),
-    })?;
-    let scalar = value.get("value").unwrap_or(value);
-    let iid = scalar
-        .as_str()
-        .ok_or_else(|| OrmError::Hydration {
-            type_name: root.into(),
-            message: "Player resolution returned a nonstring IID".into(),
-        })?
-        .to_string();
-    if iid.trim().is_empty() {
-        return Err(OrmError::Hydration {
-            type_name: root.into(),
-            message: "Player resolution returned a blank IID".into(),
-        });
-    }
-    if !type_bridge_contract::id::is_canonical_thing_iid(&iid) {
-        return Err(OrmError::Hydration {
-            type_name: root.into(),
-            message: "Player resolution returned a noncanonical IID".into(),
-        });
-    }
-    Ok(iid)
-}
-
 fn relation_identity_scalar(
     obj: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -233,7 +253,7 @@ fn relation_identity_scalar(
 }
 
 /// Hydrate one dynamic relation document through the compatibility surface.
-#[tracing::instrument(skip(doc, descriptor), fields(relation_type = %descriptor.type_name))]
+#[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.hydrate", skip(doc, descriptor), fields(model = %descriptor.type_name))]
 pub fn hydrate_dynamic_relation(
     descriptor: &RelationDescriptor,
     doc: &serde_json::Value,

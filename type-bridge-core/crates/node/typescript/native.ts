@@ -1,16 +1,19 @@
+import type { NativeRawTransaction, RawValue } from "./raw-query.js";
 import * as fs from "fs";
 import * as path from "path";
 import type {
   NativeModule,
-  NativeRustDatabase,
-  NativeRustTransactionContext,
+  NativeDatabase,
+  NativeTransactionContext,
 } from "./index.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
-import type { NativeQueryV2Authority } from "./query-v2-internals.js";
+import type { NativePlanAuthority } from "./plan-internals.js";
 import type {
   NativeProjectedFacadeProof,
   NativeProjectedManager,
   NativeProjectedValueEnvelope,
+  NativeProjectionHandle,
+  NativeAuthoredPlanResult,
   RuntimeProjectionInstall,
 } from "./runtime-projection.js";
 
@@ -161,21 +164,21 @@ interface NativeMatchQueryHandle {
     cardinality: NativeMatchRowCardinality,
   ): string;
   executeFetchRowsOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     orders: NativeMatchOrderHandle[],
     offset: bigint,
     limit: bigint,
     cardinality: NativeMatchRowCardinality,
   ): Promise<NativeValidatedMatchResultHandle>;
   executeFetchRowsBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     orders: NativeMatchOrderHandle[],
     offset: bigint,
     limit: bigint,
     cardinality: NativeMatchRowCardinality,
   ): Promise<NativeValidatedMatchResultHandle>;
   executePageByOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
     orders: NativeMatchOrderHandle[],
     offset: bigint,
@@ -183,7 +186,7 @@ interface NativeMatchQueryHandle {
     includeTotal: boolean,
   ): Promise<NativeValidatedMatchResultHandle>;
   executePageByBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
     orders: NativeMatchOrderHandle[],
     offset: bigint,
@@ -191,19 +194,19 @@ interface NativeMatchQueryHandle {
     includeTotal: boolean,
   ): Promise<NativeValidatedMatchResultHandle>;
   executeCountByOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
   ): Promise<NativeValidatedMatchResultHandle>;
   executeCountByBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
   ): Promise<NativeValidatedMatchResultHandle>;
   executeExistsByOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
   ): Promise<NativeValidatedMatchResultHandle>;
   executeExistsByBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
   ): Promise<NativeValidatedMatchResultHandle>;
   pageByDiagnostic(
@@ -222,14 +225,14 @@ interface NativeMatchQueryHandle {
     inputs: (NativeMatchFieldHandle | null)[],
   ): string;
   executeReduceByOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
     group: NativeMatchBindingHandle | null,
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): Promise<NativeValidatedMatchResultHandle>;
   executeReduceByBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
     group: NativeMatchBindingHandle | null,
     reducers: NativeMatchReduction[],
@@ -242,14 +245,14 @@ interface NativeMatchQueryHandle {
     inputs: (NativeMatchFieldHandle | null)[],
   ): string;
   executeReduceByFieldOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
     group: NativeMatchFieldHandle,
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): Promise<NativeValidatedMatchResultHandle>;
   executeReduceByFieldBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
     group: NativeMatchFieldHandle,
     reducers: NativeMatchReduction[],
@@ -262,19 +265,64 @@ interface NativeMatchQueryHandle {
     inputs: (NativeMatchFieldHandle | null)[],
   ): string;
   executeReduceByFieldsOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
     groups: NativeMatchFieldHandle[],
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): Promise<NativeValidatedMatchResultHandle>;
   executeReduceByFieldsBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
     groups: NativeMatchFieldHandle[],
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): Promise<NativeValidatedMatchResultHandle>;
+
+  stageFetchRows(
+    transaction: NativeStagedTransaction,
+    orders: NativeMatchOrderHandle[],
+    offset: bigint,
+    limit: bigint,
+    cardinality: NativeMatchRowCardinality,
+  ): NativePendingPlanAnswer;
+  stagePageBy(
+    transaction: NativeStagedTransaction,
+    root: NativeMatchBindingHandle,
+    orders: NativeMatchOrderHandle[],
+    offset: bigint,
+    limit: bigint,
+    includeTotal: boolean,
+  ): NativePendingPlanAnswer;
+  stageCountBy(
+    transaction: NativeStagedTransaction,
+    root: NativeMatchBindingHandle,
+  ): NativePendingPlanAnswer;
+  stageExistsBy(
+    transaction: NativeStagedTransaction,
+    root: NativeMatchBindingHandle,
+  ): NativePendingPlanAnswer;
+  stageReduceBy(
+    transaction: NativeStagedTransaction,
+    root: NativeMatchBindingHandle,
+    group: NativeMatchBindingHandle | null,
+    reducers: NativeMatchReduction[],
+    inputs: (NativeMatchFieldHandle | null)[],
+  ): NativePendingPlanAnswer;
+  stageReduceByField(
+    transaction: NativeStagedTransaction,
+    root: NativeMatchBindingHandle,
+    group: NativeMatchFieldHandle,
+    reducers: NativeMatchReduction[],
+    inputs: (NativeMatchFieldHandle | null)[],
+  ): NativePendingPlanAnswer;
+  stageReduceByFields(
+    transaction: NativeStagedTransaction,
+    root: NativeMatchBindingHandle,
+    groups: NativeMatchFieldHandle[],
+    reducers: NativeMatchReduction[],
+    inputs: (NativeMatchFieldHandle | null)[],
+  ): NativePendingPlanAnswer;
 }
 
 interface NativeValidatedMatchResultHandle {
@@ -358,6 +406,7 @@ export interface NativeQueryLimits {
 }
 
 export interface NativeQueryExecutionResources {
+  readonly collectPhaseTimestamps: boolean;
   readonly timeoutMilliseconds: bigint;
   readonly items: bigint;
   readonly bytes: bigint;
@@ -365,7 +414,7 @@ export interface NativeQueryExecutionResources {
   readonly attributeValues: bigint;
   readonly collectionMembers: bigint;
   readonly rolePlayers: bigint;
-  readonly statements: bigint;
+  readonly statements: bigint | null;
 }
 
 export interface NativeQueryCancellation {
@@ -381,10 +430,13 @@ interface NativePendingRemoteModelQuery {
 }
 
 export interface NativePendingPlanAnswer {
+  getQueryResult(): NativeValidatedMatchResultHandle;
+  getProjection(): NativeAuthoredPlanResult | null;
   getJson(): string;
 }
 
 export interface NativeStagedTransaction {
+  stageStack(plans: NativeStagedPlan[]): NativePendingPlanAnswer[];
   stagePlan(planBytes: Uint8Array, schemaBytes: Uint8Array): NativePendingPlanAnswer;
   stage(plan: NativePlan): NativePendingPlanAnswer;
   commit(): Promise<void>;
@@ -400,7 +452,12 @@ export interface NativePlanOperand {
 }
 
 /** One validated `query-plan/v3` program. */
+export interface NativeStagedPlan { resultRefsJson(): string; }
+
 export interface NativePlan {
+  explainJson(): string;
+  bindRows(authority: NativePlanAuthority, columns: number[][], rows: unknown[][]): NativePlan;
+  scalarRowsJson(answerJson: string): string;
   canonicalBytes(): Uint8Array;
   fingerprint(): string;
   writes(): boolean;
@@ -408,9 +465,18 @@ export interface NativePlan {
 
 /** The shared core plan builder; handles are dense indexes. */
 export interface NativePlanBuilder {
+  copy(): NativePlanBuilder;
   exact(typeJson: string): number;
   subtypes(typeJson: string): number;
   field(owner: number, ownsJson: string): number;
+  fieldValue(owner: number, ownsJson: string): number;
+  byIid(owner: number, iid: string): void;
+  byIidInput(owner: number, input: number): void;
+  bindValue(owner: number, field: string, valueType: string, value: unknown): number;
+  bindRows(columns: { owner: number; field: string; valueType: string }[], rows: number[][]): number[];
+  letValue(owner: number, field: string, expr: number): number;
+  modelRows(thing: number, columns: { field: string; valueType: string }[], rows: unknown[][]): void;
+  link(relation: number, roleJson: string, player: number): void;
   links(relation: number, roleJson: string, player: number): void;
   compare(left: NativePlanOperand, comparator: string, right: NativePlanOperand): void;
   input(name: string, valueType: string, optional: boolean): number;
@@ -430,17 +496,26 @@ export interface NativePlanBuilder {
   deletePlayer(relation: number, roleJson: string, player: number): void;
   row(columns: number[], literals: (number | null)[]): void;
   returning(columns: number[]): void;
+  fetch(thing: number, roles: string[], required: boolean[]): void;
+  fetchHeld(thing: number, roles: string[], required: boolean[]): void;
   count(): void;
   exists(): void;
-  build(authority: NativeQueryV2Authority): NativePlan;
+  build(authority: NativePlanAuthority, matched?: boolean, models?: boolean): NativePlan;
+  buildStaged(authority: NativePlanAuthority, columns: number[][], rows: unknown[][], references: string): NativeStagedPlan;
+  buildSelected(authority: NativePlanAuthority, kind: string, thing: number | null, roles: string[], required: boolean[], columns: number[], projection?: NativeProjectionHandle | null, declared?: string | null, modelBindings?: number[] | null, modelTypes?: string[] | null): NativePlan;
 }
 
 interface NativePlanBuilderModule {
-  NodePlanBuilder: new () => NativePlanBuilder;
+  setDebugListener(callback: ((json: string) => void) | null): void;
+  NodePlanBuilder: new (queryLimits?: NativeQueryLimits) => NativePlanBuilder;
 }
 
 /** Native proxy connection over the built-in HTTP route. */
 export interface NativeProxyConnection {
+  rawTransaction(kind: import("./index.js").TransactionType): NativeRawTransaction;
+  executeQuery(query: string, kind: import("./index.js").TransactionType): Promise<RawValue>;
+  readonly admissionWindowMilliseconds: bigint;
+  readonly queryLimits: NativeQueryLimits;
   readonly answerLimits: NativeQueryExecutionResources;
   transaction(
     kind?: string,
@@ -495,7 +570,7 @@ export interface NativeProxyConnection {
 interface NativeProxyConnectionModule {
   NodeProxyConnection: {
     connect(
-      authority: ReturnType<NativeModule["queryV2Authority"]>,
+      authority: ReturnType<NativeModule["planAuthority"]>,
       endpoint: string,
       tlsMode: string,
       tlsRootCa: string | undefined,
@@ -506,6 +581,8 @@ interface NativeProxyConnectionModule {
       answerLimits?: NativeQueryExecutionResources,
       cancellation?: NativeQueryCancellation,
       stagedAdvertisement?: Uint8Array,
+      admissionWindowMilliseconds?: bigint,
+      queryLimits?: NativeQueryLimits,
     ): Promise<NativeProxyConnection>;
   };
 }
@@ -553,17 +630,18 @@ interface NativeRemoteModelQueryModule {
     collectionMembers?: bigint,
     rolePlayers?: bigint,
     statements?: bigint,
+    collectPhaseTimestamps?: boolean,
   ) => NativeQueryExecutionResources;
   NodeQueryCancellation: new () => NativeQueryCancellation;
   NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
-  queryV2RemoteModelContextWithResources(
-    authority: ReturnType<NativeModule["queryV2Authority"]>,
+  planRemoteModelContextWithResources(
+    authority: ReturnType<NativeModule["planAuthority"]>,
     advertisement: Uint8Array,
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
     answerLimits?: NativeQueryExecutionResources,
   ): NativeRemoteModelQueryContext;
-  queryV2PrepareRemoteModelRows(
+  planPrepareRemoteModelRows(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     orders: NativeMatchOrderHandle[],
@@ -571,7 +649,7 @@ interface NativeRemoteModelQueryModule {
     limit: bigint,
     cardinality: NativeMatchRowCardinality,
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelPage(
+  planPrepareRemoteModelPage(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
@@ -580,17 +658,17 @@ interface NativeRemoteModelQueryModule {
     limit: bigint,
     includeTotal: boolean,
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelCount(
+  planPrepareRemoteModelCount(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelExists(
+  planPrepareRemoteModelExists(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelReduce(
+  planPrepareRemoteModelReduce(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
@@ -598,7 +676,7 @@ interface NativeRemoteModelQueryModule {
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelReduceByField(
+  planPrepareRemoteModelReduceByField(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
@@ -606,7 +684,7 @@ interface NativeRemoteModelQueryModule {
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): NativePendingRemoteModelQuery;
-  queryV2PrepareRemoteModelReduceByFields(
+  planPrepareRemoteModelReduceByFields(
     query: NativeMatchQueryHandle,
     context: NativeRemoteModelQueryContext,
     root: NativeMatchBindingHandle,
@@ -628,9 +706,10 @@ interface NativeRuntimeProjectionHandle {
     connectionLimits?: NativeQueryExecutionResources,
     answerLimits?: NativeQueryExecutionResources,
     cancellation?: NativeQueryCancellation,
-  ): NativeRustDatabase;
-  managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
-  managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
+  ): NativeDatabase;
+  managerForProxy(typeKey: string, connection: NativeProxyConnection): NativeProjectedManager;
+  managerForDatabase(typeKey: string, database: NativeDatabase): NativeProjectedManager;
+  managerForTransaction(typeKey: string, transaction: NativeTransactionContext): NativeProjectedManager;
   matchSessionWithResources(
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
@@ -701,12 +780,22 @@ interface NativeRuntimeProjectionHandle {
   rejectGeneratedTokenPackageMismatch(pathJson: string): void;
   revalidateMatchDiagnostic(diagnostic: string): string;
   materializeMatchThingJson(thing: NativeValidatedThingHandle): string;
+  materializePlanDocuments(plan: NativePlan, answerJson: string, declaredId: string): unknown[];
   materializeMatchThingProjected(
     thing: NativeValidatedThingHandle,
   ): NativeProjectedValueEnvelope;
 }
 
 interface NativeRuntimeProjectionModule {
+  projectedBatchDeleted(authority: NativeProjectedBatchAuthority, ordinal: number, roleName?: string, playerIndex?: number): boolean;
+  installPlanRuntimeProjection(
+    projectionJson: string,
+    semanticFingerprintJson: string,
+    projectionFingerprintJson: string,
+    registrationsJson: string,
+    schemaAuthorityJson: string,
+    projectedBatchMaterializer: NonNullable<ConstructorParameters<NativeRuntimeProjectionModule["NodeRuntimeProjection"]>[5]>,
+  ): NativeRuntimeProjectionHandle;
   NodeRuntimeProjection: new (
     projectionJson: string,
     semanticFingerprintJson: string,
@@ -730,11 +819,8 @@ type LoadedNativeModule =
   & NativeProxyConnectionModule
   & NativePlanBuilderModule
   & NativeRuntimeProjectionModule;
-type LoadedNativePendingQueryV2Remote = ReturnType<
-  LoadedNativeModule["queryV2PrepareRemote"]
->;
 type LoadedNativePendingRemoteModelQuery = ReturnType<
-  LoadedNativeModule["queryV2PrepareRemoteModelRows"]
+  LoadedNativeModule["planPrepareRemoteModelRows"]
 >;
 
 // This module compiles to dist/native.js (CommonJS). __dirname is therefore
@@ -745,39 +831,6 @@ type LoadedNativePendingRemoteModelQuery = ReturnType<
 // fallback for atypical build layouts.
 
 let _cached: LoadedNativeModule | null = null;
-
-function protectedPendingQueryV2Remote(
-  pending: LoadedNativePendingQueryV2Remote,
-  maxEnvelopeBytes: number,
-): LoadedNativePendingQueryV2Remote {
-  const requestBytes = pending.requestBytes.bind(pending);
-  const decodeReply = pending.decodeReply.bind(pending);
-  let decodeStarted = false;
-  return Object.freeze({
-    requestBytes: (): Uint8Array => requestBytes(),
-    decodeReply: (response: Uint8Array): Promise<string> => {
-      if (decodeStarted) {
-        // The native one-shot claim rejects replay before inspecting this
-        // argument, so do not snapshot attacker-sized replay input.
-        return decodeReply(response);
-      }
-      decodeStarted = true;
-      let snapshot: Buffer;
-      try {
-        snapshot = ownedByteSnapshot(response, maxEnvelopeBytes);
-      } catch {
-        // Preserve the native claim-first contract for an invalid first
-        // argument. The addon consumes the one-shot before its metadata check,
-        // while a replay returns without inspecting this value.
-        return decodeReply(response);
-      }
-      // Do not catch a synchronous native rejection here. The claim has
-      // already been consumed, so retrying would mask the original diagnostic
-      // with the one-shot replay error.
-      return decodeReply(snapshot);
-    },
-  });
-}
 
 function protectedPendingRemoteModelQuery(
   pending: LoadedNativePendingRemoteModelQuery,
@@ -830,48 +883,44 @@ function protectedMethodDescriptor(
 }
 
 /**
- * Hide every raw N-API V2 byte boundary behind an owned JavaScript snapshot.
+ * Hide every raw N-API byte boundary behind an owned JavaScript snapshot.
  *
  * A Node Buffer may alias SharedArrayBuffer storage that another Worker can
  * mutate. N-API exposes that storage to Rust as an ordinary borrowed slice,
  * for which concurrent mutation would be undefined behaviour. The public
- * loader therefore returns a facade whose byte-bearing V2 calls take bounded
+ * loader therefore returns a facade whose byte-bearing calls take bounded
  * copies before entering the addon. The addon independently rejects shared
  * backing storage so direct artifact loads remain safe; the facade preserves
  * Uint8Array convenience and reflective property access without weakening
  * that native boundary.
  */
-function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModule {
+function protectNativeByteInputs(native: LoadedNativeModule): LoadedNativeModule {
   const maxCanonicalBytes = native.MAX_CANONICAL_BYTES;
   const maxEnvelopeBytes = native.MAX_REMOTE_ENVELOPE_BYTES;
-  const queryV2Authority = native.queryV2Authority.bind(native);
-  const queryV2QueryOnlyAuthority = native.queryV2QueryOnlyAuthority.bind(native);
-  const queryV2ExecuteLocal = native.queryV2ExecuteLocal.bind(native);
-  const queryV2RemoteCapabilities = native.queryV2RemoteCapabilities.bind(native);
-  const queryV2PrepareRemote = native.queryV2PrepareRemote.bind(native);
-  const queryV2RemoteModelContextWithResources =
-    native.queryV2RemoteModelContextWithResources.bind(native);
-  const queryV2PrepareRemoteModelRows =
-    native.queryV2PrepareRemoteModelRows.bind(native);
-  const queryV2PrepareRemoteModelPage =
-    native.queryV2PrepareRemoteModelPage.bind(native);
-  const queryV2PrepareRemoteModelCount =
-    native.queryV2PrepareRemoteModelCount.bind(native);
-  const queryV2PrepareRemoteModelExists =
-    native.queryV2PrepareRemoteModelExists.bind(native);
-  const queryV2PrepareRemoteModelReduce =
-    native.queryV2PrepareRemoteModelReduce.bind(native);
-  const queryV2PrepareRemoteModelReduceByField =
-    native.queryV2PrepareRemoteModelReduceByField.bind(native);
-  const queryV2PrepareRemoteModelReduceByFields =
-    native.queryV2PrepareRemoteModelReduceByFields.bind(native);
+  const planAuthority = native.planAuthority.bind(native);
+  const planRemoteModelContextWithResources =
+    native.planRemoteModelContextWithResources.bind(native);
+  const planPrepareRemoteModelRows =
+    native.planPrepareRemoteModelRows.bind(native);
+  const planPrepareRemoteModelPage =
+    native.planPrepareRemoteModelPage.bind(native);
+  const planPrepareRemoteModelCount =
+    native.planPrepareRemoteModelCount.bind(native);
+  const planPrepareRemoteModelExists =
+    native.planPrepareRemoteModelExists.bind(native);
+  const planPrepareRemoteModelReduce =
+    native.planPrepareRemoteModelReduce.bind(native);
+  const planPrepareRemoteModelReduceByField =
+    native.planPrepareRemoteModelReduceByField.bind(native);
+  const planPrepareRemoteModelReduceByFields =
+    native.planPrepareRemoteModelReduceByFields.bind(native);
   const descriptors = Object.getOwnPropertyDescriptors(native);
 
-  descriptors["queryV2Authority"] = protectedMethodDescriptor(
+  descriptors["planAuthority"] = protectedMethodDescriptor(
     native,
-    "queryV2Authority",
+    "planAuthority",
     ((declaredSchema: Uint8Array, scope: string, profile: string) =>
-      queryV2Authority(
+      planAuthority(
         ownedByteSnapshot(declaredSchema, maxCanonicalBytes),
         scope,
         profile,
@@ -879,87 +928,16 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
       ...args: never[]
     ) => unknown,
   );
-  descriptors["queryV2QueryOnlyAuthority"] = protectedMethodDescriptor(
+  descriptors["planRemoteModelContextWithResources"] = protectedMethodDescriptor(
     native,
-    "queryV2QueryOnlyAuthority",
+    "planRemoteModelContextWithResources",
     ((
-      database: NativeRustDatabase,
-      declaredSchema: Uint8Array,
-      scope: string,
-      profile: string,
-    ) =>
-      queryV2QueryOnlyAuthority(
-        database,
-        ownedByteSnapshot(declaredSchema, maxCanonicalBytes),
-        scope,
-        profile,
-      )) as (...args: never[]) => unknown,
-  );
-  descriptors["queryV2ExecuteLocal"] = protectedMethodDescriptor(
-    native,
-    "queryV2ExecuteLocal",
-    ((
-      database: NativeRustDatabase,
-      authority: Parameters<LoadedNativeModule["queryV2ExecuteLocal"]>[1],
-      plan: Uint8Array,
-      invocationJson: string,
-      deadlineMs?: bigint | null,
-    ) =>
-      queryV2ExecuteLocal(
-        database,
-        authority,
-        ownedByteSnapshot(plan, maxCanonicalBytes),
-        invocationJson,
-        deadlineMs,
-      )) as (...args: never[]) => unknown,
-  );
-  descriptors["queryV2RemoteCapabilities"] = protectedMethodDescriptor(
-    native,
-    "queryV2RemoteCapabilities",
-    ((advertisement: Uint8Array) =>
-      queryV2RemoteCapabilities(
-        ownedByteSnapshot(advertisement, maxEnvelopeBytes),
-      )) as (
-      ...args: never[]
-    ) => unknown,
-  );
-  descriptors["queryV2PrepareRemote"] = protectedMethodDescriptor(
-    native,
-    "queryV2PrepareRemote",
-    ((
-      authority: Parameters<LoadedNativeModule["queryV2PrepareRemote"]>[0],
-      plan: Uint8Array,
-      invocationJson: string,
-      advertisement: Uint8Array,
-      maxItems: bigint,
-      maxBytes: bigint,
-      maxCollectionMembers: bigint,
-      deadlineMs?: bigint | null,
-    ) =>
-      protectedPendingQueryV2Remote(
-        queryV2PrepareRemote(
-          authority,
-          ownedByteSnapshot(plan, maxCanonicalBytes),
-          invocationJson,
-          ownedByteSnapshot(advertisement, maxEnvelopeBytes),
-          maxItems,
-          maxBytes,
-          maxCollectionMembers,
-          deadlineMs,
-        ),
-        maxEnvelopeBytes,
-      )) as (...args: never[]) => unknown,
-  );
-  descriptors["queryV2RemoteModelContextWithResources"] = protectedMethodDescriptor(
-    native,
-    "queryV2RemoteModelContextWithResources",
-    ((
-      authority: Parameters<LoadedNativeModule["queryV2RemoteModelContextWithResources"]>[0],
+      authority: Parameters<LoadedNativeModule["planRemoteModelContextWithResources"]>[0],
       advertisement: Uint8Array,
       resources: NativeQueryExecutionResources,
       cancellation: NativeQueryCancellation,
       answerLimits?: NativeQueryExecutionResources,
-    ) => queryV2RemoteModelContextWithResources(
+    ) => planRemoteModelContextWithResources(
       authority,
       ownedByteSnapshot(advertisement, maxEnvelopeBytes),
       resources,
@@ -967,66 +945,66 @@ function protectNativeV2ByteInputs(native: LoadedNativeModule): LoadedNativeModu
       answerLimits,
     )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelRows"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelRows"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelRows",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelRows"]>) =>
+    "planPrepareRemoteModelRows",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelRows"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelRows(...args),
+        planPrepareRemoteModelRows(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelPage"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelPage"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelPage",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelPage"]>) =>
+    "planPrepareRemoteModelPage",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelPage"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelPage(...args),
+        planPrepareRemoteModelPage(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelCount"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelCount"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelCount",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelCount"]>) =>
+    "planPrepareRemoteModelCount",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelCount"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelCount(...args),
+        planPrepareRemoteModelCount(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelExists"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelExists"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelExists",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelExists"]>) =>
+    "planPrepareRemoteModelExists",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelExists"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelExists(...args),
+        planPrepareRemoteModelExists(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelReduce"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelReduce"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelReduce",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelReduce"]>) =>
+    "planPrepareRemoteModelReduce",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelReduce"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelReduce(...args),
+        planPrepareRemoteModelReduce(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelReduceByField"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelReduceByField"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelReduceByField",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelReduceByField"]>) =>
+    "planPrepareRemoteModelReduceByField",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelReduceByField"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelReduceByField(...args),
+        planPrepareRemoteModelReduceByField(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
-  descriptors["queryV2PrepareRemoteModelReduceByFields"] = protectedMethodDescriptor(
+  descriptors["planPrepareRemoteModelReduceByFields"] = protectedMethodDescriptor(
     native,
-    "queryV2PrepareRemoteModelReduceByFields",
-    ((...args: Parameters<LoadedNativeModule["queryV2PrepareRemoteModelReduceByFields"]>) =>
+    "planPrepareRemoteModelReduceByFields",
+    ((...args: Parameters<LoadedNativeModule["planPrepareRemoteModelReduceByFields"]>) =>
       protectedPendingRemoteModelQuery(
-        queryV2PrepareRemoteModelReduceByFields(...args),
+        planPrepareRemoteModelReduceByFields(...args),
         maxEnvelopeBytes,
       )) as (...args: never[]) => unknown,
   );
@@ -1119,7 +1097,7 @@ export function loadNative(): LoadedNativeModule {
     if (fs.existsSync(candidate)) {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const native = require(candidate) as LoadedNativeModule;
-      _cached = protectNativeV2ByteInputs(native);
+      _cached = protectNativeByteInputs(native);
       return _cached;
     }
   }

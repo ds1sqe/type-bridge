@@ -1,8 +1,8 @@
 //! Session layer for TypeDB connectivity.
 //!
 //! Provides [`Database`] for connecting to TypeDB, [`Transaction`] for
-//! individual operations, and [`TransactionContext`] for grouping multiple
-//! operations into a shared transaction.
+//! staged plans, and [`TransactionContext`] for grouping operations in a
+//! caller-owned transaction.
 
 pub mod backend;
 pub mod context;
@@ -14,8 +14,9 @@ mod direct_connection;
 pub mod eager;
 #[cfg(not(feature = "internal-eager"))]
 pub(crate) mod eager;
-pub mod legacy_writer;
+mod legacy_writer;
 mod proxy_connection;
+pub mod raw;
 pub mod staged;
 pub(crate) mod staged_proxy;
 mod tls_policy;
@@ -33,15 +34,11 @@ pub use database::{
 };
 #[cfg(feature = "typedb")]
 pub use direct_connection::DirectConnectionPolicy;
-pub use legacy_writer::{require_legacy_writer_open, require_legacy_writer_open_in_transaction};
 pub use proxy_connection::{ProxyEndpoint, ProxyHttpTransport};
-pub use staged_proxy::StagedExchangeFn;
-#[allow(deprecated)]
-pub use tls_policy::DirectTls;
+pub use staged::Transaction;
+pub use staged_proxy::{StagedExchangeFn, StagedTransport};
 pub use tls_policy::TlsPolicy;
 pub use transaction::OwnedTransaction;
-#[allow(deprecated)]
-pub use transaction::Transaction;
 
 #[cfg(feature = "typedb")]
 pub use real_driver::embedded_driver_versions;

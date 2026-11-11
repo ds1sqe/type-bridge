@@ -19,7 +19,7 @@ DEFAULT_CONTRACT = ROOT / "tests/contracts/c-distribution-v1.json"
 ARTIFACTS_CATALOG = ROOT / "tests/contracts/sdk_conformance/artifacts/catalog.json"
 MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest.json"
 FULL_C_AUDIT = ROOT / "tests/contracts/c-full-sdk-audit.json"
-# The frozen released 1.6 header; 1.7 exports beyond it are the additive set.
+# The released header is retained only to describe the ABI 2.0 transition.
 ABI_1_6_HEADER = "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
 HEADER_EXPORT = re.compile(r"\b(type_bridge_[a-z0-9_]+)\s*\(")
 TRANSITION_CASES = [
@@ -71,9 +71,8 @@ def _added_exports(root: Path, contract_path: object) -> list[str]:
     except (OSError, UnicodeError) as error:
         raise ContractError(f"cannot read the released 1.6 header: {error}") from error
     released = set(HEADER_EXPORT.findall(previous))
-    _require(released <= exports, "ABI 1.7 removed a released 1.6 export")
     added = sorted(exports - released)
-    _require(bool(added), "ABI 1.7 adds no exports")
+    _require(bool(added), "ABI 2.0 adds no exports")
     return added
 
 
@@ -94,22 +93,25 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
 
     abi = contract.get("abi")
     _require(
-        isinstance(abi, dict) and abi.get("decision") == "additive-1.7", "ABI decision drifted"
+        isinstance(abi, dict) and abi.get("decision") == "breaking-2.0", "ABI decision drifted"
     )
-    _require(abi.get("version") == "1.7.0", "distribution must retain ABI 1.7")
+    _require(abi.get("version") == "2.0.0", "distribution must use ABI 2.0")
     _require(
-        abi.get("package_metadata_version") == "1.6.0",
-        "installed package metadata must retain version 1.6",
+        abi.get("package_metadata_version") == "2.0.0",
+        "installed package metadata must use ABI 2.0",
     )
     description = abi.get("package_metadata_description")
     _require(
         isinstance(description, str) and bool(description.strip()) and "\n" not in description,
         "package metadata version needs a one-line description",
     )
-    _require(abi.get("accepted_descriptor_minors") == [6, 7], "descriptor ABI range drifted")
+    _require(
+        abi.get("accepted_descriptor_minors") == [0],
+        "descriptor ABI range drifted",
+    )
     _require(
         abi.get("added_exports") == _added_exports(root, abi.get("contract_path")),
-        "additive ABI exports drifted",
+        "ABI transition exports drifted",
     )
     _require(abi.get("static_linkage") == "unsupported", "static linkage was not selected")
     _require(abi.get("shared_linkage") == "artifact", "shared artifact linkage is missing")
@@ -117,7 +119,7 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     compatibility = contract.get("compatibility")
     _require(isinstance(compatibility, dict), "compatibility contract is missing")
     _require(
-        compatibility.get("runtime_abi") == {"exact": "1.7.0"},
+        compatibility.get("runtime_abi") == {"exact": "2.0.0"},
         "runtime ABI range drifted",
     )
     _require(
@@ -220,13 +222,13 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     generated_pc = (root / "type-bridge-core/crates/schema-codegen/src/c/schema.pc.in").read_text(
         encoding="utf-8"
     )
-    _require("project(TypeBridge VERSION 1.6.0" in cmake, "runtime CMake ABI version drifted")
+    _require("project(TypeBridge VERSION 2.0.0" in cmake, "runtime CMake ABI version drifted")
     _require(
-        "find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)" in generated_cmake,
+        "find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)" in generated_cmake,
         "generated CMake range drifted",
     )
     _require(
-        "type-bridge-abi >= 1.7.0" in generated_pc,
+        "type-bridge-abi >= 2.0.0" in generated_pc,
         "generated pkg-config range drifted",
     )
 
@@ -286,11 +288,64 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     return contract
 
 
+def regenerate(root: Path = ROOT) -> None:
+    """Re-pin current C header exports and distribution sources for ABI 2.0."""
+    abi_path = root / "tests/contracts/c-abi.json"
+    abi = _load(abi_path)
+    header = (root / abi["header"]).read_bytes()
+    text = header.decode("utf-8")
+    major = re.search(r"^#define TYPE_BRIDGE_C_ABI_MAJOR (\d+)u$", text, re.M)
+    minor = re.search(r"^#define TYPE_BRIDGE_C_ABI_MINOR (\d+)u$", text, re.M)
+    _require(major is not None and minor is not None, "missing ABI version macros")
+    assert major is not None and minor is not None
+    _require((major[1], minor[1]) == ("2", "0"), "only the ABI 2.0 transition may be re-pinned")
+    abi["version"] = "2.0.0"
+    abi["header_sha256"] = hashlib.sha256(header).hexdigest()
+    abi["exports"] = sorted(
+        set(re.findall(r"TYPE_BRIDGE_CALL\s+(type_bridge_[a-z0-9_]+)\s*\(", text))
+    )
+    abi_path.write_text(json.dumps(abi, indent=2) + "\n", encoding="utf-8")
+    path = root / "tests/contracts/c-distribution-v1.json"
+    contract = _load(path)
+    contract["abi"].update(
+        decision="breaking-2.0",
+        version="2.0.0",
+        package_metadata_version="2.0.0",
+        package_metadata_description="CMake and pkg-config require ABI 2.0.0; regenerate all ABI 1.x schema packages.",
+        accepted_descriptor_minors=[0],
+        added_exports=_added_exports(root, contract["abi"]["contract_path"]),
+        contract_sha256=hashlib.sha256(abi_path.read_bytes()).hexdigest(),
+    )
+    contract["compatibility"]["runtime_abi"] = {"exact": "2.0.0"}
+    contract["identities"]["runtime"]["archive_stem"] = "type-bridge-c-runtime-abi-2.0-{target}"
+    for item in contract["source_authorities"]:
+        item["sha256"] = hashlib.sha256((root / item["path"]).read_bytes()).hexdigest()
+    path.write_text(json.dumps(contract, indent=2) + "\n", encoding="utf-8")
+    ledger_path = root / "tests/contracts/c-broad-case-ledger.json"
+    ledger = ledger_path.read_text(encoding="utf-8")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    ledger, count = re.subn(
+        r'("path": "tests/contracts/c-distribution-v1.json", "sha256": ")[0-9a-f]{64}',
+        lambda match: match[1] + digest,
+        ledger,
+    )
+    _require(count == 1, "distribution ledger authority must occur exactly once")
+    ledger_path.write_text(ledger, encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
+    parser.add_argument(
+        "--write", action="store_true", help="regenerate ABI 2.0 inventories and digests"
+    )
     arguments = parser.parse_args()
     try:
+        if arguments.write:
+            _require(
+                arguments.contract == DEFAULT_CONTRACT, "--write requires the repository contract"
+            )
+            regenerate()
         contract = validate(arguments.contract)
     except ContractError as error:
         print(f"C distribution contract rejected: {error}", file=sys.stderr)

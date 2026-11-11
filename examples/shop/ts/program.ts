@@ -17,8 +17,8 @@
  * generated package (`./index.js`); see
  * tests/contracts/sdk_conformance/writes/shop.
  */
-import { Plan, QueryV2Error, RustDatabase } from "@type-bridge/node";
-import type { PendingPlanAnswer, QueryV2Authority, StagedTransaction } from "@type-bridge/node";
+import { Plan, PlanError, Database } from "@type-bridge/node";
+import type { Pending, PlanAuthority, StagedTransaction } from "@type-bridge/node";
 import { ProxyConnection } from "@type-bridge/node/runtime-projection";
 import { Account, Item, OrderLine, schemaAuthority } from "./index.js";
 
@@ -30,12 +30,12 @@ declare const process: {
 };
 
 type Built = Plan;
-type Builder = (authority: QueryV2Authority) => Built;
+type Builder = (authority: PlanAuthority) => Built;
 /** One cart line: an item's sku and the quantity taken. */
 type CartLine = readonly [string, bigint];
 
 /** Three accounts, one given row each. */
-function seedAccounts(authority: QueryV2Authority): Built {
+function seedAccounts(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const accountId = plan.input("account_id", "string");
   const balance = plan.input("balance", "long");
@@ -52,7 +52,7 @@ function seedAccounts(authority: QueryV2Authority): Built {
 }
 
 /** Four items with a price and a stock, one given row each. */
-function seedItems(authority: QueryV2Authority): Built {
+function seedItems(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   const sku = plan.input("sku", "string");
   const price = plan.input("price", "long");
@@ -77,7 +77,7 @@ function seedItems(authority: QueryV2Authority): Built {
 // --8<-- [start:checkout]
 /** The whole cart in one query: check every line and the total, then write. */
 function checkout(
-  authority: QueryV2Authority,
+  authority: PlanAuthority,
   accountId: string,
   orderId: string,
   cart: readonly CartLine[],
@@ -139,7 +139,7 @@ function stockIs(sku: string, value: bigint): Builder {
   };
 }
 
-function orderLines(authority: QueryV2Authority): Built {
+function orderLines(authority: PlanAuthority): Built {
   const plan = Plan.builder();
   plan.exact(OrderLine);
   return plan.count().build(authority);
@@ -190,11 +190,13 @@ const ATTEMPTS = 20;
 type Answer = readonly [string, number];
 
 /** One answer as [kind, value]; rows report their count, exists 0 or 1. */
-function answer(pending: PendingPlanAnswer): Answer {
-  const value = pending.get();
+function answer(pending: Pending): Answer {
+  const value = pending.result();
   switch (value.kind) {
     case "rows":
       return ["rows", value.rows.length];
+    case "documents":
+      return ["documents", value.documents.length];
     case "exists":
       return ["exists", value.value ? 1 : 0];
     default:
@@ -223,7 +225,7 @@ async function run(
 /** A typed commit conflict that a fresh transaction may retry. */
 function retrySafeConflict(error: unknown): boolean {
   return (
-    error instanceof QueryV2Error &&
+    error instanceof PlanError &&
     error.failure !== undefined &&
     error.failure.reason === "conflict" &&
     error.failure.retry_safe
@@ -324,7 +326,7 @@ async function main(): Promise<void> {
   const database = process.env["TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE"];
   const endpoint = process.env["TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT"];
   if (database) {
-    const db = RustDatabase.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1729", database, {
+    const db = Database.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1729", database, {
       httpPort: Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
       username: process.env["TYPEDB_USERNAME"] ?? "admin",
       password: process.env["TYPEDB_PASSWORD"] ?? "password",

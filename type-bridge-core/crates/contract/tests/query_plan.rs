@@ -1,1155 +1,2058 @@
+#[path = "support/plan_examples.rs"]
+mod examples;
+
+#[path = "support/plan.rs"]
+mod support;
+
 use serde_json::{Value, json};
-use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-use type_bridge_contract::migration_assertion::{
-    AssertionBinding, BindingId, QueryVariable, ValueComparator,
-};
+use std::collections::BTreeMap;
+use support::*;
+use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::query_plan::{
-    InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryInvocation, QueryOperand,
-    QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage, decode_query_invocation,
-    decode_query_plan,
+    AttachItem, DeleteItem, InsertThing, QueryPlan, Set, Stage, decode_query_plan,
 };
-use type_bridge_contract::query_plan_capability_vocabulary;
-use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
-use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
 
-fn binding(id: u16, variable: &str) -> AssertionBinding {
-    AssertionBinding::new(
-        BindingId::new(id).expect("binding id"),
-        QueryVariable::new(variable).expect("query variable"),
-    )
+#[test]
+fn keyed_relation_put_requires_a_player_bound_before_allocation() {
+    use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+    use type_bridge_contract::schema::OwnsFactId;
+    let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+    let seed = Stage::Put {
+        include_subtypes: false,
+        things: vec![InsertThing {
+            binding: id(1),
+            type_id: purchase.clone(),
+            fields: vec![(
+                OwnsFactId::new(purchase, AttributeId::new("purchase-id").unwrap()).unwrap(),
+                string("key"),
+            )],
+            players: vec![],
+        }],
+    };
+    for optional in [false, true] {
+        let stages = vec![
+            matched(),
+            seed.clone(),
+            Stage::Attach {
+                items: vec![AttachItem::Links {
+                    optional,
+                    relation: id(1),
+                    role: RoleId::new("purchase", "buyer").unwrap(),
+                    player: id(0),
+                }],
+            },
+        ];
+        let plan = QueryPlan::new(spec(stages, vec![1]), &schema());
+        if optional {
+            plan.unwrap();
+            let mut request = spec(
+                vec![
+                    matched(),
+                    seed.clone(),
+                    Stage::Attach {
+                        items: vec![AttachItem::Links {
+                            optional: true,
+                            relation: id(1),
+                            role: RoleId::new("purchase", "buyer").unwrap(),
+                            player: id(0),
+                        }],
+                    },
+                ],
+                vec![1],
+            );
+            request.inputs = vec![InputColumn::new(
+                InputColumnId::new(0),
+                type_bridge_contract::migration_assertion::QueryVariable::new("seed").unwrap(),
+                type_bridge_contract::value::ValueTypeTag::String,
+                false,
+            )];
+            request.given_rows = Some(vec![InputRow::new(vec![Some(
+                type_bridge_contract::value::CanonicalValue::String(
+                    type_bridge_contract::value::CanonicalString::new("key").unwrap(),
+                ),
+            )])]);
+            QueryPlan::new(request.clone(), &schema()).unwrap();
+            request.pipeline.pop();
+            assert_eq!(
+                QueryPlan::new(request, &schema())
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "query_plan_insert_relation_players"
+            );
+        } else {
+            plan.unwrap();
+        }
+    }
+    let bare = QueryPlan::new(spec(vec![matched(), seed], vec![1]), &schema()).unwrap_err();
+    assert_eq!(bare.code().as_str(), "query_plan_insert_relation_players");
 }
 
-fn binding_id(id: u16) -> BindingId {
-    BindingId::new(id).expect("binding id")
-}
-
-fn managed_semantics(seed: &[u8]) -> ManagedSemanticSchemaFingerprint {
-    ManagedSemanticSchemaFingerprint::compute(
-        SemanticProfileId::new("typedb-3.12.1/v1").expect("semantic profile"),
-        seed,
-    )
-    .expect("managed semantic fingerprint")
-}
-
-fn person_isa(binding: u16) -> QueryPattern {
-    QueryPattern::Isa {
-        binding: binding_id(binding),
-        include_subtypes: true,
-        type_id: TypeId::new(TypeKind::Entity, "person").expect("type id"),
+#[test]
+fn optional_fetch_roles_may_belong_to_a_subset_of_candidates() {
+    use type_bridge_contract::id::RoleId;
+    use type_bridge_contract::query_plan::{DocumentRole, ThingDocument};
+    let schema = schema_with_subtype_role();
+    for (role, required, accepted) in [
+        (
+            RoleId::new("child-membership", "extra").unwrap(),
+            false,
+            true,
+        ),
+        (
+            RoleId::new("child-membership", "extra").unwrap(),
+            true,
+            false,
+        ),
+        (RoleId::new("purchase", "buyer").unwrap(), false, false),
+    ] {
+        let stages = vec![
+            Stage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: id(0),
+                        type_id: relation(),
+                        include_subtypes: true,
+                    }
+                    .into(),
+                ],
+            },
+            Stage::Fetch(ThingDocument::new(
+                id(0),
+                vec![DocumentRole::new(role, required)],
+            )),
+        ];
+        let plan = QueryPlan::new(spec(stages, vec![]), &schema);
+        if accepted {
+            plan.unwrap();
+        } else {
+            assert_eq!(
+                plan.unwrap_err().code().as_str(),
+                "query_plan_wrong_role_owner"
+            );
+        }
     }
 }
 
-fn full_pipeline_plan() -> QueryPlan {
-    QueryPlan::new(
-        vec![binding(0, "person"), binding(1, "age")],
-        vec![InputColumn::new(
-            InputColumnId::new(0),
-            QueryVariable::new("minimum_age").expect("input name"),
-            ValueTypeTag::Long,
-            false,
-        )],
+#[test]
+fn deferred_optional_seed_players_require_nonnull_rows_and_matching_existence_guards() {
+    use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+    use type_bridge_contract::migration_assertion::{QueryVariable, ValueComparator};
+    use type_bridge_contract::query_plan::QueryOperand;
+    use type_bridge_contract::schema::OwnsFactId;
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+    let column = InputColumnId::new(0);
+    let operand = QueryOperand::Input { column };
+    let lookup = |owner| {
         vec![
-            ReadStage::Match {
-                patterns: vec![
-                    person_isa(0),
-                    QueryPattern::Has {
-                        attribute: binding_id(1),
-                        attribute_id: AttributeId::new("age").expect("attribute id"),
-                        owner: binding_id(0),
-                    },
-                    QueryPattern::Value {
-                        comparator: ValueComparator::GreaterOrEqual,
-                        left: QueryOperand::Binding {
-                            binding: binding_id(1),
+            QueryPattern::Isa {
+                binding: id(owner),
+                type_id: entity("account"),
+                include_subtypes: false,
+            },
+            QueryPattern::Iid {
+                binding: id(owner),
+                iid: operand.clone(),
+            },
+        ]
+    };
+    let relation = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+    let allocated = InsertThing {
+        binding: id(1),
+        type_id: relation.clone(),
+        fields: vec![(
+            OwnsFactId::new(relation, AttributeId::new("purchase-id").unwrap()).unwrap(),
+            string("seed"),
+        )],
+        players: vec![],
+    };
+    for put in [false, true] {
+        let allocation = if put {
+            Stage::Put {
+                include_subtypes: false,
+                things: vec![allocated.clone()],
+            }
+        } else {
+            Stage::Insert {
+                things: vec![allocated.clone()],
+            }
+        };
+        let mut request = spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![
+                        QueryPattern::Try {
+                            patterns: lookup(0),
+                        }
+                        .into(),
+                        QueryPattern::Or {
+                            branches: vec![
+                                vec![QueryPattern::Not {
+                                    patterns: vec![QueryPattern::Value {
+                                        comparator: ValueComparator::Equal,
+                                        left: operand.clone(),
+                                        right: operand.clone(),
+                                    }],
+                                }],
+                                lookup(2),
+                            ],
+                        }
+                        .into(),
+                    ],
+                },
+                allocation,
+                Stage::Attach {
+                    items: vec![AttachItem::Links {
+                        optional: true,
+                        relation: id(1),
+                        role: RoleId::new("purchase", "buyer").unwrap(),
+                        player: id(0),
+                    }],
+                },
+            ],
+            vec![1],
+        );
+        request.inputs = vec![InputColumn::new(
+            column,
+            QueryVariable::new("player").unwrap(),
+            ValueTypeTag::String,
+            true,
+        )];
+        request.given_rows = Some(vec![InputRow::new(vec![Some(CanonicalValue::String(
+            CanonicalString::new("0x01").unwrap(),
+        ))])]);
+        let valid = QueryPlan::new(request.clone(), &schema()).unwrap();
+        let mut null = request.clone();
+        null.given_rows = Some(vec![InputRow::new(vec![None])]);
+        let mut unguarded = request.clone();
+        let Stage::Match { patterns } = &mut unguarded.pipeline[0] else {
+            unreachable!()
+        };
+        patterns.pop();
+        let mut mismatched = request.clone();
+        let Stage::Match { patterns } = &mut mismatched.pipeline[0] else {
+            unreachable!()
+        };
+        let type_bridge_contract::query_plan::Pattern::Read(QueryPattern::Or { branches }) =
+            &mut patterns[1]
+        else {
+            unreachable!()
+        };
+        let QueryPattern::Iid { iid, .. } = &mut branches[1][1] else {
+            unreachable!()
+        };
+        *iid = string("0x02");
+        let mut deleted_alias = request.clone();
+        deleted_alias.bindings.push(binding(3, "deleted_alias"));
+        let Stage::Match { patterns } = &mut deleted_alias.pipeline[0] else {
+            unreachable!()
+        };
+        patterns.extend(lookup(3).into_iter().map(Into::into));
+        deleted_alias.pipeline.insert(
+            1,
+            Stage::Delete {
+                items: vec![DeleteItem::Thing { binding: id(3) }],
+            },
+        );
+        let mut no_rows = request.clone();
+        no_rows.given_rows = None;
+        let mut empty = request.clone();
+        empty.given_rows = Some(vec![]);
+        for (unsafe_request, code) in [
+            (null, "query_plan_insert_relation_players"),
+            (unguarded, "query_plan_insert_relation_players"),
+            (mismatched, "query_plan_insert_relation_players"),
+            (deleted_alias, "query_plan_insert_relation_players"),
+            (no_rows, "query_plan_insert_relation_players"),
+            (empty, "query_invocation_missing_inputs"),
+        ] {
+            assert_eq!(
+                QueryPlan::new(unsafe_request, &schema())
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                code
+            );
+        }
+        assert_eq!(
+            valid
+                .with_given_rows(vec![InputRow::new(vec![None])], &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_insert_relation_players"
+        );
+        let mut wire: Value = serde_json::from_slice(&to_canonical_json(&valid).unwrap()).unwrap();
+        wire["given_rows"] = json!([[null]]);
+        assert_eq!(
+            decode_query_plan(&to_canonical_json(&wire).unwrap(), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_insert_relation_players"
+        );
+    }
+}
+
+#[test]
+fn relation_insert_seeds_require_a_later_player_attachment() {
+    let seed = Stage::Insert {
+        things: vec![InsertThing {
+            binding: id(1),
+            type_id: relation(),
+            fields: vec![],
+            players: vec![],
+        }],
+    };
+    let attach = Stage::Attach {
+        items: vec![AttachItem::Links {
+            optional: true,
+            relation: id(1),
+            role: role(),
+            player: id(0),
+        }],
+    };
+    QueryPlan::new(
+        spec(vec![matched(), seed.clone(), attach], vec![1]),
+        &schema(),
+    )
+    .unwrap();
+    assert_eq!(
+        QueryPlan::new(spec(vec![matched(), seed], vec![1]), &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_insert_relation_players"
+    );
+}
+use type_bridge_contract::query_plan::{
+    InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryOutput, QueryPattern,
+    ReduceAssignment, Reducer,
+};
+
+fn stage_plans() -> BTreeMap<&'static str, QueryPlan> {
+    let mut plans = BTreeMap::new();
+    let schema = schema();
+    for (name, stage) in [
+        (
+            "insert",
+            Stage::Insert {
+                things: vec![thing(1)],
+            },
+        ),
+        (
+            "put",
+            Stage::Put {
+                include_subtypes: false,
+                things: vec![thing(1)],
+            },
+        ),
+        (
+            "update",
+            Stage::Update {
+                sets: vec![Set::Field {
+                    owner: id(0),
+                    field: field("score"),
+                    operand: literal(2),
+                }],
+            },
+        ),
+        (
+            "delete_has",
+            Stage::Delete {
+                items: vec![DeleteItem::Has {
+                    owner: id(0),
+                    field: field("score"),
+                }],
+            },
+        ),
+        (
+            "delete_thing",
+            Stage::Delete {
+                items: vec![DeleteItem::Thing { binding: id(0) }],
+            },
+        ),
+    ] {
+        let output = if name == "delete_thing" {
+            vec![]
+        } else if name == "insert" || name == "put" {
+            vec![1]
+        } else {
+            vec![0]
+        };
+        plans.insert(
+            name,
+            QueryPlan::new(spec(vec![matched(), stage], output), &schema).unwrap(),
+        );
+    }
+    for (name, stage) in [
+        (
+            "link",
+            Stage::Update {
+                sets: vec![Set::Link {
+                    relation: id(1),
+                    role: role(),
+                    player: id(0),
+                }],
+            },
+        ),
+        (
+            "delete_links",
+            Stage::Delete {
+                items: vec![DeleteItem::Links {
+                    relation: id(1),
+                    role: role(),
+                    player: id(0),
+                }],
+            },
+        ),
+    ] {
+        plans.insert(
+            name,
+            QueryPlan::new(
+                spec(
+                    vec![
+                        Stage::Match {
+                            patterns: vec![pat(0, entity("account")), pat(1, relation())],
                         },
+                        stage,
+                    ],
+                    vec![0, 1],
+                ),
+                &schema,
+            )
+            .unwrap(),
+        );
+    }
+    plans.insert(
+        "insert_first",
+        QueryPlan::new(
+            spec(
+                vec![Stage::Insert {
+                    things: vec![thing(0)],
+                }],
+                vec![0],
+            ),
+            &schema,
+        )
+        .unwrap(),
+    );
+    plans.insert(
+        "read_tail",
+        QueryPlan::new(
+            spec(
+                vec![
+                    matched(),
+                    Stage::Select {
+                        bindings: vec![id(0)],
+                    },
+                    Stage::Require {
+                        bindings: vec![id(0)],
+                    },
+                    Stage::Distinct,
+                    Stage::Reduce {
+                        assignments: vec![ReduceAssignment::new(id(2), Reducer::Count, None)],
+                        groups: vec![id(0)],
+                    },
+                    Stage::Sort {
+                        terms: vec![OrderTerm::new(id(0), OrderDirection::Ascending)],
+                    },
+                    Stage::Offset { rows: 1 },
+                    Stage::Limit { rows: 10 },
+                ],
+                vec![0, 2],
+            ),
+            &schema,
+        )
+        .unwrap(),
+    );
+    plans
+}
+
+#[test]
+fn stages_have_stable_golden_bytes_and_round_trip() {
+    let schema = schema();
+    let mut fixtures = BTreeMap::<&str, Value>::new();
+    for (name, plan) in stage_plans() {
+        let bytes = plan.canonical_bytes().unwrap();
+        assert_eq!(bytes, plan.canonical_bytes().unwrap());
+        let decoded = decode_query_plan(&bytes, &schema).unwrap();
+        assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+        assert_eq!(decoded.fingerprint().unwrap(), plan.fingerprint().unwrap());
+        fixtures.insert(name,json!({"plan":serde_json::from_slice::<Value>(&bytes).unwrap(),"fingerprint":plan.fingerprint().unwrap()}));
+    }
+    let bytes = to_canonical_json(&fixtures).unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/query-plan-stages.json");
+    if std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_FIXTURES").is_some() {
+        std::fs::write(&path, &bytes).unwrap();
+    }
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn native_plan_refuses_removed_compatibility_evidence() {
+    let plan = QueryPlan::new(spec(vec![matched()], vec![0]), &schema()).unwrap();
+    let bytes = plan.canonical_bytes().unwrap();
+    let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(wire.get("compatibility").is_none());
+    for compatibility in [Value::Null, json!({})] {
+        wire["compatibility"] = compatibility;
+        assert_eq!(
+            decode_query_plan(&to_canonical_json(&wire).unwrap(), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "invalid_canonical_value"
+        );
+    }
+}
+
+#[test]
+fn write_validation_rejects_unbound_abstract_wrong_schema_key_and_deleted_targets() {
+    let schema = schema();
+    let mut abstract_thing = thing(1);
+    abstract_thing.type_id = entity("abstract_account");
+    let mut bad_owns = field("score");
+    bad_owns = type_bridge_contract::schema::OwnsFactId::new(
+        entity("other"),
+        bad_owns.attribute().clone(),
+    )
+    .unwrap();
+    for (pipeline, code) in [
+        (
+            vec![
+                matched(),
+                Stage::Update {
+                    sets: vec![Set::Field {
+                        owner: id(1),
+                        field: field("score"),
+                        operand: literal(1),
+                    }],
+                },
+            ],
+            "query_plan_write_unbound_target",
+        ),
+        (
+            vec![
+                matched(),
+                Stage::Insert {
+                    things: vec![abstract_thing],
+                },
+            ],
+            "query_plan_abstract_insert",
+        ),
+        (
+            vec![
+                matched(),
+                Stage::Update {
+                    sets: vec![Set::Field {
+                        owner: id(0),
+                        field: bad_owns,
+                        operand: literal(1),
+                    }],
+                },
+            ],
+            "query_plan_undeclared_owns",
+        ),
+        (
+            vec![
+                matched(),
+                Stage::Update {
+                    sets: vec![Set::Field {
+                        owner: id(0),
+                        field: field("id"),
+                        operand: string("private-key"),
+                    }],
+                },
+            ],
+            "query_plan_key_update",
+        ),
+        (
+            vec![
+                matched(),
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+                Stage::Update {
+                    sets: vec![Set::Field {
+                        owner: id(0),
+                        field: field("score"),
+                        operand: literal(1),
+                    }],
+                },
+            ],
+            "query_plan_write_unbound_target",
+        ),
+        (
+            vec![
+                matched(),
+                Stage::Select {
+                    bindings: vec![id(0)],
+                },
+                Stage::Update {
+                    sets: vec![Set::Field {
+                        owner: id(0),
+                        field: field("score"),
+                        operand: literal(1),
+                    }],
+                },
+            ],
+            "query_plan_stage_order",
+        ),
+    ] {
+        let error = QueryPlan::new(spec(pipeline, vec![]), &schema).unwrap_err();
+        assert_eq!(error.code().as_str(), code);
+        assert!(!format!("{error:?}").contains("private-key"));
+    }
+}
+
+#[test]
+fn write_roles_require_declared_plays_and_relates() {
+    let mut input = spec(
+        vec![
+            Stage::Match {
+                patterns: vec![pat(0, entity("other")), pat(1, relation())],
+            },
+            Stage::Update {
+                sets: vec![Set::Link {
+                    relation: id(1),
+                    role: role(),
+                    player: id(0),
+                }],
+            },
+        ],
+        vec![1],
+    );
+    assert_eq!(
+        QueryPlan::new(input.clone(), &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_undeclared_plays"
+    );
+    if let Stage::Update { sets } = &mut input.pipeline[1] {
+        sets[0] = Set::Link {
+            relation: id(1),
+            role: type_bridge_contract::id::RoleId::new("membership", "missing").unwrap(),
+            player: id(0),
+        };
+    }
+    assert_eq!(
+        QueryPlan::new(input, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_undeclared_relates"
+    );
+}
+
+#[test]
+fn decode_rejects_unknown_fields_unknown_stages_and_forged_capabilities() {
+    let plan = stage_plans().remove("update").unwrap();
+    for field in ["extra", "pipeline", "required_capabilities"] {
+        let mut value = serde_json::to_value(&plan).unwrap();
+        match field {
+            "pipeline" => value["pipeline"][1]["kind"] = json!("future_write"),
+            "required_capabilities" => value[field] = json!([]),
+            _ => value[field] = json!("private-value"),
+        }
+        let error = decode_query_plan(&to_canonical_json(&value).unwrap(), &schema()).unwrap_err();
+        assert!(!format!("{error:?}").contains("private-value"));
+    }
+}
+
+#[test]
+fn deletion_ends_lifetime_for_projection_and_read_tail() {
+    let delete = Stage::Delete {
+        items: vec![DeleteItem::Thing { binding: id(0) }],
+    };
+    assert_eq!(
+        QueryPlan::new(spec(vec![matched(), delete.clone()], vec![0]), &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_output_not_visible"
+    );
+    assert_eq!(
+        QueryPlan::new(
+            spec(
+                vec![
+                    matched(),
+                    delete,
+                    Stage::Select {
+                        bindings: vec![id(0)]
+                    }
+                ],
+                vec![]
+            ),
+            &schema()
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "query_plan_stage_unknown_binding"
+    );
+}
+
+#[test]
+fn write_and_read_stages_share_caller_selected_limits() {
+    use type_bridge_contract::diagnostic::DiagnosticCategory;
+    use type_bridge_contract::limits::QueryLimits;
+    let mut limits = QueryLimits::CANONICAL;
+    limits.structural.predicate_nodes = 1;
+    let error = QueryPlan::new_with_limits(
+        spec(
+            vec![Stage::Insert {
+                things: vec![thing(0)],
+            }],
+            vec![0],
+        ),
+        &schema(),
+        limits,
+    )
+    .unwrap_err();
+    assert_eq!(error.category(), DiagnosticCategory::ResourceLimit);
+}
+
+#[test]
+fn inherited_owns_and_plays_are_valid_but_inherited_keys_are_immutable() {
+    let matched = Stage::Match {
+        patterns: vec![pat(0, entity("child_account")), pat(1, relation())],
+    };
+    let update = Stage::Update {
+        sets: vec![
+            Set::Field {
+                owner: id(0),
+                field: field("score"),
+                operand: literal(2),
+            },
+            Set::Link {
+                relation: id(1),
+                role: role(),
+                player: id(0),
+            },
+        ],
+    };
+    QueryPlan::new(spec(vec![matched.clone(), update], vec![0]), &schema()).unwrap();
+    let update_key = Stage::Update {
+        sets: vec![Set::Field {
+            owner: id(0),
+            field: field("id"),
+            operand: string("private-key"),
+        }],
+    };
+    assert_eq!(
+        QueryPlan::new(spec(vec![matched, update_key], vec![0]), &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_key_update"
+    );
+}
+
+#[test]
+fn race_operations_and_every_expression_have_stable_goldens() {
+    let mut fixtures = BTreeMap::new();
+    for (name, plan) in examples::plans() {
+        let bytes = plan.canonical_bytes().unwrap();
+        assert_eq!(
+            decode_query_plan(&bytes, &schema())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            bytes
+        );
+        assert_eq!(plan.canonical_bytes().unwrap(), bytes);
+        assert!(
+            plan.required_capabilities()
+                .missing_from(&type_bridge_contract::query_plan::query_plan_capability_vocabulary())
+                .is_empty()
+        );
+        fixtures.insert(name,json!({"plan":serde_json::from_slice::<Value>(&bytes).unwrap(),"fingerprint":plan.fingerprint().unwrap()}));
+    }
+    let bytes = to_canonical_json(&fixtures).unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/query-plan-expressions.json");
+    if std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_FIXTURES").is_some() {
+        std::fs::write(&path, &bytes).unwrap();
+    }
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn numeric_promotion_matches_the_typedb_3_13_6_table() {
+    use type_bridge_contract::query_plan::{ArithOp, Expr};
+    use type_bridge_contract::value::ValueTypeTag::{Decimal, Double, Long};
+    let operands = [literal(2), examples::decimal(), examples::double()];
+    let ring = [
+        [Long, Decimal, Double],
+        [Decimal, Decimal, Double],
+        [Double, Double, Double],
+    ];
+    let modulo = [
+        [Long, Double, Double],
+        [Double, Double, Double],
+        [Double, Double, Double],
+    ];
+    for (i, left) in operands.iter().enumerate() {
+        for (j, right) in operands.iter().enumerate() {
+            for (op, expected) in [
+                (ArithOp::Add, ring[i][j]),
+                (ArithOp::Sub, ring[i][j]),
+                (ArithOp::Mul, ring[i][j]),
+                (ArithOp::Div, Double),
+                (ArithOp::Pow, Double),
+                (ArithOp::Mod, modulo[i][j]),
+            ] {
+                let expr = Expr::Arith {
+                    op,
+                    lhs: Box::new(Expr::Operand(left.clone())),
+                    rhs: Box::new(Expr::Operand(right.clone())),
+                };
+                assert_eq!(
+                    expr.value_type(&BTreeMap::new(), &[]).unwrap(),
+                    expected,
+                    "{op:?}: {i}/{j}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn wrong_typed_or_wrong_arity_builtins_are_value_free_errors() {
+    use type_bridge_contract::query_plan::{ArithOp, Builtin, Expr, Pattern};
+    let secret = "private-expression-value";
+    for expr in [
+        Expr::Arith {
+            op: ArithOp::Add,
+            lhs: Box::new(Expr::Operand(string(secret))),
+            rhs: Box::new(Expr::Operand(literal(1))),
+        },
+        Expr::Call {
+            func: Builtin::Ceil,
+            args: vec![Expr::Operand(literal(1))],
+        },
+        Expr::Call {
+            func: Builtin::Length,
+            args: vec![Expr::Operand(literal(1))],
+        },
+        Expr::Call {
+            func: Builtin::Abs,
+            args: vec![],
+        },
+        Expr::Call {
+            func: Builtin::Max,
+            args: vec![Expr::Operand(literal(1))],
+        },
+        Expr::Call {
+            func: Builtin::Min,
+            args: vec![Expr::Operand(literal(1)), Expr::Operand(examples::double())],
+        },
+    ] {
+        let error = QueryPlan::new(
+            spec(
+                vec![Stage::Match {
+                    patterns: vec![Pattern::Let {
+                        binding: id(0),
+                        expr,
+                    }],
+                }],
+                vec![0],
+            ),
+            &schema(),
+        )
+        .unwrap_err();
+        assert!(!format!("{error:?}").contains(secret));
+        assert!(error.code().as_str().starts_with("query_plan_expression_"));
+    }
+}
+
+#[test]
+fn let_assignments_are_fresh_and_references_are_already_typed() {
+    use type_bridge_contract::query_plan::QueryOperand;
+    use type_bridge_contract::query_plan::{Expr, Pattern};
+    for patterns in [
+        vec![
+            Pattern::Let {
+                binding: id(0),
+                expr: Expr::Operand(QueryOperand::Binding { binding: id(1) }),
+            },
+            Pattern::Let {
+                binding: id(1),
+                expr: Expr::Operand(literal(1)),
+            },
+        ],
+        vec![
+            Pattern::Let {
+                binding: id(0),
+                expr: Expr::Operand(literal(1)),
+            },
+            Pattern::Let {
+                binding: id(0),
+                expr: Expr::Operand(literal(2)),
+            },
+        ],
+        vec![
+            pat(0, entity("account")),
+            Pattern::Let {
+                binding: id(0),
+                expr: Expr::Operand(literal(1)),
+            },
+        ],
+    ] {
+        assert!(QueryPlan::new(spec(vec![Stage::Match { patterns }], vec![0]), &schema()).is_err());
+    }
+}
+
+#[test]
+fn operations_cannot_hide_writes_or_invent_them() {
+    use type_bridge_contract::query_plan::{Operation, WriteReturns};
+    assert_eq!(
+        examples::batch()
+            .with_operation(Operation::Rows, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_operation_write_mismatch"
+    );
+    let read = QueryPlan::new(spec(vec![matched()], vec![0]), &schema()).unwrap();
+    assert_eq!(
+        read.with_operation(
+            Operation::Write {
+                returns: WriteReturns::Rows
+            },
+            &schema()
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "query_plan_operation_write_mismatch"
+    );
+    assert_eq!(
+        examples::batch()
+            .with_operation(
+                Operation::Write {
+                    returns: WriteReturns::Rows
+                },
+                &schema()
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_output_limit"
+    );
+}
+
+#[test]
+fn given_rows_enforce_types_presence_width_and_the_4096_ceiling() {
+    use type_bridge_contract::query_plan::InputRow;
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+    let batch = examples::batch();
+    let rows: Vec<_> = (0..4096)
+        .map(|n| {
+            InputRow::new(vec![
+                Some(CanonicalValue::String(
+                    CanonicalString::new(format!("row-{n}")).unwrap(),
+                )),
+                Some(CanonicalValue::Long(n)),
+            ])
+        })
+        .collect();
+    batch.with_given_rows(rows.clone(), &schema()).unwrap();
+    let mut too_many = rows;
+    too_many.push(too_many[0].clone());
+    assert_eq!(
+        batch
+            .with_given_rows(too_many, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_invocation_row_limit"
+    );
+    for (row, code) in [
+        (vec![None], "query_invocation_row_arity"),
+        (
+            vec![None, Some(CanonicalValue::Long(1))],
+            "query_invocation_missing_value",
+        ),
+        (
+            vec![
+                Some(CanonicalValue::String(
+                    CanonicalString::new("private-batch-value").unwrap(),
+                )),
+                Some(CanonicalValue::Boolean(true)),
+            ],
+            "query_invocation_value_type",
+        ),
+    ] {
+        let error = batch
+            .with_given_rows(vec![InputRow::new(row)], &schema())
+            .unwrap_err();
+        assert_eq!(error.code().as_str(), code);
+        assert!(!format!("{error:?}").contains("private-batch-value"));
+    }
+}
+
+#[test]
+fn let_values_must_match_the_written_field_and_stay_bounded() {
+    use type_bridge_contract::limits::QueryLimits;
+    use type_bridge_contract::query_plan::QueryOperand;
+    use type_bridge_contract::query_plan::{ArithOp, Expr, Pattern};
+    let expr = Expr::Arith {
+        op: ArithOp::Div,
+        lhs: Box::new(Expr::Operand(literal(3))),
+        rhs: Box::new(Expr::Operand(literal(2))),
+    };
+    let plan = spec(
+        vec![
+            Stage::Match {
+                patterns: vec![
+                    pat(0, entity("account")),
+                    Pattern::Let {
+                        binding: id(1),
+                        expr: expr.clone(),
+                    },
+                ],
+            },
+            Stage::Update {
+                sets: vec![Set::Field {
+                    owner: id(0),
+                    field: field("score"),
+                    operand: QueryOperand::Binding { binding: id(1) },
+                }],
+            },
+        ],
+        vec![0],
+    );
+    assert_eq!(
+        QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
+        "query_plan_write_value_type"
+    );
+    let mut limits = QueryLimits::CANONICAL;
+    limits.structural.predicate_depth = 1;
+    let error = QueryPlan::new_with_limits(
+        spec(
+            vec![Stage::Match {
+                patterns: vec![Pattern::Let {
+                    binding: id(0),
+                    expr,
+                }],
+            }],
+            vec![0],
+        ),
+        &schema(),
+        limits,
+    )
+    .unwrap_err();
+    assert_eq!(error.code().as_str(), "query_plan_expression_limit");
+}
+
+#[test]
+fn let_cannot_reassign_a_branch_local_concept_binding() {
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::QueryPattern;
+    use type_bridge_contract::query_plan::{Expr, Pattern};
+    let patterns = vec![
+        pat(0, entity("account")),
+        QueryPattern::Or {
+            branches: vec![
+                vec![isa(1, entity("account"))],
+                vec![QueryPattern::Value {
+                    comparator: ValueComparator::Equal,
+                    left: literal(1),
+                    right: literal(1),
+                }],
+            ],
+        }
+        .into(),
+        Pattern::Let {
+            binding: id(1),
+            expr: Expr::Operand(literal(1)),
+        },
+    ];
+    assert_eq!(
+        QueryPlan::new(spec(vec![Stage::Match { patterns }], vec![1]), &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_let_binding_not_fresh"
+    );
+}
+
+#[test]
+fn native_input_template_binds_without_mutating_the_template() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::{
+        InputColumn, InputColumnId, InputRow, QueryOperand, QueryPattern,
+    };
+    use type_bridge_contract::query_plan::{Operation, PlanSpec};
+    use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+    let template = QueryPlan::new(
+        PlanSpec {
+            bindings: vec![binding(0, "account"), binding(1, "score")],
+            inputs: vec![InputColumn::new(
+                InputColumnId::new(0),
+                type_bridge_contract::migration_assertion::QueryVariable::new("minimum").unwrap(),
+                ValueTypeTag::Long,
+                false,
+            )],
+            given_rows: None,
+            operation: Operation::Rows,
+            pipeline: vec![Stage::Match {
+                patterns: vec![
+                    isa(0, entity("account")).into(),
+                    QueryPattern::Has {
+                        owner: id(0),
+                        attribute: id(1),
+                        attribute_id: AttributeId::new("score").unwrap(),
+                    }
+                    .into(),
+                    QueryPattern::Value {
+                        comparator: ValueComparator::Greater,
+                        left: QueryOperand::Binding { binding: id(1) },
                         right: QueryOperand::Input {
                             column: InputColumnId::new(0),
                         },
-                    },
-                ],
-            },
-            ReadStage::Select {
-                bindings: vec![binding_id(0), binding_id(1)],
-            },
-            ReadStage::Distinct,
-            ReadStage::Sort {
-                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Descending)],
-            },
-            ReadStage::Offset { rows: 10 },
-            ReadStage::Limit { rows: 5 },
-        ],
-        QueryOutput::Rows {
-            columns: vec![binding_id(0), binding_id(1)],
-        },
-        managed_semantics(b"query-plan-managed-fixture"),
-    )
-    .expect("full pipeline plan")
-}
-
-#[test]
-fn query_plan_capability_vocabulary_is_exact_and_deterministic() {
-    let vocabulary = query_plan_capability_vocabulary();
-    assert_eq!(vocabulary, query_plan_capability_vocabulary());
-    assert_eq!(
-        vocabulary
-            .iter()
-            .map(|capability| capability.as_str())
-            .collect::<Vec<_>>(),
-        vec![
-            "query.function.local",
-            "query.input.columns",
-            "query.output.documents",
-            "query.output.rows",
-            "query.pattern.function-call",
-            "query.pattern.has",
-            "query.pattern.isa",
-            "query.pattern.isa-subtypes",
-            "query.pattern.links",
-            "query.pattern.negation",
-            "query.pattern.reachable",
-            "query.pattern.try",
-            "query.pattern.value",
-            "query.plan",
-            "query.stage.distinct",
-            "query.stage.limit",
-            "query.stage.offset",
-            "query.stage.reduce",
-            "query.stage.require",
-            "query.stage.select",
-            "query.stage.sort",
-        ]
-    );
-}
-
-#[test]
-fn canonical_bytes_round_trip_and_bind_the_fingerprint() {
-    let plan = full_pipeline_plan();
-    assert_eq!(
-        plan.required_capabilities()
-            .iter()
-            .map(|capability| capability.as_str())
-            .collect::<Vec<_>>(),
-        vec![
-            "query.input.columns",
-            "query.output.rows",
-            "query.pattern.has",
-            "query.pattern.isa",
-            "query.pattern.isa-subtypes",
-            "query.pattern.value",
-            "query.plan",
-            "query.stage.distinct",
-            "query.stage.limit",
-            "query.stage.offset",
-            "query.stage.select",
-            "query.stage.sort",
-        ],
-    );
-    let bytes = plan.canonical_bytes().expect("canonical bytes");
-    assert_eq!(bytes, plan.canonical_bytes().expect("repeat bytes"));
-    let decoded = decode_query_plan(&bytes).expect("decode");
-    assert_eq!(decoded, plan);
-    assert_eq!(
-        plan.fingerprint().expect("fingerprint"),
-        decoded.fingerprint().expect("decoded fingerprint"),
-    );
-
-    // A different input value type is a different plan identity.
-    let retyped = QueryPlan::new(
-        plan.bindings().to_vec(),
-        vec![InputColumn::new(
-            InputColumnId::new(0),
-            QueryVariable::new("minimum_age").expect("input name"),
-            ValueTypeTag::Double,
-            false,
-        )],
-        plan.pipeline().to_vec(),
-        plan.output().clone(),
-        plan.managed_semantics().clone(),
-    )
-    .expect("retyped plan");
-    assert_ne!(
-        plan.fingerprint().expect("fingerprint"),
-        retyped.fingerprint().expect("retyped fingerprint"),
-    );
-}
-
-#[test]
-fn malformed_forged_and_unknown_wire_bytes_fail_closed() {
-    let bytes = full_pipeline_plan()
-        .canonical_bytes()
-        .expect("canonical bytes");
-
-    let mut forged: Value = serde_json::from_slice(&bytes).expect("JSON");
-    forged["required_capabilities"] = json!(["query.future", "query.plan"]);
-    assert_eq!(
-        decode_query_plan(&serde_json::to_vec(&forged).expect("JSON"))
-            .expect_err("forged capabilities")
-            .code()
-            .as_str(),
-        "query_plan_capability_claim_mismatch",
-    );
-
-    let mut unknown: Value = serde_json::from_slice(&bytes).expect("JSON");
-    unknown["pipeline"][0]["patterns"][0]["future"] = json!(true);
-    assert!(decode_query_plan(&serde_json::to_vec(&unknown).expect("JSON")).is_err());
-
-    let mut wrong_format: Value = serde_json::from_slice(&bytes).expect("JSON");
-    wrong_format["format"] = json!("typebridge.query-plan/v99");
-    assert_eq!(
-        decode_query_plan(&serde_json::to_vec(&wrong_format).expect("JSON"))
-            .expect_err("unsupported format")
-            .code()
-            .as_str(),
-        "query_plan_format_unsupported",
-    );
-}
-
-#[test]
-fn pipeline_shape_rules_fail_closed() {
-    let semantics = managed_semantics(b"query-plan-shape-fixture");
-    let output = QueryOutput::Rows {
-        columns: vec![binding_id(0)],
-    };
-    let build = |pipeline: Vec<ReadStage>| {
-        QueryPlan::new(
-            vec![binding(0, "person")],
-            Vec::new(),
-            pipeline,
-            output.clone(),
-            semantics.clone(),
-        )
-    };
-
-    assert_eq!(
-        build(vec![ReadStage::Distinct])
-            .expect_err("match must open the pipeline")
-            .code()
-            .as_str(),
-        "query_plan_match_not_first",
-    );
-    assert_eq!(
-        build(vec![
-            ReadStage::Match {
-                patterns: vec![person_isa(0)]
-            },
-            ReadStage::Distinct,
-            ReadStage::Select {
-                bindings: vec![binding_id(0)]
-            },
-        ])
-        .expect_err("stages follow the canonical order")
-        .code()
-        .as_str(),
-        "query_plan_stage_order",
-    );
-    assert_eq!(
-        build(vec![
-            ReadStage::Match {
-                patterns: vec![person_isa(0)]
-            },
-            ReadStage::Limit { rows: 3 },
-        ])
-        .expect_err("truncation requires an explicit order")
-        .code()
-        .as_str(),
-        "query_plan_unordered_truncation",
-    );
-    assert_eq!(
-        build(vec![
-            ReadStage::Match {
-                patterns: vec![person_isa(0)]
-            },
-            ReadStage::Select {
-                bindings: vec![binding_id(1)]
-            },
-        ])
-        .expect_err("select admits only declared bindings")
-        .code()
-        .as_str(),
-        "query_plan_stage_unknown_binding",
-    );
-
-    // Output must stay inside the selected visible environment.
-    let hidden = QueryPlan::new(
-        vec![binding(0, "person"), binding(1, "age")],
-        Vec::new(),
-        vec![
-            ReadStage::Match {
-                patterns: vec![
-                    person_isa(0),
-                    QueryPattern::Has {
-                        attribute: binding_id(1),
-                        attribute_id: AttributeId::new("age").expect("attribute id"),
-                        owner: binding_id(0),
-                    },
-                ],
-            },
-            ReadStage::Select {
-                bindings: vec![binding_id(0)],
-            },
-        ],
-        QueryOutput::Rows {
-            columns: vec![binding_id(1)],
-        },
-        semantics.clone(),
-    );
-    assert_eq!(
-        hidden
-            .expect_err("output projects only visible bindings")
-            .code()
-            .as_str(),
-        "query_plan_output_not_visible",
-    );
-
-    // Input references are validated against the declaration set.
-    let orphan_input = QueryPlan::new(
-        vec![binding(0, "person")],
-        Vec::new(),
-        vec![ReadStage::Match {
-            patterns: vec![
-                person_isa(0),
-                QueryPattern::Value {
-                    comparator: ValueComparator::Equal,
-                    left: QueryOperand::Input {
-                        column: InputColumnId::new(0),
-                    },
-                    right: QueryOperand::Literal {
-                        value: CanonicalValue::Long(1),
-                    },
-                },
-            ],
-        }],
-        output,
-        semantics,
-    );
-    assert_eq!(
-        orphan_input
-            .expect_err("input operands require a declaration")
-            .code()
-            .as_str(),
-        "query_plan_unknown_input_column",
-    );
-}
-
-#[test]
-fn invocations_bind_the_exact_plan_and_validate_rectangular_batches() {
-    use type_bridge_contract::query_plan::{InputRow, QueryInvocation, QueryOperation};
-
-    let plan = full_pipeline_plan();
-    let row = |value: i64| InputRow::new(vec![Some(CanonicalValue::Long(value))]);
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Rows, vec![row(18), row(65)])
-        .expect("rectangular batch");
-    assert!(invocation.binds(&plan).expect("binding check"));
-    assert_eq!(invocation.inputs().len(), 2);
-    assert_eq!(invocation.operation(), QueryOperation::Rows);
-
-    // A plan edit invalidates the outstanding invocation.
-    let edited = QueryPlan::new(
-        plan.bindings().to_vec(),
-        plan.inputs().to_vec(),
-        vec![
-            plan.pipeline()[0].clone(),
-            ReadStage::Select {
-                bindings: vec![binding_id(0), binding_id(1)],
-            },
-        ],
-        plan.output().clone(),
-        plan.managed_semantics().clone(),
-    )
-    .expect("edited plan");
-    assert!(!invocation.binds(&edited).expect("edited binding check"));
-
-    // Batch shape failures are named precisely.
-    let wrong_arity = QueryInvocation::new(
-        &plan,
-        QueryOperation::Count,
-        vec![InputRow::new(Vec::new())],
-    )
-    .expect_err("arity mismatch");
-    assert_eq!(wrong_arity.code().as_str(), "query_invocation_row_arity");
-
-    let wrong_type = QueryInvocation::new(
-        &plan,
-        QueryOperation::Exists,
-        vec![InputRow::new(vec![Some(CanonicalValue::Boolean(true))])],
-    )
-    .expect_err("value type mismatch");
-    assert_eq!(wrong_type.code().as_str(), "query_invocation_value_type");
-
-    let missing_required =
-        QueryInvocation::new(&plan, QueryOperation::Rows, vec![InputRow::new(vec![None])])
-            .expect_err("required value missing");
-    assert_eq!(
-        missing_required.code().as_str(),
-        "query_invocation_missing_value"
-    );
-
-    let empty = QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new())
-        .expect_err("declared inputs require a row");
-    assert_eq!(empty.code().as_str(), "query_invocation_missing_inputs");
-}
-
-#[test]
-fn canonical_invocation_wire_rebuilds_and_rejects_forgery_or_unknown_fields() {
-    use type_bridge_contract::codec::to_canonical_json;
-
-    let plan = full_pipeline_plan();
-    let invocation = QueryInvocation::new(
-        &plan,
-        QueryOperation::Rows,
-        vec![InputRow::new(vec![Some(CanonicalValue::Long(18))])],
-    )
-    .expect("invocation");
-    let bytes = to_canonical_json(&invocation).expect("canonical invocation");
-    let decoded = decode_query_invocation(&plan, &bytes).expect("trusted reconstruction");
-    assert_eq!(decoded, invocation);
-
-    let mut forged = serde_json::from_slice::<Value>(&bytes).expect("invocation value");
-    forged["plan_fingerprint"]["digest"] = json!("00".repeat(32));
-    assert_eq!(
-        decode_query_invocation(
-            &plan,
-            &to_canonical_json(&forged).expect("canonical forgery"),
-        )
-        .expect_err("forged plan binding")
-        .code()
-        .as_str(),
-        "query_invocation_plan_fingerprint_mismatch",
-    );
-
-    let mut unknown = serde_json::from_slice::<Value>(&bytes).expect("invocation value");
-    unknown["extra"] = json!(true);
-    assert!(
-        decode_query_invocation(
-            &plan,
-            &to_canonical_json(&unknown).expect("canonical unknown field"),
-        )
-        .is_err(),
-        "unknown invocation fields fail closed",
-    );
-}
-
-#[test]
-fn complete_invocation_wire_ceiling_is_attainable_and_exact() {
-    use type_bridge_contract::codec::to_canonical_json;
-    use type_bridge_contract::limits::{MAX_INPUT_BYTES, MAX_QUERY_INVOCATION_BYTES};
-
-    let source = full_pipeline_plan();
-    let plan = QueryPlan::new(
-        source.bindings().to_vec(),
-        vec![InputColumn::new(
-            InputColumnId::new(0),
-            QueryVariable::new("supplied_text").expect("input name"),
-            ValueTypeTag::String,
-            false,
-        )],
-        source.pipeline().to_vec(),
-        source.output().clone(),
-        source.managed_semantics().clone(),
-    )
-    .expect("string-input plan");
-
-    let base_chunk = "x".repeat((MAX_INPUT_BYTES / 5).saturating_sub(128));
-    let mut chunks = vec![base_chunk; 5];
-    let build_rows = |chunks: &[String]| {
-        chunks
-            .iter()
-            .map(|chunk| {
-                InputRow::new(vec![Some(CanonicalValue::String(
-                    CanonicalString::new(chunk.clone()).expect("bounded string"),
-                ))])
-            })
-            .collect::<Vec<_>>()
-    };
-    let initial_size = serde_json::to_vec(&build_rows(&chunks))
-        .expect("input rows")
-        .len();
-    assert!(initial_size < MAX_INPUT_BYTES);
-    chunks
-        .last_mut()
-        .expect("last input chunk")
-        .push_str(&"x".repeat(MAX_INPUT_BYTES - initial_size));
-    let rows = build_rows(&chunks);
-    assert_eq!(
-        serde_json::to_vec(&rows).expect("exact input rows").len(),
-        MAX_INPUT_BYTES,
-    );
-
-    let invocation = QueryInvocation::new(&plan, QueryOperation::Exists, rows)
-        .expect("maximum-size input batch");
-    let bytes = to_canonical_json(&invocation).expect("maximum-size invocation");
-    assert_eq!(bytes.len(), MAX_QUERY_INVOCATION_BYTES);
-    assert_eq!(
-        decode_query_invocation(&plan, &bytes).expect("maximum invocation round trip"),
-        invocation,
-    );
-}
-
-#[test]
-fn function_calls_are_first_class_and_capability_gated() {
-    use type_bridge_contract::id::FunctionId;
-
-    let semantics = managed_semantics(b"query-plan-function-fixture");
-    let call = QueryPattern::FunctionCall {
-        arguments: vec![QueryOperand::Binding {
-            binding: binding_id(0),
-        }],
-        assigned: binding_id(1),
-        function: FunctionId::new("person_age").expect("function id"),
-    };
-    let plan = QueryPlan::new(
-        vec![binding(0, "person"), binding(1, "age_value")],
-        Vec::new(),
-        vec![ReadStage::Match {
-            patterns: vec![person_isa(0), call.clone()],
-        }],
-        QueryOutput::Rows {
-            columns: vec![binding_id(0), binding_id(1)],
-        },
-        semantics.clone(),
-    )
-    .expect("function-call plan");
-    assert!(
-        plan.required_capabilities()
-            .iter()
-            .any(|capability| capability.as_str() == "query.pattern.function-call"),
-    );
-    let bytes = plan.canonical_bytes().expect("canonical bytes");
-    assert_eq!(decode_query_plan(&bytes).expect("decode"), plan);
-
-    // Function calls stay out of negations in the first vocabulary.
-    let nested = QueryPlan::new(
-        vec![binding(0, "person"), binding(1, "age_value")],
-        Vec::new(),
-        vec![ReadStage::Match {
-            patterns: vec![
-                person_isa(0),
-                QueryPattern::Not {
-                    patterns: vec![call],
-                },
-            ],
-        }],
-        QueryOutput::Rows {
-            columns: vec![binding_id(0)],
-        },
-        semantics,
-    )
-    .expect_err("negated calls are reserved");
-    assert_eq!(nested.code().as_str(), "query_plan_function_in_negation");
-}
-
-#[test]
-fn reduce_stages_group_assign_and_reject_unsound_shapes() {
-    use type_bridge_contract::query_plan::{ReduceAssignment, Reducer};
-
-    let has_age = QueryPattern::Has {
-        attribute: binding_id(1),
-        attribute_id: AttributeId::new("age").expect("attribute id"),
-        owner: binding_id(0),
-    };
-    let reduce_plan =
-        |assignments: Vec<ReduceAssignment>, groups: Vec<BindingId>, columns: Vec<BindingId>| {
-            QueryPlan::new(
-                vec![
-                    binding(0, "person"),
-                    binding(1, "age"),
-                    binding(2, "age_sum"),
-                ],
-                Vec::new(),
-                vec![
-                    ReadStage::Match {
-                        patterns: vec![person_isa(0), has_age.clone()],
-                    },
-                    ReadStage::Reduce {
-                        assignments,
-                        groups,
-                    },
-                ],
-                QueryOutput::Rows { columns },
-                managed_semantics(b"query-plan-reduce-fixture"),
-            )
-        };
-
-    // A grouped sum round-trips and derives the reduce capability.
-    let plan = reduce_plan(
-        vec![ReduceAssignment::new(
-            binding_id(2),
-            Reducer::Sum,
-            Some(binding_id(1)),
-        )],
-        vec![binding_id(0)],
-        vec![binding_id(0), binding_id(2)],
-    )
-    .expect("grouped reduce plan");
-    assert!(
-        plan.required_capabilities()
-            .iter()
-            .any(|capability| capability.as_str() == "query.stage.reduce"),
-    );
-    let bytes = plan.canonical_bytes().expect("canonical bytes");
-    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
-
-    // The reduced-away binding is no longer projectable.
-    let error = reduce_plan(
-        vec![ReduceAssignment::new(
-            binding_id(2),
-            Reducer::Sum,
-            Some(binding_id(1)),
-        )],
-        vec![binding_id(0)],
-        vec![binding_id(0), binding_id(1)],
-    )
-    .expect_err("projecting a reduced binding");
-    assert_eq!(error.code().as_str(), "query_plan_output_not_visible");
-
-    // A pattern-bound binding cannot receive a reducer result.
-    let error = reduce_plan(
-        vec![ReduceAssignment::new(
-            binding_id(1),
-            Reducer::Sum,
-            Some(binding_id(1)),
-        )],
-        vec![binding_id(0)],
-        vec![binding_id(0), binding_id(1)],
-    )
-    .expect_err("assigning onto a pattern binding");
-    assert_eq!(error.code().as_str(), "query_plan_reduce_assigned_bound");
-
-    // Reducers undefined on empty streams need group keys.
-    let error = reduce_plan(
-        vec![ReduceAssignment::new(
-            binding_id(2),
-            Reducer::Max,
-            Some(binding_id(1)),
-        )],
-        Vec::new(),
-        vec![binding_id(2)],
-    )
-    .expect_err("global max");
-    assert_eq!(error.code().as_str(), "query_plan_reduce_requires_groups");
-
-    // Every reducer except count consumes an input binding.
-    let error = reduce_plan(
-        vec![ReduceAssignment::new(binding_id(2), Reducer::Sum, None)],
-        vec![binding_id(0)],
-        vec![binding_id(0), binding_id(2)],
-    )
-    .expect_err("sum without input");
-    assert_eq!(error.code().as_str(), "query_plan_reduce_missing_input");
-
-    // A bare global count stays total and needs no input.
-    reduce_plan(
-        vec![ReduceAssignment::new(binding_id(2), Reducer::Count, None)],
-        Vec::new(),
-        vec![binding_id(2)],
-    )
-    .expect("global count plan");
-}
-
-#[test]
-fn try_blocks_export_optional_bindings_and_reject_unsound_shapes() {
-    use type_bridge_contract::query_plan::{ReduceAssignment, Reducer};
-
-    let semantics = managed_semantics(b"query-plan-try-fixture");
-    let has_age = |owner: u16, attribute: u16| QueryPattern::Has {
-        attribute: binding_id(attribute),
-        attribute_id: AttributeId::new("age").expect("attribute id"),
-        owner: binding_id(owner),
-    };
-    let build = |pipeline: Vec<ReadStage>, columns: Vec<BindingId>| {
-        QueryPlan::new(
-            vec![
-                binding(0, "person"),
-                binding(1, "age"),
-                binding(2, "result"),
-            ],
-            Vec::new(),
-            pipeline,
-            QueryOutput::Rows { columns },
-            semantics.clone(),
-        )
-    };
-    let try_match = ReadStage::Match {
-        patterns: vec![
-            person_isa(0),
-            QueryPattern::Try {
-                patterns: vec![has_age(0, 1)],
-            },
-        ],
-    };
-
-    // Optional bindings project and round-trip under the try capability.
-    let plan = build(vec![try_match.clone()], vec![binding_id(0), binding_id(1)])
-        .expect("optional projection plan");
-    assert!(
-        plan.required_capabilities()
-            .iter()
-            .any(|capability| capability.as_str() == "query.pattern.try"),
-    );
-    let bytes = plan.canonical_bytes().expect("canonical bytes");
-    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
-
-    // Count and sum skip absence; they may consume optional bindings.
-    build(
-        vec![
-            try_match.clone(),
-            ReadStage::Reduce {
-                assignments: vec![ReduceAssignment::new(
-                    binding_id(2),
-                    Reducer::Count,
-                    Some(binding_id(1)),
-                )],
-                groups: vec![binding_id(0)],
-            },
-        ],
-        vec![binding_id(0), binding_id(2)],
-    )
-    .expect("count over an optional binding");
-
-    // Mean can observe a group whose optional input never matched.
-    let error = build(
-        vec![
-            try_match.clone(),
-            ReadStage::Reduce {
-                assignments: vec![ReduceAssignment::new(
-                    binding_id(2),
-                    Reducer::Mean,
-                    Some(binding_id(1)),
-                )],
-                groups: vec![binding_id(0)],
-            },
-        ],
-        vec![binding_id(0), binding_id(2)],
-    )
-    .expect_err("mean over an optional binding");
-    assert_eq!(error.code().as_str(), "query_plan_reduce_optional_input");
-
-    // Absence has no defined sort position.
-    let error = build(
-        vec![
-            try_match.clone(),
-            ReadStage::Sort {
-                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
-            },
-        ],
-        vec![binding_id(0)],
-    )
-    .expect_err("sorting an optional binding");
-    assert_eq!(error.code().as_str(), "query_plan_stage_unknown_binding");
-
-    // Requiring an optional binding is reserved (provider contract unproven).
-    let error = build(
-        vec![
-            try_match.clone(),
-            ReadStage::Require {
-                bindings: vec![binding_id(1)],
-            },
-        ],
-        vec![binding_id(0)],
-    )
-    .expect_err("requiring an optional binding");
-    assert_eq!(
-        error.code().as_str(),
-        "query_plan_require_optional_reserved"
-    );
-
-    // Grouping keys stay mandatory.
-    let error = build(
-        vec![
-            try_match.clone(),
-            ReadStage::Reduce {
-                assignments: vec![ReduceAssignment::new(binding_id(2), Reducer::Count, None)],
-                groups: vec![binding_id(1)],
-            },
-        ],
-        vec![binding_id(1), binding_id(2)],
-    )
-    .expect_err("grouping by an optional binding");
-    assert_eq!(error.code().as_str(), "query_plan_stage_unknown_binding");
-
-    // One optional binding cannot be claimed by two try bodies.
-    let error = build(
-        vec![ReadStage::Match {
-            patterns: vec![
-                person_isa(0),
-                QueryPattern::Try {
-                    patterns: vec![has_age(0, 1)],
-                },
-                QueryPattern::Try {
-                    patterns: vec![has_age(0, 1)],
-                },
-            ],
-        }],
-        vec![binding_id(0), binding_id(1)],
-    )
-    .expect_err("two try bodies sharing a local");
-    assert_eq!(error.code().as_str(), "query_plan_try_binding_shared");
-
-    // A negation-local witness cannot poison the mandatory environment of a
-    // try export. In particular, absence has no sort position and therefore
-    // cannot define a stable window boundary.
-    let error = build(
-        vec![
-            ReadStage::Match {
-                patterns: vec![
-                    person_isa(0),
-                    QueryPattern::Not {
-                        patterns: vec![has_age(0, 1)],
-                    },
-                    QueryPattern::Try {
-                        patterns: vec![has_age(0, 1)],
-                    },
-                ],
-            },
-            ReadStage::Sort {
-                terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
-            },
-            ReadStage::Limit { rows: 1 },
-        ],
-        vec![binding_id(0)],
-    )
-    .expect_err("negation-local witness reused as a sorted try export");
-    assert_eq!(error.code().as_str(), "query_plan_try_binding_shared");
-
-    // The same poisoning must not hide duplicate ownership by two try bodies.
-    let error = build(
-        vec![ReadStage::Match {
-            patterns: vec![
-                person_isa(0),
-                QueryPattern::Not {
-                    patterns: vec![has_age(0, 1)],
-                },
-                QueryPattern::Try {
-                    patterns: vec![has_age(0, 1)],
-                },
-                QueryPattern::Try {
-                    patterns: vec![has_age(0, 1)],
-                },
-            ],
-        }],
-        vec![binding_id(0)],
-    )
-    .expect_err("negation-local witness reused by two try bodies");
-    assert_eq!(error.code().as_str(), "query_plan_try_binding_shared");
-
-    // Try blocks stay in the root conjunction with a flat first vocabulary.
-    let error = build(
-        vec![ReadStage::Match {
-            patterns: vec![
-                person_isa(0),
-                QueryPattern::Not {
-                    patterns: vec![QueryPattern::Try {
-                        patterns: vec![has_age(0, 1)],
-                    }],
-                },
-            ],
-        }],
-        vec![binding_id(0)],
-    )
-    .expect_err("try nested in a negation");
-    assert_eq!(error.code().as_str(), "query_plan_try_not_root");
-
-    let error = build(
-        vec![ReadStage::Match {
-            patterns: vec![
-                person_isa(0),
-                QueryPattern::Try {
-                    patterns: vec![QueryPattern::Not {
-                        patterns: vec![has_age(0, 1)],
-                    }],
-                },
-            ],
-        }],
-        vec![binding_id(0)],
-    )
-    .expect_err("negation nested in a try");
-    assert_eq!(error.code().as_str(), "query_plan_try_body_unsupported");
-}
-
-#[test]
-fn document_outputs_fetch_typed_fields_and_reject_unsound_shapes() {
-    use type_bridge_contract::query_plan::{DocumentField, DocumentSource};
-
-    let semantics = managed_semantics(b"query-plan-document-fixture");
-    let key = |name: &str| QueryVariable::new(name).expect("document key");
-    let build = |patterns: Vec<QueryPattern>, fields: Vec<DocumentField>| {
-        QueryPlan::new(
-            vec![binding(0, "person"), binding(1, "age")],
-            Vec::new(),
-            vec![ReadStage::Match { patterns }],
-            QueryOutput::Documents { fields },
-            semantics.clone(),
-        )
-    };
-    let has_age = QueryPattern::Has {
-        attribute: binding_id(1),
-        attribute_id: AttributeId::new("age").expect("attribute id"),
-        owner: binding_id(0),
-    };
-
-    // Scalar and list fields round-trip under the documents capability.
-    let plan = build(
-        vec![person_isa(0), has_age.clone()],
-        vec![
-            DocumentField::new(
-                key("age"),
-                DocumentSource::Binding {
-                    binding: binding_id(1),
-                },
-            ),
-            DocumentField::new(
-                key("names"),
-                DocumentSource::AttributeList {
-                    attribute: AttributeId::new("name").expect("attribute id"),
-                    owner: binding_id(0),
-                },
-            ),
-        ],
-    )
-    .expect("document plan");
-    assert!(
-        plan.required_capabilities()
-            .iter()
-            .any(|capability| capability.as_str() == "query.output.documents"),
-    );
-    let bytes = plan.canonical_bytes().expect("canonical bytes");
-    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
-
-    // One key cannot be fetched twice.
-    let error = build(
-        vec![person_isa(0), has_age.clone()],
-        vec![
-            DocumentField::new(
-                key("age"),
-                DocumentSource::Binding {
-                    binding: binding_id(1),
-                },
-            ),
-            DocumentField::new(
-                key("age"),
-                DocumentSource::Binding {
-                    binding: binding_id(1),
-                },
-            ),
-        ],
-    )
-    .expect_err("duplicate document key");
-    assert_eq!(error.code().as_str(), "query_plan_duplicate_output_column");
-
-    // Attribute lists reach through mandatory owners only.
-    let error = build(
-        vec![
-            person_isa(0),
-            QueryPattern::Try {
-                patterns: vec![has_age],
-            },
-        ],
-        vec![DocumentField::new(
-            key("names"),
-            DocumentSource::AttributeList {
-                attribute: AttributeId::new("name").expect("attribute id"),
-                owner: binding_id(1),
-            },
-        )],
-    )
-    .expect_err("optional list owner");
-    assert_eq!(error.code().as_str(), "query_plan_output_not_visible");
-}
-
-#[test]
-fn local_functions_declare_total_reducers_and_reject_unsound_shapes() {
-    use type_bridge_contract::id::{FunctionId, Label};
-    use type_bridge_contract::query_plan::{
-        LocalFunction, LocalReturn, QueryOperand as Operand, Reducer,
-    };
-
-    let semantics = managed_semantics(b"query-plan-local-fn-fixture");
-    let local_body = || {
-        vec![QueryPattern::Has {
-            attribute: binding_id(1),
-            attribute_id: AttributeId::new("age").expect("attribute id"),
-            owner: binding_id(0),
-        }]
-    };
-    let local = |returns: LocalReturn| {
-        LocalFunction::new(
-            FunctionId::new("age_count_of").expect("function id"),
-            vec![binding(0, "subject"), binding(1, "age")],
-            vec![Label::new("person").expect("label")],
-            local_body(),
-            returns,
-        )
-    };
-    let build = |functions: Vec<LocalFunction>| {
-        QueryPlan::new_with_functions(
-            vec![binding(0, "person"), binding(1, "age_count")],
-            functions,
-            Vec::new(),
-            vec![ReadStage::Match {
-                patterns: vec![
-                    person_isa(0),
-                    QueryPattern::FunctionCall {
-                        arguments: vec![Operand::Binding {
-                            binding: binding_id(0),
-                        }],
-                        assigned: binding_id(1),
-                        function: FunctionId::new("age_count_of").expect("function id"),
-                    },
+                    }
+                    .into(),
                 ],
             }],
-            QueryOutput::Rows {
-                columns: vec![binding_id(0), binding_id(1)],
+            output: QueryOutput::Rows {
+                columns: vec![id(0)],
             },
-            semantics.clone(),
+            managed_semantics: semantics(),
+            functions: vec![],
+        },
+        &schema(),
+    )
+    .unwrap();
+    let template_bytes = template.canonical_bytes().unwrap();
+    assert!(template.given_rows().is_none());
+    assert_eq!(
+        decode_query_plan(&template_bytes, &schema()).unwrap(),
+        template
+    );
+    let bound = template
+        .with_given_rows(
+            vec![InputRow::new(vec![Some(CanonicalValue::Long(3))])],
+            &schema(),
         )
-    };
-
-    // A total count declaration round-trips under the local capability.
-    let plan = build(vec![local(LocalReturn::new(
-        Reducer::Count,
-        binding_id(1),
-        ValueTypeTag::Long,
-    ))])
-    .expect("local function plan");
-    assert!(
-        plan.required_capabilities()
-            .iter()
-            .any(|capability| capability.as_str() == "query.function.local"),
+        .unwrap()
+        .with_operation(Operation::Count, &schema())
+        .unwrap();
+    assert_ne!(
+        bound.fingerprint().unwrap(),
+        template.fingerprint().unwrap()
     );
-    let bytes = plan.canonical_bytes().expect("canonical bytes");
-    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
-
-    // Reducers that can observe an empty body stream are reserved.
-    let error = build(vec![local(LocalReturn::new(
-        Reducer::Max,
-        binding_id(1),
-        ValueTypeTag::Long,
-    ))])
-    .expect_err("partial local reducer");
+    assert_eq!(template.canonical_bytes().unwrap(), template_bytes);
     assert_eq!(
-        error.code().as_str(),
-        "query_plan_local_function_return_partial",
+        decode_query_plan(&bound.canonical_bytes().unwrap(), &schema()).unwrap(),
+        bound
     );
-
-    // Median and standard deviation are partial and reserved from local returns.
-    assert!(!Reducer::Median.total_without_groups());
-    assert!(!Reducer::Std.total_without_groups());
-    assert!(Reducer::Median.requires_input());
-    assert!(Reducer::Std.requires_input());
-    let error = build(vec![local(LocalReturn::new(
-        Reducer::Median,
-        binding_id(1),
-        ValueTypeTag::Double,
-    ))])
-    .expect_err("partial median local reducer");
-    assert_eq!(
-        error.code().as_str(),
-        "query_plan_local_function_return_partial",
-    );
-    let error = build(vec![local(LocalReturn::new(
-        Reducer::Std,
-        binding_id(1),
-        ValueTypeTag::Double,
-    ))])
-    .expect_err("partial std local reducer");
-    assert_eq!(
-        error.code().as_str(),
-        "query_plan_local_function_return_partial",
-    );
-
-    // A count declares a long result, nothing else.
-    let error = build(vec![local(LocalReturn::new(
-        Reducer::Count,
-        binding_id(1),
-        ValueTypeTag::Double,
-    ))])
-    .expect_err("mistyped local return");
-    assert_eq!(
-        error.code().as_str(),
-        "query_plan_local_function_return_type"
-    );
-
-    // Two local functions cannot share a name.
-    let error = build(vec![
-        local(LocalReturn::new(
-            Reducer::Count,
-            binding_id(1),
-            ValueTypeTag::Long,
-        )),
-        local(LocalReturn::new(
-            Reducer::Count,
-            binding_id(1),
-            ValueTypeTag::Long,
-        )),
-    ])
-    .expect_err("duplicate local name");
-    assert_eq!(error.code().as_str(), "query_plan_duplicate_local_function");
 }
 
 #[test]
-fn bounded_reachability_requires_a_finite_root_bound() {
-    use type_bridge_contract::id::RoleId;
+fn shared_plan_fixtures() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/contracts/plan");
+    let write = std::env::var_os("TYPE_BRIDGE_UPDATE_PLAN_FIXTURES").is_some();
+    if write {
+        std::fs::create_dir_all(&root).unwrap();
+    }
+    let mut files = BTreeMap::new();
+    files.insert(
+        "schema.json".to_owned(),
+        to_canonical_json(&schema()).unwrap(),
+    );
+    let mut plans = stage_plans();
+    plans.extend(examples::plans());
+    // Hydration fetches are shared per-file fixtures only: the aggregate
+    // stage and expression goldens stay byte-identical, and the capability
+    // they derive is not advertised by proxies yet.
+    plans.insert("purchase-read-back", examples::purchase_read_back());
+    plans.insert("fetch_entity", examples::fetch_written(false));
+    plans.insert("fetch_relation", examples::fetch_written(true));
+    plans.insert("delete_returning_entity", examples::delete_returning(false));
+    plans.insert(
+        "delete_returning_relation",
+        examples::delete_returning(true),
+    );
+    plans.insert("attach", examples::attach());
+    plans.insert("replace_players", examples::replace_players());
+    plans.insert("rematch_window", examples::rematch_window());
+    plans.insert("iid_expression", examples::iid_expression());
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    for (name, comparator) in [
+        ("compare_contains", ValueComparator::Contains),
+        ("compare_starts_with", ValueComparator::StartsWith),
+        ("compare_ends_with", ValueComparator::EndsWith),
+        ("compare_like", ValueComparator::Like),
+    ] {
+        plans.insert(name, examples::compare_string(comparator));
+    }
 
-    let semantics = managed_semantics(b"query-plan-reachable-fixture");
-    let reachable = |max_depth: u8| QueryPattern::Reachable {
-        min_depth: 1,
-        max_depth,
-        relation: TypeId::new(TypeKind::Relation, "edge").expect("type id"),
-        role_from: RoleId::new("edge", "origin").expect("role"),
-        role_to: RoleId::new("edge", "destination").expect("role"),
-        source: binding_id(0),
-        target: binding_id(1),
+    let mut manifest = BTreeMap::new();
+    for (name, plan) in plans {
+        let bytes = plan.canonical_bytes().unwrap();
+        let decoded = decode_query_plan(&bytes, &schema()).unwrap();
+        assert_eq!(decoded.canonical_bytes().unwrap(), bytes);
+        let fingerprint = plan
+            .fingerprint()
+            .unwrap()
+            .as_fingerprint()
+            .digest()
+            .to_hex();
+        assert_eq!(
+            decoded
+                .fingerprint()
+                .unwrap()
+                .as_fingerprint()
+                .digest()
+                .to_hex(),
+            fingerprint
+        );
+        manifest.insert(format!("{name}.json"), fingerprint);
+        files.insert(format!("{name}.json"), bytes);
+    }
+    files.insert(
+        "manifest.json".to_owned(),
+        to_canonical_json(&manifest).unwrap(),
+    );
+    for (name, expected) in &files {
+        let path = root.join(name);
+        if write {
+            std::fs::write(&path, expected).unwrap();
+        }
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            *expected,
+            "{}",
+            path.display()
+        );
+    }
+    let actual: std::collections::BTreeSet<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_str().unwrap().to_owned())
+        .collect();
+    // The ORM owns explanation fixtures because it owns provider lowering.
+    let mut expected: std::collections::BTreeSet<_> = files.keys().cloned().collect();
+    expected.insert("explain".to_owned());
+    // The ownership suite owns additive fixtures outside the frozen manifest.
+    expected.insert("delete_has_value.json".to_owned());
+    expected.insert("has_type.json".to_owned());
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn delete_thing_rejects_let_and_function_scalar_bindings() {
+    use type_bridge_contract::id::FunctionId;
+    use type_bridge_contract::query_plan::{Expr, Pattern};
+    use type_bridge_contract::query_plan::{LocalFunction, LocalReturn, QueryPattern};
+    use type_bridge_contract::value::ValueTypeTag;
+    for function in [false, true] {
+        let pattern = if function {
+            QueryPattern::FunctionCall {
+                assigned: id(1),
+                function: FunctionId::new("account_count").unwrap(),
+                arguments: vec![type_bridge_contract::query_plan::QueryOperand::Binding {
+                    binding: id(0),
+                }],
+            }
+            .into()
+        } else {
+            Pattern::Let {
+                binding: id(1),
+                expr: Expr::Operand(literal(1)),
+            }
+        };
+        let mut plan = spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("account")), pattern],
+                },
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(1) }],
+                },
+            ],
+            vec![],
+        );
+        if function {
+            plan.functions = vec![LocalFunction::new(
+                FunctionId::new("account_count").unwrap(),
+                vec![binding(0, "account")],
+                vec![type_bridge_contract::id::Label::new("account").unwrap()],
+                vec![isa(0, entity("account"))],
+                LocalReturn::new(Reducer::Count, id(0), ValueTypeTag::Long),
+            )];
+        }
+        assert_eq!(
+            QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
+            "query_plan_delete_untyped_thing"
+        );
+    }
+}
+
+#[test]
+fn iid_patterns_identify_typed_things_and_round_trip() {
+    use type_bridge_contract::query_plan::Pattern;
+    let iid = |binding: u16, iid: &str| Pattern::Iid {
+        binding: id(binding),
+        iid: iid.to_owned(),
     };
-    let build = |patterns: Vec<QueryPattern>| {
-        QueryPlan::new(
-            vec![binding(0, "source"), binding(1, "target")],
-            Vec::new(),
-            vec![ReadStage::Match { patterns }],
-            QueryOutput::Rows {
-                columns: vec![binding_id(0), binding_id(1)],
-            },
-            semantics.clone(),
+    let delete = |patterns: Vec<Pattern>| {
+        spec(
+            vec![
+                Stage::Match { patterns },
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+            ],
+            vec![],
         )
     };
-
-    // A bounded pattern round-trips under the reachability capability.
-    let plan = build(vec![reachable(3)]).expect("reachability plan");
+    let plan = QueryPlan::new(
+        delete(vec![
+            pat(0, entity("account")),
+            iid(0, "0x1e00000000000000000001"),
+        ]),
+        &schema(),
+    )
+    .unwrap();
     assert!(
         plan.required_capabilities()
             .iter()
-            .any(|capability| capability.as_str() == "query.pattern.reachable"),
+            .any(|capability| capability.as_str() == "query.pattern.iid")
     );
-    let bytes = plan.canonical_bytes().expect("canonical bytes");
-    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
+    let bytes = plan.canonical_bytes().unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text.contains(r#"{"binding":0,"iid":"0x1e00000000000000000001","kind":"iid"}"#));
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
+    for (patterns, code) in [
+        (
+            vec![pat(0, entity("account")), iid(0, "1e00")],
+            "query_plan_invalid_iid",
+        ),
+        (
+            vec![pat(1, entity("account")), iid(0, "0x1e00")],
+            "query_plan_iid_untyped_thing",
+        ),
+    ] {
+        let mut plan = delete(patterns);
+        plan.pipeline[1] = Stage::Delete {
+            items: vec![DeleteItem::Thing { binding: id(1) }],
+        };
+        assert_eq!(
+            QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
+            code
+        );
+    }
+}
 
-    // The bound is mandatory: zero hops is not a V1 reachability question.
-    let error = build(vec![reachable(0)]).expect_err("zero bound");
-    assert_eq!(error.code().as_str(), "query_plan_reachable_depth");
-
-    // The bound stays within the structural depth ceiling.
-    let error = build(vec![reachable(u8::MAX)]).expect_err("unbounded depth");
-    assert_eq!(error.code().as_str(), "query_plan_reachable_depth");
-
-    // Reachability stays in the root conjunction.
-    let error = build(vec![
-        person_isa(0),
-        QueryPattern::Not {
-            patterns: vec![reachable(2)],
+#[test]
+fn iid_patterns_refuse_attribute_and_optional_or_negated_bindings() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::query_plan::Pattern;
+    use type_bridge_contract::query_plan::QueryPattern;
+    let iid = Pattern::Iid {
+        binding: id(1),
+        iid: "0x1e00".to_owned(),
+    };
+    for typed in [
+        // An attribute binding has an IID in TypeDB, but it is not a thing.
+        QueryPattern::Has {
+            attribute: id(1),
+            attribute_id: AttributeId::new("score").unwrap(),
+            owner: id(0),
         },
-    ])
-    .expect_err("reachability in a negation");
-    assert_eq!(error.code().as_str(), "query_plan_reachable_not_root");
+        QueryPattern::Try {
+            patterns: vec![isa(1, entity("account"))],
+        },
+        QueryPattern::Not {
+            patterns: vec![isa(1, entity("account"))],
+        },
+    ] {
+        let plan = spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("account")), typed.into(), iid.clone()],
+                },
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+            ],
+            vec![],
+        );
+        assert_eq!(
+            QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
+            "query_plan_iid_untyped_thing"
+        );
+    }
+}
 
-    // Expansion is charged, not the single spelled pattern: each bound of d
-    // unrolls into d(d+1)/2 hop clauses, so a depth-64 pattern alone charges
-    // 2,080 nodes and three of them cross the 4,096-node ceiling that a
-    // pattern-count check would never see.
-    let plan = build(vec![reachable(64)]).expect("one depth-64 pattern fits the node budget");
-    let bytes = plan.canonical_bytes().expect("canonical bytes");
-    assert_eq!(decode_query_plan(&bytes).expect("decoded plan"), plan);
-    let error = build(vec![reachable(64), reachable(64), reachable(64)])
-        .expect_err("stacked deep reachability must exhaust the node budget");
+#[test]
+fn thing_fetch_is_terminal_typed_and_lists_declared_roles_once() {
+    use type_bridge_contract::query_plan::{DocumentRole, Operation, ThingDocument, WriteReturns};
+    let plan = examples::fetch_written(true);
+    let bytes = plan.canonical_bytes().unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text.contains(
+        r#"{"kind":"fetch","roles":[{"required":true,"role":{"declaring_relation":"membership","label":"member"}}],"thing":1}"#
+    ), "{text}");
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.fetch.thing")
+    );
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
+
+    let fetch =
+        |thing: u16, roles: Vec<DocumentRole>| Stage::Fetch(ThingDocument::new(id(thing), roles));
+    let rows = Operation::Write {
+        returns: WriteReturns::Rows,
+    };
+    let cases: Vec<(Vec<Stage>, Operation, Vec<u16>, &str)> = vec![
+        // Not last.
+        (
+            vec![matched(), fetch(0, vec![]), Stage::Distinct],
+            Operation::Rows,
+            vec![],
+            "query_plan_fetch_not_last",
+        ),
+        // Declared output beside the documents.
+        (
+            vec![matched(), fetch(0, vec![])],
+            Operation::Rows,
+            vec![0],
+            "query_plan_fetch_output",
+        ),
+        // Count is not a document answer.
+        (
+            vec![matched(), fetch(0, vec![])],
+            Operation::Count,
+            vec![],
+            "query_plan_fetch_output",
+        ),
+        // Deleted thing.
+        (
+            vec![
+                matched(),
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+                fetch(0, vec![]),
+            ],
+            rows,
+            vec![],
+            "query_plan_fetch_untyped_thing",
+        ),
+        // An entity does not relate the role.
+        (
+            vec![matched(), fetch(0, vec![DocumentRole::new(role(), true)])],
+            Operation::Rows,
+            vec![],
+            "query_plan_wrong_role_owner",
+        ),
+        // Listed twice.
+        (
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(1, relation())],
+                },
+                fetch(
+                    1,
+                    vec![
+                        DocumentRole::new(role(), true),
+                        DocumentRole::new(role(), false),
+                    ],
+                ),
+            ],
+            Operation::Rows,
+            vec![],
+            "query_plan_fetch_duplicate_role",
+        ),
+    ];
+    for (pipeline, operation, output, code) in cases {
+        let mut plan = spec(pipeline, output);
+        plan.operation = operation;
+        assert_eq!(
+            QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
+            code
+        );
+    }
+}
+
+#[test]
+fn attach_adds_to_bound_things_and_refuses_unbound_targets() {
+    use type_bridge_contract::query_plan::AttachItem;
+    let plan = examples::attach();
+    let bytes = plan.canonical_bytes().unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text.contains(r#"{"items":[{"field":{"attribute":"score","owner":{"kind":"entity","label":"account"}},"kind":"has","operand":{"kind":"literal","value":{"kind":"long","value":"3"}},"owner":0},{"kind":"links","player":0,"relation":1,"role":{"declaring_relation":"membership","label":"member"}}],"kind":"attach"}"#), "{text}");
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.write.attach")
+    );
+    assert!(plan.writes());
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
+    let attach = |items: Vec<AttachItem>, patterns| {
+        spec(
+            vec![Stage::Match { patterns }, Stage::Attach { items }],
+            vec![],
+        )
+    };
+    let key = QueryPlan::new(
+        attach(
+            vec![AttachItem::Has {
+                optional: false,
+                owner: id(0),
+                field: field("id"),
+                operand: string("account-c"),
+            }],
+            vec![pat(0, entity("account"))],
+        ),
+        &schema(),
+    )
+    .unwrap();
+    assert!(
+        key.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.write.attach-key")
+    );
+    for (plan, code) in [
+        (
+            attach(
+                vec![AttachItem::Has {
+                    optional: false,
+                    owner: id(1),
+                    field: field("score"),
+                    operand: literal(1),
+                }],
+                vec![pat(0, entity("account"))],
+            ),
+            "query_plan_write_unbound_target",
+        ),
+        (
+            attach(
+                vec![AttachItem::Links {
+                    optional: false,
+                    relation: id(0),
+                    role: role(),
+                    player: id(0),
+                }],
+                vec![pat(0, entity("account"))],
+            ),
+            "query_plan_wrong_role_owner",
+        ),
+    ] {
+        assert_eq!(
+            QueryPlan::new(plan, &schema()).unwrap_err().code().as_str(),
+            code
+        );
+    }
+}
+
+#[test]
+fn removing_every_player_of_a_role_needs_a_declared_role_of_the_relation() {
+    let plan = examples::replace_players();
+    let bytes = plan.canonical_bytes().unwrap();
+    assert!(std::str::from_utf8(&bytes).unwrap().contains(
+        r#"{"items":[{"kind":"players","relation":1,"role":{"declaring_relation":"membership","label":"member"}}],"kind":"delete"}"#
+    ));
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
+    let wrong = spec(
+        vec![
+            matched(),
+            Stage::Delete {
+                items: vec![DeleteItem::Players {
+                    relation: id(0),
+                    role: role(),
+                }],
+            },
+        ],
+        vec![],
+    );
+    assert_eq!(
+        QueryPlan::new(wrong, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_wrong_role_owner"
+    );
+}
+
+#[test]
+fn typedb_3_14_query_rules_are_refused_at_build_on_every_profile() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
+    let shift = || {
+        vec![
+            isa(0, entity("account")).into(),
+            QueryPattern::Has {
+                owner: id(0),
+                attribute: id(1),
+                attribute_id: AttributeId::new("shift").unwrap(),
+            }
+            .into(),
+        ]
+    };
+    // Sort on a duration binding: unordered value type.
+    assert_eq!(
+        QueryPlan::new(
+            spec(
+                vec![
+                    Stage::Match { patterns: shift() },
+                    Stage::Sort {
+                        terms: vec![OrderTerm::new(id(1), OrderDirection::Ascending)],
+                    },
+                ],
+                vec![0],
+            ),
+            &schema_with_duration(),
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "query_plan_sort_unordered_value"
+    );
+    // Range comparison with a duration operand, also inside a branch.
+    let range = |comparator| {
+        let mut patterns = shift();
+        patterns.push(
+            QueryPattern::Or {
+                branches: vec![
+                    vec![QueryPattern::Value {
+                        comparator,
+                        left: QueryOperand::Binding { binding: id(1) },
+                        right: QueryOperand::Binding { binding: id(1) },
+                    }],
+                    vec![isa(0, entity("account"))],
+                ],
+            }
+            .into(),
+        );
+        QueryPlan::new(
+            spec(vec![Stage::Match { patterns }], vec![0]),
+            &schema_with_duration(),
+        )
+    };
+    assert_eq!(
+        range(ValueComparator::GreaterOrEqual)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_duration_range"
+    );
+    assert!(
+        range(ValueComparator::Equal).is_ok(),
+        "duration equality stays admitted"
+    );
+}
+
+#[test]
+fn deletion_snapshot_keeps_pre_delete_authority_and_requires_write_rows() {
+    use type_bridge_contract::query_plan::{Operation, ThingDocument, WriteReturns};
+    let pipeline = vec![
+        matched(),
+        Stage::Fetch(ThingDocument::new(id(0), vec![])),
+        Stage::Delete {
+            items: vec![DeleteItem::Thing { binding: id(0) }],
+        },
+    ];
+    let mut candidate = spec(pipeline.clone(), vec![]);
+    candidate.operation = Operation::Write {
+        returns: WriteReturns::Rows,
+    };
+    let plan = QueryPlan::new(candidate, &schema()).unwrap();
+    assert!(plan.fetch_document_shape().is_some());
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|c| c.as_str() == "query.write.delete-snapshot")
+    );
+    assert_eq!(
+        decode_query_plan(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
+        plan
+    );
+    for operation in [
+        Operation::Rows,
+        Operation::Count,
+        Operation::Write {
+            returns: WriteReturns::Matched,
+        },
+    ] {
+        let mut candidate = spec(pipeline.clone(), vec![]);
+        candidate.operation = operation;
+        assert_eq!(
+            QueryPlan::new(candidate, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_fetch_delete_operation"
+        );
+    }
+    let mut wrong_target = pipeline;
+    wrong_target[2] = Stage::Delete {
+        items: vec![DeleteItem::Has {
+            owner: id(0),
+            field: field("score"),
+        }],
+    };
+    let mut candidate = spec(wrong_target, vec![]);
+    candidate.operation = Operation::Write {
+        returns: WriteReturns::Rows,
+    };
+    assert_eq!(
+        QueryPlan::new(candidate, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_fetch_delete_target"
+    );
+}
+
+#[test]
+fn deletion_snapshot_refuses_replayed_mutations_and_nonterminal_fetches() {
+    use type_bridge_contract::query_plan::{Operation, ThingDocument, WriteReturns};
+    let fetch = Stage::Fetch(ThingDocument::new(id(0), vec![]));
+    let delete = Stage::Delete {
+        items: vec![DeleteItem::Thing { binding: id(0) }],
+    };
+    for (pipeline, code) in [
+        (
+            vec![
+                Stage::Insert {
+                    things: vec![thing(0)],
+                },
+                fetch.clone(),
+                delete.clone(),
+            ],
+            "query_plan_fetch_delete_prefix",
+        ),
+        (
+            vec![matched(), fetch.clone(), delete.clone(), Stage::Distinct],
+            "query_plan_fetch_not_last",
+        ),
+        (
+            vec![matched(), fetch, Stage::Distinct, delete],
+            "query_plan_fetch_not_last",
+        ),
+    ] {
+        let mut candidate = spec(pipeline, vec![]);
+        candidate.operation = Operation::Write {
+            returns: WriteReturns::Rows,
+        };
+        assert_eq!(
+            QueryPlan::new(candidate, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            code
+        );
+    }
+    let ordinary = QueryPlan::new(
+        spec(
+            vec![
+                matched(),
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+            ],
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap();
+    assert!(
+        !ordinary
+            .required_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == "query.write.delete-snapshot")
+    );
+}
+
+#[test]
+fn diagnostic_shape_fingerprint_omits_given_rows_and_uses_its_own_domain() {
+    let plan = examples::purchase();
+    let original_bytes = plan.canonical_bytes().unwrap();
+    let original_fingerprint = plan.fingerprint().unwrap();
+    let mut changed: Value = serde_json::from_slice(&original_bytes).unwrap();
+    changed["given_rows"][0][0]["value"] = json!("other-purchase");
+    let other = decode_query_plan(&to_canonical_json(&changed).unwrap(), &schema()).unwrap();
+    let shape = plan.shape_fingerprint().unwrap();
+    assert_eq!(shape, other.shape_fingerprint().unwrap());
+    assert_eq!(shape.domain().as_str(), "typebridge.query.plan-shape");
+    assert_ne!(
+        shape.digest(),
+        original_fingerprint.as_fingerprint().digest()
+    );
+    assert_ne!(
+        shape.digest(),
+        other.fingerprint().unwrap().as_fingerprint().digest()
+    );
+    assert_ne!(original_fingerprint, other.fingerprint().unwrap());
+    assert_eq!(original_bytes, plan.canonical_bytes().unwrap());
+    assert_eq!(original_fingerprint, plan.fingerprint().unwrap());
+}
+
+#[test]
+fn string_comparators_require_string_domains_and_bind_input_values() {
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::{InputRow, QueryPattern};
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+    for comparator in [
+        ValueComparator::Contains,
+        ValueComparator::StartsWith,
+        ValueComparator::EndsWith,
+        ValueComparator::Like,
+    ] {
+        let plan = examples::compare_string(comparator);
+        assert!(
+            plan.required_capabilities()
+                .iter()
+                .any(|c| c.as_str() == "query.pattern.string-operators")
+        );
+        let different = plan
+            .with_given_rows(
+                vec![InputRow::new(vec![Some(CanonicalValue::String(
+                    CanonicalString::new("secret").unwrap(),
+                ))])],
+                &schema(),
+            )
+            .unwrap();
+        assert_ne!(
+            plan.fingerprint().unwrap(),
+            different.fingerprint().unwrap()
+        );
+        let mut bad = serde_json::to_value(&plan).unwrap();
+        // Both operands are present and typed, but integer comparisons are invalid.
+        let value = &mut bad["pipeline"][0]["patterns"][2];
+        *value = serde_json::to_value(QueryPattern::Value {
+            comparator,
+            left: literal(1),
+            right: literal(2),
+        })
+        .unwrap();
+        let error = decode_query_plan(&to_canonical_json(&bad).unwrap(), &schema()).unwrap_err();
+        assert_eq!(error.code().as_str(), "query_plan_compare_string_type");
+    }
+}
+
+#[test]
+fn string_comparisons_validate_branch_local_attribute_domains() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::{
+        InputColumn, InputColumnId, QueryOperand, QueryPattern,
+    };
+    use type_bridge_contract::value::ValueTypeTag;
+    let inner = vec![
+        QueryPattern::Has {
+            owner: id(0),
+            attribute: id(1),
+            attribute_id: AttributeId::new("id").unwrap(),
+        },
+        QueryPattern::Value {
+            comparator: ValueComparator::Contains,
+            left: QueryOperand::Binding { binding: id(1) },
+            right: QueryOperand::Input {
+                column: InputColumnId::new(0),
+            },
+        },
+    ];
+    for nested in [
+        QueryPattern::Not {
+            patterns: inner.clone(),
+        },
+        QueryPattern::Try {
+            patterns: inner.clone(),
+        },
+        QueryPattern::Or {
+            branches: vec![inner.clone(), inner],
+        },
+    ] {
+        let mut spec = spec(
+            vec![Stage::Match {
+                patterns: vec![isa(0, entity("account")).into(), nested.into()],
+            }],
+            vec![0],
+        );
+        spec.inputs = vec![InputColumn::new(
+            InputColumnId::new(0),
+            type_bridge_contract::migration_assertion::QueryVariable::new("needle").unwrap(),
+            ValueTypeTag::String,
+            false,
+        )];
+        QueryPlan::new(spec, &schema()).unwrap();
+    }
+}
+
+#[test]
+fn rematch_retains_only_the_selected_scope_and_preserves_other_order_refusals() {
+    let plan = examples::rematch_window();
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == "query.pipeline.rematch")
+    );
+    assert_eq!(plan.statement_counts(), (1, 0));
+    let bytes = plan.canonical_bytes().unwrap();
+    assert_eq!(decode_query_plan(&bytes, &schema()).unwrap(), plan);
+    let original: Value = serde_json::from_slice(&bytes).unwrap();
+    let mut hidden = original.clone();
+    hidden["pipeline"][6]["patterns"] = json!([{
+        "kind": "value", "comparator": "equal",
+        "left": {"kind": "binding", "binding": 2},
+        "right": {"kind": "literal", "value": {"kind": "string", "value": "A"}}
+    }]);
+    assert_eq!(
+        decode_query_plan(&to_canonical_json(&hidden).unwrap(), &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_fetch_untyped_thing"
+    );
+    for case in 0..4 {
+        let mut invalid = original.clone();
+        let stages = invalid["pipeline"].as_array_mut().unwrap();
+        match case {
+            0 => stages.insert(7, stages[6].clone()),
+            1 => {
+                stages.drain(1..6);
+            }
+            2 => {
+                stages.swap(2, 3);
+            }
+            _ => {
+                stages.insert(
+                    1,
+                    json!({"kind":"update", "sets":[{
+                        "kind":"field", "owner":0,
+                        "field":{"owner":{"kind":"entity","label":"account"}, "attribute":"score"},
+                        "operand":{"kind":"literal","value":{"kind":"long","value":"1"}}
+                    }]}),
+                );
+                invalid["operation"] = json!({"kind":"write", "returns":"rows"});
+            }
+        }
+        assert_eq!(
+            decode_query_plan(&to_canonical_json(&invalid).unwrap(), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_stage_order"
+        );
+    }
+}
+
+#[test]
+fn iid_expressions_require_present_things_and_infer_string_inside_calls() {
+    use type_bridge_contract::query_plan::{Builtin, Expr, Pattern};
+    let plan = examples::iid_expression();
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == "query.expr.iid")
+    );
+    assert_eq!(
+        decode_query_plan(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
+        plan
+    );
+    for typed in [entity("account"), relation()] {
+        QueryPlan::new(
+            spec(
+                vec![Stage::Match {
+                    patterns: vec![
+                        isa(0, typed).into(),
+                        Pattern::Let {
+                            binding: id(2),
+                            expr: Expr::Call {
+                                func: Builtin::Length,
+                                args: vec![Expr::Iid { binding: id(0) }],
+                            },
+                        },
+                    ],
+                }],
+                vec![2],
+            ),
+            &schema(),
+        )
+        .unwrap();
+    }
+    for patterns in [
+        vec![isa(0, entity("account")).into()],
+        vec![
+            isa(0, entity("account")).into(),
+            type_bridge_contract::query_plan::QueryPattern::Has {
+                owner: id(0),
+                attribute: id(1),
+                attribute_id: type_bridge_contract::id::AttributeId::new("id").unwrap(),
+            }
+            .into(),
+        ],
+        vec![
+            isa(0, entity("account")).into(),
+            type_bridge_contract::query_plan::QueryPattern::Try {
+                patterns: vec![isa(1, entity("account"))],
+            }
+            .into(),
+        ],
+    ] {
+        let mut patterns = patterns;
+        patterns.push(Pattern::Let {
+            binding: id(2),
+            expr: Expr::Iid { binding: id(1) },
+        });
+        assert_eq!(
+            QueryPlan::new(spec(vec![Stage::Match { patterns }], vec![2]), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_iid_untyped_thing"
+        );
+    }
+}
+
+#[test]
+fn schema_derived_zero_hop_branches_share_the_predicate_node_budget() {
+    use type_bridge_contract::limits::QueryLimits;
+    let spec = spec(
+        vec![Stage::Match {
+            patterns: vec![
+                QueryPattern::Isa {
+                    binding: id(0),
+                    type_id: entity("account"),
+                    include_subtypes: true,
+                }
+                .into(),
+                QueryPattern::Isa {
+                    binding: id(1),
+                    type_id: entity("account"),
+                    include_subtypes: true,
+                }
+                .into(),
+                QueryPattern::Reachable {
+                    min_depth: 0,
+                    max_depth: 0,
+                    relation: relation(),
+                    role_from: role(),
+                    role_to: role(),
+                    source: id(0),
+                    target: id(1),
+                }
+                .into(),
+            ],
+        }],
+        vec![0],
+    );
+    QueryPlan::new(spec.clone(), &schema()).unwrap();
+    let mut limits = QueryLimits::CANONICAL;
+    limits.structural.predicate_nodes = 4;
+    let error = QueryPlan::new_with_limits(spec, &schema(), limits).unwrap_err();
     assert_eq!(
         error.code().as_str(),
         "query_plan_reachable_expansion_limit"
@@ -1157,298 +2060,466 @@ fn bounded_reachability_requires_a_finite_root_bound() {
 }
 
 #[test]
-fn optional_input_columns_admit_only_typed_values_or_explicit_absence() {
-    let plan = QueryPlan::new(
-        vec![binding(0, "person"), binding(1, "age")],
-        vec![InputColumn::new(
-            InputColumnId::new(0),
-            QueryVariable::new("maybe_age").expect("input name"),
-            ValueTypeTag::Long,
-            true,
-        )],
-        vec![ReadStage::Match {
-            patterns: vec![
-                person_isa(0),
-                QueryPattern::Has {
-                    attribute: binding_id(1),
-                    attribute_id: AttributeId::new("age").expect("attribute id"),
-                    owner: binding_id(0),
-                },
-                QueryPattern::Value {
-                    comparator: ValueComparator::GreaterOrEqual,
-                    left: QueryOperand::Binding {
-                        binding: binding_id(1),
-                    },
-                    right: QueryOperand::Input {
-                        column: InputColumnId::new(0),
-                    },
-                },
-            ],
+fn native_output_columns_use_the_binding_budget_while_v1_remains_frozen() {
+    use type_bridge_contract::limits::{MAX_BINDINGS, QueryLimits};
+    let columns = (0..17).collect::<Vec<_>>();
+    let patterns = columns
+        .iter()
+        .map(|column| isa(*column, entity("account")))
+        .collect::<Vec<_>>();
+    let mut wide = spec(
+        vec![Stage::Match {
+            patterns: patterns.iter().cloned().map(Into::into).collect(),
         }],
-        QueryOutput::Rows {
-            columns: vec![binding_id(0)],
-        },
-        managed_semantics(b"optional-input-fixture"),
-    )
-    .expect("optional input plan");
-
-    QueryInvocation::new(&plan, QueryOperation::Rows, vec![InputRow::new(vec![None])])
-        .expect("an optional input admits explicit absence");
-    QueryInvocation::new(
-        &plan,
-        QueryOperation::Rows,
-        vec![InputRow::new(vec![Some(CanonicalValue::Long(18))])],
-    )
-    .expect("an optional input still admits its exact declared type");
-    let error = QueryInvocation::new(
-        &plan,
-        QueryOperation::Rows,
-        vec![InputRow::new(vec![Some(CanonicalValue::Boolean(true))])],
-    )
-    .expect_err("optional does not weaken the declared scalar type");
-    assert_eq!(error.code().as_str(), "query_invocation_value_type");
-}
-
-#[test]
-fn caller_limits_recheck_the_whole_plan_structure() {
-    use type_bridge_contract::limits::StructuralLimits;
-
-    let plan = full_pipeline_plan();
-    plan.check_structural_limits(StructuralLimits::CANONICAL)
-        .expect("canonical limits accept the canonical plan");
-
-    for (case, apply, code) in [
-        (
-            "boolean terms",
-            (|limits: &mut StructuralLimits| limits.boolean_terms = 2) as fn(&mut StructuralLimits),
-            "query_plan_pattern_limit",
-        ),
-        (
-            "predicate nodes",
-            |limits: &mut StructuralLimits| limits.predicate_nodes = 2,
-            "query_plan_pattern_node_limit",
-        ),
-        (
-            "output names",
-            |limits: &mut StructuralLimits| limits.output_name_bytes = 3,
-            "query_plan_name_limit",
-        ),
-        (
-            "selected slots",
-            |limits: &mut StructuralLimits| limits.selected_slots = 1,
-            "query_plan_output_limit",
-        ),
-        (
-            "sort terms",
-            |limits: &mut StructuralLimits| limits.order_terms = 0,
-            "query_plan_sort_term_limit",
-        ),
-    ] {
-        let mut limits = StructuralLimits::CANONICAL;
-        apply(&mut limits);
-        let error = plan
-            .check_structural_limits(limits)
-            .expect_err("stricter limits must reject");
-        assert_eq!(error.code().as_str(), code, "{case}");
-    }
-}
-
-#[test]
-fn caller_name_limits_cover_document_keys_and_local_bindings() {
-    use type_bridge_contract::id::{FunctionId, Label};
-    use type_bridge_contract::limits::StructuralLimits;
-    use type_bridge_contract::query_plan::{
-        DocumentField, DocumentSource, LocalFunction, LocalReturn, Reducer,
-    };
-
-    let document_plan = QueryPlan::new(
-        vec![binding(0, "p"), binding(1, "a")],
-        Vec::new(),
-        vec![ReadStage::Match {
-            patterns: vec![
-                person_isa(0),
-                QueryPattern::Has {
-                    attribute: binding_id(1),
-                    attribute_id: AttributeId::new("age").expect("attribute id"),
-                    owner: binding_id(0),
-                },
-            ],
-        }],
-        QueryOutput::Documents {
-            fields: vec![DocumentField::new(
-                QueryVariable::new("age").expect("document key"),
-                DocumentSource::Binding {
-                    binding: binding_id(1),
-                },
-            )],
-        },
-        managed_semantics(b"document-name-limit-fixture"),
-    )
-    .expect("canonical document plan");
-
-    let local_plan = QueryPlan::new_with_functions(
-        vec![binding(0, "p"), binding(1, "c")],
-        vec![LocalFunction::new(
-            FunctionId::new("age_count_of").expect("function id"),
-            vec![binding(0, "subject"), binding(1, "age")],
-            vec![Label::new("person").expect("label")],
-            vec![QueryPattern::Has {
-                attribute: binding_id(1),
-                attribute_id: AttributeId::new("age").expect("attribute id"),
-                owner: binding_id(0),
-            }],
-            LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long),
-        )],
-        Vec::new(),
-        vec![ReadStage::Match {
-            patterns: vec![
-                person_isa(0),
-                QueryPattern::FunctionCall {
-                    arguments: vec![QueryOperand::Binding {
-                        binding: binding_id(0),
-                    }],
-                    assigned: binding_id(1),
-                    function: FunctionId::new("age_count_of").expect("function id"),
-                },
-            ],
-        }],
-        QueryOutput::Rows {
-            columns: vec![binding_id(0), binding_id(1)],
-        },
-        managed_semantics(b"local-name-limit-fixture"),
-    )
-    .expect("canonical local-function plan");
-
-    let mut limits = StructuralLimits::CANONICAL;
-    limits.output_name_bytes = 1;
-    for (case, plan) in [
-        ("document key", &document_plan),
-        ("local binding", &local_plan),
-    ] {
-        let error = plan
-            .check_structural_limits(limits)
-            .expect_err("tightened name limit must cover every name");
-        assert_eq!(error.code().as_str(), "query_plan_name_limit", "{case}");
-    }
-}
-
-#[test]
-fn invocation_row_and_byte_budgets_are_independent_of_output_slots() {
-    use type_bridge_contract::limits::{MAX_INPUT_BYTES, MAX_INPUT_ROWS};
-
-    let plan = full_pipeline_plan();
-    let too_many_rows = (0..=MAX_INPUT_ROWS)
-        .map(|_| InputRow::new(vec![Some(CanonicalValue::Long(1))]))
-        .collect();
-    assert_eq!(
-        QueryInvocation::new(&plan, QueryOperation::Rows, too_many_rows)
-            .expect_err("input rows have their own ceiling")
-            .code()
-            .as_str(),
-        "query_invocation_row_limit",
+        columns.clone(),
     );
+    wide.bindings = columns
+        .iter()
+        .map(|column| binding(*column, &format!("b{column}")))
+        .collect();
+    let plan = QueryPlan::new(wide.clone(), &schema()).unwrap();
+    assert_eq!(plan.limits().structural.selected_slots, MAX_BINDINGS);
+    let lower =
+        QueryPlan::new_with_limits(wide.clone(), &schema(), QueryLimits::CANONICAL).unwrap_err();
+    assert_eq!(lower.code().as_str(), "query_plan_output_limit");
+    let mut invalid = QueryLimits::PLAN;
+    invalid.structural.bindings = 16;
+    invalid.structural.selected_slots = 17;
+    assert_eq!(
+        invalid.validate_plan().unwrap_err().limit(),
+        "selected_slots"
+    );
+    let invalid = QueryPlan::new_with_limits(wide, &schema(), invalid).unwrap_err();
+    assert_eq!(
+        invalid.details().get("limit"),
+        Some(
+            &type_bridge_contract::diagnostic::DiagnosticDetailValue::Text("selected_slots".into())
+        )
+    );
+    assert_eq!(
+        invalid.details().get("maximum"),
+        Some(&type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(16))
+    );
+}
 
-    // Input bytes are charged before per-cell type validation. Five bounded
-    // strings exceed the aggregate 4 MiB invocation budget while remaining
-    // far below the canonical string ceiling individually.
-    let chunk = "x".repeat((MAX_INPUT_BYTES / 5) + 32);
-    let too_many_bytes = (0..5)
-        .map(|_| {
-            InputRow::new(vec![Some(CanonicalValue::String(
-                CanonicalString::new(chunk.clone()).expect("bounded input string"),
-            ))])
+#[test]
+fn native_write_stages_refuse_ordered_collections_without_a_scalar_escape() {
+    use type_bridge_contract::diagnostic::DiagnosticCategory;
+    use type_bridge_contract::query_plan::AttachItem;
+    let schema = schema_with_ordered_collections();
+    let mut stages = stage_plans()
+        .into_iter()
+        .filter(|(name, _)| {
+            matches!(
+                *name,
+                "insert" | "put" | "update" | "delete_has" | "link" | "delete_links"
+            )
         })
-        .collect();
-    assert_eq!(
-        QueryInvocation::new(&plan, QueryOperation::Rows, too_many_bytes)
-            .expect_err("input bytes have their own ceiling")
-            .code()
-            .as_str(),
-        "query_invocation_input_byte_limit",
-    );
+        .map(|(name, plan)| (name, plan.pipeline().to_vec()))
+        .collect::<Vec<_>>();
+    for (name, stage) in [
+        (
+            "attach_field",
+            Stage::Attach {
+                items: vec![AttachItem::Has {
+                    owner: id(0),
+                    field: field("score"),
+                    operand: literal(2),
+                    optional: false,
+                }],
+            },
+        ),
+        (
+            "attach_role",
+            Stage::Attach {
+                items: vec![AttachItem::Links {
+                    relation: id(1),
+                    role: role(),
+                    player: id(0),
+                    optional: false,
+                }],
+            },
+        ),
+        (
+            "clear_role",
+            Stage::Delete {
+                items: vec![DeleteItem::Players {
+                    relation: id(1),
+                    role: role(),
+                }],
+            },
+        ),
+    ] {
+        stages.push((
+            name,
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("account")), pat(1, relation())],
+                },
+                stage,
+            ],
+        ));
+    }
+    for (name, pipeline) in stages {
+        let error = QueryPlan::new(spec(pipeline, vec![]), &schema).unwrap_err();
+        assert_eq!(
+            error.category(),
+            DiagnosticCategory::UnsupportedCapability,
+            "{name}"
+        );
+        assert_eq!(
+            error.code().as_str(),
+            "query_plan_ordered_collection_unsupported",
+            "{name}"
+        );
+    }
 }
 
 #[test]
-fn predicate_nodes_charge_one_aggregate_budget_across_local_functions() {
-    use type_bridge_contract::id::{FunctionId, Label};
-    use type_bridge_contract::limits::StructuralLimits;
-    use type_bridge_contract::query_plan::{LocalFunction, LocalReturn, Reducer};
-
-    // Root conjunction: two nodes. Local body: one node. A per-function
-    // reset would accept a three-node plan under a two-node budget; the
-    // aggregate budget must reject it.
-    let plan = QueryPlan::new_with_functions(
-        vec![binding(0, "person"), binding(1, "age_count")],
-        vec![LocalFunction::new(
-            FunctionId::new("age_count_of").expect("function id"),
-            vec![binding(0, "subject"), binding(1, "age")],
-            vec![Label::new("person").expect("label")],
-            vec![QueryPattern::Has {
-                attribute: binding_id(1),
-                attribute_id: AttributeId::new("age").expect("attribute id"),
-                owner: binding_id(0),
-            }],
-            LocalReturn::new(Reducer::Count, binding_id(1), ValueTypeTag::Long),
-        )],
-        Vec::new(),
-        vec![ReadStage::Match {
-            patterns: vec![
-                person_isa(0),
-                QueryPattern::FunctionCall {
-                    arguments: vec![QueryOperand::Binding {
-                        binding: binding_id(0),
-                    }],
-                    assigned: binding_id(1),
-                    function: FunctionId::new("age_count_of").expect("function id"),
+fn ownership_delete_accepts_only_bound_schema_typed_optional_owners() {
+    use type_bridge_contract::query_plan::{Expr, Pattern};
+    for (patterns, owner, expected) in [
+        (
+            vec![
+                isa(0, entity("account")).into(),
+                QueryPattern::Try {
+                    patterns: vec![isa(1, entity("account"))],
+                }
+                .into(),
+            ],
+            id(1),
+            None,
+        ),
+        (
+            vec![
+                isa(0, entity("account")).into(),
+                Pattern::Let {
+                    binding: id(1),
+                    expr: Expr::Operand(literal(1)),
                 },
             ],
-        }],
-        QueryOutput::Rows {
-            columns: vec![binding_id(0), binding_id(1)],
-        },
-        managed_semantics(b"aggregate-node-budget-fixture"),
-    )
-    .expect("three-node plan under canonical limits");
-
-    let mut two_nodes = StructuralLimits::CANONICAL;
-    two_nodes.predicate_nodes = 2;
-    assert_eq!(
-        plan.check_structural_limits(two_nodes)
-            .expect_err("aggregate budget spans functions")
-            .code()
-            .as_str(),
-        "query_plan_pattern_node_limit"
-    );
-
-    let mut three_nodes = StructuralLimits::CANONICAL;
-    three_nodes.predicate_nodes = 3;
-    plan.check_structural_limits(three_nodes)
-        .expect("exact aggregate fits");
+            id(1),
+            Some("query_plan_write_untyped_target"),
+        ),
+        (
+            vec![isa(0, entity("account")).into()],
+            id(9),
+            Some("query_plan_write_unbound_target"),
+        ),
+        (
+            vec![isa(0, entity("account")).into()],
+            id(1),
+            Some("query_plan_write_unbound_target"),
+        ),
+    ] {
+        let plan = QueryPlan::new(
+            spec(
+                vec![
+                    Stage::Match { patterns },
+                    Stage::Delete {
+                        items: vec![DeleteItem::Has {
+                            owner,
+                            field: field("score"),
+                        }],
+                    },
+                ],
+                vec![],
+            ),
+            &schema(),
+        );
+        match expected {
+            None => {
+                plan.unwrap();
+            }
+            Some(code) => assert_eq!(plan.unwrap_err().code().as_str(), code),
+        }
+    }
 }
 
 #[test]
-fn typeql_reserved_labels_cannot_enter_plan_or_local_function_contracts() {
-    use type_bridge_contract::id::{FunctionId, Label};
+fn write_rematches_keep_selected_bindings_and_admit_fresh_bindings() {
+    use type_bridge_contract::query_plan::Operation;
+    let put = |target, key| Stage::Put {
+        include_subtypes: false,
+        things: vec![InsertThing {
+            binding: id(target),
+            type_id: entity("account"),
+            fields: vec![(field("id"), string(key))],
+            players: vec![],
+        }],
+    };
+    let pipeline = vec![
+        put(0, "a"),
+        Stage::Select {
+            bindings: vec![id(0)],
+        },
+        Stage::Distinct,
+        Stage::Match {
+            patterns: vec![isa(1, entity("account")).into()],
+        },
+        put(2, "b"),
+        Stage::Select {
+            bindings: vec![id(0), id(1), id(2)],
+        },
+        Stage::Distinct,
+        Stage::Match {
+            patterns: vec![isa(3, entity("account")).into()],
+        },
+        Stage::Attach {
+            items: vec![AttachItem::Has {
+                optional: false,
+                owner: id(2),
+                field: field("score"),
+                operand: literal(7),
+            }],
+        },
+    ];
+    let mut request = spec(pipeline, vec![0, 1, 2, 3]);
+    request.bindings.push(binding(3, "again"));
+    QueryPlan::new(request.clone(), &schema()).unwrap();
+    let mut absent = request.clone();
+    absent.pipeline[5] = Stage::Select {
+        bindings: vec![id(0), id(1)],
+    };
+    absent.output = type_bridge_contract::query_plan::QueryOutput::Rows {
+        columns: vec![id(0)],
+    };
+    assert_eq!(
+        QueryPlan::new(absent, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_write_unbound_target"
+    );
+    let mut reused = request.clone();
+    reused.pipeline[4] = put(0, "duplicate");
+    assert_eq!(
+        QueryPlan::new(reused, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_write_binding_not_fresh"
+    );
+    let mut unselected = request;
+    unselected.pipeline.drain(1..3);
+    assert_eq!(
+        QueryPlan::new(unselected, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_stage_order"
+    );
+    let mut read = spec(
+        vec![
+            matched(),
+            Stage::Select {
+                bindings: vec![id(0)],
+            },
+            Stage::Distinct,
+            Stage::Match {
+                patterns: vec![isa(1, entity("account")).into()],
+            },
+            Stage::Select {
+                bindings: vec![id(0), id(1)],
+            },
+            Stage::Distinct,
+            Stage::Match {
+                patterns: vec![isa(2, entity("account")).into()],
+            },
+        ],
+        vec![0],
+    );
+    read.operation = Operation::Rows;
+    assert_eq!(
+        QueryPlan::new(read, &schema()).unwrap_err().code().as_str(),
+        "query_plan_stage_order"
+    );
+}
 
-    assert_eq!(
-        TypeId::new(TypeKind::Entity, "isa")
-            .expect_err("reserved type label")
-            .code()
-            .as_str(),
-        "malformed_id",
+#[test]
+fn optional_has_attachment_requires_a_bound_typed_owner_and_optional_flag() {
+    use type_bridge_contract::query_plan::{Expr, Pattern};
+    for (patterns, owner, optional, expected) in [
+        (
+            vec![
+                isa(0, entity("account")).into(),
+                QueryPattern::Try {
+                    patterns: vec![isa(1, entity("account"))],
+                }
+                .into(),
+            ],
+            id(1),
+            true,
+            None,
+        ),
+        (
+            vec![
+                isa(0, entity("account")).into(),
+                QueryPattern::Try {
+                    patterns: vec![isa(1, entity("account"))],
+                }
+                .into(),
+            ],
+            id(1),
+            false,
+            Some("query_plan_write_unbound_target"),
+        ),
+        (
+            vec![
+                isa(0, entity("account")).into(),
+                Pattern::Let {
+                    binding: id(1),
+                    expr: Expr::Operand(literal(1)),
+                },
+            ],
+            id(1),
+            true,
+            Some("query_plan_write_untyped_target"),
+        ),
+        (
+            vec![isa(0, entity("account")).into()],
+            id(9),
+            true,
+            Some("query_plan_write_unbound_target"),
+        ),
+        (
+            vec![isa(0, entity("account")).into()],
+            id(1),
+            true,
+            Some("query_plan_write_unbound_target"),
+        ),
+    ] {
+        let plan = QueryPlan::new(
+            spec(
+                vec![
+                    Stage::Match { patterns },
+                    Stage::Attach {
+                        items: vec![AttachItem::Has {
+                            optional,
+                            owner,
+                            field: field("score"),
+                            operand: literal(1),
+                        }],
+                    },
+                ],
+                vec![],
+            ),
+            &schema(),
+        );
+        match expected {
+            None => {
+                plan.unwrap();
+            }
+            Some(code) => assert_eq!(plan.unwrap_err().code().as_str(), code),
+        }
+    }
+}
+
+#[test]
+fn native_optional_unions_keep_branch_visibility_and_legacy_fences() {
+    let optional = QueryPattern::Try {
+        patterns: vec![QueryPattern::Or {
+            branches: vec![
+                vec![isa(0, entity("account"))],
+                vec![isa(0, entity("account"))],
+            ],
+        }],
+    };
+    let request = spec(
+        vec![Stage::Match {
+            patterns: vec![optional.clone().into()],
+        }],
+        vec![0],
     );
+    let plan = QueryPlan::new(request.clone(), &schema()).unwrap();
+    let bytes = plan.canonical_bytes().unwrap();
     assert_eq!(
-        FunctionId::new("match")
-            .expect_err("reserved schema or local function name")
-            .code()
-            .as_str(),
-        "malformed_id",
+        decode_query_plan(&bytes, &schema())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap(),
+        bytes
     );
+    let not_in_every_branch = QueryPattern::Try {
+        patterns: vec![QueryPattern::Or {
+            branches: vec![
+                vec![isa(0, entity("account"))],
+                vec![isa(1, entity("account"))],
+            ],
+        }],
+    };
     assert_eq!(
-        Label::new("return")
-            .expect_err("reserved local-function parameter type")
-            .code()
-            .as_str(),
-        "malformed_id",
+        QueryPlan::new(
+            spec(
+                vec![Stage::Match {
+                    patterns: vec![not_in_every_branch.into()]
+                }],
+                vec![0]
+            ),
+            &schema()
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "query_plan_output_not_visible"
+    );
+    for forbidden in [
+        QueryPattern::Not {
+            patterns: vec![isa(0, entity("account"))],
+        },
+        QueryPattern::Try {
+            patterns: vec![isa(0, entity("account"))],
+        },
+    ] {
+        for child in [
+            forbidden.clone(),
+            QueryPattern::Or {
+                branches: vec![vec![forbidden]],
+            },
+        ] {
+            assert_eq!(
+                QueryPlan::new(
+                    spec(
+                        vec![Stage::Match {
+                            patterns: vec![
+                                QueryPattern::Try {
+                                    patterns: vec![child]
+                                }
+                                .into()
+                            ]
+                        }],
+                        vec![0]
+                    ),
+                    &schema()
+                )
+                .unwrap_err()
+                .code()
+                .as_str(),
+                "query_plan_try_body_unsupported"
+            );
+        }
+    }
+}
+
+#[test]
+fn rows_refuses_flat_document_output_before_execution() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::migration_assertion::QueryVariable;
+    use type_bridge_contract::query_plan::{DocumentField, DocumentSource, QueryOutput};
+    let mut request = spec(vec![matched()], vec![0]);
+    request.output = QueryOutput::Documents {
+        fields: vec![DocumentField::new(
+            QueryVariable::new("balances").unwrap(),
+            DocumentSource::AttributeList {
+                attribute: AttributeId::new("balance").unwrap(),
+                owner: id(0),
+            },
+        )],
+    };
+    let error = QueryPlan::new(request, &schema()).unwrap_err();
+    assert_eq!(error.code().as_str(), "query_plan_rows_document_output");
+    assert_eq!(
+        error.category(),
+        type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract
     );
 }

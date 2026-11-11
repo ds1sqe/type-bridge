@@ -7,14 +7,10 @@
 //! folding repeated `define` blocks into one strict query. Every rewrite is
 //! byte-length preserving, so strict-parser spans still index the caller's
 //! original source.
-
-#![allow(deprecated)] // The released reader deliberately retains its grammar.
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use type_bridge_core_lib::_parser::{
-    SourceRegionKind, blank_source_extents, parse_typeql, scan_source_regions,
-};
+use type_bridge_core_lib::_parser::{SourceRegionKind, blank_source_extents, scan_source_regions};
 use typeql::common::identifier::Identifier;
 use typeql::type_::Label;
 
@@ -46,7 +42,7 @@ impl ReleasedSyntax {
         if !size_policy.allows(source.len()) {
             return None;
         }
-        parse_typeql(source).ok()?;
+        type_bridge_core_lib::__internal::archive::parse_unresolved(source).ok()?;
         Some(Self::normalize(source))
     }
 

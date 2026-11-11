@@ -1,7 +1,7 @@
 # Model TypeDB data
 
 Split-YAML is the schema and model-authoring authority. Generated Python,
-TypeScript/Node, and Rust packages project that authority into idiomatic value,
+TypeScript/Node, Rust, and C packages project that authority into idiomatic value,
 entity, relation, reference, field-token, and role-token types.
 
 ## Build a model

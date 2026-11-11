@@ -29,9 +29,9 @@ JSON authority.
 ## Connect
 
 ```ts
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "application", {
+const db = Database.connect("localhost:1729", "application", {
   username: "admin",
   password: "password",
   httpPort: 8000,
@@ -75,14 +75,24 @@ After upgrading the generator and compatible runtime, regenerate the complete
 package. Projection and package fingerprints are recomputed from the corrected
 names and runtime resources; semantic schema fingerprints remain unchanged.
 
+## Identifiers
+
+Generated model and reference `.iid` properties retain an `Iid` object, or
+`null` for unattached values. Import `Iid` from `@type-bridge/node` (also exported
+by generated packages) and construct identifiers with `new Iid("0x1234")`.
+Reference constructors, manager IID arguments and filters, query `iid`/`iidIn`,
+and staged `byIid` require this type. Use `.toString()` for text and `.equals()`
+for identifier equality. Staged identity columns use `input("target", "iid")`
+or `optionalInput`, including columns receiving earlier staged IID results.
+
 ## Managers
 
 ```ts
 const manager = Person.manager(db);
-const stored = manager.put(ada);
+const stored = manager.put(ada).item;
 const people = manager.filter({ age__gte: Age.create(18n) }).all();
 
-if (stored.iid !== null) {
+if (stored?.iid != null) {
   const replacement = Person.create({
     personId: PersonId.create("ada"),
     age: Age.create(37n),
@@ -91,18 +101,20 @@ if (stored.iid !== null) {
 }
 ```
 
+`getByIid(iid)` permanently redirects to `filter({ iid }).first()`, retaining
+any existing canonical keyword selection.
+
 Generated entity and relation managers expose `insert`, `insertMany`, `put`,
 `putMany`, immutable replacement `update`, `delete`, `getByIid`, `filter`,
 `all`, `first`, `count`, and `exists`.
 
-Packages whose schema uses ordered collections select the successor manager and
-also expose atomic `updateMany` and `deleteMany`. Updates are readonly
-`[iid, replacement]` tuples; deletes accept canonical IID strings. Insert, put,
-and update batches return frozen values in input order, while delete returns no
-affected-row count:
+Managers also expose atomic `updateMany` and `deleteMany`. Updates are readonly
+`[iid, replacement]` tuples; deletes accept `Iid` values. Insert, put,
+and update batches return a `BatchWriteResult` whose `items` follow input
+order, while delete returns no affected-row count:
 
 ```ts
-if (stored.iid !== null) {
+if (stored?.iid != null) {
   const replacements = [
     [stored.iid, Person.create({
       personId: PersonId.create("ada"),
@@ -115,11 +127,30 @@ if (stored.iid !== null) {
 }
 ```
 
-Legacy unordered packages retain their existing manager surface and runtime
-resource exactly; regenerate from an ordered schema to use the successor batch
-methods.
+Managers also expose immutable, token-branded canonical filters.
+Chaining `filter(...).where(...)` retains IID and closed scalar keyword predicates.
+Wider keyword lookups remain available through read terminals; `.where()` refuses
+those selections with `unsupported_manager_filter`. Read their matching models
+before explicit instance or IID batch operations. `filter({ iid__in: [] })` reads
+no matches without a provider request, including with wider keyword lookups.
 
-The successor manager also exposes immutable, token-branded canonical filters:
+Replace all selected rows with `manager.filter({ iid }).update(replacement)`
+or `manager.where(field, "eq", value).update(replacement)`. The replacement must
+be the manager's exact complete model. Results include every changed root; no
+match returns `count: 0`, empty `items`, and `item: null`. IID
+`update(iid, replacement)` is a permanent redirect to that filter terminal.
+Unfiltered `manager.update(replacement)` refuses; select all explicitly with
+`filter({})` or `where()`. Heterogeneous `updateMany` keeps ordinal per-row inputs.
+
+Delete all selected rows with `manager.filter({ iid }).delete()` or
+`manager.where(Person.fields.age, "gte", Age.create(18n)).delete()`.
+`delete(iid)` permanently redirects to the same IID filter terminal.
+`deleteMany(iids)` redirects to `filter({ iid__in: iids }).delete()` and retains
+ordinal batch limits, including singleton lists. A direct
+zero-argument manager `delete()` refuses; use an explicit `filter({})` or `where()`
+when deleting every row is intended. Empty IID lists send no deletion request.
+
+For example:
 
 ```ts
 const threshold = Person.manager(db)
@@ -132,8 +163,8 @@ const ada = Person.manager(db)
 
 Each `where` returns a reusable sibling. Canonical filters accept only generated
 field tokens, exact generated values, and `eq`, `ne`, `lt`, `lte`, `gt`, or
-`gte`; Boolean ordering rejects before I/O. Their `first` requires equality for
-every effective reference-key field and proves optional singularity. The
+`gte`; Boolean ordering rejects before I/O. Their `first` requires one IID or
+equality for every effective reference-key field and proves optional singularity. The
 object-based `filter(...)` API remains available for compatibility lookups and
 keeps its existing arbitrary-first behavior.
 
@@ -164,8 +195,8 @@ const session = new QuerySession(db);
 const person = session.exact(Person);
 const employmentVar = session.exact(Employment);
 
-const adult = person.field(Person.age).gte(Age.create(18n));
-const employee = employmentVar.role(Employment.employee).connects(person);
+const adult = person.field(Person.age).ge(Age.create(18n));
+const employee = employmentVar.role(Employment.employee).links(person);
 
 const rows = await session
   .query(person, employmentVar)
@@ -174,10 +205,10 @@ const rows = await session
 ```
 
 `QuerySession(connection, { resources, cancellation, queryLimits })` runs on a
-direct `RustDatabase` or transaction, or on a proxy connection (see
+direct `Database` or transaction, or on a proxy connection (see
 [Proxy queries](#proxy-queries)). Composition is synchronous and performs no
 I/O. Every terminal (`one`, `first`, `rows`, `pageBy`, `countBy`, `existsBy`,
-`aggregate`, grouped `aggregate`) returns a `Promise` on every connection;
+`reduce`, grouped `reduce`) returns a `Promise` on every connection;
 direct terminals run off the JavaScript thread, so they do not block the event
 loop.
 
@@ -200,7 +231,8 @@ const pairs = await session
 ```ts
 const transaction = db.transaction("write");
 try {
-  const person = Person.manager(transaction).put(ada);
+  const person = Person.manager(transaction).put(ada).item;
+  if (person === null) throw new Error("expected exactly one person");
   Employment.manager(transaction).insert(
     Employment.create({ employee: person, employer: acme }),
   );
@@ -218,6 +250,49 @@ work and commit it; call `close()` to end it without committing.
 Generated managers never commit a caller-owned transaction. Close read
 transactions after their final query terminal.
 
+## Raw TypeQL
+
+Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+to TypeDB as written, and TypeDB's output comes back as it
+answered, in this SDK's native data types. TypeBridge adds no
+validation, rewriting, hydration, hooks, limits or extra
+queries. It runs in read, write and schema transactions and
+accepts any TypeQL, schema-breaking changes included. The caller
+owns its correctness; TypeBridge makes no promise about its
+effects. On a proxy connection it posts to the server's opt-in
+`/v3/raw` endpoint, which is off by default.
+
+Integer tokens outside the JavaScript safe range become `bigint`; safe integers
+and doubles stay `number`. `RawValue` describes the complete provider answer,
+including its `answerType`, `queryType`, and `answers` fields.
+
+```ts
+const answer = await db.executeQuery("match $p isa person; fetch { 'person': $p };", "read");
+const raw = await db.rawTransaction("write");
+try {
+  await raw.executeQuery("insert $p isa person, has name 'Ada';");
+  await raw.executeQuery("insert $p isa person, has name 'Grace';");
+  await raw.commit();
+} finally {
+  await raw.close();
+}
+```
+
+Direct raw transactions allow multiple statements and atomic rollback. Always
+await `commit()`, `rollback()`, or `close()` to release the transaction; a direct
+schema transaction holds its schema lock until then. Use `try/finally` with
+`close()` as above so failed queries also release it. Closing without committing
+discards pending writes. On a proxy connection a raw
+transaction holds one query, because `/v3/raw` runs each request as its own
+transaction. A second query raises `raw_transaction_single_query`; after a
+successful proxy write, `commit()` is a no-op and `rollback()` raises
+`raw_transaction_already_committed`. Use typed staged plans for several
+operations that must commit together through a proxy.
+
+Both connection kinds expose `RawQueryError` with `code`, `status`,
+`providerCode`, and `commitOutcome`. An `unknown` commit outcome means a write
+may have committed; it does not authorize an automatic retry.
+
 ## Staged transactions and plans
 
 A plan is one typed `query-plan/v3` pipeline: a match with comparisons and
@@ -231,7 +306,7 @@ The one-query purchase checks the stock and the balance, takes the item and
 the price, and records the purchase:
 
 ```ts
-import { Plan, type RustDatabase } from "@type-bridge/node";
+import { Plan, type Database } from "@type-bridge/node";
 import {
   Account,
   Item,
@@ -268,22 +343,22 @@ function purchase(order: string, itemId: string, accountId: string): Plan {
   return plan.build(schemaAuthority());
 }
 
-async function buy(db: RustDatabase): Promise<boolean> {
+async function buy(db: Database): Promise<boolean> {
   await using tx = db.stagedTransaction();
   const bought = tx.stage(purchase("O1", "I1", "A1"));
   await tx.commit();
   // `{ kind: "matched", value: 0 }`: out of stock or short of funds; nothing was written.
-  const answer = bought.get();
+  const answer = bought.result();
   return answer.kind === "matched" && answer.value === 1;
 }
 ```
 
 The builder takes the generated model, field and role tokens, so a field of
 another model does not type-check. `schemaAuthority()` is the generated
-package's embedded authority; a `QueryV2Authority` over declared-schema bytes
+package's embedded authority; a `PlanAuthority` over declared-schema bytes
 works too. Builder calls never throw on content: `build` throws the first
 invalid call (an invalid literal, a reused name, a field the thing does not
-own, a key update) as a `QueryV2Error`. Nothing is checked against TypeDB
+own, a key update) as a `PlanError`. Nothing is checked against TypeDB
 until commit. Literals are `string`, `bigint` (long) and `boolean` values,
 or the typed helpers (`double(1.5)`, `decimal("1.25")`, `date(...)`); a
 plain `number` is not a literal.
@@ -298,9 +373,9 @@ plain `number` is not a literal.
 - **Expressions.** `let` takes `add`, `sub`, `mul`, `div` and `mod` over
   values, inputs and literals, and `PlanExpr.pow`, `abs`, `ceil`, `floor`,
   `round`, `min`, `max` and `length`.
-- **Answers.** Each `stage` returns a `PendingPlanAnswer`; `get()` resolves
+- **Answers.** Each `stage` returns a `Pending`; `result()` resolves
   after a successful commit. A failed commit stores nothing and rejects with
-  a `QueryV2Error` whose `code` and `failure` name the typed outcome; every
+  a `PlanError` whose `code` and `failure` name the typed outcome; every
   answer of that commit throws the same failure.
 - **Kinds.** `db.stagedTransaction("read" | "write" | "schema")` fixes the
   kind; without one, a staged write makes it `write`. `read` refuses write
@@ -311,8 +386,8 @@ plain `number` is not a literal.
   (Node 18.18 or newer, and TypeScript 5.2 or newer or `@types/node` for
   the `using` declaration).
 
-`RustDatabase.transaction(kind)` keeps its released meaning, the eager
-`RustTransactionContext` the generated managers and query sessions run on;
+`Database.transaction(kind)` keeps its released meaning, the eager
+`TransactionContext` the generated managers and query sessions run on;
 the staged transaction is `stagedTransaction(kind)`. Generated managers do
 not stage plans yet.
 
@@ -336,7 +411,7 @@ import {
   connectProxy,
 } from "./generated/typescript/dist/index.js";
 
-// The built-in HTTP route to the server's /v2/capabilities and /v2/query.
+// The built-in HTTP route to the server's /v3/capabilities and /v3/staged.
 const proxy = await connectProxy("https://typebridge.example", {
   headers: [["Authorization", `Bearer ${token}`]],
 });
@@ -352,8 +427,8 @@ const person = session.exact(Person);
 const rows = await session.query(person).rows({ limit: 50n });
 ```
 
-Both connections use the package's privately embedded, verified Query V2
-authority; no authority file or `QueryV2Authority` is passed. `connectProxy`
+Both connections use the package's privately embedded, verified query
+authority; no authority file or `PlanAuthority` is passed. `connectProxy`
 fetches the server advertisement over the configured TLS mode (`tls`,
 `tlsRootCa`), or takes a pinned `advertisement`; `headers` carries caller
 authentication. It follows no redirects. `ExchangeConnection` takes
@@ -368,7 +443,7 @@ and scalar groups as direct execution.
 
 Writes cross the proxy as staged transactions.
 `await ProxyConnection.transaction(kind)` returns a `StagedTransaction`, the
-class `RustDatabase.stagedTransaction(kind)` returns for direct staging
+class `Database.stagedTransaction(kind)` returns for direct staging
 (see [Staged transactions and plans](#staged-transactions-and-plans)).
 `tx.stage(plan)` queues a built plan (`tx.stagePlan(bytes, declaredSchema)`
 queues canonical plan bytes), and
@@ -381,11 +456,11 @@ keeps no replies: a dropped or unverifiable reply rejects with
 database to find out. Every other signed refusal keeps its code and applied
 nothing. The `/v3/capabilities` advertisement must name the same
 executor and reply key as the connection's advertisement
-(`query_remote_v3_advertisement_mismatch` otherwise); pin it with the
+(`query_remote_advertisement_mismatch` otherwise); pin it with the
 `stagedAdvertisement` connect option. Writes need a caller the server's
 interceptor vouches for, or a server that allows unauthenticated staged writes;
 otherwise the commit fails with `staged_write_not_authorized`. See the
-[staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
+[staged remote envelope](../reference/query-plan.md#staged-remote-envelope).
 
 ## Runtime boundary
 
@@ -396,13 +471,13 @@ structural lookalikes or values from another generated package.
 
 ## Packaging note
 
-Generated TypeScript packages require `@type-bridge/node` 2.1 or newer within
-the 2.x line. The npm package publishes native modules for Linux glibc
+Generated TypeScript packages require `@type-bridge/node` 3.0 or newer within
+the 3.x line. The npm package publishes native modules for Linux glibc
 (`x64`/`arm64`), macOS (`x64`/`arm64`), and Windows (`x64`/`arm64`); other
 targets build from source and must satisfy the repository toolchain.
 
 Provider query and commit errors expose readonly `error.failure` data on
-`QueryV2Error`: `phase`, `reason`, `lock_kind`, `annotation`, `op_index`,
+`PlanError`: `phase`, `reason`, `lock_kind`, `annotation`, `op_index`,
 `retry_safe` and the TypeDB `code`. Rust classifies these fields; TypeScript
 only forwards them. A safe retry reruns the complete transaction on a new
 snapshot. An unknown commit outcome requires reconciliation before retry.

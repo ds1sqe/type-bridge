@@ -26,9 +26,34 @@ use type_bridge_orm::{
 
 use crate::match_runtime::{py_match_error, py_sdk_diagnostic};
 
+#[allow(clippy::large_enum_variant)] // Keep immediate proofs in their existing allocation.
+pub(crate) enum MatchInvocation {
+    Owned {
+        request: ValidatedMatchRequest,
+        result: ValidatedMatchResult,
+    },
+    Shared {
+        request: Arc<ValidatedMatchRequest>,
+        result: Arc<ValidatedMatchResult>,
+    },
+}
+impl MatchInvocation {
+    pub(crate) fn request(&self) -> &ValidatedMatchRequest {
+        match self {
+            Self::Owned { request, .. } => request,
+            Self::Shared { request, .. } => request,
+        }
+    }
+    pub(crate) fn result(&self) -> &ValidatedMatchResult {
+        match self {
+            Self::Owned { result, .. } => result,
+            Self::Shared { result, .. } => result,
+        }
+    }
+}
+
 struct ValidatedResultProof {
-    request: ValidatedMatchRequest,
-    result: ValidatedMatchResult,
+    invocation: MatchInvocation,
     registry: Arc<DescriptorRegistry>,
     projected: Option<Arc<ProjectedQueryValue>>,
     deadline: QueryExecutionDeadline,
@@ -40,13 +65,17 @@ impl ValidatedResultProof {
         self.deadline
             .check(&self.cancellation)
             .map_err(py_sdk_diagnostic)?;
-        self.result
-            .for_request(&self.request)
+        self.invocation
+            .result()
+            .for_request(self.invocation.request())
             .map_err(py_match_error)
     }
 
     fn rows(&self) -> PyResult<&[MatchRow]> {
-        match (&self.request.request().operation, self.result()?) {
+        match (
+            &self.invocation.request().request().operation,
+            self.result()?,
+        ) {
             (MatchOperation::FetchRows { .. }, MatchResult::Rows { rows }) => Ok(rows),
             _ => Err(access_error(
                 "validated selected-row handle contains a non-row result",
@@ -55,7 +84,10 @@ impl ValidatedResultProof {
     }
 
     fn page(&self) -> PyResult<(&[MatchRow], Window, Option<u64>)> {
-        match (&self.request.request().operation, self.result()?) {
+        match (
+            &self.invocation.request().request().operation,
+            self.result()?,
+        ) {
             (
                 MatchOperation::PageBy {
                     root: expected_root,
@@ -89,7 +121,10 @@ impl ValidatedResultProof {
     }
 
     fn count(&self) -> PyResult<u64> {
-        match (&self.request.request().operation, self.result()?) {
+        match (
+            &self.invocation.request().request().operation,
+            self.result()?,
+        ) {
             (
                 MatchOperation::CountBy {
                     root: expected_root,
@@ -103,7 +138,10 @@ impl ValidatedResultProof {
     }
 
     fn exists(&self) -> PyResult<bool> {
-        match (&self.request.request().operation, self.result()?) {
+        match (
+            &self.invocation.request().request().operation,
+            self.result()?,
+        ) {
             (
                 MatchOperation::ExistsBy {
                     root: expected_root,
@@ -117,7 +155,10 @@ impl ValidatedResultProof {
     }
 
     fn reduction(&self) -> PyResult<&[ReductionRow]> {
-        match (&self.request.request().operation, self.result()?) {
+        match (
+            &self.invocation.request().request().operation,
+            self.result()?,
+        ) {
             (
                 MatchOperation::ReduceBy {
                     root: expected_root,
@@ -162,7 +203,7 @@ impl ValidatedResultProof {
     }
 
     fn shape(&self) -> PyResult<&FetchShape> {
-        match &self.request.request().operation {
+        match &self.invocation.request().request().operation {
             MatchOperation::FetchRows { output, .. } | MatchOperation::PageBy { output, .. } => {
                 Ok(output)
             }
@@ -173,7 +214,7 @@ impl ValidatedResultProof {
     }
 
     fn selected_rows(&self) -> PyResult<&[MatchRow]> {
-        match &self.request.request().operation {
+        match &self.invocation.request().request().operation {
             MatchOperation::FetchRows { .. } => self.rows(),
             MatchOperation::PageBy { .. } => self.page().map(|(entries, _, _)| entries),
             _ => Err(access_error(
@@ -403,6 +444,28 @@ pub(crate) struct PyValidatedMatchResultHandle {
 }
 
 impl PyValidatedMatchResultHandle {
+    pub(crate) fn with_shared_budget(
+        &self,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Self {
+        let MatchInvocation::Shared { request, result } = &self.proof.invocation else {
+            unreachable!("only staged query handles renew their invocation budget")
+        };
+        Self {
+            proof: Arc::new(ValidatedResultProof {
+                invocation: MatchInvocation::Shared {
+                    request: Arc::clone(request),
+                    result: Arc::clone(result),
+                },
+                registry: Arc::clone(&self.proof.registry),
+                projected: self.proof.projected.as_ref().map(Arc::clone),
+                deadline,
+                cancellation,
+            }),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         request: ValidatedMatchRequest,
@@ -418,6 +481,7 @@ impl PyValidatedMatchResultHandle {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_budget(
         request: ValidatedMatchRequest,
         result: ValidatedMatchResult,
@@ -427,8 +491,7 @@ impl PyValidatedMatchResultHandle {
     ) -> Self {
         Self {
             proof: Arc::new(ValidatedResultProof {
-                request,
-                result,
+                invocation: MatchInvocation::Owned { request, result },
                 registry,
                 projected: None,
                 deadline,
@@ -437,6 +500,7 @@ impl PyValidatedMatchResultHandle {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_projected_budget(
         request: ValidatedMatchRequest,
         result: ValidatedMatchResult,
@@ -447,10 +511,26 @@ impl PyValidatedMatchResultHandle {
     ) -> Self {
         Self {
             proof: Arc::new(ValidatedResultProof {
-                request,
-                result,
+                invocation: MatchInvocation::Owned { request, result },
                 registry,
                 projected: Some(Arc::new(projected)),
+                deadline,
+                cancellation,
+            }),
+        }
+    }
+    pub(crate) fn from_invocation(
+        invocation: MatchInvocation,
+        registry: Arc<DescriptorRegistry>,
+        projected: Option<ProjectedQueryValue>,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Self {
+        Self {
+            proof: Arc::new(ValidatedResultProof {
+                invocation,
+                registry,
+                projected: projected.map(Arc::new),
                 deadline,
                 cancellation,
             }),
@@ -925,8 +1005,28 @@ mod tests {
     struct AccessorTransaction;
 
     impl TransactionOps for AccessorTransaction {
-        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            Box::pin(async { panic!("validated accessor test used a legacy string query") })
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            let result = if typeql.contains("fetch") {
+                QueryResult::Documents(vec![
+                    serde_json::json!({"_iid":"0x01","_type":"person","attributes":{"person-name":"Alice"}}),
+                ])
+            } else if typeql.contains("reduce $") {
+                let name = typeql
+                    .split("reduce $")
+                    .nth(1)
+                    .unwrap()
+                    .split_whitespace()
+                    .next()
+                    .unwrap();
+                QueryResult::Rows(vec![
+                    serde_json::json!({name: {"category":"Value","value_type":"integer","value":1}}),
+                ])
+            } else {
+                QueryResult::Rows(vec![
+                    serde_json::json!({"b0":{"category":"Entity","label":"person","iid":"0x01"}}),
+                ])
+            };
+            Box::pin(async move { Ok(result) })
         }
 
         fn query_typed_bounded<'a>(
@@ -1262,8 +1362,38 @@ mod tests {
     }
 
     impl TransactionOps for ReductionTransaction {
-        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            Box::pin(async { panic!("reduction accessor test used a legacy string query") })
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            let result = if typeql.contains("fetch") {
+                QueryResult::Documents(vec![
+                    serde_json::json!({"_iid":"0x1a","_type":"team","attributes":{"team-name":"Alpha"}}),
+                ])
+            } else {
+                let mut row = serde_json::Map::new();
+                if typeql.contains("groupby $b1") {
+                    row.insert("b1".into(),serde_json::json!({"kind":"thing","iid":"0x1a","type_id":{"kind":"entity","label":"team"}}));
+                }
+                let mut sums = 0;
+                for assignment in typeql
+                    .split("reduce ")
+                    .nth(1)
+                    .unwrap()
+                    .split(';')
+                    .next()
+                    .unwrap()
+                    .split(',')
+                {
+                    let (name, expression) = assignment.trim().split_once(" = ").unwrap();
+                    let value = if expression.starts_with("sum(") {
+                        sums += 1;
+                        if sums == 1 { 70 } else { 0 }
+                    } else {
+                        2
+                    };
+                    row.insert(name.trim_start_matches('$').to_owned(),serde_json::json!({"category":"Value","value_type":"integer","value":value}));
+                }
+                QueryResult::Rows(vec![serde_json::Value::Object(row)])
+            };
+            Box::pin(async move { Ok(result) })
         }
 
         fn query_typed_bounded<'a>(

@@ -15,7 +15,7 @@
 //! let db = Arc::new(Database::connect("localhost:1729", "mydb", "admin", "password").await?);
 //! let db2 = Arc::clone(&db);
 //! tokio::spawn(async move {
-//!     let manager = EntityManager::<Person>::new(&db2);
+//!     let manager = EntityManager::<Person>::from_registry(&db2, registry)?;
 //!     manager.all().await.unwrap();
 //! });
 //! ```
@@ -26,8 +26,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 
-#[cfg(feature = "typedb")]
 use super::backend::AnswerCancellation;
 #[cfg(test)]
 use super::backend::BoxFuture;
@@ -38,7 +38,6 @@ use crate::_registry::DescriptorRegistry;
 use crate::error::Result;
 use crate::match_request::selected_result_executor::SelectedResultExecutor;
 use crate::match_request::{MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult};
-#[cfg(feature = "typedb")]
 use crate::query_execution_limits::QueryExecutionDeadline;
 use crate::query_execution_limits::QueryExecutionResourceLimits;
 
@@ -55,6 +54,7 @@ pub struct Database {
     connection_authority: DatabaseConnectionAuthority,
     database_name: String,
     answer_limits: Option<QueryExecutionResourceLimits>,
+    query_limits: Option<Arc<QueryLimits>>,
 }
 
 /// Normalized outcome of creating the one database bound to a connection.
@@ -82,6 +82,28 @@ pub(crate) struct DatabaseExecutionIdentity {
 }
 
 impl DatabaseExecutionIdentity {
+    pub(crate) fn for_proxy(
+        advertisement: &type_bridge_contract::query_remote::RemoteCapabilities,
+        scope: &type_bridge_contract::managed_scope::ManagedScopeId,
+    ) -> Self {
+        let mut digest = Sha256::new();
+        digest.update(b"typebridge.orm.proxy-connection-authority/v1\0");
+        for component in [
+            advertisement.executor().identity(),
+            advertisement.executor().epoch(),
+        ] {
+            digest.update((component.len() as u64).to_be_bytes());
+            digest.update(component.as_bytes());
+        }
+        digest.update(advertisement.reply_key().as_bytes());
+        Self {
+            connection_authority: DatabaseConnectionAuthority(
+                DatabaseConnectionAuthorityKind::Provider(digest.finalize().into()),
+            ),
+            database_name: scope.as_str().to_owned(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn isolated(database_name: impl Into<String>) -> Self {
         Self {
@@ -99,9 +121,9 @@ impl fmt::Debug for DatabaseExecutionIdentity {
 
 /// Opaque authority proving that database handles target one provider endpoint.
 ///
-/// Real connections derive this private token from the TypeDB address only;
+/// Direct connections derive this private token from the TypeDB address only;
 /// credentials, database names, TLS material, and connection options never
-/// contribute. Real handles compare equal only when that address has the exact
+/// contribute. Direct handles compare equal only when that address has the exact
 /// same spelling; DNS and loopback aliases intentionally fail closed. Custom
 /// backends receive an isolated token by default and must explicitly clone one
 /// token across handles that intentionally share a provider authority. The token
@@ -220,6 +242,33 @@ impl fmt::Debug for DatabaseConnectionAuthority {
 }
 
 impl Database {
+    /// Select the immutable query policy for this connection and inherited transactions.
+    ///
+    /// Defaults remain the native staged limits. Every dimension is independently configurable.
+    /// # Errors
+    /// Returns an unsupported query-limit value before any provider I/O.
+    pub fn with_query_limits(
+        mut self,
+        limits: QueryLimits,
+    ) -> std::result::Result<Self, QueryLimitsError> {
+        let limits = limits.validate_plan()?;
+        self.query_limits = (limits != QueryLimits::PLAN).then(|| Arc::new(limits));
+        Ok(self)
+    }
+
+    /// Effective query policy captured by this connection.
+    #[must_use]
+    pub fn query_limits(&self) -> QueryLimits {
+        self.query_limits
+            .as_deref()
+            .copied()
+            .unwrap_or(QueryLimits::PLAN)
+    }
+
+    pub(crate) fn shared_query_limits(&self) -> Option<&Arc<QueryLimits>> {
+        self.query_limits.as_ref()
+    }
+
     /// Connect one verified generated package through the canonical bounded
     /// direct-connection policy.
     #[cfg(feature = "typedb")]
@@ -245,6 +294,10 @@ impl Database {
         )
         .await
         .map_err(super::direct_connection::lower_secure_connection)
+        .map(|mut database| {
+            database.query_limits = prepared.query_limits;
+            database
+        })
     }
 
     /// Create a Database with a custom backend (for testing).
@@ -272,6 +325,7 @@ impl Database {
             connection_authority,
             database_name: database_name.into(),
             answer_limits: None,
+            query_limits: None,
         }
     }
 
@@ -331,6 +385,7 @@ impl Database {
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
             answer_limits: None,
+            query_limits: None,
         })
     }
 
@@ -355,6 +410,7 @@ impl Database {
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
             answer_limits: None,
+            query_limits: None,
         })
     }
 
@@ -377,6 +433,7 @@ impl Database {
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
             answer_limits: None,
+            query_limits: None,
         })
     }
 
@@ -406,7 +463,7 @@ impl Database {
         let control = type_bridge_typedb_runtime::RuntimeConnectionControl::new(
             limits.items,
             limits.bytes,
-            limits.statements,
+            limits.statement_limit(),
             deadline.instant(),
             type_bridge_typedb_runtime::RuntimeAnswerCancellation::from_shared(
                 cancellation.shared(),
@@ -429,8 +486,17 @@ impl Database {
     /// Create a deferred transaction. No provider transaction opens until commit.
     pub fn transaction(
         &self,
-        options: super::staged::TransactionOptions,
+        mut options: super::staged::TransactionOptions,
     ) -> super::staged::Transaction {
+        if let Some(ceiling) = self.answer_limits {
+            options.collect_phase_timestamps |= ceiling.collect_phase_timestamps;
+            options.timeout = Some(
+                options
+                    .timeout
+                    .unwrap_or(ceiling.timeout_milliseconds)
+                    .constrained_by(ceiling.timeout_milliseconds),
+            );
+        }
         super::staged::Transaction::new(
             Arc::clone(&self.backend),
             self.database_name.clone(),
@@ -538,14 +604,138 @@ impl Database {
         let tx = self
             .open_eager(tx_type.into(), super::staged::TransactionOptions::default())
             .await?;
-        Ok(TransactionContext::new(
+        Ok(self.context_from_eager(tx, tx_type, capabilities, answer_limits))
+    }
+
+    pub(crate) fn context_from_owned(
+        &self,
+        tx: super::eager::EagerTransaction,
+    ) -> TransactionContext {
+        let tx_type = tx.tx_type();
+        self.context_from_eager(
+            tx,
+            tx_type,
+            self.backend.match_capabilities(),
+            self.answer_limits,
+        )
+    }
+
+    fn context_from_eager(
+        &self,
+        tx: super::eager::EagerTransaction,
+        tx_type: TxType,
+        capabilities: crate::match_request::CapabilitySet,
+        answer_limits: Option<QueryExecutionResourceLimits>,
+    ) -> TransactionContext {
+        TransactionContext::new(
             tx,
             tx_type,
             capabilities,
             self.server_version(),
             self.execution_identity(),
             answer_limits,
-        ))
+        )
+        .with_query_limits(self.query_limits.clone())
+    }
+
+    /// Execute read-only plans in one read transaction, then close without
+    /// committing. One answer policy and absolute deadline cover the stack;
+    /// normalized answers have the same representation as staged replies.
+    pub fn execute_plans(
+        &self,
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
+        limits: &QueryExecutionResourceLimits,
+        cancellation: &AnswerCancellation,
+        deadline: QueryExecutionDeadline,
+    ) -> impl std::future::Future<Output = Result<Vec<super::staged::PlanAnswer>>> {
+        use tracing::Instrument;
+        let collect = limits.collect_phase_timestamps
+            || self
+                .answer_limits
+                .is_some_and(|policy| policy.collect_phase_timestamps);
+        let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "direct");
+        crate::execution_phases::observe_orm(
+            deadline.started(),
+            collect,
+            self.execute_plans_inner(plans, limits, cancellation, deadline),
+        )
+        .instrument(span)
+    }
+
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "avoid duplicate async argument captures in manager futures"
+    )]
+    fn execute_plans_inner(
+        &self,
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
+        limits: &QueryExecutionResourceLimits,
+        cancellation: &AnswerCancellation,
+        deadline: QueryExecutionDeadline,
+    ) -> impl std::future::Future<Output = Result<Vec<super::staged::PlanAnswer>>> {
+        async move {
+            use crate::match_request::selected_result_executor::{
+                ExecutionBudget, catch_execution_unwind, close_after_execution_panic,
+                dispatch_failed_execution_close,
+            };
+            for plan in plans {
+                crate::query_plan_exec::check_provider(plan, self.server_version())
+                    .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+            }
+            limits
+                .validate()
+                .map_err(|_| crate::query_plan_exec::invalid_answer_limits())?;
+            let policy = self
+                .answer_limits
+                .map_or(*limits, |ceiling| limits.constrained_by(ceiling));
+            let deadline = deadline.earliest(crate::QueryExecutionDeadline::for_limits(policy));
+            let limits =
+                crate::query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?;
+            super::backend::BoundedAnswerReader::new(limits.answer.clone()).check_before_read()?;
+            let lifecycle = ExecutionBudget {
+                deadline: limits.answer.deadline,
+                cancellation: cancellation.clone(),
+            };
+            let mut transaction = lifecycle.await_provider(self.read_transaction()).await?;
+            crate::execution_phases::record(
+                type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
+            );
+            crate::execution_phases::record(
+                type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
+            );
+            let result =
+                catch_execution_unwind(crate::query_plan_exec::execute_plans_counted::<false>(
+                    transaction.provider_mut()?,
+                    self.supports_given_stage(),
+                    plans,
+                    policy,
+                    cancellation,
+                    deadline,
+                    None,
+                ))
+                .await;
+            match result {
+                Err(payload) => {
+                    close_after_execution_panic(transaction).await;
+                    std::panic::resume_unwind(payload)
+                }
+                Ok(Err(error)) => {
+                    if let Some(Err(close_error)) =
+                        dispatch_failed_execution_close(transaction).await
+                    {
+                        tracing::warn!(%close_error, "plan execution transaction cleanup failed");
+                    }
+                    Err(error)
+                }
+                Ok(Ok((answers, _))) => {
+                    crate::execution_phases::record(
+                        type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
+                    );
+                    lifecycle.await_cleanup(transaction.close()).await?;
+                    Ok(answers)
+                }
+            }
+        }
     }
 
     /// Execute one validated selected-row request in an owned read transaction.
@@ -583,15 +773,25 @@ impl Database {
     #[doc(hidden)]
     #[must_use]
     pub fn derived_journal_database(&self) -> Self {
+        self.derived_control_database(
+            type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX,
+        )
+    }
+
+    /// Bind the frozen pre-3.0 journal through this backend for read-only import.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn derived_legacy_journal_database(&self) -> Self {
+        self.derived_control_database(type_bridge_contract::reserved::IMPORT_LEGACY_JOURNAL_SUFFIX)
+    }
+
+    fn derived_control_database(&self, suffix: &str) -> Self {
         Self {
             backend: Arc::clone(&self.backend),
             connection_authority: self.connection_authority.clone(),
-            database_name: format!(
-                "{}{}",
-                self.database_name,
-                type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX
-            ),
+            database_name: format!("{}{suffix}", self.database_name),
             answer_limits: self.answer_limits,
+            query_limits: self.query_limits.clone(),
         }
     }
 
@@ -662,9 +862,8 @@ impl Database {
     /// When the detected server version predates 3.12, fail with an
     /// actionable versioned error instead of a server-side parse error.
     /// The server feature and negotiated provider transport are checked
-    /// separately. A 3.12 server reached through a band-8 fallback therefore
-    /// fails before opening a transaction instead of dispatching an operation
-    /// the active driver cannot carry.
+    /// separately. A custom backend without given-row transport fails before
+    /// opening a transaction instead of receiving an unsupported payload.
     pub fn check_given_stage_support(&self) -> Result<()> {
         use type_bridge_core_lib::version::{Feature, check_feature_supported};
 
@@ -783,21 +982,6 @@ impl Database {
             .map_err(|error| crate::error::OrmError::Transaction(error.to_string()))
     }
 
-    pub(crate) async fn execute_canonical(
-        &self,
-        typeql: &str,
-        tx_type: TxType,
-    ) -> Result<QueryResult> {
-        if tx_type == TxType::Schema {
-            self.check_schema_annotation_support(typeql)?;
-        }
-        self.execute_staged(
-            super::staged::StagedQuery::new(typeql, tx_type != TxType::Read).canonical(),
-            tx_type,
-        )
-        .await
-    }
-
     /// Execute a `given`-stage TypeQL query over input rows, auto-managing
     /// the transaction lifecycle.
     ///
@@ -906,8 +1090,17 @@ mod tests {
         let database = lifecycle_database(false, false, false);
         let journal = database.derived_journal_database();
 
-        assert_eq!(journal.database_name(), "bound-database__tbv2_journal");
+        assert_eq!(journal.database_name(), "bound-database__tb_journal");
         assert!(database.shares_connection_authority_with(&journal));
+        let legacy = database.derived_legacy_journal_database();
+        assert_eq!(
+            legacy.database_name(),
+            format!(
+                "bound-database{}",
+                type_bridge_contract::reserved::IMPORT_LEGACY_JOURNAL_SUFFIX
+            )
+        );
+        assert!(database.shares_connection_authority_with(&legacy));
     }
 
     #[tokio::test]
@@ -1042,7 +1235,7 @@ mod tests {
         .prepare_transport()
         .expect("prepare transport before supplying credentials");
         let limits = QueryExecutionResourceLimits {
-            statements: 0,
+            statements: Some(0),
             ..QueryExecutionResourceLimits::default()
         };
         let deadline = QueryExecutionDeadline::for_limits(limits);
@@ -1148,5 +1341,68 @@ mod tests {
             .unwrap();
         assert_eq!(bounded.answer_limits(), Some(requested.effective()));
         bounded.close().await.unwrap();
+    }
+    struct SlowRawBackend(Arc<std::sync::atomic::AtomicUsize>);
+    impl DriverBackend for SlowRawBackend {
+        fn open_transaction(
+            &self,
+            _: &str,
+            _: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn super::super::backend::TransactionOps>>> {
+            Box::pin(async {
+                Ok(Box::new(SlowRawBackend(Arc::clone(&self.0)))
+                    as Box<dyn super::super::backend::TransactionOps>)
+            })
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+    impl super::super::backend::TransactionOps for SlowRawBackend {
+        fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult>> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(61)).await;
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(QueryResult::Documents(Vec::new()))
+            })
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn raw_and_schema_reads_keep_their_unbounded_default() {
+        let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let db =
+            Database::with_backend(Box::new(SlowRawBackend(Arc::clone(&completed))), "slow-raw");
+        db.execute_raw("match $x isa person; fetch { 'x': $x };", TxType::Read)
+            .await
+            .unwrap();
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        crate::_schema::SchemaManager::new(&db)
+            .introspect()
+            .await
+            .unwrap();
+        assert_eq!(completed.load(Ordering::SeqCst), 4);
+
+        let mut tx = db.transaction(
+            super::super::staged::TransactionOptions::default()
+                .with_timeout(crate::QueryTimeout::from_milliseconds(60_000)),
+        );
+        tx.stage(super::super::staged::StagedQuery::new("slow raw", false))
+            .unwrap();
+        assert_eq!(
+            tx.commit().await.unwrap_err().diagnostic().code().as_str(),
+            "transaction_deadline_exceeded"
+        );
+        // The legacy mock completes its read; the configured deadline still refuses publication.
+        assert_eq!(completed.load(Ordering::SeqCst), 5);
     }
 }

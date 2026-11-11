@@ -13,10 +13,9 @@ pub enum CommitFailureCertainty {
 
 /// A classified commit result for recovery-aware callers.
 ///
-/// [`OrmError`] retains its released, exhaustively matchable variant set.
 /// Ordinary commit callers receive provider failures as
 /// [`OrmError::Transaction`]; callers that must distinguish a proven abort
-/// can opt into [`crate::Transaction::commit_classified`].
+/// can opt into [`crate::OwnedTransaction::commit_classified`].
 #[derive(Debug, Error)]
 pub enum ClassifiedCommitError {
     /// An ORM transaction-lifecycle error without stronger commit evidence.
@@ -79,6 +78,10 @@ impl ClassifiedCommitError {
 /// Unified error type for the ORM crate.
 #[derive(Debug, Error)]
 pub enum OrmError {
+    /// A canonical execution failure whose category and recovery details must survive adapter boundaries.
+    #[error(transparent)]
+    ExecutionDiagnostic(Box<type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic>),
+
     /// Canonical typed match request or result validation failed.
     #[error(transparent)]
     Match(#[from] crate::match_request::MatchError),
@@ -167,6 +170,9 @@ impl OrmError {
     /// Typed failure when this error came from the shared provider runtime.
     #[must_use]
     pub fn failure(&self) -> Option<type_bridge_contract::failure::Failure> {
+        if let Self::ExecutionDiagnostic(diagnostic) = self {
+            return diagnostic.failure().cloned();
+        }
         #[cfg(feature = "typedb")]
         match self {
             Self::QueryExecution(message) | Self::Transaction(message) => {
@@ -180,4 +186,15 @@ impl OrmError {
             None
         }
     }
+}
+
+/// Failure executing one lowered invocation.
+#[derive(Debug, thiserror::Error)]
+pub enum PlanExecutionError {
+    /// The provider call failed.
+    #[error("query execution provider call failed: {0}")]
+    Provider(crate::error::OrmError),
+    /// Lowering, preflight, or result-evidence validation failed.
+    #[error("query execution validation failed: {0}")]
+    Validation(type_bridge_contract::diagnostic::Diagnostic),
 }

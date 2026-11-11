@@ -7,6 +7,7 @@ import hashlib
 import importlib
 import io
 import json
+import re
 import stat
 import sys
 import tomllib
@@ -60,8 +61,30 @@ def run_snapshot() -> dict[str, Any]:
 
 def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
     selected = policy.selected_policy()
-    assert json.loads(policy.POLICY.read_text()) == selected
-    assert len(selected["ci_jobs"]) == 62
+    frozen = json.loads(policy.POLICY.read_text())
+    assert frozen == selected
+    # V1/V2 server probes are replaced by the staged binary and raw gates.
+    assert (
+        selected["ci_jobs"]["Rust integration (typedb/typedb:3.12.3)"][
+            "Run production staged server live smoke"
+        ]
+        == "success"
+    )
+    for server in ("3.13.6", "3.14.0"):
+        assert (
+            selected["ci_jobs"][f"Staged plans live (typedb/typedb:{server})"][
+                "Run raw TypeQL HTTP parity and host policy"
+            ]
+            == "success"
+        )
+    assert len(selected["ci_jobs"]) == 54
+    for server in ("3.13.6", "3.14.0"):
+        assert (
+            selected["ci_jobs"][f"Four-SDK walkthrough (TypeDB {server})"][
+                "Compare all SDKs, page blocks and captured statements"
+            ]
+            == "success"
+        )
     for server in ("3.13.6", "3.14.0"):
         assert (
             selected["ci_jobs"][f"Staged plans live (typedb/typedb:{server})"][
@@ -71,7 +94,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         )
     for step in (
         "Run concurrency guide races as staged plans",
-        "Run C ABI 1.7 staged contract plans",
+        "Run C ABI 2.0 staged contract plans",
         "Run SDK writes in four languages",
     ):
         assert selected["ci_jobs"]["Staged plans live (typedb/typedb:3.14.0)"][step] == "skipped"
@@ -92,7 +115,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         == "success"
     )
     assert (
-        selected["ci_jobs"]["Rust schema-codegen rest ubuntu-latest"][
+        selected["ci_jobs"]["Rust schema-codegen rest ubuntu-24.04"][
             "Initialize MSVC and require clang-cl for Windows C tests"
         ]
         == "skipped"
@@ -103,12 +126,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         ]
         == "success"
     )
-    assert (
-        selected["ci_jobs"]["Python Integration (schema, typedb/typedb:3.11.5)"][
-            "Upload Python queries report"
-        ]
-        == "skipped"
-    )
+    assert not any("3.11.5" in job for job in selected["ci_jobs"])
 
 
 @pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
@@ -120,7 +138,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         ("head_sha", "c" * 40),
         ("head_branch", "develop"),
         ("head_branch", "release/c-sdk-readiness"),
-        ("head_branch", "v2.3.3"),
+        ("head_branch", "v3.0.0"),
         ("path", ".github/workflows/release.yml"),
         ("event", "pull_request"),
         ("event", "schedule"),
@@ -321,10 +339,10 @@ def test_verified_bundle_rejects_substitution(tmp_path: Path, change: str) -> No
 
 
 def test_tag_requires_an_annotated_direct_same_source_target() -> None:
-    reference = {"ref": "refs/tags/v2.3.3", "object": {"type": "tag", "sha": "c" * 40}}
+    reference = {"ref": "refs/tags/v3.0.0", "object": {"type": "tag", "sha": "c" * 40}}
     tag = {
         "sha": "c" * 40,
-        "tag": "v2.3.3",
+        "tag": "v3.0.0",
         "object": {
             "type": "commit",
             "sha": SOURCE,
@@ -351,7 +369,7 @@ def test_workflow_keeps_publish_protected_and_without_builders() -> None:
     assert workflow["permissions"] == {"contents": "read", "actions": "read"}
     publish = workflow["jobs"]["publish"]
     assert publish["environment"] == "release"
-    assert publish["if"] == "inputs.mode == 'publish' && github.ref == 'refs/tags/v2.3.3'"
+    assert publish["if"] == "inputs.mode == 'publish' && github.ref == 'refs/tags/v3.0.0'"
     assert publish["permissions"] == {"contents": "write", "actions": "read", "id-token": "write"}
     assert all(job["runs-on"] == "ubuntu-24.04" for job in workflow["jobs"].values())
     source = json.dumps(publish)
@@ -453,10 +471,10 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
             "files": [promotion.record(payloads / name) for name in files],
         },
     )
-    reference = {"ref": "refs/tags/v2.3.3", "object": {"type": "tag", "sha": "c" * 40}}
+    reference = {"ref": "refs/tags/v3.0.0", "object": {"type": "tag", "sha": "c" * 40}}
     tag = {
         "sha": "c" * 40,
-        "tag": "v2.3.3",
+        "tag": "v3.0.0",
         "object": {
             "type": "commit",
             "sha": SOURCE,
@@ -471,7 +489,7 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
         "id": 999,
         "draft": True,
         "prerelease": False,
-        "tag_name": "v2.3.3",
+        "tag_name": "v3.0.0",
         "target_commitish": SOURCE,
         "body": "Ordinary release",
         "assets": [
@@ -498,3 +516,26 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
     with pytest.raises(promotion.PromotionError, match="bytes conflict"):
         promotion.publish(tmp_path)
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("field", ["header_sha256", "exports", "version"])
+def test_policy_refuses_stale_abi_contract(tmp_path: Path, monkeypatch, field: str) -> None:
+    contract = json.loads((ROOT / "tests/contracts/c-abi.json").read_text())
+    header = tmp_path / contract["header"]
+    header.parent.mkdir(parents=True)
+    header.write_bytes((ROOT / contract["header"]).read_bytes())
+    contract[field] = [] if field == "exports" else "stale"
+    path = tmp_path / "tests/contracts/c-abi.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(contract))
+    monkeypatch.setattr(policy, "ROOT", tmp_path)
+    with pytest.raises(ValueError, match="disagrees with the public header"):
+        policy.abi_contract()
+
+
+def test_ci_consumes_exact_current_c_artifact_names() -> None:
+    source = policy.CI.read_text()
+    runtime_names = set(re.findall(r"type-bridge-c-runtime-abi-[\w.-]+\.tar\.gz", source))
+    generated_names = set(re.findall(r"tb_sdk\w*-c-[0-9a-f]+\.tar\.gz", source))
+    assert runtime_names == {policy.RUNTIME}
+    assert generated_names == {policy.GENERATED}

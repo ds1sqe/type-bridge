@@ -37,14 +37,23 @@
 //! ```
 
 use std::marker::PhantomData;
+use std::sync::Arc;
+
+pub mod recording;
+mod results;
+pub use results::PlanCellResult;
 
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId};
+use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
-use type_bridge_contract::query_plan::v3::{
-    ArithOp, Builtin, Expr as PlanExpr, PlanBuilder as CoreBuilder, QueryPlanV3,
+use type_bridge_contract::query_plan::{
+    ArithOp, BuiltPlans, Builtin, DocumentRole, Expr as CoreExpr, PlanBuilder as CoreBuilder,
+    QueryPlan, Site,
 };
-use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
+use type_bridge_contract::query_plan::{InputColumnId, InputRow, QueryOperand};
+use type_bridge_contract::query_remote::StagedPlan as WireStagedPlan;
+pub use type_bridge_contract::query_remote::StagedResultRef;
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
@@ -56,7 +65,13 @@ use crate::__codegen::{
 use crate::Result;
 use crate::error::{Error, ModelValidationPhase};
 use crate::query::{Exact, SelectionMode, Subtypes};
-use crate::schema::{Schema, SchemaPackage};
+use crate::schema::{Schema, SchemaPackage, Unbound};
+use crate::staged::{PendingError, PlanAnswer};
+use type_bridge_orm::_registry::DescriptorRegistry;
+use type_bridge_orm::match_request::{OwnedPlanFetchResult, PlanFetchStack};
+use type_bridge_orm::{
+    InstalledRuntimeProjection, ProjectedQueryOrigin, ProjectedQuerySlotValue, ProjectedQueryValue,
+};
 
 fn identity_error(code: &'static str) -> Error {
     Error::model_validation(
@@ -160,9 +175,31 @@ impl<M: ThingModel, Mode: SelectionMode> std::fmt::Debug for Thing<M, Mode> {
     }
 }
 
+/// One generated role to include in a fetched thing document.
+pub struct FetchRole<M: ThingModel> {
+    role: Result<RoleId>,
+    required: bool,
+    marker: PhantomData<fn() -> M>,
+}
+
+impl<M: ThingModel> FetchRole<M> {
+    /// Fetch the role's player; a missing required player drops the document.
+    pub fn new<Owner, Players>(role: RoleToken<Owner, Players>, required: bool) -> Self
+    where
+        M: RoleTokenCompatible<Owner, Players>,
+        Owner: RelationModel<Schema = M::Schema>,
+    {
+        Self {
+            role: role_id(role.role_id_json()),
+            required,
+            marker: PhantomData,
+        }
+    }
+}
+
 /// A scalar value bound by [`PlanBuilder::field`] or [`PlanBuilder::let_`].
 #[derive(Clone, Copy, Debug)]
-pub struct Value {
+pub struct PlanValue {
     binding: BindingId,
 }
 
@@ -207,6 +244,24 @@ impl<V> Input<V> {
     }
 }
 
+impl Input<crate::Iid> {
+    /// Read one selected IID column of an earlier entry in this staged stack.
+    /// # Errors
+    /// Returns an invalid generated model identity.
+    pub fn result_ref<M: ThingModel>(
+        self,
+        source_plan: u32,
+        source_column: u16,
+    ) -> Result<StagedResultRef> {
+        Ok(StagedResultRef {
+            input: self.column,
+            source_plan,
+            source_column,
+            expected_types: vec![type_id::<M>()?],
+        })
+    }
+}
+
 /// One column's value in an input row; see [`PlanBuilder::row`].
 #[derive(Clone, Debug)]
 pub struct InputValue {
@@ -214,12 +269,12 @@ pub struct InputValue {
     value: std::result::Result<Option<CanonicalValue>, ValidationError>,
 }
 
-/// A scalar operand: a [`Value`], an [`Input`], or a literal.
+/// A scalar operand: a [`PlanValue`], an [`Input`], or a literal.
 #[derive(Clone, Debug)]
 pub struct Operand(std::result::Result<QueryOperand, ValidationError>);
 
-impl From<Value> for Operand {
-    fn from(value: Value) -> Self {
+impl From<PlanValue> for Operand {
+    fn from(value: PlanValue) -> Self {
         Self(Ok(QueryOperand::Binding {
             binding: value.binding,
         }))
@@ -240,7 +295,7 @@ impl<T: QueryValued> From<T> for Operand {
 
 /// A comparison between two operands, added with [`PlanBuilder::where_`].
 #[derive(Clone, Debug)]
-pub struct Condition {
+pub struct PlanCondition {
     left: Operand,
     comparator: ValueComparator,
     right: Operand,
@@ -250,8 +305,8 @@ macro_rules! comparisons {
     ($($name:ident => $comparator:ident, $doc:literal;)*) => {$(
         #[doc = $doc]
         #[must_use]
-        pub fn $name(self, other: impl Into<Operand>) -> Condition {
-            Condition {
+        pub fn $name(self, other: impl Into<Operand>) -> PlanCondition {
+            PlanCondition {
                 left: self.into(),
                 comparator: ValueComparator::$comparator,
                 right: other.into(),
@@ -259,7 +314,7 @@ macro_rules! comparisons {
         }
     )*};
 }
-impl Value {
+impl PlanValue {
     comparisons! {
         eq => Equal, "Require this value to equal `other`.";
         ne => NotEqual, "Require this value to differ from `other`.";
@@ -273,18 +328,18 @@ impl Value {
 /// A value expression for [`PlanBuilder::let_`]. Build it with `+`, `-`,
 /// `*`, `/` and `%` over values, inputs and literals, or with the builtins.
 #[derive(Clone, Debug)]
-pub struct Expr(std::result::Result<PlanExpr, ValidationError>);
+pub struct PlanExpr(std::result::Result<CoreExpr, ValidationError>);
 
-impl<T: Into<Operand>> From<T> for Expr {
+impl<T: Into<Operand>> From<T> for PlanExpr {
     fn from(operand: T) -> Self {
-        Self(operand.into().0.map(PlanExpr::Operand))
+        Self(operand.into().0.map(CoreExpr::Operand))
     }
 }
 
-impl Expr {
+impl PlanExpr {
     fn arith(op: ArithOp, lhs: Self, rhs: Self) -> Self {
         Self(lhs.0.and_then(|lhs| {
-            rhs.0.map(|rhs| PlanExpr::Arith {
+            rhs.0.map(|rhs| CoreExpr::Arith {
                 op,
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
@@ -296,7 +351,7 @@ impl Expr {
             args.into_iter()
                 .map(|arg| arg.0)
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map(|args| PlanExpr::Call { func, args }),
+                .map(|args| CoreExpr::Call { func, args }),
         )
     }
     /// `base` to the power `exponent`.
@@ -343,22 +398,22 @@ impl Expr {
 
 macro_rules! arithmetic {
     ($($trait:ident :: $method:ident => $op:ident;)*) => {$(
-        impl<R: Into<Expr>> std::ops::$trait<R> for Expr {
-            type Output = Expr;
-            fn $method(self, rhs: R) -> Expr {
-                Expr::arith(ArithOp::$op, self, rhs.into())
+        impl<R: Into<PlanExpr>> std::ops::$trait<R> for PlanExpr {
+            type Output = PlanExpr;
+            fn $method(self, rhs: R) -> PlanExpr {
+                PlanExpr::arith(ArithOp::$op, self, rhs.into())
             }
         }
-        impl<R: Into<Expr>> std::ops::$trait<R> for Value {
-            type Output = Expr;
-            fn $method(self, rhs: R) -> Expr {
-                Expr::arith(ArithOp::$op, self.into(), rhs.into())
+        impl<R: Into<PlanExpr>> std::ops::$trait<R> for PlanValue {
+            type Output = PlanExpr;
+            fn $method(self, rhs: R) -> PlanExpr {
+                PlanExpr::arith(ArithOp::$op, self.into(), rhs.into())
             }
         }
-        impl<V, R: Into<Expr>> std::ops::$trait<R> for Input<V> {
-            type Output = Expr;
-            fn $method(self, rhs: R) -> Expr {
-                Expr::arith(ArithOp::$op, self.into(), rhs.into())
+        impl<V, R: Into<PlanExpr>> std::ops::$trait<R> for Input<V> {
+            type Output = PlanExpr;
+            fn $method(self, rhs: R) -> PlanExpr {
+                PlanExpr::arith(ArithOp::$op, self.into(), rhs.into())
             }
         }
     )*};
@@ -379,8 +434,8 @@ impl<M: ThingModel, Mode: SelectionMode> From<Thing<M, Mode>> for Column {
         Self(thing.binding)
     }
 }
-impl From<Value> for Column {
-    fn from(value: Value) -> Self {
+impl From<PlanValue> for Column {
+    fn from(value: PlanValue) -> Self {
         Self(value.binding)
     }
 }
@@ -390,32 +445,557 @@ impl From<Value> for Column {
 /// Stage it on a [`Transaction`](crate::staged::Transaction) from
 /// [`Database::transaction`](crate::Database::transaction) or
 /// [`ProxyDatabase::transaction`](crate::ProxyDatabase::transaction).
-pub struct Plan<S: Schema> {
-    plan: QueryPlanV3,
-    marker: PhantomData<fn() -> S>,
+struct PlanInner {
+    program: PlanProgram,
 }
-impl<S: Schema> Clone for Plan<S> {
+
+enum PlanProgram {
+    Single(QueryPlan),
+    Bulk(BuiltPlans),
+    Models {
+        stack: Box<PlanFetchStack>,
+        registry: Arc<DescriptorRegistry>,
+        installed: Arc<InstalledRuntimeProjection>,
+    },
+}
+impl PlanInner {
+    fn projection(&self) -> &QueryPlan {
+        match &self.program {
+            PlanProgram::Single(plan) => plan,
+            PlanProgram::Bulk(plans) => plans.projection_plan(),
+            PlanProgram::Models { stack, .. } => stack.selection_plan(),
+        }
+    }
+    fn writes(&self) -> bool {
+        match &self.program {
+            PlanProgram::Single(plan) => plan.writes(),
+            PlanProgram::Bulk(plans) => plans.writes(),
+            PlanProgram::Models { stack, .. } => stack.writes(),
+        }
+    }
+}
+impl AsRef<[QueryPlan]> for PlanInner {
+    fn as_ref(&self) -> &[QueryPlan] {
+        match &self.program {
+            PlanProgram::Single(plan) => std::slice::from_ref(plan),
+            PlanProgram::Bulk(plans) => plans.plans(),
+            PlanProgram::Models { stack, .. } => stack.plans(),
+        }
+    }
+}
+
+impl AsRef<PlanFetchStack> for PlanInner {
+    fn as_ref(&self) -> &PlanFetchStack {
+        let PlanProgram::Models { stack, .. } = &self.program else {
+            unreachable!("only model groups expose a fetch stack")
+        };
+        stack
+    }
+}
+
+/// A generated schema with the package evidence used for explicit plan validation.
+pub trait PlanSchema: Schema + Sized {
+    /// The generated package's immutable schema evidence.
+    fn package() -> SchemaPackage<Self>;
+}
+
+/// Compile-time admission for a plan's schema into a transaction schema.
+#[doc(hidden)]
+pub trait StageSchema<Destination: Schema>: Schema {}
+
+impl<S: Schema> StageSchema<S> for Unbound {}
+
+mod result_sealed {
+    pub trait Sealed {}
+}
+
+/// A result admitted by the generated plan authoring API.
+pub trait PlanResult: result_sealed::Sealed + Sized {
+    /// Decode an already validated committed answer.
+    #[doc(hidden)]
+    fn decode(plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self>;
+    /// Decode only the core's published model proof and projected companion.
+    #[doc(hidden)]
+    fn decode_models(
+        _proof: &OwnedPlanFetchResult,
+        _projected: &ProjectedQueryValue,
+        _installed: &InstalledRuntimeProjection,
+    ) -> Result<Self> {
+        Err(result_shape())
+    }
+}
+
+/// Number of rows affected by a write whose model projection was not held.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Matched {
+    /// The matched row count.
+    pub count: u64,
+}
+
+fn result_shape() -> Error {
+    Error::model_validation(
+        ModelValidationPhase::Hydration,
+        "plan_result_shape",
+        vec![],
+        "the committed answer does not match the selected result",
+        None,
+    )
+}
+
+impl result_sealed::Sealed for PlanAnswer {}
+impl PlanResult for PlanAnswer {
+    fn decode(_plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self> {
+        Ok(answer.clone())
+    }
+}
+impl result_sealed::Sealed for Matched {}
+impl PlanResult for Matched {
+    fn decode(_plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self> {
+        match answer {
+            PlanAnswer::Matched(count) | PlanAnswer::Count(count) => Ok(Self { count: *count }),
+            _ => Err(result_shape()),
+        }
+    }
+}
+impl result_sealed::Sealed for i64 {}
+impl PlanResult for i64 {
+    fn decode(_plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self> {
+        match answer {
+            PlanAnswer::Count(count) => i64::try_from(*count).map_err(|_| result_shape()),
+            _ => Err(result_shape()),
+        }
+    }
+}
+impl result_sealed::Sealed for bool {}
+impl PlanResult for bool {
+    fn decode(_plan: &QueryPlan, answer: &PlanAnswer) -> Result<Self> {
+        match answer {
+            PlanAnswer::Exists(value) => Ok(*value),
+            _ => Err(result_shape()),
+        }
+    }
+}
+
+impl<M: crate::__codegen::MaterializeModel> result_sealed::Sealed for Vec<M> {}
+impl<M: crate::__codegen::MaterializeModel> PlanResult for Vec<M> {
+    fn decode(_plan: &QueryPlan, _answer: &PlanAnswer) -> Result<Self> {
+        Err(result_shape())
+    }
+    fn decode_models(
+        proof: &OwnedPlanFetchResult,
+        projected: &ProjectedQueryValue,
+        installed: &InstalledRuntimeProjection,
+    ) -> Result<Self> {
+        let ProjectedQueryValue::Rows { rows } = projected else {
+            return Err(result_shape());
+        };
+        proof
+            .model_rows()
+            .iter()
+            .map(|ordinal| {
+                let slot = rows
+                    .get(*ordinal)
+                    .and_then(|row| row.slots().first())
+                    .ok_or_else(result_shape)?;
+                let ProjectedQuerySlotValue::One(thing) = slot.value() else {
+                    return Err(result_shape());
+                };
+                let row = crate::projected_codec::projected_to_hydrated_row(thing, installed)?;
+                M::materialize(&row, &crate::__codegen::HydrationCapability::new()).map_err(
+                    |error| {
+                        crate::entity_codec::map_validation_error(
+                            error,
+                            ModelValidationPhase::Hydration,
+                        )
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+/// A typed answer visible after the transaction commits successfully.
+pub struct Pending<R> {
+    answer: PendingAnswers,
+    documents: std::sync::OnceLock<Arc<PlanAnswer>>,
+    plan: Arc<PlanInner>,
+    marker: PhantomData<fn() -> R>,
+}
+
+#[derive(Clone, Debug)]
+enum PendingAnswers {
+    Single(type_bridge_orm::session::staged::Pending<PlanAnswer>),
+    Bulk(Vec<type_bridge_orm::session::staged::Pending<PlanAnswer>>),
+    Models {
+        answer: type_bridge_orm::session::staged::Pending<OwnedPlanFetchResult>,
+        origin: ProjectedQueryOrigin,
+        projected: Arc<
+            std::sync::OnceLock<
+                std::result::Result<
+                    ProjectedQueryValue,
+                    type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic,
+                >,
+            >,
+        >,
+    },
+}
+impl PendingAnswers {
+    fn get(&self, plan: &PlanInner) -> std::result::Result<Arc<PlanAnswer>, PendingError> {
+        match self {
+            Self::Single(answer) => answer.get(),
+            Self::Models { answer, .. } => answer.get().map(|proof| proof.shared_selection()),
+            Self::Bulk(answers) => {
+                let correlations = answers
+                    .iter()
+                    .map(|pending| pending.correlation())
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let answers = answers
+                    .iter()
+                    .map(type_bridge_orm::session::staged::Pending::get)
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let PlanProgram::Bulk(plans) = &plan.program else {
+                    unreachable!("bulk pending retains bulk plans")
+                };
+                type_bridge_orm::session::staged::merge_plan_answers(plans, &answers, &correlations)
+                    .map_err(|error| PendingError::InvalidPlan(Box::new(error)))
+            }
+        }
+    }
+}
+
+impl<R> std::fmt::Debug for Pending<R> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Pending")
+            .field("answer", &self.answer)
+            .finish_non_exhaustive()
+    }
+}
+impl<R> Clone for Pending<R> {
     fn clone(&self) -> Self {
         Self {
-            plan: self.plan.clone(),
+            answer: self.answer.clone(),
+            documents: self.documents.clone(),
+            plan: Arc::clone(&self.plan),
             marker: PhantomData,
         }
     }
 }
-impl<S: Schema> std::fmt::Debug for Plan<S> {
+impl<R: PlanResult> Pending<R> {
+    /// Borrow the raw documents of this execution after successful commit.
+    ///
+    /// Does not execute another query or hydrate models. The returned slice
+    /// remains valid while this pending result is borrowed.
+    ///
+    /// # Errors
+    /// Returns the transaction's lifecycle or execution failure, or
+    /// `plan_result_shape` when the selected answer is not documents.
+    pub fn documents(&self) -> Result<&[serde_json::Value]> {
+        if self.documents.get().is_none() {
+            let answer = self.answer.get(&self.plan)?;
+            if !matches!(answer.as_ref(), PlanAnswer::Documents(_)) {
+                return Err(result_shape());
+            }
+            let _ = self.documents.set(answer);
+        }
+        match self
+            .documents
+            .get()
+            .expect("successful answer retained")
+            .as_ref()
+        {
+            PlanAnswer::Documents(documents) => Ok(documents),
+            _ => unreachable!("only document answers are retained"),
+        }
+    }
+
+    /// Read the selected result after successful commit.
+    ///
+    /// # Errors
+    /// Returns the typed transaction failure or result validation error.
+    pub fn result(&self) -> Result<R> {
+        if let PendingAnswers::Models {
+            answer,
+            origin,
+            projected,
+        } = &self.answer
+        {
+            let proof = answer.get()?;
+            let PlanProgram::Models {
+                installed,
+                registry,
+                ..
+            } = &self.plan.program
+            else {
+                unreachable!("model pending retains its finished source")
+            };
+            let companion = projected.get_or_init(|| {
+                origin
+                    .clone()
+                    .materialize_borrowed_with_budget(
+                        installed,
+                        registry,
+                        proof.request(),
+                        proof.result(),
+                        Default::default(),
+                        &type_bridge_orm::AnswerCancellation::default(),
+                        None,
+                    )
+                    .map(|(value, _)| value)
+            });
+            let companion = companion.as_ref().map_err(|error| {
+                Error::from_sdk_execution(error.clone(), ModelValidationPhase::Hydration)
+            })?;
+            return R::decode_models(&proof, companion, installed);
+        }
+        R::decode(
+            self.plan.projection(),
+            self.answer.get(&self.plan)?.as_ref(),
+        )
+    }
+}
+impl Pending<PlanAnswer> {
+    /// Borrow the raw answer without copying rows or documents.
+    ///
+    /// # Errors
+    /// Returns the pending transaction's unresolved or failed state.
+    pub fn get(&self) -> std::result::Result<Arc<PlanAnswer>, PendingError> {
+        self.answer.get(&self.plan)
+    }
+}
+
+/// `R` identifies the result and `S` optionally brands the schema.
+/// Generated packages export `Plan<R>` with their own schema fixed.
+pub struct Plan<R = PlanAnswer, S: Schema = Unbound> {
+    inner: PlanState,
+    marker: PhantomData<fn() -> (R, S)>,
+}
+
+#[derive(Clone)]
+enum PlanState {
+    Built(Arc<PlanInner>),
+    Held(recording::Selection),
+}
+
+impl<R, S: Schema> Clone for Plan<R, S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+impl<R, S: Schema> std::fmt::Debug for Plan<R, S> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Plan")
-            .field("writes", &self.plan.writes())
+            .field("writes", &self.writes())
             .finish_non_exhaustive()
     }
 }
 
-impl<S: Schema> Plan<S> {
+/// Common explanation shape returned by all SDKs.
+pub use type_bridge_orm::plan_explain::PlanExplanation;
+
+impl<R, S: Schema> Plan<R, S> {
+    /// Inspect the exact provider program, excluding transported input values.
+    /// Embedded plan constants remain visible.
+    ///
+    /// ```
+    /// # fn inspect<R, S: type_bridge::Schema>(plan: &type_bridge::plan::Plan<R, S>) -> type_bridge::Result<()> {
+    /// let explanation = plan.explain()?;
+    /// assert_eq!(explanation.statements.len(), explanation.read_statements + explanation.write_statements);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns the same lowering and resource-limit diagnostics as execution.
+    pub fn explain(&self) -> Result<PlanExplanation> {
+        type_bridge_orm::plan_explain::explain(self.single_wire_plan()?)
+            .map_err(Error::from_contract_diagnostic)
+    }
+}
+
+impl<S: Schema> Plan<PlanAnswer, S> {
     /// Start an empty program.
     #[must_use]
     pub fn builder() -> PlanBuilder<S> {
         PlanBuilder::new()
+    }
+}
+
+impl<R, S: Schema> Plan<R, S> {
+    /// Record a generated program and select the result returned by `body`.
+    ///
+    /// # Errors
+    /// Returns the first invalid token, value, ownership or core validation error.
+    pub fn build<B: PlanSchema, Output>(
+        body: impl FnOnce(&mut recording::Recording<B>) -> Output,
+    ) -> Result<Self>
+    where
+        S: StageSchema<B>,
+        Output: recording::IntoSelection<R, B>,
+    {
+        Self::with_limits(QueryLimits::CANONICAL).build(body)
+    }
+
+    /// Capture query limits once for a generated recording.
+    #[must_use]
+    pub fn with_limits(limits: QueryLimits) -> recording::PlanAuthoring<R, S> {
+        recording::PlanAuthoring::new(limits)
+    }
+
+    fn from_core(plan: QueryPlan) -> Self {
+        Self {
+            inner: PlanState::Built(Arc::new(PlanInner {
+                program: PlanProgram::Single(plan),
+            })),
+            marker: PhantomData,
+        }
+    }
+
+    fn from_bulk(plans: BuiltPlans) -> Self {
+        Self {
+            inner: PlanState::Built(Arc::new(PlanInner {
+                program: PlanProgram::Bulk(plans),
+            })),
+            marker: PhantomData,
+        }
+    }
+
+    fn from_tuple_plan<B: PlanSchema>(
+        plan: QueryPlan,
+        models: &[(BindingId, &'static str)],
+    ) -> Result<Self> {
+        let installed = B::package().verify_and_install()?;
+        let registry = crate::session::build_match_registry(&installed)?;
+        let slots = models
+            .iter()
+            .map(|(binding, descriptor)| {
+                let descriptor: TypeId = from_canonical_json(descriptor.as_bytes())
+                    .map_err(Error::from_contract_diagnostic)?;
+                let kind = match descriptor.kind() {
+                    type_bridge_contract::id::TypeKind::Entity => "entity",
+                    type_bridge_contract::id::TypeKind::Relation => "relation",
+                    _ => return Err(result_shape()),
+                };
+                Ok((
+                    *binding,
+                    type_bridge_orm::match_request::DescriptorId::new(format!(
+                        "{kind}:{}",
+                        descriptor.label().as_str()
+                    )),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let stack =
+            type_bridge_orm::match_request::build_plan_fetch_stack(&registry, &plan, &slots)
+                .map_err(Error::from_contract_diagnostic)?;
+        Ok(Self {
+            inner: PlanState::Built(Arc::new(PlanInner {
+                program: PlanProgram::Models {
+                    stack: Box::new(stack),
+                    registry,
+                    installed,
+                },
+            })),
+            marker: PhantomData,
+        })
+    }
+
+    fn from_model_plans<B: PlanSchema>(
+        plans: BuiltPlans,
+        binding: BindingId,
+        descriptor_json: &str,
+    ) -> Result<Self> {
+        let installed = B::package().verify_and_install()?;
+        let registry = crate::session::build_match_registry(&installed)?;
+        let descriptor: TypeId = from_canonical_json(descriptor_json.as_bytes())
+            .map_err(Error::from_contract_diagnostic)?;
+        let descriptor = type_bridge_orm::match_request::DescriptorId::new(format!(
+            "{}:{}",
+            match descriptor.kind() {
+                type_bridge_contract::id::TypeKind::Entity => "entity",
+                type_bridge_contract::id::TypeKind::Relation => "relation",
+                _ => return Err(result_shape()),
+            },
+            descriptor.label().as_str()
+        ));
+        let stack = type_bridge_orm::match_request::build_bulk_plan_fetch_stack(
+            &registry,
+            plans,
+            (binding, descriptor),
+        )
+        .map_err(Error::from_contract_diagnostic)?;
+        Ok(Self {
+            inner: PlanState::Built(Arc::new(PlanInner {
+                program: PlanProgram::Models {
+                    stack: Box::new(stack),
+                    registry,
+                    installed,
+                },
+            })),
+            marker: PhantomData,
+        })
+    }
+
+    fn held(selection: recording::Selection) -> Self {
+        Self {
+            inner: PlanState::Held(selection),
+            marker: PhantomData,
+        }
+    }
+
+    fn shared_inner(&self) -> Result<&Arc<PlanInner>> {
+        match &self.inner {
+            PlanState::Built(inner) => Ok(inner),
+            PlanState::Held(_) => Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "plan_context_missing",
+                vec![],
+                "finish the recording before using its held result",
+                None,
+            )),
+        }
+    }
+    /// Drop the compile-time schema brand without changing or validating the plan.
+    #[must_use]
+    pub fn erase(self) -> Plan<R> {
+        Plan {
+            inner: self.inner,
+            marker: PhantomData,
+        }
+    }
+
+    /// Explicitly check the generated schema and return a plan branded by it.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the plan's semantic scope differs.
+    pub fn validate<T: PlanSchema>(self) -> Result<Plan<R, T>> {
+        self.brand::<T>()
+    }
+
+    /// Check the generated package's semantic scope before adding its brand.
+    ///
+    /// # Errors
+    /// Returns a typed refusal when the package or scope is invalid.
+    pub fn brand<T: PlanSchema>(self) -> Result<Plan<R, T>> {
+        let source = self.inner()?;
+        let authority = T::package().plan_authority()?;
+        if source.managed_semantics() != authority.managed_state().managed_semantic_schema() {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "plan_schema_mismatch",
+                vec![],
+                "the plan belongs to another semantic schema",
+                None,
+            ));
+        }
+        Ok(Plan {
+            inner: self.inner,
+            marker: PhantomData,
+        })
     }
 
     /// The plan's canonical `query-plan/v3` bytes, identical in every SDK.
@@ -424,7 +1004,7 @@ impl<S: Schema> Plan<S> {
     ///
     /// Returns an error when the plan exceeds the canonical codec limits.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
-        self.plan
+        self.single_wire_plan()?
             .canonical_bytes()
             .map_err(Error::from_contract_diagnostic)
     }
@@ -433,11 +1013,106 @@ impl<S: Schema> Plan<S> {
     /// `Write`.
     #[must_use]
     pub fn writes(&self) -> bool {
-        self.plan.writes()
+        match &self.inner {
+            PlanState::Built(inner) => inner.writes(),
+            PlanState::Held(selection) => selection.writes,
+        }
     }
 
-    pub(crate) fn inner(&self) -> &QueryPlanV3 {
-        &self.plan
+    fn single_wire_plan(&self) -> Result<&QueryPlan> {
+        match <PlanInner as AsRef<[QueryPlan]>>::as_ref(self.shared_inner()?.as_ref()) {
+            [plan] => Ok(plan),
+            _ => Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "plan_batch_split",
+                vec![],
+                "a split or empty bulk has no single wire plan",
+                None,
+            )),
+        }
+    }
+
+    pub(crate) fn inner(&self) -> Result<&QueryPlan> {
+        Ok(self.shared_inner()?.projection())
+    }
+
+    pub(crate) fn stage(
+        &self,
+        tx: &mut type_bridge_orm::session::staged::Transaction,
+        origin: ProjectedQueryOrigin,
+    ) -> std::result::Result<Pending<R>, PendingError> {
+        let source = self.shared_inner().expect("stage admitted a built plan");
+        match &source.program {
+            PlanProgram::Single(_) => tx
+                .stage_shared_plan(Arc::clone(source), 0)
+                .map(|answer| self.pending(answer)),
+            PlanProgram::Models { registry, .. } => tx
+                .stage_plan_fetch(Arc::clone(source), Arc::clone(registry), Default::default())
+                .map(|answer| Pending {
+                    documents: std::sync::OnceLock::new(),
+                    answer: PendingAnswers::Models {
+                        answer,
+                        origin,
+                        projected: Arc::new(std::sync::OnceLock::new()),
+                    },
+                    plan: Arc::clone(source),
+                    marker: PhantomData,
+                }),
+            PlanProgram::Bulk(plans) => tx
+                .stage_plans(Arc::clone(source), plans.returns_documents())
+                .map(|answers| Pending {
+                    documents: std::sync::OnceLock::new(),
+                    answer: PendingAnswers::Bulk(answers),
+                    plan: Arc::clone(source),
+                    marker: PhantomData,
+                }),
+        }
+    }
+
+    pub(crate) fn pending(
+        &self,
+        answer: type_bridge_orm::session::staged::Pending<PlanAnswer>,
+    ) -> Pending<R> {
+        Pending {
+            documents: std::sync::OnceLock::new(),
+            answer: PendingAnswers::Single(answer),
+            plan: Arc::clone(self.shared_inner().expect("stage admitted a built plan")),
+            marker: PhantomData,
+        }
+    }
+}
+
+/// One authored staged invocation, including its future IID references.
+/// Queue the complete block with [`crate::staged::Transaction::stage_stack`].
+pub struct StagedPlan<S: Schema> {
+    entry: WireStagedPlan,
+    authority: Arc<type_bridge_schema::VerifiedSchemaAuthority>,
+    plan: Plan<PlanAnswer, S>,
+}
+
+impl<S: Schema> StagedPlan<S> {
+    /// Inspect authored dependency metadata; future IID values stay absent.
+    #[must_use]
+    pub fn result_refs(&self) -> &[StagedResultRef] {
+        self.entry.result_refs()
+    }
+
+    pub(crate) fn stage_stack(
+        plans: &[Self],
+        transaction: &mut type_bridge_orm::session::staged::Transaction,
+    ) -> std::result::Result<Vec<Pending<PlanAnswer>>, PendingError> {
+        let Some(first) = plans.first() else {
+            return Ok(vec![]);
+        };
+        let answers = transaction.stage_plan_stack(
+            plans.iter().map(|plan| plan.entry.clone()).collect(),
+            Arc::new(first.authority.declared_schema().clone()),
+        )?;
+        Ok(plans
+            .iter()
+            .zip(answers)
+            .map(|(plan, answer)| plan.plan.pending(answer))
+            .collect())
     }
 }
 
@@ -469,8 +1144,15 @@ impl<S: Schema> PlanBuilder<S> {
     /// An empty program.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_limits(QueryLimits::CANONICAL)
+    }
+
+    /// An empty program using `limits` for validation and canonical values.
+    #[must_use]
+    pub fn with_limits(limits: QueryLimits) -> Self {
+        type_bridge_orm::debug::init();
         Self {
-            core: CoreBuilder::new(),
+            core: CoreBuilder::with_limits(limits),
             error: None,
             marker: PhantomData,
         }
@@ -517,13 +1199,76 @@ impl<S: Schema> PlanBuilder<S> {
         self.thing(CoreBuilder::subtypes)
     }
 
+    /// Match a model by IID, admitting its concrete subtypes.
+    pub fn by_iid<M: ThingModel<Schema = S>>(&mut self, iid: &crate::Iid) -> Thing<M, Subtypes> {
+        let thing = self.subtypes::<M>();
+        self.core.by_iid(thing.binding, iid.as_str());
+        thing
+    }
+
+    /// Match a model by an invocation IID, including a staged result reference.
+    pub fn by_iid_input<M: ThingModel<Schema = S>>(
+        &mut self,
+        input: Input<crate::Iid>,
+    ) -> Thing<M, Subtypes> {
+        let thing = self.subtypes::<M>();
+        self.core.by_iid_input(thing.binding, input.column);
+        thing
+    }
+
+    /// Bind a caller value as an implicit input at a generated model field.
+    pub fn bind_value<M, Mode, Owner, V>(
+        &mut self,
+        thing: Thing<M, Mode>,
+        token: FieldToken<Owner, V>,
+        value: impl QueryValued,
+    ) -> Operand
+    where
+        M: ThingModel<Schema = S> + NominalUpcast<Owner>,
+        Mode: SelectionMode,
+        Owner: Model<Schema = S>,
+    {
+        let value = self.check(canonical(&value).map_err(literal_error));
+        let field = self.check(owns_id(token.owns_id_json()));
+        let operand = match (field, value) {
+            (Some(field), Some(value)) => Some(self.core.bind_value(
+                Site::new(thing.binding, field.attribute().label().as_str()),
+                value,
+            )),
+            _ => None,
+        };
+        Operand(Ok(operand.unwrap_or(QueryOperand::Literal {
+            value: CanonicalValue::Boolean(false),
+        })))
+    }
+
+    /// Return the cached scalar binding used by generated handle accessors.
+    pub fn field_value<M, Mode, Owner, V>(
+        &mut self,
+        thing: Thing<M, Mode>,
+        token: FieldToken<Owner, V>,
+    ) -> PlanValue
+    where
+        M: ThingModel<Schema = S> + NominalUpcast<Owner>,
+        Mode: SelectionMode,
+        Owner: Model<Schema = S>,
+    {
+        let binding = match self.check(owns_id(token.owns_id_json())) {
+            Some(field) => self
+                .core
+                .field_value(thing.binding, field.attribute().clone()),
+            None => BindingId::new(0).expect("zero is a valid binding"),
+        };
+        PlanValue { binding }
+    }
+
     /// Bind the value of `thing`'s field. Things without the field do not
     /// match.
     pub fn field<M, Mode, Owner, V>(
         &mut self,
         thing: Thing<M, Mode>,
         token: FieldToken<Owner, V>,
-    ) -> Value
+    ) -> PlanValue
     where
         M: ThingModel<Schema = S> + NominalUpcast<Owner>,
         Mode: SelectionMode,
@@ -533,7 +1278,7 @@ impl<S: Schema> PlanBuilder<S> {
             Some(field) => self.core.field(thing.binding, field.attribute().clone()),
             None => BindingId::new(0).expect("zero is a valid binding"),
         };
-        Value { binding }
+        PlanValue { binding }
     }
 
     /// Declare an input column named `name`; each [`Self::row`] supplies a
@@ -569,7 +1314,7 @@ impl<S: Schema> PlanBuilder<S> {
     }
 
     /// Require `condition` of every matched row.
-    pub fn where_(&mut self, condition: Condition) -> &mut Self {
+    pub fn where_(&mut self, condition: PlanCondition) -> &mut Self {
         let left = self.operand(condition.left);
         let right = self.operand(condition.right);
         self.core.compare(left, condition.comparator, right);
@@ -598,14 +1343,14 @@ impl<S: Schema> PlanBuilder<S> {
     }
 
     /// Bind `name` to `expr`, evaluated for each matched row.
-    pub fn let_(&mut self, name: &str, expr: impl Into<Expr>) -> Value {
+    pub fn let_(&mut self, name: &str, expr: impl Into<PlanExpr>) -> PlanValue {
         let expr = expr.into().0.map_err(literal_error);
         let expr = self
             .check(expr)
-            .unwrap_or(PlanExpr::Operand(QueryOperand::Literal {
+            .unwrap_or(CoreExpr::Operand(QueryOperand::Literal {
                 value: CanonicalValue::Boolean(false),
             }));
-        Value {
+        PlanValue {
             binding: self.core.let_(name, expr),
         }
     }
@@ -756,6 +1501,30 @@ impl<S: Schema> PlanBuilder<S> {
         self
     }
 
+    /// Describe `thing` and its listed role players.
+    /// Call before deleting `thing` to return a deletion snapshot.
+    pub fn fetch<M, Mode>(
+        &mut self,
+        thing: Thing<M, Mode>,
+        roles: impl IntoIterator<Item = FetchRole<M>>,
+    ) -> &mut Self
+    where
+        M: ThingModel<Schema = S>,
+        Mode: SelectionMode,
+    {
+        let roles = roles
+            .into_iter()
+            .map(|role| {
+                self.check(role.role)
+                    .map(|id| DocumentRole::new(id, role.required))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(roles) = roles {
+            self.core.fetch(thing.binding, roles);
+        }
+        self
+    }
+
     /// Answer the number of rows a read plan matches.
     pub fn count(&mut self) -> &mut Self {
         self.core.count();
@@ -766,6 +1535,54 @@ impl<S: Schema> PlanBuilder<S> {
     pub fn exists(&mut self) -> &mut Self {
         self.core.exists();
         self
+    }
+
+    /// Finalize one staged invocation with typed template cells and IID references.
+    ///
+    /// Use [`Input::absent`] for every referenced cell. Source indexes are relative
+    /// to the complete block passed to [`crate::staged::Transaction::stage_stack`].
+    /// # Errors
+    /// Returns the first builder error or an invalid template or reference.
+    pub fn build_staged(
+        self,
+        schema: &SchemaPackage<S>,
+        rows: Vec<Vec<InputValue>>,
+        result_refs: Vec<StagedResultRef>,
+    ) -> Result<StagedPlan<S>> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        let mut templates = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut values = vec![None; self.core.input_columns().len()];
+            let mut seen = std::collections::BTreeSet::new();
+            for cell in row {
+                let index = usize::from(cell.column.get());
+                let Some(value) = values.get_mut(index) else {
+                    return Err(identity_error("plan_builder_handle_unknown"));
+                };
+                if !seen.insert(index) {
+                    return Err(identity_error("plan_input_duplicate"));
+                }
+                *value = cell.value.map_err(literal_error)?;
+            }
+            templates.push(InputRow::new(values));
+        }
+        let authority = schema.plan_authority()?;
+        let entry = self
+            .core
+            .build_staged(
+                authority.declared_schema(),
+                authority.managed_state().managed_semantic_schema().clone(),
+                templates,
+                result_refs,
+            )
+            .map_err(Error::from_contract_diagnostic)?;
+        Ok(StagedPlan {
+            plan: Plan::from_core(entry.plan().clone()),
+            entry,
+            authority,
+        })
     }
 
     /// Validate the program against the generated schema package.
@@ -779,7 +1596,7 @@ impl<S: Schema> PlanBuilder<S> {
     /// Returns the first invalid builder call, a package without compiled
     /// schema authority, or the plan validation failure (for example a
     /// field the thing does not own, or a key field update).
-    pub fn build(self, schema: &SchemaPackage<S>) -> Result<Plan<S>> {
+    pub fn build(self, schema: &SchemaPackage<S>) -> Result<Plan<PlanAnswer, S>> {
         if let Some(error) = self.error {
             return Err(error);
         }
@@ -791,10 +1608,7 @@ impl<S: Schema> PlanBuilder<S> {
                 authority.managed_state().managed_semantic_schema().clone(),
             )
             .map_err(Error::from_contract_diagnostic)?;
-        Ok(Plan {
-            plan,
-            marker: PhantomData,
-        })
+        Ok(Plan::from_core(plan))
     }
 }
 
@@ -860,3 +1674,6 @@ impl<S: Schema, M: ThingModel<Schema = S>> NewThing<'_, S, M> {
 
 #[cfg(test)]
 mod tests;
+
+/// Typed values and handles used by generated authoring helpers.
+pub use recording::{Condition, Expr, Handle, Recording, Value};

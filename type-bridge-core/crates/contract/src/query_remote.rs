@@ -20,7 +20,6 @@ use crate::id::TypeId;
 use crate::limits::{
     MAX_REMOTE_ENVELOPE_BYTES, QueryLimits, REMOTE_ENVELOPE_CODEC_LIMITS, answer_limit_field,
 };
-use crate::query_plan::{QueryPlan, decode_query_plan_with_limits};
 use crate::value::CanonicalValue;
 
 /// The authenticated outer reply format used for both successes and failures.
@@ -39,6 +38,9 @@ const EXECUTOR_COMPONENT_MAX_BYTES: usize = 128;
 pub const DEFAULT_REMOTE_DEADLINE_MS: u64 = 30 * 1_000;
 /// Longest caller deadline admitted by the first remote format: five minutes.
 pub const MAX_REMOTE_DEADLINE_MS: u64 = 5 * 60 * 1_000;
+/// Default request delivery window; independent of execution duration.
+pub const DEFAULT_ADMISSION_WINDOW_MILLISECONDS: u64 = 60_000;
+
 /// Maximum positive client/server wall-clock skew admitted by remote preflight.
 ///
 /// The request lifetime is still bounded to [`MAX_REMOTE_DEADLINE_MS`]
@@ -78,6 +80,16 @@ pub enum RemoteValue {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RemoteFieldValue {
+    /// Complete player documents of one unordered staged role.
+    Documents {
+        /// Schema-checked documents in provider order.
+        documents: Vec<BTreeMap<String, RemoteFieldValue>>,
+    },
+    /// Nested named fields of a staged thing document.
+    Document {
+        /// Schema-checked members.
+        fields: BTreeMap<String, RemoteFieldValue>,
+    },
     /// One exact typed scalar.
     Scalar {
         /// The exact typed scalar value.
@@ -367,6 +379,8 @@ pub struct RemoteCapabilities {
     // that differ from the defaults, under the same rule as `query_limits`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     answer_limits: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    admission_window_milliseconds: Option<std::num::NonZeroU64>,
     // This key is an explicit caller trust input. Its inclusion in the exact
     // advertisement fingerprint binds every prepared request to one signer.
     reply_key: RemoteSigningPublicKey,
@@ -384,15 +398,46 @@ impl RemoteCapabilities {
         reply_key: RemoteSigningPublicKey,
     ) -> Self {
         let reply_key_id = RemoteSigningKeyId::for_public_key(reply_key);
+        let query_limits = if capabilities.contains(
+            &crate::capability::CapabilityId::new(crate::query_remote::CAP_QUERY_REMOTE_STAGED)
+                .expect("static staged capability"),
+        ) {
+            BTreeMap::from([(
+                "selected_slots".to_owned(),
+                crate::limits::MAX_BINDINGS as u64,
+            )])
+        } else {
+            BTreeMap::new()
+        };
         Self {
             capabilities,
             executor,
             format: QUERY_REMOTE_CAPABILITIES_FORMAT_V1.to_owned(),
-            query_limits: BTreeMap::new(),
+            query_limits,
             answer_limits: BTreeMap::new(),
+            admission_window_milliseconds: None,
             reply_key,
             reply_key_id,
         }
+    }
+
+    /// Set the finite request delivery window this executor permits.
+    pub fn with_admission_window_milliseconds(
+        mut self,
+        milliseconds: u64,
+    ) -> Result<Self, Diagnostic> {
+        let value =
+            std::num::NonZeroU64::new(milliseconds).ok_or_else(advertised_limits_invalid)?;
+        self.admission_window_milliseconds =
+            (milliseconds != DEFAULT_ADMISSION_WINDOW_MILLISECONDS).then_some(value);
+        Ok(self)
+    }
+
+    /// Maximum request age at admission; it does not limit execution.
+    #[must_use]
+    pub fn admission_window_milliseconds(&self) -> u64 {
+        self.admission_window_milliseconds
+            .map_or(DEFAULT_ADMISSION_WINDOW_MILLISECONDS, |value| value.get())
     }
 
     /// Advertise the answer ceilings this executor enforces.
@@ -419,9 +464,17 @@ impl RemoteCapabilities {
     /// Require the canonical form of the advertised answer ceilings: known
     /// names, no default-valued entry, and no value past its maximum.
     fn validate_answer_limits(&self) -> Result<(), Diagnostic> {
+        if self
+            .admission_window_milliseconds
+            .is_some_and(|value| value.get() == DEFAULT_ADMISSION_WINDOW_MILLISECONDS)
+        {
+            return Err(advertised_limits_invalid());
+        }
         for (name, value) in &self.answer_limits {
             let field = answer_limit_field(name).ok_or_else(advertised_limits_invalid)?;
-            if *value == field.proxy_default || *value > field.maximum {
+            if (field.name != "statements" && *value == field.proxy_default)
+                || *value > field.maximum
+            {
                 return Err(advertised_limits_invalid());
             }
         }
@@ -433,7 +486,7 @@ impl RemoteCapabilities {
     /// `limits` is admitted through [`QueryLimits::validate`]. Only limits
     /// that differ from the canonical defaults reach the wire.
     pub fn with_query_limits(mut self, limits: QueryLimits) -> Result<Self, Diagnostic> {
-        let limits = limits.validate().map_err(|_| advertised_limits_invalid())?;
+        let limits = self.validate_format_query_limits(limits)?;
         self.query_limits = QueryLimits::FIELDS
             .iter()
             .filter_map(|name| {
@@ -468,10 +521,23 @@ impl RemoteCapabilities {
                 return Err(advertised_limits_invalid());
             }
         }
-        self.query_limits()
-            .validate()
+        self.validate_format_query_limits(self.query_limits())
             .map(|_| ())
-            .map_err(|_| advertised_limits_invalid())
+    }
+
+    fn validate_format_query_limits(&self, limits: QueryLimits) -> Result<QueryLimits, Diagnostic> {
+        if self.capabilities.contains(
+            &crate::capability::CapabilityId::new(crate::query_remote::CAP_QUERY_REMOTE_STAGED)
+                .expect("static staged capability"),
+        ) {
+            limits
+                .validate_plan()
+                .map_err(|_| advertised_limits_invalid())
+        } else if limits.structural.selected_slots > crate::limits::MAX_SELECTED_SLOTS {
+            Err(advertised_limits_invalid())
+        } else {
+            limits.validate().map_err(|_| advertised_limits_invalid())
+        }
     }
 
     /// Encode exact canonical envelope bytes.
@@ -541,34 +607,6 @@ impl RemoteCapabilities {
             &self.encode()?,
         )))
     }
-}
-
-/// Attribute a request-envelope codec failure: its byte ceiling is the
-/// remote request budget, not the plan artifact ceiling the code table names.
-pub(crate) fn annotate_request_envelope(limits: QueryLimits, diagnostic: Diagnostic) -> Diagnostic {
-    if diagnostic.code().as_str() == "canonical_json_too_large" {
-        limits.annotate_limit(diagnostic, "remote_request_bytes")
-    } else {
-        limits.annotate(diagnostic)
-    }
-}
-
-/// Hold one plan to an executor's advertised limits before anything is sent.
-///
-/// Returns the merged limits the request must also be encoded under. The
-/// plan is re-decoded only where the advertisement is stricter than the
-/// limits it was built under, which is the same check the executor runs.
-pub(crate) fn negotiate_query_limits(
-    plan: &QueryPlan,
-    advertisement: &RemoteCapabilities,
-) -> Result<QueryLimits, Diagnostic> {
-    let configured = plan.limits();
-    let negotiated = configured.min(advertisement.query_limits());
-    if negotiated != configured {
-        decode_query_plan_with_limits(&plan.canonical_bytes()?, negotiated)
-            .map_err(|diagnostic| negotiated.mark_advertised(configured, diagnostic))?;
-    }
-    Ok(negotiated)
 }
 
 fn advertised_limits_invalid() -> Diagnostic {
@@ -721,17 +759,6 @@ pub(crate) fn encode_signed_reply_payload(
     encode_signed_reply(payload, advertisement, signer)
 }
 
-/// Encode additive versioned payload bytes under the envelope byte ceiling
-/// the two peers agreed on.
-pub(crate) fn encode_signed_reply_payload_bounded(
-    payload: &[u8],
-    advertisement: &RemoteCapabilitiesFingerprint,
-    signer: &impl RemoteReplySigner,
-    max_bytes: usize,
-) -> Result<Vec<u8>, Diagnostic> {
-    encode_signed_reply_bounded(payload, advertisement, signer, max_bytes)
-}
-
 /// Encode already bounded, canonical additive payload bytes.
 ///
 /// This is used only by the fixed internal-failure fallback after the normal
@@ -769,32 +796,6 @@ fn encode_signed_reply_unchecked(
         payload,
         &signature,
     )
-}
-
-fn signed_reply_encoded_len(
-    payload: &[u8],
-    advertisement: &RemoteCapabilitiesFingerprint,
-    key: RemoteSigningPublicKey,
-) -> usize {
-    canonical_signed_reply(
-        &advertisement.digest_hex(),
-        QUERY_REMOTE_SIGNED_REPLY_FORMAT_V1,
-        &key.to_hex(),
-        &RemoteSigningKeyId::for_public_key(key).to_hex(),
-        payload,
-        &encode_hex(&[0_u8; 64]),
-    )
-    .len()
-}
-
-/// Return the exact unchanged signed-envelope length for additive payload
-/// bytes without constructing a signature.
-pub(crate) fn signed_reply_payload_encoded_len(
-    payload: &[u8],
-    advertisement: &RemoteCapabilitiesFingerprint,
-    key: RemoteSigningPublicKey,
-) -> usize {
-    signed_reply_encoded_len(payload, advertisement, key)
 }
 
 fn remote_reply_signing_digest(
@@ -977,3 +978,7 @@ fn envelope_failure(
         message,
     )
 }
+
+#[path = "query_remote_staged.rs"]
+mod staged;
+pub use staged::*;

@@ -1,17 +1,14 @@
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, Label, TypeId, TypeKind};
-use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
-use type_bridge_contract::query_plan::{
-    QueryInvocation, QueryOperation, QueryOutput, QueryPattern, QueryPlan, ReadStage,
-};
+use type_bridge_contract::query_plan::{Operation, PlanSpec, QueryPlan, Stage};
+use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
 use type_bridge_contract::schema::DocumentId;
-use type_bridge_orm::query_v2::lower_validated_query;
-use type_bridge_query::{MigrationAssertionValidationContext, validate_query_plan};
+use type_bridge_orm::plan_explain::explain;
 use type_bridge_schema::{
-    ManagedDeltaContext, SchemaDocumentSet, managed_schema_state, normalize_documents, resolve,
+    ManagedDeltaContext, SchemaDocumentSet, managed_schema_state, normalize_documents,
 };
 
 fn binding(id: u16, variable: &str) -> AssertionBinding {
@@ -170,60 +167,56 @@ entities:
         CapabilitySet::new(),
     );
     let managed = managed_schema_state(&declared, &delta_context).expect("managed state");
-    let resolved = resolve(&declared, &profile).expect("resolved schema");
 
     let thing = BindingId::new(0).expect("binding ID");
     let middle_dot_value = BindingId::new(1).expect("binding ID");
     let combining_value = BindingId::new(2).expect("binding ID");
     let plan = QueryPlan::new(
-        vec![
-            binding(0, "thing"),
-            binding(1, "middle_dot_value"),
-            binding(2, "combining_value"),
-        ],
-        Vec::new(),
-        vec![ReadStage::Match {
-            patterns: vec![
-                QueryPattern::Isa {
-                    binding: thing,
-                    include_subtypes: false,
-                    type_id: TypeId::new(TypeKind::Entity, "℘x").expect("entity label"),
-                },
-                QueryPattern::Has {
-                    attribute: middle_dot_value,
-                    attribute_id: AttributeId::new("a·b").expect("middle-dot label"),
-                    owner: thing,
-                },
-                QueryPattern::Has {
-                    attribute: combining_value,
-                    attribute_id: AttributeId::new(combining_label).expect("combining label"),
-                    owner: thing,
-                },
+        PlanSpec {
+            bindings: vec![
+                binding(0, "thing"),
+                binding(1, "middle_dot_value"),
+                binding(2, "combining_value"),
             ],
-        }],
-        QueryOutput::Rows {
-            columns: vec![thing, middle_dot_value, combining_value],
+            inputs: Vec::new(),
+            functions: Vec::new(),
+            given_rows: None,
+            operation: Operation::Rows,
+            pipeline: vec![Stage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: thing,
+                        include_subtypes: false,
+                        type_id: TypeId::new(TypeKind::Entity, "℘x").expect("entity label"),
+                    },
+                    QueryPattern::Has {
+                        attribute: middle_dot_value,
+                        attribute_id: AttributeId::new("a·b").expect("middle-dot label"),
+                        owner: thing,
+                    },
+                    QueryPattern::Has {
+                        attribute: combining_value,
+                        attribute_id: AttributeId::new(combining_label).expect("combining label"),
+                        owner: thing,
+                    },
+                ]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            }],
+            output: QueryOutput::Rows {
+                columns: vec![thing, middle_dot_value, combining_value],
+            },
+            managed_semantics: managed.managed_semantic_schema().clone(),
         },
-        managed.managed_semantic_schema().clone(),
+        &declared,
     )
     .expect("query plan");
-    let validation_context = MigrationAssertionValidationContext::new(&resolved, &managed);
-    let validated = validate_query_plan(&plan, &validation_context, StructuralLimits::CANONICAL)
-        .expect("Unicode-labelled query validates");
-    let invocation =
-        QueryInvocation::new(&plan, QueryOperation::Rows, Vec::new()).expect("query invocation");
-    let lowered = lower_validated_query(&validated, &invocation).expect("query lowers");
+    let explanation = explain(&plan).expect("query lowers");
+    let lowered = &explanation.statements[0];
 
-    assert!(lowered.typeql().contains("$thing isa! ℘x;"));
-    assert!(
-        lowered
-            .typeql()
-            .contains("$thing has a·b $middle_dot_value;")
-    );
-    assert!(
-        lowered
-            .typeql()
-            .contains(&format!("$thing has {combining_label} $combining_value;"))
-    );
-    typeql::parse_query(lowered.typeql()).expect("TypeQL 3.12 accepts lowered query");
+    assert!(lowered.contains("$thing isa! ℘x;"));
+    assert!(lowered.contains("$thing has a·b $middle_dot_value;"));
+    assert!(lowered.contains(&format!("$thing has {combining_label} $combining_value;")));
+    typeql::parse_query(lowered).expect("TypeQL 3.12 accepts lowered query");
 }

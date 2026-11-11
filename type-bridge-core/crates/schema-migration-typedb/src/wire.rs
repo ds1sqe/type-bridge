@@ -1,5 +1,8 @@
 //! Canonical private persistence wire for trusted execution records.
 
+mod data;
+pub(crate) use data::{decode_data_event, encode_data_event};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use type_bridge_contract::codec::{from_canonical_json_with_limits, to_canonical_json_with_limits};
@@ -595,7 +598,7 @@ pub(crate) fn decode_rolled_back(
 
 pub(crate) fn persisted_fence(
     bytes: &[u8],
-    expected_kind: &'static str,
+    expected_kind: &str,
 ) -> Result<ExecutionFence, Diagnostic> {
     let value: Value = from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
     let object = value.as_object().ok_or_else(|| {

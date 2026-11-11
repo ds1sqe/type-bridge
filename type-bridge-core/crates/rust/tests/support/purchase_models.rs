@@ -30,6 +30,12 @@ pub use purchase_plan::{PROFILE, SCOPE, SOURCE};
 pub struct Shop;
 impl sealed::Sealed for Shop {}
 impl Schema for Shop {}
+impl type_bridge::plan::StageSchema<Shop> for Shop {}
+impl type_bridge::plan::PlanSchema for Shop {
+    fn package() -> SchemaPackage<Self> {
+        package()
+    }
+}
 
 macro_rules! thing {
     ($name:ident, $kind:ident, $marker:ident, $json:literal) => {
@@ -142,7 +148,7 @@ pub fn purchase_plan(
     order: &str,
     item_id: &str,
     account_id: &str,
-) -> type_bridge::Result<type_bridge::plan::Plan<Shop>> {
+) -> type_bridge::Result<type_bridge::plan::Plan<type_bridge::staged::PlanAnswer, Shop>> {
     use type_bridge::plan::Plan;
     let mut plan = Plan::builder();
     let item = plan.exact::<Item>();
@@ -251,7 +257,7 @@ pub fn hand_built_purchase(
     order: &str,
     item_id: &str,
     account_id: &str,
-) -> type_bridge_contract::query_plan::v3::QueryPlanV3 {
+) -> type_bridge_contract::query_plan::QueryPlan {
     let (declared, semantics) = authority();
     purchase_plan::hand_built_purchase(&declared, semantics, order, item_id, account_id)
 }

@@ -1,17 +1,18 @@
 import type {
-  NativeRustDatabase,
-  NativeRustTransactionContext,
-  RustDatabase,
-  RustTransactionContext,
+  NativeDatabase,
+  NativeTransactionContext,
+  Database,
+  TransactionContext,
+  MigrationTransaction,
 } from "./index.js";
 
-const databaseHandles = new WeakMap<object, NativeRustDatabase>();
-const transactionHandles = new WeakMap<object, NativeRustTransactionContext>();
+const databaseHandles = new WeakMap<object, NativeDatabase>();
+const transactionHandles = new WeakMap<object, NativeTransactionContext>();
 
 /** @internal Reject structurally forged execution connections. */
-export function isRegisteredRustConnection(
+export function isRegisteredConnection(
   connection: unknown,
-): connection is RustDatabase | RustTransactionContext {
+): connection is Database | TransactionContext | MigrationTransaction {
   if (
     connection === null ||
     (typeof connection !== "object" && typeof connection !== "function")
@@ -22,31 +23,31 @@ export function isRegisteredRustConnection(
 }
 
 /** @internal Retain an opaque native database handle. */
-export function registerRustDatabaseHandle(
-  database: RustDatabase,
-  native: NativeRustDatabase,
+export function registerDatabaseHandle(
+  database: Database,
+  native: NativeDatabase,
 ): void {
   databaseHandles.set(database, native);
 }
 
 /** @internal Retain an opaque borrowed transaction handle. */
-export function registerRustTransactionHandle(
-  transaction: RustTransactionContext,
-  native: NativeRustTransactionContext,
+export function registerTransactionHandle(
+  transaction: TransactionContext | MigrationTransaction,
+  native: NativeTransactionContext,
 ): void {
   transactionHandles.set(transaction, native);
 }
 
 /** @internal Resolve database ownership for generated execution. */
 export function rustDatabaseHandle(
-  connection: RustDatabase | RustTransactionContext,
-): NativeRustDatabase | undefined {
+  connection: Database | TransactionContext | MigrationTransaction,
+): NativeDatabase | undefined {
   return databaseHandles.get(connection);
 }
 
 /** @internal Resolve borrowed transaction ownership for generated execution. */
 export function rustTransactionHandle(
-  connection: RustDatabase | RustTransactionContext,
-): NativeRustTransactionContext | undefined {
+  connection: Database | TransactionContext | MigrationTransaction,
+): NativeTransactionContext | undefined {
   return transactionHandles.get(connection);
 }

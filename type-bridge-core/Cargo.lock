@@ -40,27 +40,12 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "anstream"
-version = "0.6.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43d5b281e737544384e969a5ccad3f1cdd24b48086a0fc1b2a5262a26b8f4f4a"
-dependencies = [
- "anstyle",
- "anstyle-parse 0.2.7",
- "anstyle-query",
- "anstyle-wincon",
- "colorchoice",
- "is_terminal_polyfill",
- "utf8parse",
-]
-
-[[package]]
-name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d"
 dependencies = [
  "anstyle",
- "anstyle-parse 1.0.0",
+ "anstyle-parse",
  "anstyle-query",
  "anstyle-wincon",
  "colorchoice",
@@ -73,15 +58,6 @@ name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
-
-[[package]]
-name = "anstyle-parse"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7644824f0aa2c7b9384579234ef10eb7efb6a0deb83f9630a49594dd9c15c2"
-dependencies = [
- "utf8parse",
-]
 
 [[package]]
 name = "anstyle-parse"
@@ -350,9 +326,9 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cap-fs-ext"
-version = "4.0.2"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d78e5a3368ae89b7cb68186411452b4b9fac8b41be9c19bf3f47c2d2c8e36e6b"
+checksum = "56ff379b70af8e08307a8f65e7040c7301cb4a572538ade16b4984f0da77847f"
 dependencies = [
  "cap-primitives",
  "cap-std",
@@ -362,9 +338,9 @@ dependencies = [
 
 [[package]]
 name = "cap-primitives"
-version = "4.0.2"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdadbd7c002d3a484b35243669abdae85a0ebaded5a61117169dc3400f9a7ff0"
+checksum = "8b5f74729fd2f44701d1a8eb47e906cdb3ccd9ec0f02baad85a744b791940b18"
 dependencies = [
  "ambient-authority",
  "fs-set-times",
@@ -380,9 +356,9 @@ dependencies = [
 
 [[package]]
 name = "cap-std"
-version = "4.0.2"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7281235d6e96d3544ca18bba9049be92f4190f8d923e3caef1b5f66cfa752608"
+checksum = "c1ec78e242cfa2cfe276807ac2ecc00315a6c97786977414bcd1c3963b6c91b8"
 dependencies = [
  "cap-primitives",
  "io-extras",
@@ -510,7 +486,7 @@ version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "714a53001bf66416adb0e2ef5ac857140e7dc3a0c48fb28b2f10762fc4b5069f"
 dependencies = [
- "anstream 1.0.0",
+ "anstream",
  "anstyle",
  "clap_lex",
  "strsim",
@@ -1069,9 +1045,9 @@ dependencies = [
 
 [[package]]
 name = "granit-parser"
-version = "0.0.7"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d03f81ad4732830d85cfd417a9f62cde6dadda4354d37d078a6084a19560aa2d"
+checksum = "da55feca5d1625466bae068f9fd4b87892caeae70c3fe671ddb0f50d41aebf37"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -1738,18 +1714,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85fbf1fa9f1babfe396d74bbbf52b3643770243e8f5b0b46715d4caf7f0dfc9a"
 dependencies = [
  "libloading",
-]
-
-[[package]]
-name = "network-interface"
-version = "2.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ddcb8865ad3d9950f22f42ffa0ef0aecbfbf191867b3122413602b0a360b2a6"
-dependencies = [
- "cc",
- "libc",
- "thiserror",
- "winapi",
 ]
 
 [[package]]
@@ -2436,9 +2400,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.4"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags",
  "errno",
@@ -3115,7 +3079,6 @@ dependencies = [
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -3213,7 +3176,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "axum 0.8.8",
  "http-body-util",
@@ -3237,8 +3200,9 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-c"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
+ "ed25519-dalek",
  "serde_json",
  "sha2",
  "tokio",
@@ -3255,7 +3219,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-cli"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "clap",
  "serde_json",
@@ -3263,7 +3227,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "type-bridge-contract",
- "type-bridge-migration",
  "type-bridge-orm",
  "type-bridge-schema",
  "type-bridge-schema-codegen",
@@ -3277,7 +3240,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-contract"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "ed25519-dalek",
  "serde",
@@ -3289,7 +3252,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "pyo3",
  "pythonize",
@@ -3301,7 +3264,6 @@ dependencies = [
  "type-bridge-cli",
  "type-bridge-contract",
  "type-bridge-core-lib",
- "type-bridge-migration",
  "type-bridge-orm",
  "type-bridge-perf-stages",
  "type-bridge-schema",
@@ -3309,12 +3271,11 @@ dependencies = [
  "type-bridge-schema-compat",
  "type-bridge-schema-migration",
  "type-bridge-schema-migration-typedb",
- "type-bridge-toml-transpiler",
 ]
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -3330,7 +3291,6 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "type-bridge-contract",
  "typeql",
@@ -3341,34 +3301,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "type-bridge-migration"
-version = "2.3.3"
-dependencies = [
- "anstream 0.6.21",
- "anstyle",
- "cap-fs-ext",
- "cap-primitives",
- "cap-std",
- "chrono",
- "clap",
- "network-interface",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
- "type-bridge-contract",
- "type-bridge-core-lib",
- "type-bridge-orm",
- "type-bridge-schema-compat",
- "uuid",
-]
-
-[[package]]
 name = "type-bridge-node"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "napi",
  "napi-build",
@@ -3390,7 +3324,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "base64",
  "criterion",
@@ -3418,7 +3352,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3428,7 +3362,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-perf"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "serde_json",
  "tokio",
@@ -3443,7 +3377,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-perf-stages"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "tokio",
  "tracing",
@@ -3452,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-query"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -3460,7 +3394,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3474,7 +3408,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-codegen"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "serde_json",
  "sha2",
@@ -3485,20 +3419,19 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-compat"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
  "type-bridge-contract",
  "type-bridge-core-lib",
  "type-bridge-schema",
- "type-bridge-toml-transpiler",
  "typeql",
 ]
 
 [[package]]
 name = "type-bridge-schema-migration"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -3521,7 +3454,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration-typedb"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3529,7 +3462,6 @@ dependencies = [
  "tokio",
  "type-bridge-contract",
  "type-bridge-core-lib",
- "type-bridge-migration",
  "type-bridge-orm",
  "type-bridge-query",
  "type-bridge-schema",
@@ -3540,7 +3472,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-server"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "axum 0.8.8",
  "axum-server",
@@ -3560,68 +3492,22 @@ dependencies = [
  "tokio",
  "toml",
  "tower 0.5.3",
- "tower-http",
  "tracing",
  "tracing-subscriber",
  "type-bridge-contract",
  "type-bridge-core-lib",
  "type-bridge-orm",
- "type-bridge-query",
  "type-bridge-schema",
  "type-bridge-schema-compat",
+ "type-bridge-schema-migration",
+ "type-bridge-schema-migration-typedb",
  "type-bridge-typedb-runtime",
  "uuid",
 ]
 
 [[package]]
-name = "type-bridge-toml-transpiler"
-version = "2.3.3"
-dependencies = [
- "indexmap 2.13.1",
- "serde",
- "serde_json",
- "thiserror",
- "toml",
- "type-bridge-core-lib",
- "typeql",
-]
-
-[[package]]
-name = "type-bridge-typedb-driver-b8"
-version = "3.11.5"
-dependencies = [
- "chrono",
- "chrono-tz",
- "crossbeam",
- "futures",
- "http",
- "itertools 0.14.0",
- "maybe-async",
- "prost",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-types",
- "tracing",
- "tracing-subscriber",
- "type-bridge-typedb-protocol-b8",
- "uuid",
-]
-
-[[package]]
-name = "type-bridge-typedb-protocol-b8"
-version = "3.11.0"
-dependencies = [
- "prost",
- "tonic",
-]
-
-[[package]]
 name = "type-bridge-typedb-runtime"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3636,13 +3522,12 @@ dependencies = [
  "tracing-subscriber",
  "type-bridge-contract",
  "type-bridge-core-lib",
- "type-bridge-typedb-driver-b8",
  "typedb-driver",
 ]
 
 [[package]]
 name = "type-bridge-workspace"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",

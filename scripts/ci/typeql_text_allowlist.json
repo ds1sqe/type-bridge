@@ -26,7 +26,7 @@
     },
     "type-bridge-core/crates/orm/src/session/legacy_writer.rs": {
       "remove_in": "3.0",
-      "reason": "Released legacy writer lane; still reached by the dynamic fallbacks."
+      "reason": "Holds only the migration-callback managed-fence read; the released legacy writer guard is removed."
     }
   }
 }

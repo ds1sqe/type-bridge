@@ -38,7 +38,7 @@ use type_bridge_schema_migration_typedb::{
 fn connection() -> (String, String, String, String, ConnectOptions) {
     let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_owned());
     let database = env::var("TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE")
-        .unwrap_or_else(|_| "type_bridge_v2_execution_store".to_owned());
+        .unwrap_or_else(|_| "type_bridge_execution_store".to_owned());
     let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
     let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
     let mut options = ConnectOptions::default();
@@ -210,6 +210,8 @@ async fn foreign_journal_schema_rejects_without_mutating_either_database() {
     );
     assert_eq!(journal.schema_text().await.unwrap(), journal_before);
     assert_eq!(managed.schema_text().await.unwrap(), managed_before);
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -250,6 +252,8 @@ async fn different_provider_authority_rejects_before_mutating_either_database() 
     let rendered = format!("{error}\n{error:?}");
     assert!(!rendered.contains(&address));
     assert!(!rendered.contains(&alternate));
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -295,10 +299,10 @@ async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence()
         .expect("write transaction");
     transaction
         .query(
-            "insert $owner isa typebridge-internal-v2-journal-owner, \
-             has typebridge-internal-v2-journal-owner-key \"typebridge-journal-owner/v1\", \
-             has typebridge-internal-v2-journal-owner-managed-database \"another-database\", \
-             has typebridge-internal-v2-journal-owner-managed-scope \"another-scope\";",
+            "insert $owner isa typebridge-internal-journal-owner, \
+             has typebridge-internal-journal-owner-key \"typebridge-journal-owner/v1\", \
+             has typebridge-internal-journal-owner-managed-database \"another-database\", \
+             has typebridge-internal-journal-owner-managed-scope \"another-scope\";",
         )
         .await
         .expect("insert a foreign owner");
@@ -317,6 +321,8 @@ async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence()
     );
     assert_eq!(journal.schema_text().await.unwrap(), journal_schema);
     assert_eq!(managed.schema_text().await.unwrap(), managed_before);
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -343,12 +349,12 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
         .expect_err("read-only verification cannot bootstrap an empty journal");
     assert_eq!(
         verify_error.code().as_str(),
-        "migration_typedb_journal_control_schema_absent"
+        "migration_journal_import_pending"
     );
     assert_eq!(journal.schema_text().await.unwrap(), journal_before);
     assert_eq!(managed.schema_text().await.unwrap(), managed_before);
-    assert!(!journal_before.contains("typebridge-internal-v2-"));
-    assert!(!managed_before.contains("typebridge-internal-v2-"));
+    assert!(!journal_before.contains("typebridge-internal-"));
+    assert!(!managed_before.contains("typebridge-internal-"));
 
     let catalog_b =
         VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
@@ -364,10 +370,10 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
     let mut transaction = journal.read_transaction().await.unwrap();
     let owners = transaction
         .query(
-            "match $owner isa typebridge-internal-v2-journal-owner, \
-             has typebridge-internal-v2-journal-owner-key $key, \
-             has typebridge-internal-v2-journal-owner-managed-database $database, \
-             has typebridge-internal-v2-journal-owner-managed-scope $scope; \
+            "match $owner isa typebridge-internal-journal-owner, \
+             has typebridge-internal-journal-owner-key $key, \
+             has typebridge-internal-journal-owner-managed-database $database, \
+             has typebridge-internal-journal-owner-managed-scope $scope; \
              fetch { \"key\": $key, \"database\": $database, \"scope\": $scope };",
         )
         .await
@@ -386,6 +392,11 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
         .ensure_control_schema()
         .await
         .expect("a restarted apply/adopt process verifies the existing owner");
+    let lease = resumed
+        .acquire(&scope, &LeaseHolderId::new("resume-import").unwrap())
+        .await
+        .unwrap();
+    resumed.release(&lease).await.unwrap();
     assert!(
         resumed
             .load_applied_read_only(&scope)
@@ -393,6 +404,8 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
             .expect("read-only verification resumes against the owned journal")
             .is_empty()
     );
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -520,7 +533,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
         .begin_plan(&lease_one, plan_record)
         .await
         .expect("persist open plan");
-    assert_eq!(stored_plan.sequence().get(), 1);
+    assert_eq!(stored_plan.sequence().get(), 2);
 
     let migration_apply = &plan.migrations()[0];
     let group = &migration_apply.transaction_groups()[0];
@@ -570,7 +583,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
         .record_group_event(&lease_one, before)
         .await
         .expect("persist before-commit");
-    assert_eq!(stored_before.sequence().get(), 2);
+    assert_eq!(stored_before.sequence().get(), 3);
     require_active_managed_fence(&mut managed_schema_transaction, &lease_one)
         .await
         .expect("journal append cannot disturb managed fence");
@@ -593,9 +606,9 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
         .await
         .expect("rehydrate open plan")
         .expect("open plan survives takeover");
-    assert_eq!(recovered.plan().sequence().get(), 1);
+    assert_eq!(recovered.plan().sequence().get(), 2);
     assert_eq!(recovered.events().len(), 1);
-    assert_eq!(recovered.events()[0].sequence().get(), 2);
+    assert_eq!(recovered.events()[0].sequence().get(), 3);
 
     let committed = GroupEventRecord::new(
         &lease_two,
@@ -614,7 +627,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
         .record_group_event(&lease_two, committed)
         .await
         .expect("persist committed");
-    assert_eq!(stored_committed.sequence().get(), 3);
+    assert_eq!(stored_committed.sequence().get(), 4);
 
     let applied = AppliedRecord::from_verified_manifest_contract(&lease_two, &migration)
         .expect("applied record");
@@ -622,7 +635,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
         .record_applied(&lease_two, applied)
         .await
         .expect("persist applied checkpoint");
-    assert_eq!(stored_applied.sequence().get(), 4);
+    assert_eq!(stored_applied.sequence().get(), 5);
     assert!(
         journal
             .load_open_plan(&lease_two)
@@ -635,7 +648,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
         .await
         .expect("load applied ledger");
     assert_eq!(applied.len(), 1);
-    assert_eq!(applied[0].sequence().get(), 4);
+    assert_eq!(applied[0].sequence().get(), 5);
     journal
         .release(&lease_two)
         .await
@@ -686,7 +699,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
         .await
         .expect("rehydrate applied ledger from verified catalog");
     assert_eq!(rehydrated.len(), 1);
-    assert_eq!(rehydrated[0].sequence().get(), 4);
+    assert_eq!(rehydrated[0].sequence().get(), 5);
     assert!(
         reopened
             .load_open_plan(&lease_three)
@@ -708,7 +721,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
         .begin_plan(&lease_three, follow_on_record)
         .await
         .expect("applied basis gates follow-on begin");
-    assert_eq!(stored_follow_on.sequence().get(), 5);
+    assert_eq!(stored_follow_on.sequence().get(), 6);
 
     let follow_on_migration = &follow_on_plan.migrations()[0];
     let follow_on_group = &follow_on_migration.transaction_groups()[0];
@@ -727,7 +740,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
             .expect("persist follow-on before-commit")
             .sequence()
             .get(),
-        6
+        7
     );
     let follow_on_committed = GroupEventRecord::new(
         &lease_three,
@@ -750,7 +763,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
             .expect("persist follow-on committed")
             .sequence()
             .get(),
-        7
+        8
     );
     let follow_on_applied = AppliedRecord::from_verified_manifest_contract(&lease_three, &second)
         .expect("follow-on applied record");
@@ -761,7 +774,7 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
             .expect("persist follow-on applied")
             .sequence()
             .get(),
-        8
+        9
     );
     let completed_basis = reopened
         .load_applied(&lease_three)
@@ -881,6 +894,106 @@ async fn racing_lease_acquirers_serialize_on_the_control_row() {
     assert_eq!(next.fence().get(), 3);
     store.release(&next).await.unwrap();
 
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn interrupted_import_keeps_owner_and_fence_when_restarted() {
+    let (managed, journal) = databases().await;
+    let scope_id = ManagedScopeId::new("import-restart-scope").unwrap();
+    let binding = TypeDbExecutionBinding::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        context_for_scope(scope_id.clone()),
+    )
+    .unwrap();
+    let catalog =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .unwrap();
+    let store = TypeDbMigrationStore::new(&binding, catalog).unwrap();
+    let scope = ExecutionScope::new(scope_id);
+    let first = store
+        .acquire(&scope, &LeaseHolderId::new("interrupted-importer").unwrap())
+        .await
+        .unwrap();
+    // Remove only the last completion record to reproduce interruption just
+    // before its commit. The held lease, owner and control remain in place.
+    journal.execute_raw(
+        "match $r isa typebridge-internal-migration-journal, has typebridge-internal-record-kind \"import-complete\"; delete $r;",
+        type_bridge_orm::TxType::Write,
+    ).await.unwrap();
+    let pending = store.load_applied_read_only(&scope).await.unwrap_err();
+    assert_eq!(pending.code().as_str(), "migration_journal_import_pending");
+    let restarted = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        store.acquire(&scope, &LeaseHolderId::new("replacement-importer").unwrap()),
+    )
+    .await
+    .expect("held lease takeover must finish within the bound")
+    .unwrap();
+    assert!(restarted.fence() > first.fence());
+    assert_eq!(
+        store.release(&first).await.unwrap_err().code().as_str(),
+        "migration_execution_stale_fence"
+    );
+    assert!(
+        store
+            .load_applied_read_only(&scope)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    store.release(&restarted).await.unwrap();
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn legacy_import_refuses_a_foreign_source_without_modifying_it() {
+    let (managed, journal) = databases().await;
+    let old = managed.derived_legacy_journal_database();
+    old.create_database().await.unwrap();
+    old.execute_raw(
+        "define entity foreign-journal-data;",
+        type_bridge_orm::TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let before = old.schema_text().await.unwrap();
+    let scope_id = ManagedScopeId::new("foreign-import-scope").unwrap();
+    let binding = TypeDbExecutionBinding::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        context_for_scope(scope_id.clone()),
+    )
+    .unwrap();
+    let catalog =
+        VerifiedMigrationCatalog::new(std::iter::empty::<&VerifiedSchemaMigrationManifest>())
+            .unwrap();
+    let store = TypeDbMigrationStore::new(&binding, catalog).unwrap();
+    let scope = ExecutionScope::new(scope_id);
+    let error = store
+        .acquire(
+            &scope,
+            &LeaseHolderId::new("foreign-source-reader").unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "migration_journal_import_invalid");
+    assert_eq!(old.schema_text().await.unwrap(), before);
+    assert_eq!(
+        store
+            .load_applied_read_only(&scope)
+            .await
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "migration_journal_import_pending"
+    );
+    old.delete_database().await.unwrap();
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }

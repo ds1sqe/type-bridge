@@ -11,11 +11,11 @@ execution.
 
 ```toml
 [dependencies]
-type-bridge-schema-migration-typedb = "2.3.3"
+type-bridge-schema-migration-typedb = "3.0.0"
 ```
 
 Embedders should start with the fully bound `TypeDbMigrationRunner` from the
-[crate API](https://docs.rs/type-bridge-schema-migration-typedb/2.3.3). It
+[crate API](https://docs.rs/type-bridge-schema-migration-typedb/3.0.0). It
 constructs one execution binding and reuses it for every provider/store
 component it composes.
 
@@ -26,6 +26,7 @@ Lower-level embedders must do the same explicitly:
 # use type_bridge_contract::diagnostic::Diagnostic;
 # use type_bridge_orm::Database;
 # use type_bridge_schema::ManagedDeltaContext;
+# use type_bridge_schema_migration::VerifiedMigrationApplyPlan;
 # use type_bridge_schema_migration_typedb::{
 #     TypeDbExecutionBinding, TypeDbMigrationProvider, TypeDbMigrationStore,
 #     VerifiedMigrationCatalog,
@@ -35,17 +36,19 @@ Lower-level embedders must do the same explicitly:
 #     journal: Arc<Database>,
 #     context: ManagedDeltaContext,
 #     catalog: VerifiedMigrationCatalog<'a>,
+#     plan: &VerifiedMigrationApplyPlan,
 # ) -> Result<(), Diagnostic> {
 let binding = TypeDbExecutionBinding::new(managed, journal, context)?;
 let store = TypeDbMigrationStore::new(&binding, catalog)?;
-let provider = TypeDbMigrationProvider::new(&binding)?;
+let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities())?;
 # let _ = (store, provider);
 # Ok(())
 # }
 ```
 
-`TypeDbExecutionBinding` validates the exact managed/journal pair, TypeDB
-3.12.1 server identity, and `ManagedDeltaContext`. The store binds each lease
+`TypeDbExecutionBinding` validates the exact managed/journal pair, the TypeDB
+server line and patch floor the semantic profile requires, and
+`ManagedDeltaContext`. The store binds each lease
 it issues to this process-local identity; the store and provider reject an
 unbound lease or a lease from any independently constructed binding before
 opening a transaction. Constructing a second binding from otherwise identical
@@ -59,10 +62,10 @@ the active managed fence for the full mutation; never write the control schema
 or journal ad hoc.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
-2.3.3, requires Rust 1.88+, and executes migrations only against exactly TypeDB
-3.12.1. The wider TypeDB driver-band support belongs to the runtime and server
-crates, not this migration provider.
+3.0.0 and requires Rust 1.88+. Connected migrations run on exactly two
+profile/server pairs: `typedb-3.12.1/v1` with TypeDB 3.12.3 and
+`typedb-3.13.6/v1` with TypeDB 3.13.6 or 3.14.0.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-schema-migration-typedb/2.3.3) ·
+[API documentation](https://docs.rs/type-bridge-schema-migration-typedb/3.0.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

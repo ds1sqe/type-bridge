@@ -43,14 +43,14 @@ def hostile_inventory(tmp_path: Path, old: str, new: str) -> Path:
 def test_repository_inventory_closes_every_cargo_product_class() -> None:
     inventory = inventory_module.load_inventory()
 
-    assert inventory.release_version == "2.3.3"
+    assert inventory.release_version == "3.0.0"
     assert inventory.first_party_msrv == "1.88"
-    assert len(inventory.packages) == 24
-    assert len(inventory.public_packages) == 19
-    assert len(inventory.first_party_packages) == 17
-    assert len(inventory.immutable_packages) == 2
+    assert len(inventory.packages) == 20
+    assert len(inventory.public_packages) == 15
+    assert len(inventory.first_party_packages) == 15
+    assert len(inventory.immutable_packages) == 0
     assert len(inventory.private_packages) == 5
-    assert [package.publish_order for package in inventory.public_packages] == list(range(1, 20))
+    assert [package.publish_order for package in inventory.public_packages] == list(range(1, 16))
     assert {package.name for package in inventory.binding_packages} == {
         "type-bridge-c",
         "type-bridge-core",
@@ -69,7 +69,7 @@ def test_repository_inventory_closes_every_cargo_product_class() -> None:
     assert inventory.tooling_packages[0].role == "perf-harness"
     for package in inventory.private_packages:
         assert package.version_policy == "lockstep"
-        assert package.version == "2.3.3"
+        assert package.version == "3.0.0"
         assert package.docs_target == "none"
         assert package.public is False
         assert package.publish_order is None
@@ -81,8 +81,8 @@ def test_repository_inventory_closes_every_cargo_product_class() -> None:
         if package.name == "type-bridge-server"
     )
     assert server.public is True
-    assert server.version == "2.3.3"
-    assert server.documentation == "https://docs.rs/type-bridge-server/2.3.3"
+    assert server.version == "3.0.0"
+    assert server.documentation == "https://docs.rs/type-bridge-server/3.0.0"
 
 
 def test_public_cargo_package_index_is_inventory_closed_and_linked() -> None:
@@ -98,7 +98,7 @@ def test_public_cargo_package_index_is_inventory_closed_and_linked() -> None:
         for match in row_pattern.finditer(source)
     }
 
-    assert len(rows) == len(inventory.public_packages) == 19
+    assert len(rows) == len(inventory.public_packages) == 15
     assert set(rows) == {package.name for package in inventory.public_packages}
     for package in inventory.public_packages:
         assert rows[package.name] == (
@@ -176,19 +176,14 @@ def test_inventory_classifies_the_real_workspace_without_omissions() -> None:
             "private tooling package set must be exact",
         ),
         (
-            "publish-order = 19",
-            "publish-order = 20",
+            "publish-order = 15",
+            "publish-order = 16",
             "publish-order must be contiguous",
         ),
         (
             'name = "type-bridge-core"\nmanifest = "crates/python/Cargo.toml"\nclassification = "private-binding"\nrole = "binding"\nversion-policy = "lockstep"\ndocs-target = "none"',
             'name = "type-bridge-core"\nmanifest = "crates/python/Cargo.toml"\nclassification = "private-binding"\nrole = "binding"\nversion-policy = "lockstep"\npublish-order = 20\ndocs-target = "none"',
             "private package type-bridge-core cannot have publish-order",
-        ),
-        (
-            'version-policy = "fixed"\nversion = "3.11.0"',
-            'version-policy = "fixed"\nversion = ""',
-            "type-bridge-typedb-protocol-b8.version must be a non-empty string",
         ),
     ],
 )
@@ -201,6 +196,27 @@ def test_inventory_rejects_identity_and_order_drift(
     path = hostile_inventory(tmp_path, old, new)
 
     with pytest.raises(inventory_module.InventoryError, match=message):
+        inventory_module.load_inventory(path)
+
+
+def test_inventory_rejects_an_immutable_package(tmp_path: Path) -> None:
+    path = tmp_path / "cargo-release-inventory.toml"
+    path.write_text(
+        INVENTORY_FILE.read_text(encoding="utf-8") + "\n[[packages]]\n"
+        'name = "unexpected-immutable"\n'
+        'manifest = "vendor/unexpected/Cargo.toml"\n'
+        'classification = "public-immutable"\n'
+        'role = "compatibility"\n'
+        'version-policy = "fixed"\n'
+        'version = "1.0.0"\n'
+        "publish-order = 16\n"
+        'docs-target = "lib"\n'
+        'registry-checksum = "' + "0" * 64 + '"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        inventory_module.InventoryError, match="must not contain immutable packages"
+    ):
         inventory_module.load_inventory(path)
 
 

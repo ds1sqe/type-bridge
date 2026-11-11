@@ -1,13 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
-# PROJECT_VERSION is the frozen ABI 1.6 package-metadata line: pkg-config
-# reports it so generated packages pinned to `type-bridge = 1.6.0` keep
-# resolving. The native ABI the runtime implements comes from the header;
-# CMake reports it and serves every earlier minor down to 1.6 (see
-# cmake/TypeBridgeConfigVersion.cmake.in), and pkg-config provides it as
-# `type-bridge-abi`. The product/runtime version is reported at run time by
-# type_bridge_runtime_version().
-project(TypeBridge VERSION 1.6.0 LANGUAGES NONE)
-set(TYPE_BRIDGE_C_ABI_OLDEST "1.6.0")
+# Installed package metadata and the native runtime use the same ABI version.
+project(TypeBridge VERSION 2.0.0 LANGUAGES NONE)
+set(TYPE_BRIDGE_C_ABI_OLDEST "2.0.0")
 file(STRINGS "include/typebridge/type_bridge.h" TYPE_BRIDGE_C_ABI_MAJOR
      REGEX "^#define TYPE_BRIDGE_C_ABI_MAJOR [0-9]+u$")
 file(STRINGS "include/typebridge/type_bridge.h" TYPE_BRIDGE_C_ABI_MINOR

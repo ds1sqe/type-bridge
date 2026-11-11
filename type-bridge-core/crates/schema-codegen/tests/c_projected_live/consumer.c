@@ -7,6 +7,18 @@
 #include <projected/models.h>
 #include <projected_foreign/models.h>
 
+/* These fixtures expect one root. Exercise the result owner, then its item. */
+#define TEST_SINGLE_WRITE(MODEL, OP, CALL, OUT, DIAG)                           \
+  ((write_status = (CALL)) != TYPE_BRIDGE_STATUS_OK ? write_status :            \
+   ((write_status = MODEL##_##OP##_batch_result_item(                           \
+         MODEL##_##OP##_result, (OUT), (DIAG))) != TYPE_BRIDGE_STATUS_OK ?       \
+    ((void)MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result),            \
+     write_status) :                                                          \
+    (MODEL##_##OP##_batch_result_close(&MODEL##_##OP##_result) !=               \
+         TYPE_BRIDGE_STATUS_OK ? TYPE_BRIDGE_STATUS_INVALID_ARGUMENT :         \
+     (*(OUT) != NULL ? TYPE_BRIDGE_STATUS_OK : TYPE_BRIDGE_STATUS_INVALID_ARGUMENT))))
+
+
 #define CHECK(condition)                                                       \
   do {                                                                         \
     if (!(condition)) {                                                        \
@@ -19,6 +31,7 @@
   ((type_bridge_byte_view_t){(const uint8_t *)(text), sizeof(text) - 1u})
 
 typedef struct iid_copy {
+  type_bridge_iid_t *typed;
   uint8_t bytes[256];
   size_t length;
 } iid_copy_t;
@@ -75,7 +88,7 @@ static int copy_iid(type_bridge_byte_view_t iid, iid_copy_t *output) {
   }
   memcpy(output->bytes, iid.data, iid.length);
   output->length = iid.length;
-  return 1;
+  return type_bridge_iid_open(iid, &output->typed) == TYPE_BRIDGE_STATUS_OK;
 }
 
 static type_bridge_byte_view_t iid_view(const iid_copy_t *iid) {
@@ -324,6 +337,13 @@ static int interaction_actor_is(
 }
 
 int main(void) {
+  type_bridge_status_t write_status;
+  projected_container_insert_batch_result *projected_container_insert_result = NULL;
+  projected_event_insert_batch_result *projected_event_insert_result = NULL;
+  projected_interaction_insert_batch_result *projected_interaction_insert_result = NULL;
+  projected_person_insert_batch_result *projected_person_insert_result = NULL;
+  projected_plainzhactivity_insert_batch_result *projected_plainzhactivity_insert_result = NULL;
+  projected_robot_insert_batch_result *projected_robot_insert_result = NULL;
   const char *address = getenv("TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS");
   const char *database_name = getenv("TYPE_BRIDGE_PROJECTED_LIVE_DATABASE");
   const char *username = getenv("TYPEDB_USERNAME");
@@ -334,7 +354,7 @@ int main(void) {
   uint32_t http_port = required_http_port();
   type_bridge_schema_package_t *package = NULL;
   type_bridge_schema_package_t *foreign_package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_database_t *database = NULL;
@@ -344,7 +364,7 @@ int main(void) {
       TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN,
       0u,
       {0u, 0u, 0u, 0u}};
-  type_bridge_database_config_v1_t database_config = {0};
+  type_bridge_database_config_t database_config = {0};
   type_bridge_byte_view_t version = {0};
   projected_person_create *ada_create = NULL;
   projected_person_create *dana_create = NULL;
@@ -352,7 +372,7 @@ int main(void) {
   projected_robot_create *robot_positive_create = NULL;
   projected_robot_create *robot_negative_create = NULL;
   projected_robot *robot = NULL;
-  iid_copy_t iids[10] = {{{0}, 0u}};
+  iid_copy_t iids[10] = {{NULL, {0}, 0u}};
   projected_person_ref *ada_ref = NULL;
   projected_person_ref *dana_ref = NULL;
   projected_robot_ref *robot_ref = NULL;
@@ -401,7 +421,7 @@ int main(void) {
   CHECK(type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         runtime != NULL && diagnostics == NULL);
-  CHECK(type_bridge_database_open_v1(runtime, package, &database_config, NULL,
+  CHECK(type_bridge_database_open(runtime, package, &database_config, NULL,
                                      &database, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         database != NULL && diagnostics == NULL);
@@ -438,8 +458,8 @@ int main(void) {
       package, "data-ada", "Ada", 38, 7, 40, 0u, 38, "2026-08-12",
       "2026-08-12T09:30:00", "2026-08-12T09:30:00Z", "38.5",
       UINT64_C(0x4043000000000000), "PT38S", &ada_create, &diagnostics));
-  CHECK(projected_person_database_insert(database, ada_create, NULL, &person,
-                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(projected_person, insert, projected_person_database_insert(database, ada_create, NULL,  NULL,&projected_person_insert_result,
+                                      &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_byte_view_t iid = {0};
     CHECK(projected_person_iid(person, &iid, &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
@@ -450,8 +470,8 @@ int main(void) {
       package, "data-dana", NULL, 45, 9, 40, 1u, 45, "2026-08-13",
       "2026-08-13T10:45:00", "2026-08-13T10:45:00Z", "45.5",
       UINT64_C(0x4046800000000000), "PT45S", &dana_create, &diagnostics));
-  CHECK(projected_person_database_insert(database, dana_create, NULL, &person,
-                                      &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(projected_person, insert, projected_person_database_insert(database, dana_create, NULL,  NULL,&projected_person_insert_result,
+                                      &diagnostics), &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_byte_view_t iid = {0};
     CHECK(projected_person_iid(person, &iid, &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
@@ -463,8 +483,7 @@ int main(void) {
 
   CHECK(open_robot_create(package, 7, 12, &robot_positive_create,
                           &diagnostics));
-  CHECK(projected_robot_database_insert(database, robot_positive_create, NULL,
-                                     &robot, &diagnostics) ==
+  CHECK(TEST_SINGLE_WRITE(projected_robot, insert, projected_robot_database_insert(database, robot_positive_create, NULL,  NULL,&projected_robot_insert_result, &diagnostics), &robot, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_byte_view_t iid = {0};
@@ -481,8 +500,7 @@ int main(void) {
   CHECK(projected_robot_close(&robot) == TYPE_BRIDGE_STATUS_OK);
   CHECK(open_robot_create(package, -7, 13, &robot_negative_create,
                           &diagnostics));
-  CHECK(projected_robot_database_insert(database, robot_negative_create, NULL,
-                                     &robot, &diagnostics) ==
+  CHECK(TEST_SINGLE_WRITE(projected_robot, insert, projected_robot_database_insert(database, robot_negative_create, NULL,  NULL,&projected_robot_insert_result, &diagnostics), &robot, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   {
     type_bridge_byte_view_t iid = {0};
@@ -532,9 +550,9 @@ int main(void) {
       CHECK(projected_interaction_create_open(
                 package, &args, &interaction_creates[index], &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK);
-      CHECK(projected_interaction_database_insert(
-                database, interaction_creates[index], NULL, &interaction,
-                &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
+      CHECK(TEST_SINGLE_WRITE(projected_interaction, insert, projected_interaction_database_insert(
+                database, interaction_creates[index], NULL,  NULL,&projected_interaction_insert_result,
+                &diagnostics), &interaction, &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
             interaction_actor_is(interaction, expected_kinds[index],
                                  &diagnostics) &&
             projected_interaction_iid(interaction, &iid, &diagnostics) ==
@@ -559,8 +577,8 @@ int main(void) {
     CHECK(projected_plainzhactivity_create_open(package, &args, &plain_create,
                                              &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(projected_plainzhactivity_database_insert(
-              database, plain_create, NULL, &plain, &diagnostics) ==
+    CHECK(TEST_SINGLE_WRITE(projected_plainzhactivity, insert, projected_plainzhactivity_database_insert(
+              database, plain_create, NULL,  NULL,&projected_plainzhactivity_insert_result, &diagnostics), &plain, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK &&
           projected_plainzhactivity_iid(plain, &iid, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK &&
@@ -580,7 +598,7 @@ int main(void) {
               TYPE_BRIDGE_STATUS_OK &&
           projected_plainzhactivity_close(&plain) == TYPE_BRIDGE_STATUS_OK);
     CHECK(projected_plainzhactivity_database_get_by_iid(
-              database, iid_view(&iids[7]), NULL, &plain, &diagnostics) ==
+              database, iids[7].typed, NULL,  NULL, &plain, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK &&
           plain != NULL && diagnostics == NULL);
     CHECK(projected_plainzhactivity_close(&plain) == TYPE_BRIDGE_STATUS_OK);
@@ -597,8 +615,8 @@ int main(void) {
     args.role_subject = event_subject;
     CHECK(projected_event_create_open(package, &args, &event_create,
                                    &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
-          projected_event_database_insert(database, event_create, NULL, &event,
-                                       &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
+          TEST_SINGLE_WRITE(projected_event, insert, projected_event_database_insert(database, event_create, NULL,  NULL,&projected_event_insert_result,
+                                       &diagnostics), &event, &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
           projected_event_iid(event, &iid, &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
           copy_iid(iid, &iids[8]));
     CHECK(projected_event_close(&event) == TYPE_BRIDGE_STATUS_OK);
@@ -625,8 +643,7 @@ int main(void) {
     args.role_item_chunks = &chunk;
     CHECK(projected_container_create_open(package, &args, &container_create,
                                        &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
-          projected_container_database_insert(database, container_create, NULL,
-                                           &container, &diagnostics) ==
+          TEST_SINGLE_WRITE(projected_container, insert, projected_container_database_insert(database, container_create, NULL,  NULL,&projected_container_insert_result, &diagnostics), &container, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK &&
           projected_container_iid(container, &iid, &diagnostics) ==
               TYPE_BRIDGE_STATUS_OK &&
@@ -650,57 +667,57 @@ int main(void) {
   }
 
   CHECK(projected_container_database_delete_by_iid(
-            database, iid_view(&iids[9]), NULL, &diagnostics) ==
+            database, iids[9].typed, NULL,  NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_event_database_delete_by_iid(database, iid_view(&iids[8]), NULL,
+  CHECK(projected_event_database_delete_by_iid(database, iids[8].typed, NULL,  NULL,
                                             &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(projected_plainzhactivity_database_delete_by_iid(
-            database, iid_view(&iids[7]), NULL, &diagnostics) ==
+            database, iids[7].typed, NULL,  NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(projected_plainzhactivity_database_get_by_iid(
-            database, iid_view(&iids[7]), NULL, &plain, &diagnostics) ==
+            database, iids[7].typed, NULL,  NULL, &plain, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         plain == NULL && diagnostics == NULL);
-  CHECK(projected_plainzhactivity_database_count(database, NULL, &count,
+  CHECK(projected_plainzhactivity_database_count(database, NULL,  NULL, &count,
                                               &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
   CHECK(projected_interaction_database_delete_by_iid(
-            database, iid_view(&iids[6]), NULL, &diagnostics) ==
+            database, iids[6].typed, NULL,  NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(projected_interaction_database_delete_by_iid(
-            database, iid_view(&iids[5]), NULL, &diagnostics) ==
+            database, iids[5].typed, NULL,  NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(projected_interaction_database_delete_by_iid(
-            database, iid_view(&iids[4]), NULL, &diagnostics) ==
+            database, iids[4].typed, NULL,  NULL, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_robot_database_delete_by_iid(database, iid_view(&iids[3]), NULL,
+  CHECK(projected_robot_database_delete_by_iid(database, iids[3].typed, NULL,  NULL,
                                             &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_robot_database_delete_by_iid(database, iid_view(&iids[2]), NULL,
+  CHECK(projected_robot_database_delete_by_iid(database, iids[2].typed, NULL,  NULL,
                                             &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_person_database_delete_by_iid(database, iid_view(&iids[1]), NULL,
+  CHECK(projected_person_database_delete_by_iid(database, iids[1].typed, NULL,  NULL,
                                              &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_person_database_delete_by_iid(database, iid_view(&iids[0]), NULL,
+  CHECK(projected_person_database_delete_by_iid(database, iids[0].typed, NULL,  NULL,
                                              &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(projected_container_database_count(database, NULL, &count, &diagnostics) ==
+  CHECK(projected_container_database_count(database, NULL,  NULL, &count, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
-  CHECK(projected_event_database_count(database, NULL, &count, &diagnostics) ==
+  CHECK(projected_event_database_count(database, NULL,  NULL, &count, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
-  CHECK(projected_interaction_database_count(database, NULL, &count,
+  CHECK(projected_interaction_database_count(database, NULL,  NULL, &count,
                                           &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
-  CHECK(projected_robot_database_count(database, NULL, &count, &diagnostics) ==
+  CHECK(projected_robot_database_count(database, NULL,  NULL, &count, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
-  CHECK(projected_person_database_count(database, NULL, &count, &diagnostics) ==
+  CHECK(projected_person_database_count(database, NULL,  NULL, &count, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         count == 0u);
 
@@ -742,6 +759,9 @@ int main(void) {
         projected_person_ref_close(&ada_ref) == TYPE_BRIDGE_STATUS_OK &&
         projected_person_create_close(&dana_create) == TYPE_BRIDGE_STATUS_OK &&
         projected_person_create_close(&ada_create) == TYPE_BRIDGE_STATUS_OK);
+  for (size_t index = 0u; index < 10u; ++index) {
+    CHECK(type_bridge_iid_close(&iids[index].typed) == TYPE_BRIDGE_STATUS_OK);
+  }
   CHECK(type_bridge_database_close(&database, &diagnostics) ==
             TYPE_BRIDGE_STATUS_OK &&
         database == NULL && diagnostics == NULL);

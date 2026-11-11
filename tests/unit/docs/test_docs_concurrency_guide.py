@@ -18,6 +18,7 @@ from typing import Any, cast
 import pytest
 from type_bridge_core import Exists, Matched
 
+import type_bridge.plan as plan_module
 from tests.unit.typed_query import test_plan_builder as golden
 from type_bridge import CommitConflict, CommitOutcomeUnknown, CommitRejected, Failure
 
@@ -54,10 +55,33 @@ def test_every_guide_include_names_a_section_of_an_existing_file() -> None:
 def _models() -> ModuleType:
     """The generated package's tokens, shaped as the plan builder reads them."""
 
+    authority = golden._authority()
+    projection = None
+
     def model(kind: str, label: str, **fields: str) -> type[Any]:
         owner = type(label.title(), (), {"__type_id__": f'{{"kind":"{kind}","label":"{label}"}}'})
+        setattr(owner, "__runtime_projection__", projection)
+        setattr(owner, "__plan_roles__", [])
+        handle = type(f"{label.title()}Handle", (plan_module.Handle,), {})
+        token_class = type("Token", (plan_module.FieldToken,), {})
         for name, attribute in fields.items():
-            setattr(owner, name, golden.field(owner, attribute))
+            token = token_class()
+            object.__setattr__(token, "owner", owner)
+            object.__setattr__(token, "fact", golden.field(owner, attribute).fact)
+            setattr(owner, name, token)
+            setattr(handle, name, property(lambda self, token=token: self._value(token)))
+        setattr(handle, "set", lambda self, **values: self._set(values))
+
+        def match(cls: type[Any], **values: Any) -> Any:
+            return plan_module._match(cls, handle, authority, None, plan_module._MISSING, values)
+
+        def insert(cls: type[Any], **values: Any) -> Any:
+            players = {key: value for key, value in values.items() if key in {"buyer", "item"}}
+            scalars = {key: value for key, value in values.items() if key not in players}
+            return plan_module._insert(cls, authority, scalars, players)
+
+        setattr(owner, "match", classmethod(match))
+        setattr(owner, "insert", classmethod(insert))
         return owner
 
     purchase = model("relation", "purchase", order_id="order-id")
@@ -85,11 +109,13 @@ def recovery() -> ModuleType:
     return _load(PURCHASE / "python/recovery.py", "docs_purchase_recovery")
 
 
-def test_the_guide_purchase_is_the_golden_purchase(program: ModuleType) -> None:
+def test_the_guide_purchase_matches_the_explicit_core_schedule(program: ModuleType) -> None:
     args = golden.FIXTURE["purchase"]
     assert (args["order"], args["item_id"], args["account_id"]) == ("O1", "I1", "A1")
     built = program.purchase(golden._authority())
-    assert built.canonical_bytes().hex() == golden.FIXTURE["purchase_hex"]
+    explicit = _load(PURCHASE / "python/program_explicit.py", "docs_purchase_explicit")
+    oracle = explicit.purchase(program.models, golden._authority())
+    assert built.canonical_bytes() == oracle.canonical_bytes()
 
 
 def _failure(phase: str, reason: str | None, *, retry_safe: bool, code: str) -> Failure:

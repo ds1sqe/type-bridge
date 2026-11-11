@@ -9,7 +9,7 @@ message respects the human-version contract (no protocol band numbers, no
 Usage:
     assert_gate_rejection.py --address localhost:1729 --probe connect --expect window
     assert_gate_rejection.py --address localhost:1729 --probe driver --expect installed
-    assert_gate_rejection.py --address localhost:1729 --probe connect --http-port 1 --expect ok
+    assert_gate_rejection.py --address localhost:1729 --probe connect --http-port 1 --expect discovery
 """
 
 from __future__ import annotations
@@ -26,10 +26,11 @@ CLASS_MARKERS = {
     "installed": "is not protocol-compatible with",
     # The version-range check (either component below floor).
     "window": "outside the admitted range",
+    "discovery": "reachable HTTP version endpoint",
 }
 
 # These must never appear in any user-facing gate message.
-FORBIDDEN = ["band 7", "band 8", "0.0.0"]
+FORBIDDEN = [*(f"band {band}" for band in range(7, 10)), "0.0.0"]
 
 
 def main() -> int:

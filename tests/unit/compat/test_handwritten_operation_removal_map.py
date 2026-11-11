@@ -46,6 +46,9 @@ def test_every_handwritten_family_has_an_exact_retained_disposition() -> None:
                 operation = generated_operations[operation_id]
                 required = set(operation.get("required_bindings", BINDINGS))
                 assert binding in required, (family["id"], operation_id, binding)
+                if operation["status"] == "removed_in_3_0":
+                    assert operation["replacements"], operation_id
+                    continue
                 assert operation["status"] in {
                     "accepted_live",
                     "accepted_offline",
@@ -75,7 +78,15 @@ def test_cut_over_handwritten_sources_are_absent_but_their_audit_is_frozen() -> 
             identities.add(identity)
 
         path = ROOT / item["path"]
-        if item["binding"] in cutover_bindings and family["disposition"] == "generated_successor":
+        if item["path"] in {
+            "tests/integration/queries/test_compiler_integration.py",
+            "tests/integration/queries/test_function_query.py",
+            "tests/integration/queries/test_query_v2_binding_smoke.py",
+            "type-bridge-core/crates/node/tests/integration/queries/query-v2-smoke.test.ts",
+        }:
+            # The frozen 2.1 map retained raw/V2 query evidence until 3.0.
+            assert not path.exists(), f"retired query evidence still active: {path}"
+        elif item["binding"] in cutover_bindings and family["disposition"] == "generated_successor":
             assert not path.exists(), f"retired handwritten evidence still active: {path}"
         elif family["disposition"] != "generated_successor":
             assert path.is_file(), f"retained contract evidence is absent: {path}"

@@ -479,6 +479,29 @@ fn emits_exact_deterministic_compound_package_with_migration_resource() {
                 .find("# Projection-owned dependency-first SCC link phase.")
                 .unwrap()
     );
+    // Unordered snapshots also retain native proofs through weak references.
+    for (declaration, slots) in [
+        ("Person(_Entity)", "(\"__weakref__\",)"),
+        ("PersonRef(_Reference)", "(\"__weakref__\",)"),
+        ("Membership(_Relation)", "(\"__weakref__\",)"),
+        ("MembershipRef(_Reference)", "(\"__weakref__\",)"),
+        ("Employment(Membership)", "()"),
+        ("EmploymentRef(MembershipRef)", "()"),
+    ] {
+        let body = source
+            .split_once(&format!("class {declaration}:\n"))
+            .unwrap()
+            .1;
+        let actual = body
+            .lines()
+            .find(|line| line.contains("__slots__ ="))
+            .unwrap();
+        assert_eq!(
+            actual.trim(),
+            format!("__slots__ = {slots}"),
+            "{declaration}"
+        );
+    }
     assert!(source.contains("class PlayerStats(_StructValue):"));
     assert!(
         source
@@ -542,6 +565,26 @@ entities:
     assert!(source.contains(&format!("class Person(Actor):\n    {documentation}")));
     assert!(source.contains(&format!("class PersonRef(ActorRef):\n    {documentation}")));
     assert!(stub.contains(&format!("class Person(Actor):\n    {documentation}")));
+    for (declaration, slots) in [
+        ("Actor(_Entity)", "(\"__weakref__\",)"),
+        ("ActorRef(_Reference)", "(\"__weakref__\",)"),
+        ("Person(Actor)", "()"),
+        ("PersonRef(ActorRef)", "()"),
+    ] {
+        let body = source
+            .split_once(&format!("class {declaration}:\n"))
+            .unwrap()
+            .1;
+        let actual = body
+            .lines()
+            .find(|line| line.contains("__slots__ ="))
+            .unwrap();
+        assert_eq!(
+            actual.trim(),
+            format!("__slots__ = {slots}"),
+            "{declaration}"
+        );
+    }
 }
 
 #[test]
@@ -584,27 +627,29 @@ fn rejects_public_name_collisions_and_missing_parents() {
     );
     let employment_id = TypeId::new(TypeKind::Relation, "employment").unwrap();
     let employment = &projection.models()[&employment_id];
-    let collision = ModelProjection::new(
-        employment.id().clone(),
-        TargetIdentifier::python("Membership").unwrap(),
-        employment.declaration().clone(),
-        employment.create().clone(),
-        employment.complete_read().clone(),
-        employment.reference_read().clone(),
-        employment.query_tokens().clone(),
-    )
-    .unwrap();
-    let mut models = projection.models().clone();
-    models.insert(employment_id.clone(), collision);
-    let collision_projection = rebuild(&projection, models, &resources);
-    assert_eq!(
-        emitter
-            .emit(&collision_projection, &authority)
-            .unwrap_err()
-            .code()
-            .as_str(),
-        "python_emitter_name_collision"
-    );
+    for name in ["Membership", "WriteResult"] {
+        let collision = ModelProjection::new(
+            employment.id().clone(),
+            TargetIdentifier::python(name).unwrap(),
+            employment.declaration().clone(),
+            employment.create().clone(),
+            employment.complete_read().clone(),
+            employment.reference_read().clone(),
+            employment.query_tokens().clone(),
+        )
+        .unwrap();
+        let mut models = projection.models().clone();
+        models.insert(employment_id.clone(), collision);
+        let collision_projection = rebuild(&projection, models, &resources);
+        assert_eq!(
+            emitter
+                .emit(&collision_projection, &authority)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "python_emitter_name_collision"
+        );
+    }
 
     let ghost = TypeId::new(TypeKind::Relation, "ghost").unwrap();
     let declaration = DeclarationProjection::new(
@@ -661,4 +706,46 @@ fn fixed_resources_are_distinct_and_content_addressed() {
             assert_ne!(left.content_fingerprint(), right.content_fingerprint());
         }
     }
+}
+
+#[test]
+fn scalar_authoring_factories_omit_many_valued_ownerships() {
+    let emitter = PythonEmitter::new();
+    let source = include_str!("acceptance/schema-plan-idioms.yaml");
+    let (projection, authority) = projected(source, &emitter.code_resources().unwrap());
+    let package = emitter.emit(&projection, &authority).unwrap();
+    let stub = std::str::from_utf8(package.get("_models.pyi").unwrap()).unwrap();
+    let item = stub
+        .split("class Item(")
+        .nth(1)
+        .unwrap()
+        .split("class ItemHandle")
+        .next()
+        .unwrap();
+    assert!(item.contains("def insert("));
+    let many = stub
+        .split("class Many(")
+        .nth(1)
+        .unwrap()
+        .split("class ManyHandle")
+        .next()
+        .unwrap();
+    assert!(!many.contains("def insert("));
+    let handle = stub
+        .split("class ManyHandle(")
+        .nth(1)
+        .unwrap()
+        .split("\nclass ")
+        .next()
+        .unwrap();
+    assert!(handle.contains("def tags("));
+    assert!(!handle.contains("def set("));
+    let inherited = stub
+        .split("class ManyItem(")
+        .nth(1)
+        .unwrap()
+        .split("class ManyItemHandle")
+        .next()
+        .unwrap();
+    assert!(inherited.contains("insert: None = None"));
 }

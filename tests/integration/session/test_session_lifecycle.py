@@ -59,7 +59,7 @@ class TestDatabaseLifecycle:
     def test_connect_creates_rust_handle(self, clean_db):
         """connect() should create a Rust database handle."""
         # clean_db is already connected
-        assert getattr(clean_db, "_rust_backend_database", None) is not None
+        assert getattr(clean_db, "_native_database", None) is not None
 
     def test_close_destroys_rust_handle(self, test_database):
         """close() should terminate and clear the Rust database handle."""
@@ -67,12 +67,12 @@ class TestDatabaseLifecycle:
 
         db = Database(address=TEST_DB_ADDRESS, database=test_database)
         db.connect()
-        rust_database = getattr(db, "_rust_backend_database", None)
+        rust_database = getattr(db, "_native_database", None)
         assert rust_database is not None
         assert rust_database.is_connected() is True
         db.close()
         db.close()
-        assert getattr(db, "_rust_backend_database", None) is None
+        assert getattr(db, "_native_database", None) is None
         assert rust_database.is_connected() is False
         with pytest.raises(RuntimeError, match="TypeDB driver connection is closed"):
             rust_database.database_exists()
@@ -82,8 +82,8 @@ class TestDatabaseLifecycle:
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         with Database(address=TEST_DB_ADDRESS, database=test_database) as db:
-            assert getattr(db, "_rust_backend_database", None) is not None
-        assert getattr(db, "_rust_backend_database", None) is None
+            assert getattr(db, "_native_database", None) is not None
+        assert getattr(db, "_native_database", None) is None
 
     def test_database_exists_true(self, clean_db, test_database):
         """database_exists() should return True for existing database."""
@@ -175,28 +175,28 @@ class TestTransactionTypes:
         """Read transaction should allow queries."""
         _install_session_schema(clean_db)
 
-        with clean_db.transaction(TransactionType.READ) as tx:
+        with clean_db.raw_transaction("read") as tx:
             # Should be able to read (even if empty)
-            results = tx.execute("match $p isa session_test_person; fetch { $p.* };")
-            assert results == []
+            results = tx.execute_query("match $p isa session_test_person; fetch { $p.* };")
+            assert results["answers"] == []
 
     def test_write_transaction(self, clean_db):
         """Write transaction should allow inserts."""
         _install_session_schema(clean_db)
 
-        with clean_db.transaction(TransactionType.WRITE) as tx:
-            tx.execute('insert $p isa session_test_person, has SessionName "Alice";')
+        with clean_db.raw_transaction("write") as tx:
+            tx.execute_query('insert $p isa session_test_person, has SessionName "Alice";')
             # Commit happens automatically on exit
 
         # Verify insert persisted
-        with clean_db.transaction(TransactionType.READ) as tx:
-            results = tx.execute("match $p isa session_test_person; fetch { $p.* };")
-            assert len(results) == 1
+        with clean_db.raw_transaction("read") as tx:
+            results = tx.execute_query("match $p isa session_test_person; fetch { $p.* };")
+            assert len(results["answers"]) == 1
 
     def test_schema_transaction(self, clean_db):
         """Schema transaction should allow schema changes."""
-        with clean_db.transaction(TransactionType.SCHEMA) as tx:
-            tx.execute("define attribute lifecycle_test_attr, value string;")
+        with clean_db.raw_transaction("schema") as tx:
+            tx.execute_query("define attribute lifecycle_test_attr, value string;")
             # Commit happens automatically on exit
 
         # Verify schema change persisted
@@ -210,19 +210,19 @@ class TestTransactionOperations:
     """Tests for transaction operations."""
 
     def test_execute_returns_results(self, clean_db):
-        """execute() should return query results."""
+        """execute_query() should return the provider answer."""
         _install_session_schema(clean_db)
 
         # Insert test data
-        with clean_db.transaction(TransactionType.WRITE) as tx:
-            tx.execute('insert $p isa session_test_person, has SessionName "Bob";')
+        with clean_db.raw_transaction("write") as tx:
+            tx.execute_query('insert $p isa session_test_person, has SessionName "Bob";')
 
         # Execute read query
-        with clean_db.transaction(TransactionType.READ) as tx:
-            results = tx.execute("match $p isa session_test_person; fetch { $p.* };")
-            assert len(results) == 1
+        with clean_db.raw_transaction("read") as tx:
+            results = tx.execute_query("match $p isa session_test_person; fetch { $p.* };")
+            assert len(results["answers"]) == 1
             # Result should contain the person data
-            assert any("Bob" in str(r) for r in results)
+            assert any("Bob" in str(r) for r in results["answers"])
 
     def test_is_open_property(self, clean_db):
         """is_open should reflect transaction state."""
@@ -235,14 +235,14 @@ class TestTransactionOperations:
         """Explicit commit should persist changes."""
         _install_session_schema(clean_db)
 
-        with clean_db.transaction(TransactionType.WRITE) as tx:
-            tx.execute('insert $p isa session_test_person, has SessionName "Charlie";')
+        with clean_db.raw_transaction("write") as tx:
+            tx.execute_query('insert $p isa session_test_person, has SessionName "Charlie";')
             tx.commit()
 
         # Verify persisted
-        with clean_db.transaction(TransactionType.READ) as tx:
-            results = tx.execute("match $p isa session_test_person; fetch { $p.* };")
-            assert len(results) == 1
+        with clean_db.raw_transaction("read") as tx:
+            results = tx.execute_query("match $p isa session_test_person; fetch { $p.* };")
+            assert len(results["answers"]) == 1
 
 
 @pytest.mark.integration
@@ -257,7 +257,7 @@ class TestExecuteQuery:
         results = clean_db.execute_query(
             "match $p isa session_test_person; fetch { $p.* };", transaction_type="read"
         )
-        assert results == []
+        assert results["answers"] == []
 
     def test_execute_query_write_commits(self, clean_db):
         """execute_query with write type should commit changes."""
@@ -271,7 +271,7 @@ class TestExecuteQuery:
         results = clean_db.execute_query(
             "match $p isa session_test_person; fetch { $p.* };", transaction_type="read"
         )
-        assert len(results) == 1
+        assert len(results["answers"]) == 1
 
     def test_execute_query_schema_commits(self, clean_db):
         """execute_query with schema type should commit changes."""

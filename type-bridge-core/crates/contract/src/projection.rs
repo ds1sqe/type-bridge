@@ -1,5 +1,7 @@
 //! Binding-target configuration and reproducible projection fingerprints.
 
+pub mod c_view;
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -39,29 +41,53 @@ const MAX_C_SYMBOL_PREFIX_BYTES: usize = 63;
 /// descriptors without changing physical schema identities.
 pub const TYPESCRIPT_MODEL_RESERVED_NAMES: &[&str] = &[
     "__proto__",
+    "byIid",
     "completeRead",
     "constructor",
     "create",
     "declaration",
+    "definition",
+    "delete",
+    "deleteReturning",
+    "deleted",
+    "field",
     "fields",
     "id",
     "iid",
+    "insert",
+    "insertMany",
+    "link",
+    "linkPlayers",
     "metadata",
     "manager",
+    "match",
+    "modelType",
+    "models",
     "name",
+    "open",
     "plays",
     "prototype",
+    "put",
+    "putMany",
+    "recording",
     "reference",
     "roles",
+    "set",
+    "setFields",
+    "subtypes",
+    "thing",
     "typeKey",
     "typeToken",
+    "unlink",
+    "unset",
     "valueType",
+    "where",
 ];
 
 /// ABI major required by C packages emitted under the C-v1 projection contract.
-pub const TYPE_BRIDGE_C_ABI_MAJOR: u32 = 1;
+pub const TYPE_BRIDGE_C_ABI_MAJOR: u32 = 2;
 /// Current aggregate ABI minor supported by the native C runtime.
-pub const TYPE_BRIDGE_C_ABI_MINOR: u32 = 7;
+pub const TYPE_BRIDGE_C_ABI_MINOR: u32 = 0;
 /// Generated-only projection-token layout version consumed by native SDK facades.
 pub const TYPE_BRIDGE_PROJECTED_TOKEN_VERSION: u32 = 1;
 /// Maximum generated C create fields on one projected model.

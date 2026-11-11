@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{future::Future, pin::Pin};
@@ -526,7 +527,7 @@ struct RemoteOriginTransport {
     advertisement_contract: type_bridge_contract::query_remote::RemoteCapabilities,
     advertisement: Vec<u8>,
     exchanges: Arc<AtomicUsize>,
-    signer: type_bridge_orm::query_v2_remote::RemoteReplySigningKey,
+    signer: type_bridge_orm::remote_signing::RemoteReplySigningKey,
 }
 
 impl crate::remote::ProxyExchange for RemoteOriginTransport {
@@ -539,76 +540,69 @@ impl crate::remote::ProxyExchange for RemoteOriginTransport {
         &'a self,
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = crate::Result<Vec<u8>>> + Send + 'a>> {
-        use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-        use type_bridge_contract::query_plan::CompatibilityValueV2;
-        use type_bridge_contract::query_remote_v2::{
-            HydratedRowV2, HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2,
-            HydrationNodeKindV2, HydrationNodeV2, HydrationReferenceV2, HydrationSlotV2,
-            RemoteOutcomeV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
+        use type_bridge_contract::query_remote::RemoteFieldValue;
+        use type_bridge_contract::query_remote::{
+            StagedAnswer, StagedOutcome, StagedReply, StagedRequest,
         };
         use type_bridge_contract::value::{CanonicalString, CanonicalValue};
-
+        use type_bridge_orm::plan_authority::QueryAuthority;
         self.exchanges.fetch_add(1, Ordering::SeqCst);
-        let request = RemoteQueryRequestV2::decode(request).unwrap();
-        request
-            .validate_advertisement(&self.advertisement_contract)
-            .unwrap();
-        let plan = request.plan().unwrap();
-        let record = TypeId::new(TypeKind::Entity, "record").unwrap();
-        let node = HydrationNodeIdV2::new(0);
-        let graph = HydrationGraphV2::new(vec![HydrationNodeV2::new(
-            node,
-            "0x01".into(),
-            record.clone(),
-            HydrationNodeKindV2::Entity,
-            vec![
-                HydrationAttributeEvidenceV2::new(
-                    AttributeId::new("name").unwrap(),
-                    vec![CompatibilityValueV2::canonical(CanonicalValue::String(
-                        CanonicalString::new("Alice").unwrap(),
-                    ))],
-                ),
-                HydrationAttributeEvidenceV2::new(
-                    AttributeId::new("tally").unwrap(),
-                    vec![CompatibilityValueV2::canonical(CanonicalValue::Long(1))],
-                ),
-            ],
-            vec![],
-        )])
+        let authority = QueryAuthority::from_declared_bytes(
+            successor_package()
+                .declared_schema_json()
+                .unwrap()
+                .as_bytes(),
+            "query-origin-test",
+            "typedb-3.12.1/v1",
+        )
         .unwrap();
-        let outcome = RemoteOutcomeV2::HydratedRows {
-            graph,
-            rows: vec![HydratedRowV2::new(vec![HydrationSlotV2::Singular {
-                value: HydrationReferenceV2::new(record, node),
-            }])],
-        };
-        let response = RemoteQueryResponseV2::new(
-            request.nonce(),
-            &plan,
-            &request.fingerprint().unwrap(),
-            request.result_kind(),
-            outcome,
+        let request =
+            StagedRequest::decode(request, authority.declared(), &self.advertisement_contract)
+                .unwrap();
+        assert_eq!(request.plans().len(), 1);
+        let scalar = |value| RemoteFieldValue::Scalar { value };
+        let string = |value| scalar(CanonicalValue::String(CanonicalString::new(value).unwrap()));
+        let document = BTreeMap::from([
+            ("_iid".into(), string("0x01")),
+            ("_type".into(), string("record")),
+            (
+                "attributes".into(),
+                RemoteFieldValue::Document {
+                    fields: BTreeMap::from([
+                        ("name".into(), string("Alice")),
+                        ("tally".into(), scalar(CanonicalValue::Long(1))),
+                    ]),
+                },
+            ),
+        ]);
+        let response = StagedReply::new(
+            &request,
+            StagedOutcome::Committed,
+            vec![StagedAnswer::Documents {
+                documents: vec![document],
+            }],
         )
         .unwrap()
-        .encode_signed(
-            &self.advertisement_contract.fingerprint().unwrap(),
-            &self.signer,
-        )
+        .encode_signed(&request, &self.advertisement_contract, &self.signer)
         .unwrap();
         Box::pin(async move { Ok(response) })
     }
 }
 
 fn remote_origin_transport() -> (RemoteOriginTransport, Arc<AtomicUsize>) {
-    use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
+    use type_bridge_contract::query_plan::query_plan_capability_vocabulary;
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-    use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
-    use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+
+    use type_bridge_orm::remote_signing::RemoteReplySigningKey;
 
     let signer = RemoteReplySigningKey::from_secret_bytes([0x52; 32]);
-    let mut capabilities = query_plan_v2_capability_vocabulary();
-    for capability in query_remote_v2_required_capabilities(true) {
-        capabilities.insert(capability);
+    let mut capabilities = query_plan_capability_vocabulary();
+    for capability in [
+        type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED,
+        type_bridge_contract::query_remote::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+    ] {
+        capabilities
+            .insert(type_bridge_contract::capability::CapabilityId::new(capability).unwrap());
     }
     let advertisement_contract = RemoteCapabilities::new(
         capabilities,
@@ -687,84 +681,78 @@ impl TransactionOps for SuccessorTransaction {
             .lock()
             .unwrap()
             .push(typeql.to_owned());
-        let statement = self.statement;
         self.statement += 1;
-        let answer = self.answer;
-        Box::pin(async move {
-            match (statement, answer) {
-                (0, SuccessorAnswer::Record) => Ok(QueryResult::Rows(vec![serde_json::json!({
-                    "bindings": [{"binding": 0, "concept_id": "0x01"}],
-                    "satisfied_role_edges": [],
-                })])),
-                (1, SuccessorAnswer::Record) => {
-                    Ok(QueryResult::Documents(vec![record_hydration(0, "0x01")]))
-                }
-                (0, SuccessorAnswer::RecordGrouped) => {
-                    Ok(QueryResult::Rows(vec![serde_json::json!({
-                        "bindings": [{"binding": 0, "concept_id": "0x01"}],
-                        "satisfied_role_edges": [],
-                    })]))
-                }
-                (1, SuccessorAnswer::RecordGrouped) => {
-                    Ok(QueryResult::Documents(vec![serde_json::json!({
-                        "bindings": [
-                            record_hydration(0, "0x01"),
-                            record_hydration_with_name(1, "0x02", "Bob"),
-                        ],
-                        "satisfied_role_edges": [],
-                    })]))
-                }
-                (0, SuccessorAnswer::RecordMany) => Ok(QueryResult::Rows(vec![
-                    serde_json::json!({
-                        "bindings": [{"binding": 0, "concept_id": "0x01"}],
-                        "satisfied_role_edges": [],
-                    }),
-                    serde_json::json!({
-                        "bindings": [{"binding": 0, "concept_id": "0x02"}],
-                        "satisfied_role_edges": [],
-                    }),
-                ])),
-                (1, SuccessorAnswer::RecordMany) => Ok(QueryResult::Documents(vec![
+        let captures = |pattern: &str| regex::Regex::new(pattern).unwrap();
+        let tuples = match self.answer {
+            SuccessorAnswer::Record | SuccessorAnswer::RecordPair => vec![vec![
+                record_hydration(0, "0x01"),
+                record_hydration(1, "0x01"),
+            ]],
+            SuccessorAnswer::RecordMany => vec![
+                vec![record_hydration(0, "0x01")],
+                vec![record_hydration_with_name(0, "0x02", "Bob")],
+            ],
+            SuccessorAnswer::RecordGrouped => vec![vec![
+                record_hydration(0, "0x01"),
+                record_hydration_with_name(1, "0x02", "Bob"),
+            ]],
+            SuccessorAnswer::RecordGraphPage => vec![
+                vec![
                     record_hydration(0, "0x01"),
-                    record_hydration_with_name(0, "0x02", "Bob"),
-                ])),
-                // `name` is a key, so the only pair with equal names is one
-                // record matched by both bindings.
-                (0, SuccessorAnswer::RecordPair) => {
-                    Ok(QueryResult::Rows(vec![serde_json::json!({
-                        "bindings": [
-                            {"binding": 0, "concept_id": "0x01"},
-                            {"binding": 1, "concept_id": "0x01"},
-                        ],
-                        "satisfied_role_edges": [],
-                    })]))
-                }
-                (1, SuccessorAnswer::RecordPair) => Ok(QueryResult::Documents(vec![
+                    record_hydration_with_name(1, "0x02", "Bob"),
+                ],
+                vec![
                     record_hydration(0, "0x01"),
-                    record_hydration(1, "0x01"),
-                ])),
-                (0, SuccessorAnswer::RecordGraphPage) => {
-                    Ok(QueryResult::Rows(vec![serde_json::json!({
-                        "bindings": [{"binding": 0, "concept_id": "0x01"}],
-                        "satisfied_role_edges": [],
-                    })]))
+                    record_hydration_with_name(1, "0x03", "Carol"),
+                ],
+            ],
+            SuccessorAnswer::Route => vec![vec![route_hydration(0, "0x10")]],
+        };
+        let result = if let Some(fetch) = captures(r#""_iid": iid\(\$b(\d+)\)"#).captures(typeql) {
+            let binding: usize = fetch[1].parse().unwrap();
+            let mut documents = BTreeMap::new();
+            for tuple in &tuples {
+                let node = &tuple[binding];
+                let mut document = native_origin_document(node);
+                for role in captures(r"([a-z]+): \$PlanFetchRole(\d+)").captures_iter(typeql) {
+                    let player = node["roles"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|item| item["role"] == role[1])
+                        .unwrap()["players"][0]
+                        .clone();
+                    let index = &role[2];
+                    document[format!("_role_{index}_iid")] = player["concept_id"].clone();
+                    document[format!("_role_{index}_type")] = player["concrete_type"].clone();
+                    document[format!("_role_{index}_attributes")] =
+                        native_origin_document(&player)["attributes"].clone();
                 }
-                (1, SuccessorAnswer::RecordGraphPage) => Ok(QueryResult::Documents(vec![
-                    rematched_records("0x01", "0x02"),
-                    rematched_records("0x01", "0x03"),
-                ])),
-                (0, SuccessorAnswer::Route) => Ok(QueryResult::Rows(vec![serde_json::json!({
-                    "bindings": [{"binding": 0, "concept_id": "0x10"}],
-                    "satisfied_role_edges": [],
-                })])),
-                (1, SuccessorAnswer::Route) => {
-                    Ok(QueryResult::Documents(vec![route_hydration(0, "0x10")]))
-                }
-                _ => Err(OrmError::QueryExecution(format!(
-                    "unexpected successor query statement {statement}"
-                ))),
+                documents.insert(node["concept_id"].as_str().unwrap().to_owned(), document);
             }
-        })
+            QueryResult::Documents(documents.into_values().collect())
+        } else if let Some(reduce) = captures(r"reduce \$(b\d+) = count").captures(typeql) {
+            let mut row = serde_json::json!({&reduce[1]:{"category":"Value","value_type":"integer","value":1}});
+            if typeql.contains("groupby $b1") {
+                row["b1"] = serde_json::json!({"category":"Entity","label":"record","iid":"0x02"});
+            }
+            QueryResult::Rows(vec![row])
+        } else {
+            let selected = captures(r"select ([^;]+);")
+                .captures_iter(typeql)
+                .last()
+                .unwrap()[1]
+                .to_owned();
+            let columns = captures(r"\$b(\d+)")
+                .captures_iter(&selected)
+                .map(|capture| capture[1].parse::<usize>().unwrap())
+                .collect::<Vec<_>>();
+            QueryResult::Rows(tuples.iter().map(|tuple| serde_json::Value::Object(columns.iter().map(|column| {
+                let node=&tuple[*column];
+                (format!("b{column}"),serde_json::json!({"category":"Entity","label":node["concrete_type"],"iid":node["concept_id"]}))
+            }).collect())).collect())
+        };
+        Box::pin(async move { Ok(result) })
     }
 
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
@@ -799,15 +787,19 @@ fn record_hydration_with_name(binding: u16, concept_id: &str, name: &str) -> ser
     })
 }
 
-fn rematched_records(root: &str, member: &str) -> serde_json::Value {
-    let member_name = if member == "0x02" { "Bob" } else { "Carol" };
-    serde_json::json!({
-        "bindings": [
-            record_hydration(0, root),
-            record_hydration_with_name(1, member, member_name),
-        ],
-        "satisfied_role_edges": [],
-    })
+fn native_origin_document(node: &serde_json::Value) -> serde_json::Value {
+    let attributes = node["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| {
+            (
+                field["field"].as_str().unwrap().to_owned(),
+                field["values"][0].clone(),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::json!({"_iid":node["concept_id"],"_type":node["concrete_type"],"attributes":attributes})
 }
 
 fn route_hydration(binding: u16, concept_id: &str) -> serde_json::Value {
@@ -1143,7 +1135,7 @@ async fn successor_named_collected_page_retains_root_and_member_origins() {
     let members = member
         .collect()
         .distinct()
-        .order_by(member.field(NAME).asc())
+        .sort(member.field(NAME).asc())
         .unwrap();
     let query = session
         .query(OriginGraph::select(root, members).unwrap())
@@ -1151,7 +1143,7 @@ async fn successor_named_collected_page_retains_root_and_member_origins() {
         .allow_cross_join(root, member)
         .unwrap();
     let page = query
-        .page_by(root, PageOptions::new(2).order_by(root.field(NAME).asc()))
+        .page_by(root, PageOptions::new(2).sort(root.field(NAME).asc()))
         .await
         .unwrap();
     assert_eq!(page.offset(), 0);
@@ -1169,6 +1161,11 @@ async fn successor_named_collected_page_retains_root_and_member_origins() {
     );
     assert_eq!(state.opened.load(Ordering::SeqCst), 1);
     assert_eq!(state.closed.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state.statements.lock().unwrap().len(),
+        3,
+        "mapping and two independent hydration partitions"
+    );
 }
 
 #[tokio::test]
@@ -1285,7 +1282,7 @@ async fn successor_grouped_thing_aggregate_retains_the_group_origin() {
     let rows = query
         .group_by(group)
         .unwrap()
-        .aggregate((aggregate::count(),))
+        .reduce((aggregate::count(),))
         .await
         .unwrap();
     let [(group, (count,))] = rows.as_slice() else {
@@ -1316,13 +1313,18 @@ async fn successor_cancellation_during_generated_materialization_publishes_no_pa
     let record = session.exact::<SuccessorSlowRecord>().unwrap();
     let query = session.query(record).unwrap();
     let canceller = std::thread::spawn(move || {
+        let started = std::time::Instant::now();
         while SUCCESSOR_SLOW_MATERIALIZATION_CALLS.load(Ordering::SeqCst) == 0 {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "materialization never started"
+            );
             std::thread::yield_now();
         }
         cancellation.cancel();
     });
     let result = query
-        .rows(RowsOptions::new(2).order_by(record.field(NAME).asc()))
+        .rows(RowsOptions::new(2).sort(record.field(NAME).asc()))
         .await;
     canceller.join().unwrap();
     let error = result.expect_err("cancellation must discard the partially built output vector");
@@ -1343,13 +1345,15 @@ fn query_resources_close_idempotently_with_independent_persistent_lineages() {
     let record = session.exact::<Record>().unwrap();
     let input = session.query(record).unwrap();
     let cloned = input.clone();
-    let derived = input.where_(record.iid("0x01")).unwrap();
+    let derived = input
+        .where_(record.iid(&crate::Iid::new("0x01").unwrap()))
+        .unwrap();
     let sibling = session.query(record).unwrap();
 
     derived.close();
     derived.close();
     assert!(derived.is_closed());
-    let derived_error = match derived.where_(record.iid("0x02")) {
+    let derived_error = match derived.where_(record.iid(&crate::Iid::new("0x02").unwrap())) {
         Err(error) => error,
         Ok(_) => panic!("closed derived query must reject composition"),
     };
@@ -1600,7 +1604,7 @@ fn predicates_lower_operators_and_compose_by_domain() {
             ..
         }
     ));
-    let pattern = name.regex(Regex::new("^A").unwrap());
+    let pattern = name.like(Regex::new("^A").unwrap());
     assert!(matches!(
         pattern.expr,
         PredicateExpr::FieldValue {
@@ -1637,7 +1641,7 @@ fn predicates_lower_operators_and_compose_by_domain() {
             return;
         }
     };
-    let connects = assignment.role(WORKER).connects(record);
+    let connects = assignment.role(WORKER).links(record);
     assert!(matches!(connects.expr, PredicateExpr::Connects { .. }));
 }
 
@@ -1885,17 +1889,13 @@ async fn collected_named_shapes_validate_root_pages_and_owned_envelopes() {
     let member = session.exact::<Record>().unwrap();
     let connected = root.field(NAME).eq_field(member.field(NAME));
 
-    let wrong_order = root
-        .collect()
-        .order_by(member.field(NAME).asc())
-        .err()
-        .unwrap();
+    let wrong_order = root.collect().sort(member.field(NAME).asc()).err().unwrap();
     assert_model_error(wrong_order, "collection_order_binding_mismatch");
 
     let collected = member
         .collect()
         .distinct()
-        .order_by(member.field(NAME).desc())
+        .sort(member.field(NAME).desc())
         .unwrap();
     let named = Graph::select(root, collected).unwrap();
     let query = session
@@ -2104,31 +2104,18 @@ async fn query_facade_rejects_cross_owner_fields_and_zero_limits_before_io() {
 }
 
 #[tokio::test]
-async fn query_terminal_budget_rejects_zero_timeout_and_precancellation_before_provider_io() {
+async fn query_terminal_unbounded_timeout_preserves_precancellation_before_provider_io() {
     let (db, state) = test_db();
     let zero_timeout = type_bridge_orm::QueryExecutionResourceLimits {
-        timeout_milliseconds: 0,
+        timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
         ..type_bridge_orm::QueryExecutionResourceLimits::default()
     };
-    let mut timed_session = db
-        .query_with_resources(zero_timeout, type_bridge_orm::AnswerCancellation::default())
-        .unwrap();
-    let timed_record = timed_session.exact::<Record>().unwrap();
-    let timed_error = timed_session
-        .query(timed_record)
-        .unwrap()
-        .count()
-        .await
-        .expect_err("zero timeout must fail before opening a transaction");
-    assert_eq!(timed_error.category(), crate::ErrorCategory::ResourceLimit);
-    assert_eq!(timed_error.code(), Some("transaction_deadline_exceeded"));
-    assert_eq!(
-        timed_error.diagnostic_path(),
-        Some(
-            &[crate::ErrorPathSegment::Query(
-                crate::QueryDiagnosticPathKind::ProviderEvidence
-            )][..]
-        )
+    let unbounded = type_bridge_orm::QueryExecutionDeadline::for_limits(zero_timeout);
+    assert_eq!(unbounded.instant(), None);
+    assert!(
+        unbounded
+            .check(&type_bridge_orm::AnswerCancellation::default())
+            .is_ok()
     );
 
     let cancellation = type_bridge_orm::AnswerCancellation::default();
@@ -2301,4 +2288,101 @@ async fn query_aggregates_build_reduce_requests_and_decode_typed_tuples() {
         }
         _ => panic!("expected a grouped reduction result"),
     }
+}
+
+#[tokio::test]
+async fn staged_typed_terminals_own_their_context_and_resolve_after_commit() {
+    use crate::query::{PageOptions, Pending, RowsOptions};
+    const NAME: __codegen::FieldToken<OriginRecord, String> =
+        __codegen::FieldToken::new(NAME_OWNS, "{}");
+    let (database, state) = successor_test_db("staged-query", SuccessorAnswer::Record);
+    let mut tx = database.transaction(Default::default());
+    let (one, rows, first, page, count, exists, aggregate) = {
+        let mut session = tx.query().unwrap();
+        let root = session.exact::<OriginRecord>().unwrap();
+        let query = session.query(root).unwrap();
+        let one: Pending<OriginRecord> = query.one().await.unwrap();
+        let rows: Pending<Vec<OriginRecord>> = query
+            .rows(RowsOptions::new(2).sort(root.field(NAME).asc()))
+            .await
+            .unwrap();
+        let first: Pending<Option<OriginRecord>> =
+            query.first(root.field(NAME).asc()).await.unwrap();
+        let page: Pending<crate::Page<OriginRecord>> = query
+            .page_by(
+                root,
+                PageOptions::new(2)
+                    .include_total(true)
+                    .sort(root.field(NAME).asc()),
+            )
+            .await
+            .unwrap();
+        let count: Pending<u64> = query.count().await.unwrap();
+        let exists: Pending<bool> = query.exists().await.unwrap();
+        let aggregate: Pending<(u64,)> = query.reduce((crate::aggregate::count(),)).await.unwrap();
+        (one, rows, first, page, count, exists, aggregate)
+    };
+    assert_eq!(state.opened.load(Ordering::SeqCst), 0);
+    assert!(one.result().is_err());
+    tx.commit().await.unwrap();
+    assert_eq!(one.result().unwrap().iid, "0x01");
+    assert!(one.result().unwrap().origin.projected().is_some());
+    assert_eq!(rows.result().unwrap().len(), 1);
+    assert_eq!(first.result().unwrap().unwrap().iid, "0x01");
+    assert_eq!(page.result().unwrap().total(), Some(1));
+    assert_eq!(count.result().unwrap(), 1);
+    assert!(exists.result().unwrap());
+    assert_eq!(aggregate.result().unwrap(), (1,));
+    assert_eq!(state.opened.load(Ordering::SeqCst), 1);
+    assert_eq!(state.closed.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn staged_typed_query_rollback_keeps_the_pending_unpublished() {
+    let (database, state) = successor_test_db("staged-rollback", SuccessorAnswer::Record);
+    let mut tx = database.transaction(Default::default());
+    let pending = {
+        let mut session = tx.query().unwrap();
+        let record = session.exact::<OriginRecord>().unwrap();
+        session.query(record).unwrap().one().await.unwrap()
+    };
+    tx.rollback().unwrap();
+    assert!(
+        pending
+            .result()
+            .unwrap_err()
+            .to_string()
+            .contains("rolled back")
+    );
+    assert_eq!(state.opened.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn staged_typed_queries_preserve_caller_cancellation_before_io() {
+    let (database, state) = successor_test_db("staged-cancel", SuccessorAnswer::Record);
+    let mut tx = database.transaction(Default::default());
+    let cancellation = type_bridge_orm::AnswerCancellation::default();
+    cancellation.cancel();
+    {
+        let mut session = tx
+            .query_with_resources(Default::default(), cancellation)
+            .unwrap();
+        let root = session.exact::<OriginRecord>().unwrap();
+        let error = session.query(root).unwrap().one().await.unwrap_err();
+        assert_eq!(error.code(), Some("provider_cancelled"));
+    }
+    tx.commit().await.unwrap();
+    assert_eq!(state.opened.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn direct_query_futures_remain_send() {
+    fn assert_send<T: Send>(_: T) {}
+    let (database, _) = successor_test_db("query-send", SuccessorAnswer::Record);
+    let mut session = database.query().unwrap();
+    let root = session.exact::<OriginRecord>().unwrap();
+    let query = session.query(root).unwrap();
+    assert_send(query.one());
+    assert_send(query.count());
+    assert_send(query.reduce((crate::aggregate::count(),)));
 }

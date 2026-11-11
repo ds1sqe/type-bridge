@@ -1,3 +1,4 @@
+import { Iid } from "@type-bridge/node";
 import {
   Actor,
   Container,
@@ -21,9 +22,9 @@ import {
   QuerySession,
   aggregate,
   qualifyingScore,
-} from "./generated_v2/src/index.js";
+} from "./generated_package/src/index.js";
 import { Person as ForeignPerson } from "./generated_foreign/src/index.js";
-import { Plan, type RustDatabase } from "@type-bridge/node";
+import { type StagedTransaction, Plan, type Database } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
 const person = (value: Identifier): Person => Person.create({
@@ -38,11 +39,11 @@ const person = (value: Identifier): Person => Person.create({
   valDouble: ValDouble.create(3.5),
   valDuration: ValDuration.create("PT3S"),
 });
-const personReference = Person.reference("person-iid", { identifier });
-const eventReference = Event.reference("event-iid", {});
+const personReference = Person.reference(new Iid("0xa1"), { identifier });
+const eventReference = Event.reference(new Iid("0xe1"), {});
 declare const exactPersonManager: ReturnType<typeof Person.manager>;
 declare const maybeIdentifier: string | undefined;
-declare const database: RustDatabase;
+declare const database: Database;
 const querySession = new QuerySession(database);
 const personVar = querySession.var(Person);
 const eventVar = querySession.var(Event);
@@ -87,13 +88,13 @@ personVar.field(Person.identifier).eq(Score.create(3n));
 // @ts-expect-error prior function calls retain their exact scalar domain
 qualifyingScore(querySession, personVar, booleanCall);
 // @ts-expect-error generated relation roles retain their accepted player union
-employmentVar.role(Employment.employee).connects(eventVar);
+employmentVar.role(Employment.employee).links(eventVar);
 // @ts-expect-error an exact abstract ancestor is not itself an accepted player
-eventVar.role(Event.subject).connects(exactActorVar);
+eventVar.role(Event.subject).links(exactActorVar);
 // @ts-expect-error an unrelated concrete subtype remains rejected
-eventVar.role(Event.subject).connects(exactRobotVar);
+eventVar.role(Event.subject).links(exactRobotVar);
 // @ts-expect-error a subtype root whose closure has no accepted player remains rejected
-eventVar.role(Event.subject).connects(subtypeRobotVar);
+eventVar.role(Event.subject).links(subtypeRobotVar);
 // @ts-expect-error generated queries require at least one selection
 querySession.query();
 // @ts-expect-error generated named queries require at least one selection
@@ -107,9 +108,9 @@ querySession.query(personVar, personVar, personVar, personVar, personVar, person
 // @ts-expect-error aggregate fields must carry a generated long or double value
 aggregate.mean(personVar.field(Person.identifier));
 // @ts-expect-error generated aggregate terms are non-empty
-querySession.query(personVar).aggregate(personVar, [] as const);
+querySession.query(personVar).reduce(personVar, [] as const);
 // @ts-expect-error generated aggregate typing is capped at sixteen terms
-querySession.query(personVar).aggregate(personVar, [
+querySession.query(personVar).reduce(personVar, [
   aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
   aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
   aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
@@ -128,3 +129,35 @@ const negativePerson = negativePlan.exact(Person);
 negativePlan.field(negativePerson, Robot.robotId);
 // @ts-expect-error plan literals are typed: a number is not a long
 negativePlan.field(negativePerson, Person.score).gt(1);
+
+declare const stagedTransaction: StagedTransaction;
+const stagedSession = new QuerySession(stagedTransaction);
+const stagedRoot = stagedSession.exact(Person);
+const stagedPerson = await stagedSession.query(stagedRoot).one();
+// @ts-expect-error a pending model is not a committed model
+const pendingAsModel: Person = stagedPerson;
+// @ts-expect-error a pending answer is not a scalar field input
+stagedRoot.field(Person.score).eq(stagedPerson);
+
+// @ts-expect-error IID reference arguments are nominal.
+Person.reference("0xa1", { identifier });
+// @ts-expect-error IID predicates reject strings.
+personVar.iid("0xa1");
+// @ts-expect-error IID lists reject string members.
+personVar.iidIn(["0xa1"]);
+// @ts-expect-error Manager IID keywords reject strings.
+exactPersonManager.filter({ iid: "0xa1" });
+// @ts-expect-error Manager IID lists reject string members.
+exactPersonManager.filter({ iid__in: ["0xa1"] });
+// @ts-expect-error By-IID reads reject strings.
+exactPersonManager.getByIid("0xa1");
+
+// @ts-expect-error Model IIDs are nominal values, not strings.
+const plainReferenceIid: string | null = personReference.iid;
+const iidBuilder = Plan.builder();
+const textColumn = iidBuilder.input("target", "string");
+const iidTarget = iidBuilder.exact(Person);
+// @ts-expect-error IID input predicates require nominal IID columns.
+iidBuilder.byIidInput(iidTarget, textColumn);
+// @ts-expect-error Authored by-IID helpers reject strings.
+Plan.build(() => Person.byIid("0xa1"));

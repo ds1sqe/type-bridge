@@ -7,23 +7,41 @@
 
 use std::sync::Arc;
 
-use napi::bindgen_prelude::{Env, Object, Unknown};
+use napi::bindgen_prelude::{ClassInstance, Env, Object, Unknown};
 use napi_derive::napi;
 use tracing::Instrument as _;
-use type_bridge_contract::query_plan::v3::decode_query_plan_v3;
+use type_bridge_contract::query_plan::{BuiltPlans, decode_query_plan};
 use type_bridge_contract::schema::decode_declared_schema;
 use type_bridge_orm::ProviderRuntimeOwner;
 use type_bridge_orm::session::staged::{
     Pending, PendingError, PlanAnswer, Transaction, TransactionKind, TransactionOptions,
+    merge_plan_answers,
 };
 
-use crate::plan_builder_runtime::NodePlan;
+use crate::plan_builder_runtime::{NodePlan, NodePlanProgram, NodeStagedPlan};
+use crate::plan_runtime::non_shared_buffer;
 use crate::proxy_connection_runtime::settle;
-use crate::query_v2_runtime::non_shared_buffer;
 
-/// Parse the optional JavaScript transaction kind; omitted infers from writes.
-pub(crate) fn staged_options(kind: Option<&str>) -> napi::Result<TransactionOptions> {
-    let options = TransactionOptions::default();
+/// Parse transaction kind and shared deadline/phase policy without provider I/O.
+pub(crate) fn staged_options(
+    kind: Option<&str>,
+    timeout: Option<napi::bindgen_prelude::BigInt>,
+    collect: Option<bool>,
+) -> napi::Result<TransactionOptions> {
+    let mut options =
+        TransactionOptions::default().with_collect_phase_timestamps(collect.unwrap_or(false));
+    if let Some(timeout) = timeout {
+        let (milliseconds, lossless) = timeout.get_i64();
+        if !lossless {
+            return Err(napi::Error::new(
+                napi::Status::InvalidArg,
+                "timeoutMilliseconds must be a signed 64-bit bigint",
+            ));
+        }
+        options = options.with_timeout(type_bridge_orm::QueryTimeout::from_signed_milliseconds(
+            milliseconds,
+        ));
+    }
     let kind = match kind {
         None => return Ok(options),
         Some("read") => TransactionKind::Read,
@@ -41,18 +59,11 @@ pub(crate) fn staged_options(kind: Option<&str>) -> napi::Result<TransactionOpti
 
 fn pending_error(error: &PendingError) -> napi::Error {
     match error {
-        PendingError::Failed {
-            failure: Some(failure),
-            context,
-            ..
-        } => crate::match_runtime::napi_sdk_diagnostic(
-            type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::from_failure(
-                failure,
-                context.as_ref().clone(),
-            ),
-        ),
+        PendingError::Failed { diagnostic, .. } => {
+            crate::match_runtime::napi_sdk_diagnostic(diagnostic.as_ref().clone())
+        }
         PendingError::InvalidPlan(diagnostic) | PendingError::NotAllowedInKind(diagnostic) => {
-            crate::query_v2_runtime::napi_error(diagnostic)
+            crate::plan_runtime::napi_error(diagnostic)
         }
         // The server's refusal keeps its stable code.
         PendingError::Refused { diagnostic, .. } => {
@@ -65,6 +76,9 @@ fn pending_error(error: &PendingError) -> napi::Error {
 fn answer_json(answer: &PlanAnswer) -> napi::Result<String> {
     let value = match answer {
         PlanAnswer::Rows(rows) => serde_json::json!({ "kind": "rows", "rows": rows }),
+        PlanAnswer::Documents(documents) => {
+            serde_json::json!({ "kind": "documents", "documents": documents })
+        }
         PlanAnswer::Count(count) => serde_json::json!({ "kind": "count", "value": count }),
         PlanAnswer::Exists(exists) => serde_json::json!({ "kind": "exists", "value": exists }),
         PlanAnswer::Matched(matched) => serde_json::json!({ "kind": "matched", "value": matched }),
@@ -77,21 +91,164 @@ fn answer_json(answer: &PlanAnswer) -> napi::Result<String> {
     serde_json::to_string(&value).map_err(|error| napi::Error::from_reason(error.to_string()))
 }
 
+/// Decode the native answer envelope without a JavaScript numeric round trip.
+pub(crate) fn parse_plan_answer_json(json: &str) -> napi::Result<PlanAnswer> {
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+    enum Answer {
+        Rows { rows: Vec<serde_json::Value> },
+        Documents { documents: Vec<serde_json::Value> },
+        Count { value: u64 },
+        Exists { value: bool },
+        Matched { value: u64 },
+    }
+    if json.len() > type_bridge_contract::limits::MAX_CANONICAL_BYTES {
+        return Err(napi::Error::from_reason(
+            "plan_answer_limit: answer exceeds the canonical byte ceiling",
+        ));
+    }
+    let answer: Answer =
+        serde_json::from_str(json).map_err(|error| napi::Error::from_reason(error.to_string()))?;
+    Ok(match answer {
+        Answer::Rows { rows } => PlanAnswer::Rows(rows),
+        Answer::Documents { documents } => PlanAnswer::Documents(documents),
+        Answer::Count { value } => PlanAnswer::Count(value),
+        Answer::Exists { value } => PlanAnswer::Exists(value),
+        Answer::Matched { value } => PlanAnswer::Matched(value),
+    })
+}
+
 /// One staged plan's answer, visible only after its commit succeeds.
 #[napi]
 pub struct NodePendingPlanAnswer {
-    inner: Pending<PlanAnswer>,
+    source: PendingSource,
+    origin: type_bridge_orm::ProjectedQueryOrigin,
+}
+
+enum PendingSource {
+    Plans {
+        inner: Vec<Pending<PlanAnswer>>,
+        plans: Arc<NodePlanProgram>,
+        models: Option<Pending<type_bridge_orm::match_request::OwnedPlanFetchResult>>,
+        projected: std::sync::OnceLock<
+            Result<
+                type_bridge_orm::ProjectedQueryValue,
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic,
+            >,
+        >,
+    },
+    Query {
+        pending: Pending<type_bridge_orm::ValidatedMatchResult>,
+        request: Arc<type_bridge_orm::ValidatedMatchRequest>,
+        registry: Arc<type_bridge_orm::_registry::DescriptorRegistry>,
+        context: crate::match_runtime::NodeMatchResultContext,
+        projected: crate::match_runtime::NodeQueryProjectionCache,
+    },
 }
 
 #[napi]
 impl NodePendingPlanAnswer {
+    /// Materialize only the core's published model proof, preserving opaque origins.
+    #[napi(js_name = "getProjection")]
+    pub fn get_projection(
+        &self,
+    ) -> napi::Result<Option<crate::runtime_projection::NodeAuthoredPlanResult>> {
+        let PendingSource::Plans {
+            models,
+            plans,
+            projected,
+            ..
+        } = &self.source
+        else {
+            return Ok(None);
+        };
+        let Some(pending) = models else {
+            return Ok(None);
+        };
+        let proof = pending.get().map_err(|error| pending_error(&error))?;
+        let NodePlanProgram::Models(model) = plans.as_ref() else {
+            unreachable!("model pending retains its program")
+        };
+        if model.tuple.is_some() {
+            Ok(Some(crate::runtime_projection::NodeAuthoredPlanResult {
+                models: None,
+                rows: Some(model.materialize_rows(&proof, self.origin.clone(), projected)?),
+            }))
+        } else {
+            Ok(Some(crate::runtime_projection::NodeAuthoredPlanResult {
+                models: Some(model.materialize(&proof, self.origin.clone(), projected)?),
+                rows: None,
+            }))
+        }
+    }
+
     /// The answer as JSON (`{kind, value}` or `{kind: "rows", rows}`), or
     /// the lifecycle or execution failure every answer of the stack shares.
     #[napi(js_name = "getJson")]
     pub fn get_json(&self) -> napi::Result<String> {
         let _entry = crate::perf_stages::entry().entered();
-        let answer = self.inner.get().map_err(|error| pending_error(&error))?;
+        let PendingSource::Plans {
+            inner,
+            models,
+            plans,
+            ..
+        } = &self.source
+        else {
+            return Err(napi::Error::from_reason(
+                "pending_answer_kind: a typed query requires getQueryResult",
+            ));
+        };
+        let answers = inner
+            .iter()
+            .map(|pending| pending.get())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| pending_error(&error))?;
+        let correlations = inner
+            .iter()
+            .map(|pending| pending.correlation())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| pending_error(&error))?;
+        if let Some(models) = models {
+            return answer_json(
+                models
+                    .get()
+                    .map_err(|error| pending_error(&error))?
+                    .selection(),
+            );
+        }
+        let NodePlanProgram::Raw(plans) = plans.as_ref() else {
+            unreachable!("raw pending retains raw plans")
+        };
+        let answer = merge_plan_answers(plans, &answers, &correlations)
+            .map_err(|error| crate::plan_runtime::napi_error(&error))?;
         answer_json(&answer)
+    }
+
+    /// Return the exact-invocation typed query proof after commit.
+    #[napi(js_name = "getQueryResult")]
+    pub fn get_query_result(
+        &self,
+    ) -> napi::Result<crate::match_runtime::NodeValidatedMatchResultHandle> {
+        let PendingSource::Query {
+            pending,
+            request,
+            registry,
+            context,
+            projected,
+        } = &self.source
+        else {
+            return Err(napi::Error::from_reason(
+                "pending_answer_kind: this pending contains a plan answer",
+            ));
+        };
+        let result = pending.get().map_err(|error| pending_error(&error))?;
+        context.attach_shared(
+            self.origin.clone(),
+            Arc::clone(request),
+            result,
+            Arc::clone(registry),
+            projected,
+        )
     }
 }
 
@@ -102,6 +259,7 @@ impl NodePendingPlanAnswer {
 pub struct NodeStagedTransaction {
     inner: Arc<tokio::sync::Mutex<Transaction>>,
     runtime: Arc<ProviderRuntimeOwner>,
+    origin: type_bridge_orm::ProjectedQueryOrigin,
 }
 
 impl NodeStagedTransaction {
@@ -109,7 +267,40 @@ impl NodeStagedTransaction {
         Self {
             inner: Arc::new(tokio::sync::Mutex::new(transaction)),
             runtime,
+            origin: type_bridge_orm::ProjectedQueryOrigin::remote_unbound(),
         }
+    }
+
+    pub(crate) fn with_origin(mut self, origin: type_bridge_orm::ProjectedQueryOrigin) -> Self {
+        self.origin = origin;
+        self
+    }
+
+    pub(crate) fn stage_query(
+        &self,
+        validated: type_bridge_orm::ValidatedMatchRequest,
+        registry: Arc<type_bridge_orm::_registry::DescriptorRegistry>,
+        context: crate::match_runtime::NodeMatchResultContext,
+    ) -> napi::Result<NodePendingPlanAnswer> {
+        let request = Arc::new(validated);
+        let pending = self
+            .lock()?
+            .stage_shared_match_with_limits(
+                &registry,
+                Arc::clone(&request),
+                context.execution_limits(),
+            )
+            .map_err(|error| pending_error(&error))?;
+        Ok(NodePendingPlanAnswer {
+            source: PendingSource::Query {
+                pending,
+                request,
+                registry,
+                context,
+                projected: std::sync::OnceLock::new(),
+            },
+            origin: self.origin.clone(),
+        })
     }
 
     fn lock(&self) -> napi::Result<tokio::sync::MutexGuard<'_, Transaction>> {
@@ -151,14 +342,23 @@ impl NodeStagedTransaction {
         let plan_bytes = non_shared_buffer(&env, plan_bytes)?;
         let schema_bytes = non_shared_buffer(&env, schema_bytes)?;
         let schema = decode_declared_schema(&schema_bytes)
-            .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
-        let plan = decode_query_plan_v3(&plan_bytes, &schema)
-            .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+            .map_err(|error| crate::plan_runtime::napi_error(&error))?;
+        let plan = decode_query_plan(&plan_bytes, &schema)
+            .map_err(|error| crate::plan_runtime::napi_error(&error))?;
+        let plans = Arc::new(NodePlanProgram::Raw(Box::new(BuiltPlans::single(plan))));
         let inner = self
             .lock()?
-            .stage_plan(&plan)
+            .stage_plans(Arc::clone(&plans), plans.returns_documents())
             .map_err(|error| pending_error(&error))?;
-        Ok(NodePendingPlanAnswer { inner })
+        Ok(NodePendingPlanAnswer {
+            source: PendingSource::Plans {
+                inner,
+                plans,
+                models: None,
+                projected: std::sync::OnceLock::new(),
+            },
+            origin: self.origin.clone(),
+        })
     }
 
     /// Stage one plan built by the plan builder. Nothing is sent until
@@ -166,11 +366,68 @@ impl NodeStagedTransaction {
     #[napi]
     pub fn stage(&self, plan: &NodePlan) -> napi::Result<NodePendingPlanAnswer> {
         let _entry = crate::perf_stages::entry().entered();
-        let inner = self
+        let (inner, models) = match plan.plans.as_ref() {
+            NodePlanProgram::Models(model) => {
+                let answer = self
+                    .lock()?
+                    .stage_plan_fetch(
+                        Arc::clone(&plan.plans),
+                        Arc::clone(&model.registry),
+                        Default::default(),
+                    )
+                    .map_err(|error| pending_error(&error))?;
+                (vec![], Some(answer))
+            }
+            NodePlanProgram::Raw(_) => {
+                let answers = self
+                    .lock()?
+                    .stage_plans(Arc::clone(&plan.plans), plan.plans.returns_documents())
+                    .map_err(|error| pending_error(&error))?;
+                (answers, None)
+            }
+        };
+        Ok(NodePendingPlanAnswer {
+            source: PendingSource::Plans {
+                inner,
+                models,
+                plans: Arc::clone(&plan.plans),
+                projected: std::sync::OnceLock::new(),
+            },
+            origin: self.origin.clone(),
+        })
+    }
+
+    /// Queue a complete authored invocation stack with block-local IID references.
+    #[napi]
+    pub fn stage_stack(
+        &self,
+        plans: Vec<ClassInstance<'_, NodeStagedPlan>>,
+    ) -> napi::Result<Vec<NodePendingPlanAnswer>> {
+        let Some(first) = plans.first() else {
+            return Ok(vec![]);
+        };
+        let pending = self
             .lock()?
-            .stage_plan(plan.inner())
+            .stage_plan_stack(
+                plans.iter().map(|plan| plan.entry.clone()).collect(),
+                Arc::new(first.authority.declared().clone()),
+            )
             .map_err(|error| pending_error(&error))?;
-        Ok(NodePendingPlanAnswer { inner })
+        Ok(plans
+            .iter()
+            .zip(pending)
+            .map(|(plan, pending)| NodePendingPlanAnswer {
+                source: PendingSource::Plans {
+                    inner: vec![pending],
+                    models: None,
+                    plans: Arc::new(NodePlanProgram::Raw(Box::new(BuiltPlans::single(
+                        plan.entry.plan().clone(),
+                    )))),
+                    projected: std::sync::OnceLock::new(),
+                },
+                origin: self.origin.clone(),
+            })
+            .collect())
     }
 
     /// Close without committing once any running commit settles; a closed
@@ -204,5 +461,79 @@ impl NodeStagedTransaction {
     #[napi]
     pub fn close(&self) -> napi::Result<()> {
         self.lock()?.close().map_err(|error| pending_error(&error))
+    }
+}
+
+#[cfg(test)]
+mod document_answer_tests {
+    use super::*;
+
+    #[test]
+    fn document_answer_json_preserves_nested_values() {
+        let documents =
+            vec![serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{"name":"Ada"}})];
+        let encoded = answer_json(&PlanAnswer::Documents(documents.clone())).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+            serde_json::json!({"kind":"documents", "documents":documents})
+        );
+    }
+}
+
+#[cfg(test)]
+mod pending_diagnostic_redaction_tests {
+    use super::*;
+    #[test]
+    fn pending_failure_uses_the_canonical_diagnostic_without_server_text() {
+        let error = PendingError::Failed {
+            diagnostic: Box::new(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::commit_failure(
+                    type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome::Unknown,
+                ),
+            ),
+            op_index: None,
+            message: "signed-server-secret".into(),
+            failure: Some(Box::new(
+                type_bridge_contract::failure::Failure::Indeterminate { code: None },
+            )),
+            context: Default::default(),
+        };
+        assert!(!error.to_string().contains("signed-server-secret"));
+        let surfaced = pending_error(&error);
+        assert!(!surfaced.reason.contains("signed-server-secret"));
+        assert!(surfaced.reason.contains("commit_outcome_unknown"));
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use napi::bindgen_prelude::BigInt;
+
+    #[test]
+    fn staged_policy_defaults_and_signed_timeouts() {
+        let defaults = staged_options(None, None, None).unwrap();
+        assert_eq!(
+            defaults.timeout.unwrap_or_default().milliseconds(),
+            Some(60_000)
+        );
+        assert!(!defaults.collect_phase_timestamps);
+        for (input, expected) in [(0_i64, None), (-1, None), (86_400_001, Some(86_400_001))] {
+            let options =
+                staged_options(Some("write"), Some(BigInt::from(input)), Some(true)).unwrap();
+            assert_eq!(options.timeout.unwrap().milliseconds(), expected);
+            assert!(options.collect_phase_timestamps);
+        }
+        assert!(
+            staged_options(
+                None,
+                Some(BigInt {
+                    sign_bit: false,
+                    words: vec![u64::MAX]
+                }),
+                None
+            )
+            .is_err()
+        );
     }
 }

@@ -153,18 +153,11 @@ def write_bundle(tmp_path: Path) -> tuple[Path, CargoReleaseInventory]:
     return root, inventory
 
 
-def test_inventory_pins_candidate_toolchain_and_exact_b8_registry_bytes() -> None:
+def test_inventory_pins_candidate_toolchain_without_retired_registry_inputs() -> None:
     inventory = load_inventory()
 
     assert inventory.candidate_toolchain == "1.94.1"
-    assert {value.name: value.registry_checksum for value in inventory.immutable_packages} == {
-        "type-bridge-typedb-protocol-b8": (
-            "e181af88e3742a13e35225c439f8a98968f014417b1814b18736743f6d799b16"
-        ),
-        "type-bridge-typedb-driver-b8": (
-            "a2c4fe7da8c6c8d6a075bb667c916f8fceda416bbb844d0396f987cd48204d2e"
-        ),
-    }
+    assert inventory.immutable_packages == ()
     assert all(value.registry_checksum is None for value in inventory.first_party_packages)
 
 

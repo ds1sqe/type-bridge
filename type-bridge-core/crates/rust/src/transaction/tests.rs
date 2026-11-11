@@ -1,3 +1,13 @@
+mod native_batch_answer_item {
+    pub use type_bridge_orm::session::backend::{AnswerItem, QueryResult};
+}
+#[allow(dead_code)]
+mod native_batch {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../orm/tests/support/native_batch.rs"
+    ));
+}
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -34,7 +44,7 @@ const ASSIGNMENT_JSON: &str = r#"{"kind":"relation","label":"assignment"}"#;
 const POSITION_OWNS: &str =
     r#"{"attribute":"position","owner":{"kind":"relation","label":"assignment"}}"#;
 
-fn v3_repository_root() -> PathBuf {
+fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -46,8 +56,8 @@ fn v3_repository_root() -> PathBuf {
         .unwrap()
 }
 
-fn v3_data_source_identity(root: &Path, relative: &str) -> Value {
-    let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
+fn data_source_identity(root: &Path, relative: &str) -> Value {
+    let bytes = fs::read(root.join(relative)).expect("staged proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
@@ -57,21 +67,21 @@ fn publish_models_data_fragment(results: Vec<Value>) {
     assert_eq!(
         destination.is_some(),
         nonce.is_some(),
-        "V3 proof destination and nonce must be configured together"
+        "staged proof destination and nonce must be configured together"
     );
     let (Some(destination), Some(nonce)) = (destination, nonce) else {
         return;
     };
     let destination = PathBuf::from(destination);
     assert!(destination.is_absolute() && !destination.exists());
-    let nonce = nonce.to_str().expect("V3 proof nonce is UTF-8");
+    let nonce = nonce.to_str().expect("staged proof nonce is UTF-8");
     assert!(
         nonce.len() == 64
             && nonce
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     );
-    let root = v3_repository_root();
+    let root = repository_root();
     let sources = [
         "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",
         "type-bridge-core/crates/orm/src/execution_diagnostic.rs",
@@ -91,26 +101,28 @@ fn publish_models_data_fragment(results: Vec<Value>) {
     let fragment = json!({
         "binding": "rust",
         "contract": {
-            "allowlist": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
-            "journey": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
-            "proof_schema": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
+            "allowlist": data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+            "journey": data_source_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+            "proof_schema": data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
         },
         "format": "typebridge.sdk-models-proof-fragment/v1",
-        "producer": {"id": "type-bridge-rust.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| v3_data_source_identity(&root, path)).collect::<Vec<_>>()},
+        "producer": {"id": "type-bridge-rust.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| data_source_identity(&root, path)).collect::<Vec<_>>()},
         "results": results,
         "run_nonce": nonce,
         "semantic_profile": crate::sdk_profile_matrix::requested("models").semantic_profile,
     });
     let mut bytes = type_bridge_contract::codec::to_canonical_json(&fragment)
-        .expect("V3 data fragment canonicalizes");
+        .expect("staged data fragment canonicalizes");
     bytes.push(b'\n');
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
-        .expect("V3 data fragment destination creates once");
-    output.write_all(&bytes).expect("V3 data fragment writes");
-    output.sync_all().expect("V3 data fragment is durable");
+        .expect("staged data fragment destination creates once");
+    output
+        .write_all(&bytes)
+        .expect("staged data fragment writes");
+    output.sync_all().expect("staged data fragment is durable");
 }
 
 fn worker_role() -> &'static str {
@@ -175,6 +187,9 @@ impl MaterializeModel for Worker {
             Some(EncodedScalar::String(value)) => value.clone(),
             _ => return Err(ValidationError::new("name", "missing_name")),
         };
+        if name == "reject-materialize" {
+            return Err(ValidationError::new("name", "rejected_materialization"));
+        }
         Ok(Self {
             iid: row.iid().to_owned(),
             name,
@@ -367,9 +382,10 @@ impl Tx {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| panic!("unexpected recording query: {q}"));
+        let source = q.to_owned();
         Box::pin(async move {
             match result {
-                Response::Result(value) => Ok(value),
+                Response::Result(value) => Ok(native_batch::result(&source, value)),
                 Response::Error(error) => Err(OrmError::QueryExecution(error)),
             }
         })
@@ -395,7 +411,7 @@ fn worker_fetch(iid: &str, name: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "_iid": iid,
         "_type": "person",
-        "attributes": {"name": [name]}
+        "attributes": {"name": name}
     })]))
 }
 
@@ -403,10 +419,10 @@ fn assignment_fetch(iid: &str, position: &str, worker_iid: &str, worker_name: &s
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "_iid": iid,
         "_type": "assignment",
-        "attributes": {"position": [position]},
+        "attributes": {"position": position},
         "_role_0_iid": worker_iid,
         "_role_0_type": "person",
-        "_role_0_attributes": {"name": [worker_name]}
+        "_role_0_attributes": {"name": worker_name}
     })]))
 }
 
@@ -543,7 +559,10 @@ async fn write_transaction_commits_multiple_operations_in_one_context() {
             name: "alice".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(worker.iid, "0x1");
     assert_eq!(worker.name, "alice");
     let assignment = tx
@@ -553,7 +572,10 @@ async fn write_transaction_commits_multiple_operations_in_one_context() {
             worker_iid: worker.iid.clone(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     assert_eq!(assignment.iid, "0x2");
     assert_eq!(assignment.position, "captain");
     tx.commit().await.unwrap();
@@ -585,6 +607,56 @@ async fn write_transaction_commits_multiple_operations_in_one_context() {
 }
 
 #[tokio::test]
+async fn borrowed_single_materializer_failure_marks_rollback_only_and_retains_binding_error() {
+    let (db, state) = test_db(vec![worker_fetch("0x1", "reject-materialize")]);
+    let tx = db.write().await.unwrap();
+    let error = tx
+        .entities::<Worker>()
+        .insert(WorkerCreate {
+            name: "reject-materialize".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_model_error(
+        error,
+        crate::error::ModelValidationPhase::Hydration,
+        "rejected_materialization",
+        &["name"],
+    );
+    assert_eq!(
+        tx.tx.lifecycle_state().await,
+        type_bridge_orm::TransactionContextState::RollbackOnly
+    );
+    let cause = tx
+        .tx
+        .rollback_only_cause()
+        .await
+        .expect("materialization latches its cause");
+    assert_eq!(
+        cause.code().as_str(),
+        "generated_model_materialization_failed"
+    );
+    assert!(tx.tx.commit_sdk().await.is_err());
+    tx.rollback().await.unwrap();
+    let state = state.lock().unwrap();
+    assert_eq!(
+        state
+            .events
+            .iter()
+            .filter(|event| matches!(event, Event::Query(_)))
+            .count(),
+        1
+    );
+    assert!(
+        !state
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::Commit))
+    );
+    assert!(matches!(state.events.last(), Some(Event::Rollback)));
+}
+
+#[tokio::test]
 async fn write_transaction_explicit_rollback_discards_operations() {
     let (db, state) = test_db(vec![worker_fetch("0x1", "alice")]);
     let tx = db.write().await.unwrap();
@@ -593,7 +665,10 @@ async fn write_transaction_explicit_rollback_discards_operations() {
             name: "alice".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     tx.rollback().await.unwrap();
     let guard = state.lock().unwrap();
     assert!(matches!(guard.events.last(), Some(Event::Rollback)));
@@ -614,7 +689,10 @@ async fn write_transaction_uncommitted_drop_releases_without_commit() {
             name: "alice".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     drop(tx);
     let guard = state.lock().unwrap();
     assert!(
@@ -658,27 +736,7 @@ async fn write_transaction_preflight_and_reads_share_the_open_context() {
         Response::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 0})])),
     ]);
     let tx = db.write().await.unwrap();
-    assert_model_error(
-        tx.entities::<Worker>().get_by_iid("bad").await.unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
-    assert_model_error(
-        tx.relations::<Assignment>()
-            .update(
-                "bad",
-                AssignmentCreate {
-                    position: "p".into(),
-                    worker_iid: "0x1".into(),
-                },
-            )
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "invalid_iid",
-        &["iid"],
-    );
+
     {
         let guard = state.lock().unwrap();
         assert_eq!(guard.events.len(), 1);
@@ -686,7 +744,7 @@ async fn write_transaction_preflight_and_reads_share_the_open_context() {
     }
     assert!(
         tx.entities::<Worker>()
-            .get_by_iid("0x9")
+            .get_by_iid(&crate::Iid::new("0x9").unwrap())
             .await
             .unwrap()
             .is_none()
@@ -733,7 +791,13 @@ async fn sdk_models_rust_data_plane_fragment() {
         DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
         DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
     );
-    assert_eq!(effective, QueryExecutionResourceLimits::default());
+    assert_eq!(
+        effective,
+        QueryExecutionResourceLimits {
+            statements: Some(DEFAULT_DIRECT_QUERY_STATEMENTS),
+            ..Default::default()
+        }
+    );
     let policy = DirectConnectionPolicy::new(
         "localhost:1729",
         "sdk",
@@ -746,18 +810,39 @@ async fn sdk_models_rust_data_plane_fragment() {
     assert_eq!(policy_debug, "DirectConnectionPolicy([REDACTED])");
     assert!(!policy_debug.contains("secret-that-must-not-appear"));
 
-    // The frozen journey records the proxy wire policy on every binding.
-    let wire_limits =
-        QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy);
+    // Historical-policy replay: 07.0 changed the default timeout from 30 s to 60 s.
+    assert_eq!(
+        QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy)
+            .timeout_milliseconds
+            .milliseconds(),
+        Some(60_000),
+    );
+    let wire_limits = QueryExecutionResourceLimits {
+        collect_phase_timestamps: false,
+        timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(30_000),
+        items: 65_536,
+        bytes: 33_554_432,
+        graph_nodes: 65_536,
+        attribute_values: 65_536,
+        collection_members: 65_536,
+        role_players: 65_536,
+        statements: Some(3),
+    }
+    .validate()
+    .expect("historical policy is accepted");
+    assert_eq!(effective.constrained_by(wire_limits), wire_limits);
     let dimensions = [
-        ("timeout_milliseconds", wire_limits.timeout_milliseconds),
+        (
+            "timeout_milliseconds",
+            wire_limits.timeout_milliseconds.milliseconds().unwrap_or(0),
+        ),
         ("items", wire_limits.items),
         ("bytes", wire_limits.bytes),
         ("graph_nodes", wire_limits.graph_nodes),
         ("attribute_values", wire_limits.attribute_values),
         ("collection_members", wire_limits.collection_members),
         ("role_players", wire_limits.role_players),
-        ("statements", u64::from(wire_limits.statements)),
+        ("statements", u64::from(wire_limits.statement_limit())),
     ]
     .into_iter()
     .map(|(dimension, hard_max)| {
@@ -832,7 +917,10 @@ async fn rollback_keep_accepts_more_work_and_commit() {
             name: "alice".into(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .into_items()
+        .pop()
+        .expect("one written root");
     tx.commit().await.unwrap();
     let events = &state.lock().unwrap().events;
     assert_eq!(

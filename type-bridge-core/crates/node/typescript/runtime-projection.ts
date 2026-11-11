@@ -1,13 +1,18 @@
+import { RawTransaction, rawNativeCall, rawNativePromise, type RawValue } from "./raw-query.js";
 import {
   createRustDatabaseFromNative,
-  QueryV2Authority,
-  type NativeRustDatabase,
-  type NativeRustTransactionContext,
-  type RustDatabase,
-  type RustTransactionContext,
+  PlanAuthority,
+  type NativeDatabase,
+  type NativeTransactionContext,
+  type Database,
+  type TransactionContext,
+  type MigrationTransaction,
 } from "./index.js";
 import { loadNative } from "./native.js";
 import type {
+  NativePlan,
+  NativePendingPlanAnswer,
+  NativeStagedTransaction,
   NativeProxyConnection,
   NativeQueryCancellation,
   NativeQueryExecutionResources,
@@ -19,13 +24,13 @@ import {
   type StagedTransactionKind,
 } from "./staged-transaction.js";
 import {
-  queryV2AuthorityHandle,
-  queryV2NativeCall,
-  queryV2NativePromise,
-  registerQueryV2AuthorityHandle,
-} from "./query-v2-internals.js";
+  planAuthorityHandle,
+  planNativeCall,
+  planNativePromise,
+  registerPlanAuthorityHandle,
+} from "./plan-internals.js";
 import {
-  isRegisteredRustConnection,
+  isRegisteredConnection,
   rustDatabaseHandle,
   rustTransactionHandle,
 } from "./runtime-handles.js";
@@ -58,10 +63,12 @@ export type RuntimeProjectionReduction =
   | "mean"
   | "median"
   | "std";
-type RuntimeProjectionRemoteContext = ReturnType<NativeModule["queryV2RemoteModelContextWithResources"]>;
-type RuntimeProjectionRemotePending = ReturnType<NativeModule["queryV2PrepareRemoteModelRows"]>;
+type RuntimeProjectionRemoteContext = ReturnType<NativeModule["planRemoteModelContextWithResources"]>;
+type RuntimeProjectionRemotePending = ReturnType<NativeModule["planPrepareRemoteModelRows"]>;
 
-export type RuntimeProjectionConnection = RustDatabase | RustTransactionContext;
+export type RuntimeProjectionConnection = Database | TransactionContext | MigrationTransaction | ProxyConnection;
+
+const proxyConnectionHandles = new WeakMap<ProxyConnection, NativeProxyConnection>();
 
 export interface RuntimeProjectionBinding {
   readonly typeKey: string;
@@ -82,6 +89,8 @@ export interface RuntimeProjectionInstall {
    * unsupported and outside the runtime projection contract.
    */
   readonly projectedBatchMaterializer?: NativeProjectedBatchMaterializer;
+  /** @internal Restrict an ordinary package's batch mapper to plan results. */
+  readonly planResultsOnly?: boolean;
 }
 
 export interface GeneratedSchemaAuthorityInstall {
@@ -94,6 +103,8 @@ export interface GeneratedSchemaAuthorityInstall {
  * dimension takes the core default; a given one may tighten or raise it.
  */
 export interface QueryExecutionResourceLimitOptions {
+  /** Collect a diagnostic timeline without a tracing subscriber. Defaults to false. */
+  readonly collectPhaseTimestamps?: boolean;
   readonly timeoutMilliseconds?: bigint;
   readonly items?: bigint;
   readonly bytes?: bigint;
@@ -119,10 +130,12 @@ export class QueryExecutionResourceLimits {
       options.collectionMembers,
       options.rolePlayers,
       options.statements,
+      options.collectPhaseTimestamps,
     );
     Object.freeze(this);
   }
 
+  get collectPhaseTimestamps(): boolean { return this.#native.collectPhaseTimestamps; }
   get timeoutMilliseconds(): bigint { return this.#native.timeoutMilliseconds; }
   get items(): bigint { return this.#native.items; }
   get bytes(): bigint { return this.#native.bytes; }
@@ -130,7 +143,7 @@ export class QueryExecutionResourceLimits {
   get attributeValues(): bigint { return this.#native.attributeValues; }
   get collectionMembers(): bigint { return this.#native.collectionMembers; }
   get rolePlayers(): bigint { return this.#native.rolePlayers; }
-  get statements(): bigint { return this.#native.statements; }
+  get statements(): bigint | undefined { return this.#native.statements ?? undefined; }
 
   /** @internal Exact native policy owner. */
   nativeHandle(): NativeQueryExecutionResources { return this.#native; }
@@ -245,14 +258,16 @@ export type RuntimeProjectionRemoteExchange = (
 ) => Promise<Uint8Array>;
 
 /** Opaque verified remote terminal executor for one generated package. */
-export interface RuntimeProjectionRemote {
+export type RuntimeProjectionQueryResult = RuntimeProjectionMatchResult | NativePendingPlanAnswer;
+
+export interface RuntimeProjectionRemote<Result = RuntimeProjectionMatchResult> {
   rows(
     query: RuntimeProjectionMatchQuery,
     orders: RuntimeProjectionMatchOrder[],
     offset: bigint,
     limit: bigint,
     cardinality: "exactly_one" | "bounded_many",
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   page(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
@@ -260,36 +275,36 @@ export interface RuntimeProjectionRemote {
     offset: bigint,
     limit: bigint,
     includeTotal: boolean,
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   count(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   exists(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   reduce(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
     group: RuntimeProjectionMatchBinding | null,
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   reduceByField(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
     group: RuntimeProjectionMatchField,
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   reduceByFields(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
     groups: RuntimeProjectionMatchField[],
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
 }
 
 declare const nativeProjectedFacadeProof: unique symbol;
@@ -301,9 +316,21 @@ export interface NativeProjectedFacadeProof {
 
 /** @internal Private wire plus exact root and role-player proofs. */
 export interface NativeProjectedValueEnvelope {
+  readonly deleted: boolean;
   readonly json: string;
   rootProof(): NativeProjectedFacadeProof;
   roleProof(roleName: string, playerIndex: number): NativeProjectedFacadeProof;
+}
+
+/** @internal Cells and row order issued by the core authored-result proof. */
+export interface NativeAuthoredPlanCell {
+  readonly model?: NativeProjectedValueEnvelope | null;
+  readonly scalar?: string | null;
+}
+/** @internal Exactly one committed authored projection shape. */
+export interface NativeAuthoredPlanResult {
+  readonly models?: readonly NativeProjectedValueEnvelope[] | null;
+  readonly rows?: readonly (readonly NativeAuthoredPlanCell[])[] | null;
 }
 
 type NativeProjectedBatchMaterializer = (
@@ -318,6 +345,11 @@ declare const nativeProjectedBatchAuthority: unique symbol;
 /** @internal One opaque pending/active authority shared by a projected batch. */
 interface NativeProjectedBatchAuthority {
   readonly [nativeProjectedBatchAuthority]: never;
+}
+
+/** @internal Read the core snapshot flag while the generated mapper publishes a row. */
+export function projectedBatchDeleted(authority: NativeProjectedBatchAuthority, ordinal: number, roleName?: string, playerIndex?: number): boolean {
+  return planNativeCall(() => loadNative().projectedBatchDeleted(authority, ordinal, roleName, playerIndex));
 }
 
 /** @internal Exact root selector backed by one batch publication authority. */
@@ -351,47 +383,64 @@ interface NativeProjectedUpdateBatchRow extends NativeProjectedCreateBatchRow {
   readonly iid: string;
 }
 
+/** Complete hydrated roots from a single-input manager write, in answer order. */
+export interface WriteResult<T> {
+  readonly count: number;
+  readonly items: readonly T[];
+  readonly item: T | null;
+}
+
+/** Complete batch roots with their original input row indexes. */
+export interface BatchWriteResult<T> {
+  readonly count: number;
+  readonly items: readonly T[];
+  readonly inputIndexes: readonly number[];
+}
+
+/** Build the public write result from all roots already returned by the engine. */
+export function writeResult<T>(items: readonly T[]): WriteResult<T> {
+  const retained = Object.freeze(items);
+  return Object.freeze({ count: retained.length, items: retained, item: retained.length === 1 ? retained[0]! : null });
+}
+
 export interface NativeProjectedManager {
-  insertProjected(
+  insertProjected<Complete>(
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
-  ): NativeProjectedValueEnvelope;
-  insertJson(instanceJson: string): string;
-  insertManyJson(batchJson: string): string;
+  ): WriteResult<Complete>;
   insertManyProjected<Complete>(
     rowCount: number,
     rowAt: (ordinal: number) => NativeProjectedCreateBatchRow,
-  ): readonly Complete[];
-  putProjected(
+  ): BatchWriteResult<Complete>;
+  putProjected<Complete>(
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
-  ): NativeProjectedValueEnvelope;
-  putJson(instanceJson: string): string;
-  putManyJson(batchJson: string): string;
+  ): WriteResult<Complete>;
   putManyProjected<Complete>(
     rowCount: number,
     rowAt: (ordinal: number) => NativeProjectedCreateBatchRow,
-  ): readonly Complete[];
-  updateProjected(
+  ): BatchWriteResult<Complete>;
+  updateProjected<Complete>(
     iid: string,
     instanceJson: string,
     proofs: (NativeProjectedInputProof | null)[],
-  ): NativeProjectedValueEnvelope;
-  updateJson(iid: string, instanceJson: string): string;
+  ): WriteResult<Complete>;
   updateManyProjected<Complete>(
     rowCount: number,
     rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow,
-  ): readonly Complete[];
+  ): BatchWriteResult<Complete>;
   deleteByIid(iid: string): void;
+  deleteByIidReturning<Complete>(iid: string): WriteResult<Complete>;
+  deleteManyReturning<Complete>(iids: string[]): BatchWriteResult<Complete>;
   deleteManyProjected(
     rowCount: number,
     rowAt: (ordinal: number) => string,
   ): void;
   managerFilter(): NativeProjectedManagerFilter;
   filterEntriesJson(filtersJson: string): NativeProjectedManager;
-  filterJson(filtersJson: string): NativeProjectedManager;
   getByIidProjected(iid: string): NativeProjectedValueEnvelope | null;
-  getByIidJson(iid: string): string;
+  allProjected(): readonly NativeProjectedValueEnvelope[];
+  firstProjected(): NativeProjectedValueEnvelope | null;
   allJson(): string;
   firstJson(): string;
   count(): bigint;
@@ -411,14 +460,19 @@ export interface NativeProjectedManagerFilter {
   firstProjected(): NativeProjectedValueEnvelope | null;
   count(): bigint;
   exists(): boolean;
+  delete(): void;
+  updateProjected<Complete>(
+    instanceJson: string,
+    proofs: (NativeProjectedInputProof | null)[],
+  ): WriteResult<Complete>;
 }
 
 /** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */
 export function projectedManagerNativeCall<Result>(operation: () => Result): Result {
-  return queryV2NativeCall(operation);
+  return planNativeCall(operation);
 }
 
-interface NativeProjectionHandle {
+export interface NativeProjectionHandle {
   connectDirect(
     endpoint: string,
     database: string,
@@ -430,9 +484,11 @@ interface NativeProjectionHandle {
     connectionLimits?: NativeQueryExecutionResources,
     answerLimits?: NativeQueryExecutionResources,
     cancellation?: NativeQueryCancellation,
-  ): NativeRustDatabase;
-  managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
-  managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
+    queryLimits?: NativeQueryLimits,
+  ): NativeDatabase;
+  managerForProxy(typeKey: string, connection: NativeProxyConnection): NativeProjectedManager;
+  managerForDatabase(typeKey: string, database: NativeDatabase): NativeProjectedManager;
+  managerForTransaction(typeKey: string, transaction: NativeTransactionContext): NativeProjectedManager;
   matchSessionWithResources(
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
@@ -503,6 +559,7 @@ interface NativeProjectionHandle {
   rejectGeneratedTokenPackageMismatch(pathJson: string): void;
   revalidateMatchDiagnostic(diagnostic: string): string;
   materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
+  materializePlanDocuments(plan: NativePlan, answerJson: string, declaredId: string): unknown[];
   materializeMatchThingProjected(
     thing: RuntimeProjectionMatchThing,
   ): NativeProjectedValueEnvelope;
@@ -528,6 +585,9 @@ export class InstalledRuntimeProjection {
     Object.freeze(this);
   }
 
+  /** @internal Retain this installed package while compiling an authored result. */
+  nativeHandle(): NativeProjectionHandle { return this.#native; }
+
   /** @internal Open through this installed generated package's authority. */
   connectDirect(input: {
     endpoint: string;
@@ -540,7 +600,8 @@ export class InstalledRuntimeProjection {
     connectionLimits?: QueryExecutionResourceLimits;
     answerLimits?: QueryExecutionResourceLimits;
     cancellation?: QueryCancellation;
-  }): RustDatabase {
+    queryLimits?: QueryLimits;
+  }): Database {
     return createRustDatabaseFromNative(this.#native.connectDirect(
       input.endpoint,
       input.database,
@@ -552,13 +613,18 @@ export class InstalledRuntimeProjection {
       input.connectionLimits?.nativeHandle(),
       input.answerLimits?.nativeHandle(),
       input.cancellation?.nativeHandle(),
+      input.queryLimits?.nativeHandle(),
     ));
   }
 
   /** @internal Bind one generated token without exposing its native handle. */
   manager(typeKey: string, connection: RuntimeProjectionConnection): NativeProjectedManager {
-    if (!isRegisteredRustConnection(connection)) {
-      throw new TypeError("projected manager requires a registered RustDatabase or RustTransactionContext");
+    const proxy = proxyConnectionHandles.get(connection as ProxyConnection);
+    if (proxy !== undefined) {
+      return this.#native.managerForProxy(typeKey, proxy);
+    }
+    if (!isRegisteredConnection(connection)) {
+      throw new TypeError("projected manager requires a registered Database or TransactionContext");
     }
     const database = rustDatabaseHandle(connection);
     if (database !== undefined) {
@@ -767,14 +833,20 @@ export class InstalledRuntimeProjection {
 
   /** @internal Reject structural or foreign connection lookalikes. */
   assertConnection(connection: RuntimeProjectionConnection): void {
-    if (!isRegisteredRustConnection(connection)) {
-      throw new TypeError("generated query requires a registered RustDatabase or RustTransactionContext");
+    if (!proxyConnectionHandles.has(connection as ProxyConnection)
+      && !isRegisteredConnection(connection)) {
+      throw new TypeError("generated query requires a registered Database or TransactionContext");
     }
   }
 
   /** @internal Materialize one native-validated thing as projected private JSON. */
   materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string {
     return this.#native.materializeMatchThingJson(thing);
+  }
+
+  /** @internal Project validated plan documents through the installed model registry. */
+  materializePlanDocuments<Model>(plan: NativePlan, answerJson: string, declaredId: string): Model[] {
+    return planNativeCall(() => this.#native.materializePlanDocuments(plan, answerJson, declaredId)) as Model[];
   }
 
   /** @internal Materialize one successor query thing with its exact opaque proof. */
@@ -785,12 +857,15 @@ export class InstalledRuntimeProjection {
   }
 
   /**
-   * @internal Bind one registered `RustDatabase` (owned) or transaction
+   * @internal Bind one registered `Database` (owned) or transaction
    * (borrowed) as a terminal executor. Terminals run on the provider runtime
    * and resolve without blocking the event loop.
    */
   direct(connection: RuntimeProjectionConnection): RuntimeProjectionRemote {
-    if (!isRegisteredRustConnection(connection)) {
+    if (proxyConnectionHandles.has(connection as ProxyConnection)) {
+      return connection as ProxyConnection;
+    }
+    if (!isRegisteredConnection(connection)) {
       throw new TypeError("generated query requires a registered Rust connection");
     }
     const database = rustDatabaseHandle(connection);
@@ -804,22 +879,27 @@ export class InstalledRuntimeProjection {
     return new InstalledRuntimeProjectionDirect(this.#native, { kind: "borrowed", transaction });
   }
 
+  /** @internal Bind generated typed reads to one deferred transaction. */
+  staged(connection: StagedTransaction): RuntimeProjectionRemote<NativePendingPlanAnswer> {
+    return new InstalledRuntimeProjectionStaged(connection.nativeHandle());
+  }
+
   /**
    * @internal Bind remote authority, executor epoch, the session's resources
    * and cancellation, and one host exchange. `answerLimits` is the
    * connection's ceiling; left out, the session's resources are the ceiling.
    */
   remote(
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     advertisement: Uint8Array,
     exchange: RuntimeProjectionRemoteExchange,
     resources: QueryExecutionResourceLimits,
     cancellation: QueryCancellation,
     answerLimits?: QueryExecutionResourceLimits,
   ): RuntimeProjectionRemote {
-    const nativeAuthority = queryV2AuthorityHandle(authority);
+    const nativeAuthority = planAuthorityHandle(authority);
     if (nativeAuthority === undefined) {
-      throw new TypeError("generated remote query requires a type-bridge QueryV2Authority");
+      throw new TypeError("generated remote query requires a type-bridge PlanAuthority");
     }
     if (!(advertisement instanceof Uint8Array)) {
       throw new TypeError("generated remote query advertisement must be a Uint8Array");
@@ -834,7 +914,7 @@ export class InstalledRuntimeProjection {
       throw new TypeError("generated remote query answerLimits must be QueryExecutionResourceLimits");
     }
     const native = loadNative();
-    const context = queryV2NativeCall(() => native.queryV2RemoteModelContextWithResources(
+    const context = planNativeCall(() => native.planRemoteModelContextWithResources(
       nativeAuthority,
       advertisement,
       resources.nativeHandle(),
@@ -846,10 +926,74 @@ export class InstalledRuntimeProjection {
 }
 
 type DirectTarget =
-  | { readonly kind: "owned"; readonly database: NativeRustDatabase }
-  | { readonly kind: "borrowed"; readonly transaction: NativeRustTransactionContext };
+  | { readonly kind: "owned"; readonly database: NativeDatabase }
+  | { readonly kind: "borrowed"; readonly transaction: NativeTransactionContext };
 
 /** Verified direct execution bound to one registered Rust database or transaction. */
+class InstalledRuntimeProjectionStaged implements RuntimeProjectionRemote<NativePendingPlanAnswer> {
+  readonly #transaction: NativeStagedTransaction;
+  constructor(transaction: NativeStagedTransaction) { this.#transaction = transaction; Object.freeze(this); }
+
+  async rows(
+    query: RuntimeProjectionMatchQuery,
+    orders: RuntimeProjectionMatchOrder[],
+    offset: bigint,
+    limit: bigint,
+    cardinality: "exactly_one" | "bounded_many",
+  ): Promise<NativePendingPlanAnswer> {
+    return planNativeCall(() => query.stageFetchRows(this.#transaction, orders, offset, limit, cardinality));
+  }
+  async page(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    orders: RuntimeProjectionMatchOrder[],
+    offset: bigint,
+    limit: bigint,
+    includeTotal: boolean,
+  ): Promise<NativePendingPlanAnswer> {
+    return planNativeCall(() => query.stagePageBy(this.#transaction, root, orders, offset, limit, includeTotal));
+  }
+  async count(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+  ): Promise<NativePendingPlanAnswer> {
+    return planNativeCall(() => query.stageCountBy(this.#transaction, root));
+  }
+  async exists(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+  ): Promise<NativePendingPlanAnswer> {
+    return planNativeCall(() => query.stageExistsBy(this.#transaction, root));
+  }
+  async reduce(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    group: RuntimeProjectionMatchBinding | null,
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<NativePendingPlanAnswer> {
+    return planNativeCall(() => query.stageReduceBy(this.#transaction, root, group, reducers, inputs));
+  }
+  async reduceByField(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    group: RuntimeProjectionMatchField,
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<NativePendingPlanAnswer> {
+    return planNativeCall(() => query.stageReduceByField(this.#transaction, root, group, reducers, inputs));
+  }
+  async reduceByFields(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    groups: RuntimeProjectionMatchField[],
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<NativePendingPlanAnswer> {
+    return planNativeCall(() => query.stageReduceByFields(this.#transaction, root, groups, reducers, inputs));
+  }
+}
+
 class InstalledRuntimeProjectionDirect implements RuntimeProjectionRemote {
   readonly #native: NativeRuntimeProjection;
   readonly #target: DirectTarget;
@@ -962,13 +1106,13 @@ class InstalledRuntimeProjectionDirect implements RuntimeProjectionRemote {
   /** Revalidate the request, then run it on the owned or borrowed entry point. */
   async #run(
     diagnostic: () => string,
-    owned: (database: NativeRustDatabase) => Promise<RuntimeProjectionMatchResult>,
+    owned: (database: NativeDatabase) => Promise<RuntimeProjectionMatchResult>,
     borrowed: (
-      transaction: NativeRustTransactionContext,
+      transaction: NativeTransactionContext,
     ) => Promise<RuntimeProjectionMatchResult>,
   ): Promise<RuntimeProjectionMatchResult> {
     const target = this.#target;
-    return queryV2NativePromise(queryV2NativeCall(() => {
+    return planNativePromise(planNativeCall(() => {
       this.#native.revalidateMatchDiagnostic(diagnostic());
       return target.kind === "owned" ? owned(target.database) : borrowed(target.transaction);
     }));
@@ -1002,7 +1146,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     limit: bigint,
     cardinality: "exactly_one" | "bounded_many",
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() => this.#native.queryV2PrepareRemoteModelRows(
+    return this.#execute(planNativeCall(() => this.#native.planPrepareRemoteModelRows(
       query,
       this.#context,
       orders,
@@ -1020,7 +1164,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     limit: bigint,
     includeTotal: boolean,
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() => this.#native.queryV2PrepareRemoteModelPage(
+    return this.#execute(planNativeCall(() => this.#native.planPrepareRemoteModelPage(
       query,
       this.#context,
       root,
@@ -1035,8 +1179,8 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() =>
-      this.#native.queryV2PrepareRemoteModelCount(query, this.#context, root)
+    return this.#execute(planNativeCall(() =>
+      this.#native.planPrepareRemoteModelCount(query, this.#context, root)
     ));
   }
 
@@ -1044,8 +1188,8 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() =>
-      this.#native.queryV2PrepareRemoteModelExists(query, this.#context, root)
+    return this.#execute(planNativeCall(() =>
+      this.#native.planPrepareRemoteModelExists(query, this.#context, root)
     ));
   }
 
@@ -1056,8 +1200,8 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() =>
-      this.#native.queryV2PrepareRemoteModelReduce(
+    return this.#execute(planNativeCall(() =>
+      this.#native.planPrepareRemoteModelReduce(
         query,
         this.#context,
         root,
@@ -1075,8 +1219,8 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() =>
-      this.#native.queryV2PrepareRemoteModelReduceByField(
+    return this.#execute(planNativeCall(() =>
+      this.#native.planPrepareRemoteModelReduceByField(
         query,
         this.#context,
         root,
@@ -1094,8 +1238,8 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
   ): Promise<RuntimeProjectionMatchResult> {
-    return this.#execute(queryV2NativeCall(() =>
-      this.#native.queryV2PrepareRemoteModelReduceByFields(
+    return this.#execute(planNativeCall(() =>
+      this.#native.planPrepareRemoteModelReduceByFields(
         query,
         this.#context,
         root,
@@ -1107,7 +1251,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
   }
 
   async #execute(pending: RuntimeProjectionRemotePending): Promise<RuntimeProjectionMatchResult> {
-    const request = queryV2NativeCall(() => new Uint8Array(pending.requestBytes()));
+    const request = planNativeCall(() => new Uint8Array(pending.requestBytes()));
     const controller = new AbortController();
     const detach = this.#cancellation.onCancelled(() => controller.abort());
     const exchange = Promise.resolve()
@@ -1124,7 +1268,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
       if (outcome.kind === "cancelled") {
         // Claim through the neutral one-shot authority after cancellation so
         // the pending request is consumed and the canonical diagnostic wins.
-        return await queryV2NativePromise(queryV2NativeCall(() =>
+        return await planNativePromise(planNativeCall(() =>
           pending.decodeReply(new Uint8Array())
         ));
       }
@@ -1135,7 +1279,7 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
       if (!(response instanceof Uint8Array)) {
         throw new TypeError("generated remote query exchange must resolve to a Uint8Array");
       }
-      return queryV2NativePromise(queryV2NativeCall(() => pending.decodeReply(response)));
+      return planNativePromise(planNativeCall(() => pending.decodeReply(response)));
     } finally {
       detach();
     }
@@ -1161,12 +1305,16 @@ export interface ProxyConnectionOptions {
    * it must name the same executor and reply key as `advertisement`.
    */
   readonly stagedAdvertisement?: Uint8Array;
+  /** Finite delivery window, default 60000 ms; independent of execution. */
+  readonly admissionWindowMilliseconds?: bigint;
   /** Bounds connecting, which fetches the advertisement. */
   readonly connectionLimits?: QueryExecutionResourceLimits;
   /** The ceiling every terminal on this connection is constrained by. */
   readonly answerLimits?: QueryExecutionResourceLimits;
   /** Cancels connecting. */
   readonly cancellation?: QueryCancellation;
+  /** Independent query policy, tightened by the staged server advertisement. */
+  readonly queryLimits?: QueryLimits;
 }
 
 /**
@@ -1176,22 +1324,50 @@ export interface ProxyConnectionOptions {
  * query session's policy constrained by this connection's `answerLimits`.
  */
 export class ProxyConnection implements RuntimeProjectionRemote {
+  /** Open a raw context that accepts one query, committed on the proxy host. */
+  async rawTransaction(kind: import("./index.js").TransactionType = "read"): Promise<RawTransaction> {
+    return new RawTransaction(rawNativeCall(() => this.#native.rawTransaction(kind)));
+  }
+
+  /**
+   * Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+   * to TypeDB as written, and TypeDB's output comes back as it
+   * answered, in this SDK's native data types. TypeBridge adds no
+   * validation, rewriting, hydration, hooks, limits or extra
+   * queries. It runs in read, write and schema transactions and
+   * accepts any TypeQL, schema-breaking changes included. The caller
+   * owns its correctness; TypeBridge makes no promise about its
+   * effects. On a proxy connection it posts to the server's opt-in
+   * `/v3/raw` endpoint, which is off by default.
+   *
+   * Integer tokens outside the JavaScript safe range become bigint; safe integers and doubles stay number.
+   */
+  executeQuery(query: string, kind: import("./index.js").TransactionType = "read"): Promise<RawValue> {
+    return rawNativePromise(rawNativeCall(() => this.#native.executeQuery(query, kind)));
+  }
+
   readonly #native: NativeProxyConnection;
 
   private constructor(native: NativeProxyConnection) {
     this.#native = native;
+    proxyConnectionHandles.set(this, native);
     Object.freeze(this);
+  }
+
+  /** Configured delivery window, before the server ceiling is applied. */
+  get admissionWindowMilliseconds(): bigint {
+    return this.#native.admissionWindowMilliseconds;
   }
 
   /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
   static async connect(
-    authority: QueryV2Authority,
+    authority: PlanAuthority,
     endpoint: string,
     options: ProxyConnectionOptions = {},
   ): Promise<ProxyConnection> {
-    const nativeAuthority = queryV2AuthorityHandle(authority);
+    const nativeAuthority = planAuthorityHandle(authority);
     if (nativeAuthority === undefined) {
-      throw new TypeError("proxy connection requires a type-bridge QueryV2Authority");
+      throw new TypeError("proxy connection requires a type-bridge PlanAuthority");
     }
     if (typeof endpoint !== "string") {
       throw new TypeError("proxy endpoint must be a string");
@@ -1214,7 +1390,7 @@ export class ProxyConnection implements RuntimeProjectionRemote {
     const stagedAdvertisement = options.stagedAdvertisement === undefined
       ? undefined
       : ownedByteSnapshot(options.stagedAdvertisement, loadNative().MAX_REMOTE_ENVELOPE_BYTES);
-    const native = await queryV2NativePromise(queryV2NativeCall(() =>
+    const native = await planNativePromise(planNativeCall(() =>
       loadNative().NodeProxyConnection.connect(
         nativeAuthority,
         endpoint,
@@ -1227,6 +1403,8 @@ export class ProxyConnection implements RuntimeProjectionRemote {
         options.answerLimits?.nativeHandle(),
         options.cancellation?.nativeHandle(),
         stagedAdvertisement,
+        options.admissionWindowMilliseconds,
+        options.queryLimits?.nativeHandle(),
       )
     ));
     return new ProxyConnection(native);
@@ -1242,10 +1420,16 @@ export class ProxyConnection implements RuntimeProjectionRemote {
     kind?: StagedTransactionKind,
     options: { readonly cancellation?: QueryCancellation } = {},
   ): Promise<StagedTransaction> {
-    const native = await queryV2NativePromise(queryV2NativeCall(() =>
+    const native = await planNativePromise(planNativeCall(() =>
       this.#native.transaction(kind, options.cancellation?.nativeHandle())
     ));
     return new StagedTransaction(native);
+  }
+
+  /** Query policy tightened by the currently pinned staged server ceiling. */
+  get queryLimits(): QueryLimits {
+    const limits = this.#native.queryLimits;
+    return new QueryLimits(Object.fromEntries(limits.names().map(name => [name, limits.get(name)])));
   }
 
   /** The ceiling every terminal on this connection is constrained by. */
@@ -1259,7 +1443,8 @@ export class ProxyConnection implements RuntimeProjectionRemote {
       attributeValues: limits.attributeValues,
       collectionMembers: limits.collectionMembers,
       rolePlayers: limits.rolePlayers,
-      statements: limits.statements,
+      statements: limits.statements ?? undefined,
+      collectPhaseTimestamps: limits.collectPhaseTimestamps,
     });
   }
 
@@ -1337,13 +1522,20 @@ export class ProxyConnection implements RuntimeProjectionRemote {
   async #run(
     terminal: () => Promise<RuntimeProjectionMatchResult>,
   ): Promise<RuntimeProjectionMatchResult> {
-    return queryV2NativePromise(queryV2NativeCall(terminal));
+    return planNativePromise(planNativeCall(terminal));
   }
 }
 
 /** Verify and install one generated package's exact projection evidence. */
 export function installRuntimeProjection(input: RuntimeProjectionInstall): InstalledRuntimeProjection {
   const native = loadNative();
+  if (input.planResultsOnly === true) {
+    if (input.schemaAuthorityJson === undefined || input.projectedBatchMaterializer === undefined) throw new TypeError("plan results require schema authority and a generated batch mapper");
+    return new InstalledRuntimeProjection(planNativeCall(() => native.installPlanRuntimeProjection(
+      input.projectionJson, input.semanticFingerprintJson, input.projectionFingerprintJson,
+      JSON.stringify(input.bindings), input.schemaAuthorityJson!, input.projectedBatchMaterializer!,
+    )));
+  }
   return new InstalledRuntimeProjection(new native.NodeRuntimeProjection(
     input.projectionJson,
     input.semanticFingerprintJson,
@@ -1357,12 +1549,12 @@ export function installRuntimeProjection(input: RuntimeProjectionInstall): Insta
 /** @internal Verify an embedded authority before a generated package installs. */
 export function installGeneratedSchemaAuthority(
   input: GeneratedSchemaAuthorityInstall,
-): QueryV2Authority {
-  const authority = Object.create(QueryV2Authority.prototype) as QueryV2Authority;
-  registerQueryV2AuthorityHandle(
+): PlanAuthority {
+  const authority = Object.create(PlanAuthority.prototype) as PlanAuthority;
+  registerPlanAuthorityHandle(
     authority,
-    queryV2NativeCall(() =>
-      loadNative().queryV2AuthorityFromSchemaAuthority(
+    planNativeCall(() =>
+      loadNative().planAuthorityFromSchemaAuthority(
         input.schemaAuthorityJson,
         input.semanticFingerprintJson,
       )

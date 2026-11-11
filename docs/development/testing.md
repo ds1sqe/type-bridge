@@ -77,7 +77,7 @@ cargo test --workspace
 Generated projection live acceptance additionally exercises a dependency-
 isolated consumer crate, preventing success through workspace-private paths.
 
-### Internal C foundation checks
+### C SDK and runtime checks
 
 ```bash
 ./scripts/check.sh c
@@ -92,7 +92,7 @@ Clang/clang++ are available on macOS, or both MSVC and clang-cl are available
 on Windows. Current accepted evidence covers the native-host run; the
 configured hosted macOS and Windows lanes remain unverified and cannot support
 platform claims. Linux additionally runs address/undefined-behavior sanitizers
-and checks the Rust-owned C boundary on MSRV 1.88. ABI 1.6 coverage includes
+and checks the Rust-owned C boundary on MSRV 1.88. ABI 2.0 coverage includes
 verified flat and chunked schema packages, projected values/models, synchronous
 runtime, policy-aware database and distinct read/write transactions,
 cancellation, classified commit outcomes, parent/child ownership, generated
@@ -105,7 +105,7 @@ siblings, strict identity-first validation, and reusable borrowed reads without
 adding C runtime exports.
 
 The full integration suite runs the ordinary generated C17 CRUD and typed-query
-consumer and strict generated C17/C++17 ABI-1.6 successor consumers on the
+consumer and strict generated C17/C++17 ABI-2.0 consumers on the
 3.12.3, 3.13.6 and 3.14.0 lanes. A focused four-binding lane compares the same generated
 Python, Node, Rust, and C manager-filter observation. The successor lane leaves
 ordered attributes and ordered role-player lists empty and therefore does not
@@ -128,29 +128,27 @@ uv run python scripts/ci/run_generated_live.py manager
 ```
 
 Each live lane creates and removes its own isolated TypeDB and runs under that
-line's semantic profile: 3.11.5 with `typedb-3.11.5/v1`, 3.12.3 with
+line's semantic profile: 3.12.3 with
 `typedb-3.12.1/v1`, and 3.13.6 and 3.14.0 with `typedb-3.13.6/v1`. The offline tiers run
 once. With `--typedb all`, each line is its own compose project
 (`tb-<worktree>-typedb-<line>`), and the summary lists every lane.
-`--no-integration` runs offline Rust, Python, Node, and internal C-foundation
+`--no-integration` runs offline Rust, Python, Node, and C SDK and runtime
 tiers. `--no-isolated` uses an existing server; its version picks the lane.
 
-| Live step | 3.11.5 | 3.12.3 | 3.13.6 | 3.14.0 |
-| --- | --- | --- | --- | --- |
-| Rust ORM, production V2 server, generated Rust | yes | yes | yes | yes |
-| Python and Node integration, generated projections | yes | yes | yes | yes |
-| SDK report fan-in, projected exact-live parity | — | yes | yes | — |
-| C runtime and generated C CRUD live | — | yes | yes | — |
-| CLI workspace and migration recovery lifecycles | — | yes | yes | yes |
-| Unsupported-server migration refusal | yes | — | — | — |
-| TLS lane (`--tls`) | — | yes | yes | — |
+| Live step | 3.12.3 | 3.13.6 | 3.14.0 |
+| --- | --- | --- | --- |
+| Rust ORM, production staged server, generated Rust | yes | yes | yes |
+| Python and Node integration, generated projections | yes | yes | yes |
+| SDK report fan-in, projected exact-live parity | yes | yes | — |
+| C runtime and generated C CRUD live | yes | yes | — |
+| CLI workspace and migration recovery lifecycles | yes | yes | yes |
+| TLS lane (`--tls`) | yes | yes | — |
 
 Steps bound to the SDK conformance contracts run where the lane's profile is in
 the SDK version matrix and pairs with the lane's server; the matrix pairs
 `typedb-3.13.6/v1` with 3.13.6, so the 3.14.0 lane skips them, as well as
-the staged C ABI plans and the four-language writes suites. Connected migrations refuse TypeDB 3.11, so that lane
-proves the refusal instead of the lifecycles. Its TLS lane is skipped too: the
-TLS steps assert the band-9 driver and apply a workspace migration.
+the staged C ABI plans and the four-language writes suites. TLS steps assert
+the band-9 driver and apply a workspace migration.
 
 The upgrade lane starts a 3.12.3 and a 3.13.6 server together and moves a
 migration history across a profile bridge
@@ -166,17 +164,14 @@ C17 consumer exercises the exact Person and Membership database/read/write
 CRUD paths, immutable typed queries, reductions and grouping, schema-function
 calls, caller-owned remote transport, structured diagnostics, cancellation,
 limits, and explicit query-resource close; it ends with every created resource
-deleted. The ABI-1.6 successor lane compiles one generated consumer as both C17
+deleted. The ABI-2.0 lane compiles one generated consumer as both C17
 and C++17, exercises both package-admission forms, policy entries, keyed entity
 and relation batches, unkeyed IID lifecycles, and later-row rollback, then
 removes its isolated database before evaluating process assertions. These
 remain internal foundation evidence, not a public C support or distribution
 claim.
 
-Both server bands run the same generated application assertions. The 3.11.5
-lane emits from `schema-3.11.5.yaml` and defines `provider-3.11.5.tql`; an
-offline guard proves those fixtures differ from the 3.12.1 pair only by the
-removal of 3.12-only plays-side documentation annotations.
+All retained server lines run the same generated application assertions.
 
 The generated live journeys cover, where advertised by each binding:
 
@@ -201,13 +196,13 @@ For an application operation:
 5. Run the equivalent bindings that advertise the operation.
 
 Do not subclass private query-engine classes, build runtime descriptors by
-hand, or widen generated values to `object`/`Any`. The retained raw query
-builders may use private handwritten fixtures only in tests explicitly scoped
-to those contracts.
+hand, or widen generated values to `object`/`Any`. Exercise generated queries
+and staged plans through their public binding APIs.
 
-Historical migration and TOML fixtures are read-only evidence. Tests may load,
-verify, convert, and adopt them, but must not use them as active authoring
-authority or generate new root Python/JSON histories.
+Historical migration fixtures are read-only evidence. Existing adopted
+canonical histories retain ledger and anchor verification; new archive
+adoption and TOML conversion require TypeBridge 2.3.x before upgrading.
+Historical fixtures are never active authoring authority.
 
 ## Release and artifact gates
 

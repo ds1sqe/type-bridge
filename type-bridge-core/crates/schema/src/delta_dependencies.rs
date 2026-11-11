@@ -1,9 +1,9 @@
 //! Provider-neutral fact dependency planning for schema deltas.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::id::{Label, RoleId, TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, Label, RoleId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
     AnnotationSubjectId, DeclaredSchema, RelatesFactId, SchemaFact, SchemaFactId, SchemaOperation,
     SubFactId, ValueFactId,
@@ -65,7 +65,10 @@ impl FactDependencyGraph {
 
         let mut dependencies = BTreeMap::new();
         for fact in inventory.values() {
-            dependencies.insert(fact.id(), dependencies_for(fact, &labels, &sub_by_child)?);
+            dependencies.insert(
+                fact.id(),
+                dependencies_for(fact, &labels, &sub_by_child, &inventory)?,
+            );
         }
 
         let mut dependents: BTreeMap<SchemaFactId, BTreeSet<SchemaFactId>> = BTreeMap::new();
@@ -190,10 +193,39 @@ fn fact_map(declared: &DeclaredSchema) -> BTreeMap<SchemaFactId, SchemaFact> {
         .collect()
 }
 
+fn inherited_value_dependencies(
+    attribute: &TypeId,
+    sub_by_child: &BTreeMap<TypeId, Vec<SubFactId>>,
+    inventory: &BTreeMap<SchemaFactId, SchemaFact>,
+) -> Result<Option<BTreeSet<SchemaFactId>>, Diagnostic> {
+    let mut pending = VecDeque::from([(attribute.clone(), BTreeSet::new())]);
+    let mut visited = BTreeSet::new();
+    while let Some((current, path)) = pending.pop_front() {
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        let value = SchemaFactId::Value(ValueFactId::new(AttributeId::new(
+            current.label().as_str(),
+        )?));
+        if inventory.contains_key(&value) {
+            let mut dependencies = path;
+            dependencies.insert(value);
+            return Ok(Some(dependencies));
+        }
+        for edge in sub_by_child.get(&current).into_iter().flatten() {
+            let mut path = path.clone();
+            path.insert(SchemaFactId::Sub(edge.clone()));
+            pending.push_back((edge.supertype().clone(), path));
+        }
+    }
+    Ok(None)
+}
+
 fn dependencies_for(
     fact: &SchemaFact,
     labels: &BTreeMap<Label, Vec<SchemaFactId>>,
     sub_by_child: &BTreeMap<TypeId, Vec<SubFactId>>,
+    inventory: &BTreeMap<SchemaFactId, SchemaFact>,
 ) -> Result<BTreeSet<SchemaFactId>, Diagnostic> {
     let mut dependencies = BTreeSet::new();
     match fact {
@@ -208,9 +240,19 @@ fn dependencies_for(
         SchemaFact::Owns(fact) => {
             dependencies.insert(SchemaFactId::Type(fact.id().owner().clone()));
             dependencies.insert(SchemaFactId::Type(attribute_type(fact.id().attribute())?));
-            dependencies.insert(SchemaFactId::Value(ValueFactId::new(
-                fact.id().attribute().clone(),
-            )));
+            let direct = SchemaFactId::Value(ValueFactId::new(fact.id().attribute().clone()));
+            if inventory.contains_key(&direct) {
+                dependencies.insert(direct);
+            } else if let Some(inherited) = inherited_value_dependencies(
+                &attribute_type(fact.id().attribute())?,
+                sub_by_child,
+                inventory,
+            )? {
+                dependencies.extend(inherited);
+            } else {
+                // Keep the absent authority edge so validate_complete fails closed.
+                dependencies.insert(direct);
+            }
         }
         SchemaFact::Relates(fact) => {
             dependencies.insert(SchemaFactId::Type(fact.id().relation().clone()));

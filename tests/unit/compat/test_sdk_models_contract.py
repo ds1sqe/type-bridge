@@ -221,9 +221,8 @@ EXPECTED_FRAGMENT_PRODUCERS: dict[str, dict[str, dict[str, Any]]] = {
             "sources": COMMON_DATA_SOURCES
             | {
                 "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-                "type-bridge-core/crates/c/src/entity_crud.rs",
+                "type-bridge-core/crates/c/src/policy_crud.rs",
                 "type-bridge-core/crates/c/src/projected_model.rs",
-                "type-bridge-core/crates/c/src/relation_crud.rs",
                 "type-bridge-core/crates/c/src/runtime.rs",
             },
             "lanes": DATA_LANES,
@@ -303,10 +302,10 @@ def test_sdk_models_catalog_freezes_final_fingerprint_authority() -> None:
                 "digest": digest,
             }
             for binding, digest in {
-                "python": "907f0cb03771d40f99500e5a6938b809de661bb055a96a0b82f6509d16973bfc",
-                "node": "8a6d47683f014600e356118b48794ead60ca204ba020ce9a44cb154aea6dba40",
-                "rust": "1cc66932534b1aac15775ff2be839acbd688647ee40ccb25e0f078f2cc1401f2",
-                "c": "d242ae5c7d56a878372b6eccab0dc3bae47d60d48a2b7241d7d51dd9e6dada9a",
+                "python": "3cc5bb3f3100685b43f4ce1d0d27199f7ab79471cffbf62f9409dd0d1f40c0fd",
+                "node": "a5d9495ad74c79304bd4dbf135606219a69ef8e0e7dff80e58ae818d26fdb467",
+                "rust": "9e8ffa06fe85ea392fe652a2cedd63501ec5483eb2ec504ee708503dd792f9be",
+                "c": "152219cef0360831c247e3b95cb5e9e2c9bfe1881666d87b51bb930c40b04d9a",
             }.items()
         },
     }

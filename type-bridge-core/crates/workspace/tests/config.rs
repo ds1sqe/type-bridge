@@ -7,7 +7,7 @@ use type_bridge_contract::managed_scope::{EXCLUSIVE_MANAGED_SCOPE_PROFILE_ID, Ma
 use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::projection::BindingTarget;
 use type_bridge_workspace::{
-    ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory, OutputDirectory,
+    ExtensionRegistryService, ExtensionRequirement, MigrationDirectory, OutputDirectory,
     SchemaAuthorityOutputPath, SchemaSetPath, SecretReference, SecretReferenceService, SecretSlot,
     TypeBridgeConfig, TypeBridgeConfigBuilder, TypeBridgeConfigServices, WorkspaceConfigErrorCode,
     WorkspaceRoot, WorkspaceServiceError, WorkspaceSourceService, c_symbol_prefix_for_app_label,
@@ -130,16 +130,16 @@ fn base_builder() -> TypeBridgeConfigBuilder {
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
 }
 
-fn builder_with_paths(schema_set: &str, migration_v2_directory: &str) -> TypeBridgeConfigBuilder {
+fn builder_with_paths(schema_set: &str, migration_directory: &str) -> TypeBridgeConfigBuilder {
     TypeBridgeConfig::builder(root())
         .schema_set(SchemaSetPath::new(schema_set).unwrap())
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new(migration_v2_directory).unwrap())
+        .migration_directory(MigrationDirectory::new(migration_directory).unwrap())
 }
 
 fn services<'a>(
@@ -196,7 +196,7 @@ fn typed_builder_retains_exact_policy_and_uses_injected_services() {
         Path::new(VIRTUAL_ROOT).join("schema/schema.yaml")
     );
     assert_eq!(
-        config.migration_v2_absolute_path(),
+        config.migration_absolute_path(),
         Path::new(VIRTUAL_ROOT).join("migrations/v2")
     );
     assert_eq!(config.app_label().as_str(), "example");
@@ -416,12 +416,18 @@ fn schema_migration_and_output_paths_are_portable_and_confined() {
         SchemaSetPath::new("schema/schema.yml").unwrap_err().code(),
         WorkspaceConfigErrorCode::InvalidSchemaSetPath
     );
+    for path in ["migrations", "history/custom", "migrations/v2"] {
+        assert_eq!(
+            MigrationDirectory::new(path).unwrap().as_path(),
+            Path::new(path)
+        );
+    }
     assert_eq!(
-        MigrationV2Directory::new("migrations").unwrap_err().code(),
-        WorkspaceConfigErrorCode::InvalidMigrationV2Directory
+        MigrationDirectory::default().as_path(),
+        Path::new("migrations")
     );
     assert_eq!(
-        MigrationV2Directory::new("../v2").unwrap_err().code(),
+        MigrationDirectory::new("../v2").unwrap_err().code(),
         WorkspaceConfigErrorCode::PathNotConfined
     );
     assert_eq!(
@@ -431,9 +437,7 @@ fn schema_migration_and_output_paths_are_portable_and_confined() {
         WorkspaceConfigErrorCode::PathNotConfined
     );
     assert_eq!(
-        MigrationV2Directory::new("migrations/v2")
-            .unwrap()
-            .as_path(),
+        MigrationDirectory::new("migrations/v2").unwrap().as_path(),
         Path::new("migrations/v2")
     );
 
@@ -530,22 +534,27 @@ fn frozen_semantic_profiles_and_all_required_fields_fail_closed() {
     assert_eq!(error.code(), WorkspaceConfigErrorCode::MissingRequiredField);
     assert_eq!(error.detail(), Some("schema_set"));
 
-    let band8 = TypeBridgeConfig::builder(root())
+    let retired_profile = format!("typedb-3.{}.5/v1", 12 - 1);
+    let error = TypeBridgeConfig::builder(root())
         .schema_set(SchemaSetPath::new("schema/schema.yaml").unwrap())
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
-        .semantic_profile(SemanticProfileId::new("typedb-3.11.5/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .semantic_profile(SemanticProfileId::new(&retired_profile).unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
         .build(&services(&source, &secrets, &extensions))
-        .expect("the retained TypeDB 3.11 semantic profile is supported for generation");
-    assert_eq!(band8.semantic_profile().as_str(), "typedb-3.11.5/v1");
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::UnsupportedSemanticProfile
+    );
+    assert_eq!(error.detail(), Some(retired_profile.as_str()));
 
     let error = TypeBridgeConfig::builder(root())
         .schema_set(SchemaSetPath::new("schema/schema.yaml").unwrap())
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.10.0/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
         .build(&services(&source, &secrets, &extensions))
         .unwrap_err();
     assert_eq!(
@@ -679,7 +688,7 @@ fn workspace_owned_paths_reject_equality_and_name_both_fields() {
         error.code(),
         WorkspaceConfigErrorCode::OverlappingWorkspacePath
     );
-    assert_eq!(error.detail(), Some("migration_v2_directory,output.python"));
+    assert_eq!(error.detail(), Some("migration_directory,output.python"));
 
     let error = base_builder()
         .output(
@@ -721,7 +730,7 @@ fn workspace_owned_paths_reject_equality_and_name_both_fields() {
     );
     assert_eq!(
         error.detail(),
-        Some("migration_v2_directory,artifact.schema_authority")
+        Some("migration_directory,artifact.schema_authority")
     );
 
     let error = base_builder()
@@ -758,7 +767,7 @@ fn workspace_owned_paths_reject_ancestor_descendant_nesting_deterministically() 
         error.code(),
         WorkspaceConfigErrorCode::OverlappingWorkspacePath
     );
-    assert_eq!(error.detail(), Some("schema_set,migration_v2_directory"));
+    assert_eq!(error.detail(), Some("schema_set,migration_directory"));
 
     let error = base_builder()
         .output(
@@ -900,28 +909,30 @@ fn normalized_endpoint_sets_reject_managed_and_reserved_journal_aliases() {
     let source = CanonicalSource::new();
     let secrets = AcceptSecrets::new();
     let extensions = AcceptExtensions::new();
-    let error = base_builder()
-        .environment(
-            "primary",
-            environment("DB-1.EXAMPLE.:1729,[2001:0db8::1]:01730", "production"),
-        )
-        .environment(
-            "journal-alias",
-            environment("[2001:db8::1]:1730", "production__tbv2_journal"),
-        )
-        .build(&services(&source, &secrets, &extensions))
-        .unwrap_err();
-    assert_eq!(
-        error.code(),
-        WorkspaceConfigErrorCode::EnvironmentDatabaseCollision
-    );
-    assert_eq!(error.detail(), Some("journal-alias,primary"));
+    for suffix in ["__tb_journal", "__tbv2_journal"] {
+        let error = base_builder()
+            .environment(
+                "primary",
+                environment("DB-1.EXAMPLE.:1729,[2001:0db8::1]:01730", "production"),
+            )
+            .environment(
+                "journal-alias",
+                environment("[2001:db8::1]:1730", &format!("production{suffix}")),
+            )
+            .build(&services(&source, &secrets, &extensions))
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            WorkspaceConfigErrorCode::EnvironmentDatabaseCollision
+        );
+        assert_eq!(error.detail(), Some("journal-alias,primary"));
+    }
 
     base_builder()
         .environment("primary", environment("db-1.example:1729", "production"))
         .environment(
             "separate-cluster",
-            environment("db-2.example:1729", "production__tbv2_journal"),
+            environment("db-2.example:1729", "production__tb_journal"),
         )
         .build(&services(&source, &secrets, &extensions))
         .expect("database namespaces on distinct endpoint sets do not alias");

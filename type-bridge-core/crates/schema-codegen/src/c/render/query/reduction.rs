@@ -619,7 +619,7 @@ fn render_terminal_definitions(output: &mut String, prefix: &str) -> Result<(), 
              NULL, NULL, 0u, 0u, NULL, 0u, reducers, reducer_count,\n\
              {{ 0u, 0u, 0u, 0u }}\n\
            }};\n\
-           return type_bridge_query_terminal_open_v1(\n\
+           return type_bridge_query_terminal_open(\n\
                root.query, &descriptor,\n\
                (type_bridge_query_terminal_t **)out_terminal, out_diagnostics);\n\
          }}\n\n\
@@ -637,7 +637,7 @@ fn render_terminal_definitions(output: &mut String, prefix: &str) -> Result<(), 
              group.binding, group.expected_model, group.expected_mode, 0u,\n\
              NULL, 0u, reducers, reducer_count, {{ 0u, 0u, 0u, 0u }}\n\
            }};\n\
-           return type_bridge_query_terminal_open_v1(\n\
+           return type_bridge_query_terminal_open(\n\
                root.query, &descriptor,\n\
                (type_bridge_query_terminal_t **)out_terminal, out_diagnostics);\n\
          }}\n\n\
@@ -656,7 +656,7 @@ fn render_terminal_definitions(output: &mut String, prefix: &str) -> Result<(), 
              NULL, NULL, 0u, 0u, &group, 1u, reducers, reducer_count,\n\
              {{ 0u, 0u, 0u, 0u }}\n\
            }};\n\
-           return type_bridge_query_terminal_open_v1(\n\
+           return type_bridge_query_terminal_open(\n\
                root.query, &descriptor,\n\
                (type_bridge_query_terminal_t **)out_terminal, out_diagnostics);\n\
          }}\n\n",
@@ -679,7 +679,7 @@ fn render_terminal_definitions(output: &mut String, prefix: &str) -> Result<(), 
              NULL, NULL, 0u, 0u, groups, group_count, reducers, reducer_count,\n\
              {{ 0u, 0u, 0u, 0u }}\n\
            }};\n\
-           return type_bridge_query_terminal_open_v1(\n\
+           return type_bridge_query_terminal_open(\n\
                root.query, &descriptor,\n\
                (type_bridge_query_terminal_t **)out_terminal, out_diagnostics);\n\
          }}\n\n",
@@ -700,17 +700,17 @@ fn render_result_definitions(
             (
                 "database",
                 "type_bridge_database_t",
-                "type_bridge_database_query_execute_v1",
+                "type_bridge_database_query_execute",
             ),
             (
                 "read_transaction",
                 "type_bridge_read_transaction_t",
-                "type_bridge_read_transaction_query_execute_v1",
+                "type_bridge_read_transaction_query_execute",
             ),
             (
                 "proxy",
                 "type_bridge_proxy_connection_t",
-                "type_bridge_proxy_query_execute_v1",
+                "type_bridge_proxy_query_execute",
             ),
         ] {
             let _ = write!(
@@ -806,7 +806,7 @@ fn render_result_definitions(
            {long_slot} slot, size_t row_index,\n\
            type_bridge_query_reduced_value_metadata_v1_t *out_metadata,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-           return type_bridge_query_result_reduction_value_metadata_v1(\n\
+           return type_bridge_query_result_reduction_value_metadata(\n\
                slot.handle, slot.expected_result_kind, row_index, slot.value_index,\n\
                slot.expected_value_kind, out_metadata, out_diagnostics);\n\
          }}\n\n\
@@ -821,7 +821,7 @@ fn render_result_definitions(
            {double_slot} slot, size_t row_index,\n\
            type_bridge_query_reduced_value_metadata_v1_t *out_metadata,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-           return type_bridge_query_result_reduction_value_metadata_v1(\n\
+           return type_bridge_query_result_reduction_value_metadata(\n\
                slot.handle, slot.expected_result_kind, row_index, slot.value_index,\n\
                slot.expected_value_kind, out_metadata, out_diagnostics);\n\
          }}\n\n\

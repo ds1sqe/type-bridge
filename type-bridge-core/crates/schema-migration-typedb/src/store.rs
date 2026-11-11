@@ -1,8 +1,15 @@
 //! TypeDB implementation of the provider-neutral fenced execution stores.
 
+mod import;
+
+use crate::wire::{decode_data_event, encode_data_event};
+use type_bridge_contract::reserved::DATA_STEP_EVENT_RECORD_KIND;
+use type_bridge_schema_migration::{DataStepDirection, DataStepEventRecord};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
 use type_bridge_core_lib::__internal as tql;
 
 use serde_json::Value;
@@ -11,10 +18,11 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::failure::Failure;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationId;
-use type_bridge_contract::query_plan::v3::QueryPlanV3;
+use type_bridge_contract::query_plan::QueryPlan;
 use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
 use type_bridge_orm::session::DatabaseCreateOutcome;
+#[cfg(test)]
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::session::eager::EagerTransaction as Transaction;
 use type_bridge_orm::session::staged::{
@@ -44,6 +52,7 @@ use crate::control_schema::{
     RECORD_PAYLOAD, RECORD_PAYLOAD_DIGEST, RECORD_SEQUENCE, ROLLBACK_EVENT_RECORD_KIND,
     ROLLBACK_PLAN_RECORD_KIND, ROLLED_BACK_RECORD_KIND,
 };
+use crate::data_plan::{self, DataQuery};
 use crate::lease_plan::{LeasePlans, LeaseRow};
 use crate::observation::{partition_typeql_export, partition_typeql_export_lossless};
 use crate::provider::{TypeDbExecutionBinding, require_managed_state_execution_context};
@@ -74,6 +83,8 @@ pub enum ManagedDatabasePairState {
     Absent,
     /// Only a standalone managed database without TypeBridge control schema exists.
     StandaloneManaged,
+    /// An exact old pair is usable; migration writes must first import its journal.
+    ImportPending,
     /// Both databases exist and the journal owner binds this exact pair and scope.
     OwnedPair,
     /// Only the exact owner-verified journal remains.
@@ -154,8 +165,16 @@ impl ManagedDatabasePairAdministrator {
             .database_exists()
             .await
             .map_err(map_orm_error)?;
+        let legacy_exists = import::legacy_journal_present(
+            &self.inner.managed_database,
+            &self.inner.managed_scope_id,
+        )
+        .await?;
         if !journal_exists {
             if !managed_exists {
+                if legacy_exists {
+                    return Ok(ManagedDatabasePairState::OwnedJournalOrphan);
+                }
                 return Ok(ManagedDatabasePairState::Absent);
             }
             let export = self
@@ -164,6 +183,14 @@ impl ManagedDatabasePairAdministrator {
                 .schema_text()
                 .await
                 .map_err(map_orm_error)?;
+            if legacy_exists
+                && matches!(
+                    type_bridge_schema_compat::import_legacy_fence_schema_presence(&export),
+                    Ok(type_bridge_schema_compat::LiveQueryControlPresence::ManagedFence)
+                )
+            {
+                return Ok(ManagedDatabasePairState::ImportPending);
+            }
             if export.contains(crate::TYPEBRIDGE_INTERNAL_PREFIX) {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
@@ -211,7 +238,9 @@ impl ManagedDatabasePairAdministrator {
         &self,
     ) -> Result<ManagedDatabasePairCreateOutcome, Diagnostic> {
         match self.inspect().await? {
-            ManagedDatabasePairState::StandaloneManaged | ManagedDatabasePairState::OwnedPair => {
+            ManagedDatabasePairState::StandaloneManaged
+            | ManagedDatabasePairState::OwnedPair
+            | ManagedDatabasePairState::ImportPending => {
                 Ok(ManagedDatabasePairCreateOutcome::AlreadyExists)
             }
             ManagedDatabasePairState::Absent | ManagedDatabasePairState::OwnedJournalOrphan => self
@@ -235,7 +264,9 @@ impl ManagedDatabasePairAdministrator {
         control: &MigrationExecutionControl,
     ) -> Result<ManagedDatabasePairCreateOutcome, Diagnostic> {
         match self.inspect_controlled(control).await? {
-            ManagedDatabasePairState::StandaloneManaged | ManagedDatabasePairState::OwnedPair => {
+            ManagedDatabasePairState::StandaloneManaged
+            | ManagedDatabasePairState::OwnedPair
+            | ManagedDatabasePairState::ImportPending => {
                 Ok(ManagedDatabasePairCreateOutcome::AlreadyExists)
             }
             ManagedDatabasePairState::Absent | ManagedDatabasePairState::OwnedJournalOrphan => {
@@ -274,6 +305,23 @@ impl ManagedDatabasePairAdministrator {
             administrator: self.clone(),
             inspected,
         })
+    }
+
+    async fn delete_legacy_journal(&self) -> Result<(), Diagnostic> {
+        if import::legacy_journal_present(
+            &self.inner.managed_database,
+            &self.inner.managed_scope_id,
+        )
+        .await?
+        {
+            self.inner
+                .managed_database
+                .derived_legacy_journal_database()
+                .delete_database_outcome()
+                .await
+                .map_err(map_orm_error)?;
+        }
+        Ok(())
     }
 
     async fn require_exact_journal_owner(&self) -> Result<(), Diagnostic> {
@@ -324,7 +372,7 @@ impl ManagedDatabasePairDeletionPlan {
         self.inspected
     }
 
-    /// Revalidate the pair and delete journal-first so no trusted orphan remains.
+    /// Revalidate and delete the current pair before its retained old journal.
     pub async fn execute(self) -> Result<ManagedDatabasePairDeleteOutcome, Diagnostic> {
         let current = self.administrator.inspect().await?;
         if current != self.inspected {
@@ -334,43 +382,7 @@ impl ManagedDatabasePairDeletionPlan {
                 "database pair changed after destructive admission; inspect and approve again",
             ));
         }
-        match current {
-            ManagedDatabasePairState::Absent => Ok(ManagedDatabasePairDeleteOutcome::AlreadyAbsent),
-            ManagedDatabasePairState::StandaloneManaged => {
-                self.administrator
-                    .inner
-                    .managed_database
-                    .delete_database_outcome()
-                    .await
-                    .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged)
-            }
-            ManagedDatabasePairState::OwnedJournalOrphan => {
-                self.administrator
-                    .inner
-                    .journal_database
-                    .delete_database_outcome()
-                    .await
-                    .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan)
-            }
-            ManagedDatabasePairState::OwnedPair => {
-                self.administrator.require_exact_journal_owner().await?;
-                self.administrator
-                    .inner
-                    .journal_database
-                    .delete_database_outcome()
-                    .await
-                    .map_err(map_orm_error)?;
-                self.administrator
-                    .inner
-                    .managed_database
-                    .delete_database_outcome()
-                    .await
-                    .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedPair)
-            }
-        }
+        self.delete_inspected(current).await
     }
 
     /// Revalidate interruptibly, then execute deletion without masking its outcome.
@@ -387,8 +399,24 @@ impl ManagedDatabasePairDeletionPlan {
             ));
         }
         control.check()?;
-        match current {
-            ManagedDatabasePairState::Absent => Ok(ManagedDatabasePairDeleteOutcome::AlreadyAbsent),
+        self.delete_inspected(current).await
+    }
+
+    async fn delete_inspected(
+        &self,
+        current: ManagedDatabasePairState,
+    ) -> Result<ManagedDatabasePairDeleteOutcome, Diagnostic> {
+        let outcome = match current {
+            ManagedDatabasePairState::ImportPending => {
+                self.administrator
+                    .inner
+                    .managed_database
+                    .delete_database_outcome()
+                    .await
+                    .map_err(map_orm_error)?;
+                ManagedDatabasePairDeleteOutcome::DeletedOwnedPair
+            }
+            ManagedDatabasePairState::Absent => ManagedDatabasePairDeleteOutcome::AlreadyAbsent,
             ManagedDatabasePairState::StandaloneManaged => {
                 self.administrator
                     .inner
@@ -396,7 +424,7 @@ impl ManagedDatabasePairDeletionPlan {
                     .delete_database_outcome()
                     .await
                     .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged)
+                ManagedDatabasePairDeleteOutcome::DeletedStandaloneManaged
             }
             ManagedDatabasePairState::OwnedJournalOrphan => {
                 self.administrator
@@ -405,7 +433,7 @@ impl ManagedDatabasePairDeletionPlan {
                     .delete_database_outcome()
                     .await
                     .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan)
+                ManagedDatabasePairDeleteOutcome::DeletedOwnedJournalOrphan
             }
             ManagedDatabasePairState::OwnedPair => {
                 self.administrator.require_exact_journal_owner().await?;
@@ -421,9 +449,11 @@ impl ManagedDatabasePairDeletionPlan {
                     .delete_database_outcome()
                     .await
                     .map_err(map_orm_error)?;
-                Ok(ManagedDatabasePairDeleteOutcome::DeletedOwnedPair)
+                ManagedDatabasePairDeleteOutcome::DeletedOwnedPair
             }
-        }
+        };
+        self.administrator.delete_legacy_journal().await?;
+        Ok(outcome)
     }
 }
 
@@ -850,6 +880,7 @@ pub struct TypeDbMigrationStore<'a> {
     journal_schema_verified: AtomicBool,
     journal_lease: LeasePlans,
     managed_lease: LeasePlans,
+    import_binding: Option<crate::runner::LegacyBridgeBinding>,
 }
 
 impl<'a> TypeDbMigrationStore<'a> {
@@ -878,24 +909,13 @@ impl<'a> TypeDbMigrationStore<'a> {
             journal_schema_verified: AtomicBool::new(false),
             journal_lease: LeasePlans::journal(context.semantic_profile())?,
             managed_lease: LeasePlans::managed(context.semantic_profile())?,
+            import_binding: None,
         })
     }
 
     /// Bind the store to the exact apply plan used for open-plan recovery.
     pub fn bind_plan(self, plan: &'a VerifiedMigrationApplyPlan) -> Result<Self, Diagnostic> {
         self.bind_plan_inner(plan, false)
-    }
-
-    /// Bind the one guarded legacy-import plan.
-    ///
-    /// This is intentionally crate-private: public/generic plan binding must
-    /// never establish the permanent bridge without the runner's managed-side
-    /// recovery anchor and V1 ledger guard.
-    pub(crate) fn bind_legacy_import_plan(
-        self,
-        plan: &'a VerifiedMigrationApplyPlan,
-    ) -> Result<Self, Diagnostic> {
-        self.bind_plan_inner(plan, true)
     }
 
     /// Bind a descendant apply plan after the runner validated the permanent
@@ -1006,6 +1026,14 @@ impl<'a> TypeDbMigrationStore<'a> {
         }
         self.rollback_plan = Some(plan);
         Ok(self)
+    }
+
+    pub(crate) fn with_import_binding(
+        mut self,
+        binding: Option<crate::runner::LegacyBridgeBinding>,
+    ) -> Self {
+        self.import_binding = binding;
+        self
     }
 
     /// Install or verify the frozen control schema.
@@ -1127,8 +1155,7 @@ impl<'a> TypeDbMigrationStore<'a> {
                     self.managed_database.database_name(),
                     &self.managed_scope_id,
                 )?;
-                if let Err(error) = transaction.query(&owner).await {
-                    let primary = map_orm_error(error);
+                if let Err(primary) = execute_data_plan(&mut transaction, &owner).await {
                     return Err(rollback_schema_error(
                         &mut transaction,
                         primary,
@@ -1252,8 +1279,9 @@ impl<'a> TypeDbMigrationStore<'a> {
         holder: &LeaseHolderId,
     ) -> Result<MigrationLease, Diagnostic> {
         self.ensure_schema_for_scope(scope).await?;
-        let lease = self.acquire_authoritative(scope, holder).await?;
-        self.publish_managed_fence(&lease).await?;
+        let (lease, evidence) = self.acquire_imported(scope, holder).await?;
+        self.publish_managed_fence(&lease, evidence.as_ref())
+            .await?;
         Ok(lease)
     }
 
@@ -1268,6 +1296,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         &self,
         scope: &ExecutionScope,
         holder: &LeaseHolderId,
+        floor: u64,
     ) -> Result<MigrationLease, Diagnostic> {
         let observed = {
             let mut transaction = open_read(&self.journal_database).await?;
@@ -1277,7 +1306,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         let given = self.journal_database.supports_given_stage();
         let (fence, plan) = match observed {
             Some(current) => {
-                let fence = ExecutionFence::new(current.fence)?.checked_successor()?;
+                let fence = ExecutionFence::new(current.fence.max(floor))?.checked_successor()?;
                 let row = LeaseRow {
                     scope,
                     holder,
@@ -1292,7 +1321,7 @@ impl<'a> TypeDbMigrationStore<'a> {
                 (fence, plan)
             }
             None => {
-                let fence = ExecutionFence::new(1)?;
+                let fence = ExecutionFence::new(floor.checked_add(1).ok_or_else(stale_fence)?)?;
                 let row = LeaseRow {
                     scope,
                     holder,
@@ -1314,7 +1343,11 @@ impl<'a> TypeDbMigrationStore<'a> {
         }
     }
 
-    async fn publish_managed_fence(&self, lease: &MigrationLease) -> Result<(), Diagnostic> {
+    async fn publish_managed_fence(
+        &self,
+        lease: &MigrationLease,
+        evidence: Option<&import::LegacyEvidence>,
+    ) -> Result<(), Diagnostic> {
         let current = {
             let mut transaction = open_read(&self.managed_database).await?;
             let current = load_managed_fence(&mut transaction, lease.scope()).await;
@@ -1335,6 +1368,9 @@ impl<'a> TypeDbMigrationStore<'a> {
                 ));
             }
         };
+        if let Some(evidence) = evidence {
+            return self.publish_imported_mirror(lease, &plan, evidence).await;
+        }
         let settled = lease_state_query(lease, LEASE_HELD)?;
         match commit_lease_plan(&self.managed_database, &plan, &settled).await? {
             LeaseWrite::Applied => Ok(()),
@@ -1504,6 +1540,62 @@ impl<'a> TypeDbMigrationStore<'a> {
         Ok(JournalEntry::from_store(sequence, record))
     }
 
+    async fn record_data_event_inner(
+        &self,
+        lease: &MigrationLease,
+        record: DataStepEventRecord,
+    ) -> Result<JournalEntry<DataStepEventRecord>, Diagnostic> {
+        ensure_record_lease(lease, record.scope(), record.fence())?;
+        self.ensure_schema_for_scope(lease.scope()).await?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
+        let current = load_active_control(&mut transaction, lease).await?;
+        let member = match record.direction() {
+            DataStepDirection::Forward => {
+                let plan = self.require_plan()?;
+                self.load_open_plan_in_transaction(&mut transaction, lease, plan)
+                    .await?
+                    .is_some_and(|open| {
+                        open.plan()
+                            .record()
+                            .manifest_digests()
+                            .contains(&record.manifest_digest())
+                    })
+            }
+            DataStepDirection::Reverse => {
+                let plan = self.require_rollback_plan()?;
+                self.load_open_rollback_plan_in_transaction(&mut transaction, lease, plan)
+                    .await?
+                    .is_some_and(|open| {
+                        open.plan()
+                            .record()
+                            .manifest_digests()
+                            .contains(&record.manifest_digest())
+                    })
+            }
+        };
+        if !member {
+            let _ = rollback_and_close(&mut transaction).await;
+            return Err(record_identity_mismatch());
+        }
+        let payload = encode_data_event(&record)?;
+        let sequence = append_record(
+            &mut transaction,
+            lease,
+            current,
+            DATA_STEP_EVENT_RECORD_KIND,
+            &payload,
+        )
+        .await?;
+        transaction.commit().await.map_err(map_orm_error)?;
+        Ok(JournalEntry::from_store(sequence, record))
+    }
+
     async fn record_applied_inner(
         &self,
         lease: &MigrationLease,
@@ -1594,18 +1686,18 @@ impl<'a> TypeDbMigrationStore<'a> {
     /// Read the applied ledger without a lease, a write, or a schema install.
     ///
     /// This is the inspection path for read-only commands such as verify:
-    /// the frozen control schema is checked against the journal export and
-    /// never installed, no control row is consulted, and the whole read is
-    /// one snapshot transaction. A journal database without the control
-    /// schema has never recorded history through the migration path, so the
-    /// load fails closed instead of bootstrapping control state into an
-    /// environment the caller promised not to mutate. The result is
+    /// the exact control schema and import evidence are checked without
+    /// installation. If the old journal still exists, its sequence must not
+    /// have advanced beyond the imported boundary. Applied records are read
+    /// from one snapshot after those checks. Missing completion evidence
+    /// reports import-pending rather than bootstrapping state. The result is
     /// reporting-grade data, never execution authority.
     pub async fn load_applied_read_only(
         &self,
         scope: &ExecutionScope,
     ) -> Result<Vec<JournalEntry<AppliedRecord>>, Diagnostic> {
         self.require_owned_scope(scope)?;
+        self.require_import_complete_read_only(scope).await?;
         let export = self
             .journal_database
             .schema_text()
@@ -1648,6 +1740,70 @@ impl<'a> TypeDbMigrationStore<'a> {
             (Ok(_), Err(error)) => Err(error),
             (Ok(records), Ok(())) => Ok(records),
         }
+    }
+
+    /// Recover the original execution basis from journal ordering. This is only
+    /// a reconstruction hint: the bound plan is subsequently checked against
+    /// every byte of the persisted plan record by the coordinator.
+    pub(crate) async fn load_execution_source_basis(
+        &self,
+        lease: &MigrationLease,
+        rollback: bool,
+    ) -> Result<
+        Option<std::collections::BTreeSet<type_bridge_contract::migration::MigrationId>>,
+        Diagnostic,
+    > {
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Read,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
+        let result = async {
+            load_active_control(&mut transaction, lease).await?;
+            let rows = load_rows(
+                &mut transaction,
+                lease.scope(),
+                Some(if rollback {
+                    ROLLBACK_PLAN_RECORD_KIND
+                } else {
+                    PLAN_RECORD_KIND
+                }),
+            )
+            .await?;
+            let row = match rows.as_slice() {
+                [] => return Ok(None),
+                [row] => row,
+                _ => {
+                    return Err(failure(
+                        DiagnosticCategory::Integrity,
+                        "migration_typedb_multiple_open_plans",
+                        "scope has multiple open execution plans",
+                    ));
+                }
+            };
+            let mut entries = self
+                .load_applied_rows_in_transaction(&mut transaction, lease.scope(), lease.holder())
+                .await?;
+            let mut retired = self
+                .load_rolled_back_in_transaction(&mut transaction, lease.scope(), lease.holder())
+                .await?;
+            entries.retain(|entry| entry.sequence() < row.sequence);
+            retired.retain(|entry| entry.sequence() < row.sequence);
+            let entries = active_applied_entries(entries, &retired)?;
+            Ok(Some(
+                entries
+                    .into_iter()
+                    .map(|entry| entry.record().migration_id().clone())
+                    .collect(),
+            ))
+        }
+        .await;
+        let close = transaction.close().await.map_err(map_orm_error);
+        let result = result?;
+        close?;
+        Ok(result)
     }
 
     async fn load_applied_inner(
@@ -1805,7 +1961,29 @@ impl<'a> TypeDbMigrationStore<'a> {
             let record = decode_apply_backfill_event_against_plan(&event_row.payload, lease, plan)?;
             backfill_events.push(JournalEntry::from_store(event_row.sequence, record));
         }
-        OpenPlanRecord::from_store_with_backfills(plan_entry, events, backfill_events).map(Some)
+        let mut data_events = Vec::new();
+        for row in load_rows(
+            transaction,
+            lease.scope(),
+            Some(DATA_STEP_EVENT_RECORD_KIND),
+        )
+        .await?
+        {
+            let record = decode_data_event(
+                &row.payload,
+                lease,
+                plan.migrations().iter().map(|entry| entry.manifest()),
+                DataStepDirection::Forward,
+            )?;
+            data_events.push(JournalEntry::from_store(row.sequence, record));
+        }
+        OpenPlanRecord::from_store_with_data_events(
+            plan_entry,
+            events,
+            backfill_events,
+            data_events,
+        )
+        .map(Some)
     }
 
     async fn begin_rollback_plan_inner(
@@ -2087,8 +2265,29 @@ impl<'a> TypeDbMigrationStore<'a> {
                 decode_rollback_backfill_event_against_plan(&event_row.payload, lease, plan)?;
             backfill_events.push(JournalEntry::from_store(event_row.sequence, record));
         }
-        OpenRollbackPlanRecord::from_store_with_backfills(plan_entry, events, backfill_events)
-            .map(Some)
+        let mut data_events = Vec::new();
+        for row in load_rows(
+            transaction,
+            lease.scope(),
+            Some(DATA_STEP_EVENT_RECORD_KIND),
+        )
+        .await?
+        {
+            let record = decode_data_event(
+                &row.payload,
+                lease,
+                plan.rollbacks().iter().map(|entry| entry.manifest()),
+                DataStepDirection::Reverse,
+            )?;
+            data_events.push(JournalEntry::from_store(row.sequence, record));
+        }
+        OpenRollbackPlanRecord::from_store_with_data_events(
+            plan_entry,
+            events,
+            backfill_events,
+            data_events,
+        )
+        .map(Some)
     }
 }
 
@@ -2140,6 +2339,16 @@ impl MigrationExecutionJournal for TypeDbMigrationStore<'_> {
         Box::pin(async move {
             self.require_owned_lease(lease)?;
             self.record_backfill_event_inner(lease, record).await
+        })
+    }
+    fn record_data_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: DataStepEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<DataStepEventRecord>> {
+        Box::pin(async move {
+            self.require_owned_lease(lease)?;
+            self.record_data_event_inner(lease, record).await
         })
     }
 
@@ -2242,7 +2451,6 @@ struct ManagedControlSnapshot {
 
 struct StoredRow {
     key: String,
-    kind: String,
     payload: Vec<u8>,
     sequence: JournalSequence,
 }
@@ -2430,61 +2638,38 @@ async fn append_record(
         )
     })?;
     let digest = payload_digest(payload.as_bytes());
-    let query = journal_query(|| {
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![journal_pattern(
-                "control",
-                CONTROL_ENTITY,
-                &[
-                    (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-                    (LEASE_HOLDER, lease.holder().as_str()),
-                    (LEASE_FENCE, &lease.fence().get().to_string()),
-                    (LEASE_STATE, LEASE_HELD),
-                    (NEXT_SEQUENCE, &current.next_sequence.to_string()),
-                ],
-                &[],
-            )?]),
-            tql::delete(vec![tql::delete_thing("control")?]),
-            tql::insert(vec![
-                journal_pattern(
-                    "next-control",
-                    CONTROL_ENTITY,
-                    &[
-                        (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-                        (LEASE_HOLDER, lease.holder().as_str()),
-                        (LEASE_FENCE, &lease.fence().get().to_string()),
-                        (LEASE_STATE, LEASE_HELD),
-                        (NEXT_SEQUENCE, &next.to_string()),
-                    ],
-                    &[],
-                )?,
-                journal_pattern(
-                    "record",
-                    JOURNAL_ENTITY,
-                    &[
-                        (RECORD_KEY, &key),
-                        (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-                        (RECORD_SEQUENCE, &next.to_string()),
-                        (RECORD_KIND, kind),
-                        (RECORD_PAYLOAD, payload),
-                        (RECORD_PAYLOAD_DIGEST, &digest),
-                    ],
-                    &[],
-                )?,
-            ]),
-        ]))
-    })?;
-    transaction.query(&query).await.map_err(map_orm_error)?;
-    let observed = load_active_control(transaction, lease).await?;
-    if observed.next_sequence != next {
+    let plan = data_plan::replace_and_insert(
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_HOLDER, lease.holder().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD),
+            (NEXT_SEQUENCE, &current.next_sequence.to_string()),
+        ],
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_HOLDER, lease.holder().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD),
+            (NEXT_SEQUENCE, &next.to_string()),
+        ],
+        JOURNAL_ENTITY,
+        &[
+            (RECORD_KEY, &key),
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (RECORD_SEQUENCE, &next.to_string()),
+            (RECORD_KIND, kind),
+            (RECORD_PAYLOAD, payload),
+            (RECORD_PAYLOAD_DIGEST, &digest),
+        ],
+    )?;
+    let mut answers = transaction
+        .execute_plan(&plan)
+        .await
+        .map_err(map_orm_error)?;
+    if !matches!(answers.pop(), Some(PlanAnswer::Matched(1))) || !answers.is_empty() {
         return Err(stale_fence());
-    }
-    let inserted = load_row_by_key(transaction, &key).await?;
-    if inserted.kind != kind
-        || inserted.payload != payload.as_bytes()
-        || inserted.sequence != sequence
-    {
-        return Err(record_identity_mismatch());
     }
     Ok(sequence)
 }
@@ -2528,39 +2713,6 @@ async fn load_rows(
     Ok(rows)
 }
 
-async fn load_row_by_key(
-    transaction: &mut Transaction,
-    key: &str,
-) -> Result<StoredRow, Diagnostic> {
-    let query = journal_query(|| {
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![journal_pattern(
-                "record",
-                JOURNAL_ENTITY,
-                &[(RECORD_KEY, key)],
-                &[
-                    (RECORD_SEQUENCE, "sequence"),
-                    (RECORD_KIND, "kind"),
-                    (RECORD_PAYLOAD, "payload"),
-                    (RECORD_PAYLOAD_DIGEST, "digest"),
-                ],
-            )?]),
-            tql::fetch(vec![
-                ("key", tql::fetch_expr(tql::string(key)?)),
-                ("sequence", tql::fetch_expr(tql::var("sequence")?)),
-                ("kind", tql::fetch_expr(tql::var("kind")?)),
-                ("payload", tql::fetch_expr(tql::var("payload")?)),
-                ("digest", tql::fetch_expr(tql::var("digest")?)),
-            ])?,
-        ]))
-    })?;
-    let documents = query_documents(transaction, &query).await?;
-    if documents.len() != 1 {
-        return Err(record_identity_mismatch());
-    }
-    parse_stored_row(documents.into_iter().next().expect("length checked"))
-}
-
 fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
     let key = required_scalar(&document, "key")?;
     let kind = required_scalar(&document, "kind")?;
@@ -2569,10 +2721,13 @@ fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
         PLAN_RECORD_KIND
             | EVENT_RECORD_KIND
             | BACKFILL_EVENT_RECORD_KIND
+            | DATA_STEP_EVENT_RECORD_KIND
             | APPLIED_RECORD_KIND
             | ROLLBACK_PLAN_RECORD_KIND
             | ROLLBACK_EVENT_RECORD_KIND
             | ROLLED_BACK_RECORD_KIND
+            | type_bridge_contract::reserved::LEGACY_IMPORT_RECORD_KIND
+            | type_bridge_contract::reserved::IMPORT_COMPLETE_RECORD_KIND
     ) {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -2591,7 +2746,6 @@ fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
     }
     Ok(StoredRow {
         key,
-        kind,
         payload,
         sequence: JournalSequence::new(canonical_u64(&required_scalar(&document, "sequence")?)?)?,
     })
@@ -2599,16 +2753,30 @@ fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
 
 async fn query_documents<T: MigrationQuery + ?Sized>(
     transaction: &mut T,
-    query: &str,
+    query: &DataQuery,
 ) -> Result<Vec<Value>, Diagnostic> {
-    match transaction.query(query).await.map_err(map_orm_error)? {
-        QueryResult::Documents(documents) | QueryResult::Rows(documents) => Ok(documents),
-        QueryResult::Ok => Err(failure(
-            DiagnosticCategory::InvalidContract,
+    let mut answers = transaction
+        .execute_plan(&query.plan)
+        .await
+        .map_err(map_orm_error)?;
+    if answers.len() != 1 {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
             "migration_typedb_query_returned_no_documents",
             "TypeDB control query returned no document result",
-        )),
+        ));
     }
+    query.documents(answers.remove(0))
+}
+async fn execute_data_plan<T: MigrationQuery + ?Sized>(
+    transaction: &mut T,
+    plan: &QueryPlan,
+) -> Result<(), Diagnostic> {
+    transaction
+        .execute_plan(plan)
+        .await
+        .map_err(map_orm_error)?;
+    Ok(())
 }
 
 fn required_scalar(document: &Value, key: &str) -> Result<String, Diagnostic> {
@@ -2654,8 +2822,8 @@ enum LeaseWrite {
 /// stands, because an absent row in one snapshot proves nothing.
 async fn commit_lease_plan(
     database: &Database,
-    plan: &QueryPlanV3,
-    settled: &str,
+    plan: &QueryPlan,
+    settled: &DataQuery,
 ) -> Result<LeaseWrite, Diagnostic> {
     let mut transaction =
         database.transaction(TransactionOptions::default().with_kind(TransactionKind::Write));
@@ -2699,7 +2867,7 @@ fn pending_failure(error: PendingError) -> Diagnostic {
     }
 }
 
-async fn settled_exists(database: &Database, query: &str) -> Result<bool, Diagnostic> {
+async fn settled_exists(database: &Database, query: &DataQuery) -> Result<bool, Diagnostic> {
     let mut transaction = open_read(database).await?;
     let documents = query_documents(&mut transaction, query).await;
     Ok(finish_read(&mut transaction, documents).await?.len() == 1)
@@ -2707,7 +2875,7 @@ async fn settled_exists(database: &Database, query: &str) -> Result<bool, Diagno
 
 /// The control row a lease write leaves behind: held by this holder and
 /// fence, or free at this fence.
-fn lease_state_query(lease: &MigrationLease, state: &str) -> Result<String, Diagnostic> {
+fn lease_state_query(lease: &MigrationLease, state: &str) -> Result<DataQuery, Diagnostic> {
     let scope = lease.scope().managed_scope_id().as_str();
     let fence = lease.fence().get().to_string();
     let mut fields = vec![(CONTROL_SCOPE, scope), (LEASE_FENCE, fence.as_str())];
@@ -2743,56 +2911,38 @@ async fn delete_open_plan(
     transaction: &mut Transaction,
     scope: &ExecutionScope,
 ) -> Result<(), Diagnostic> {
-    for kind in [
-        PLAN_RECORD_KIND,
-        EVENT_RECORD_KIND,
-        BACKFILL_EVENT_RECORD_KIND,
-    ] {
-        let query = journal_query(|| {
-            Ok(tql::pipeline(vec![
-                tql::match_stage(vec![journal_pattern(
-                    "record",
-                    JOURNAL_ENTITY,
-                    &[
-                        (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
-                        (RECORD_KIND, kind),
-                    ],
-                    &[],
-                )?]),
-                tql::delete(vec![tql::delete_thing("record")?]),
-            ]))
-        })?;
-        transaction.query(&query).await.map_err(map_orm_error)?;
-    }
-    Ok(())
+    let plan = data_plan::delete_kinds(
+        JOURNAL_ENTITY,
+        CONTROL_SCOPE,
+        scope.managed_scope_id().as_str(),
+        RECORD_KIND,
+        &[
+            PLAN_RECORD_KIND,
+            EVENT_RECORD_KIND,
+            BACKFILL_EVENT_RECORD_KIND,
+            DATA_STEP_EVENT_RECORD_KIND,
+        ],
+    )?;
+    execute_data_plan(transaction, &plan).await
 }
 
 async fn delete_open_rollback_plan(
     transaction: &mut Transaction,
     scope: &ExecutionScope,
 ) -> Result<(), Diagnostic> {
-    for kind in [
-        ROLLBACK_PLAN_RECORD_KIND,
-        ROLLBACK_EVENT_RECORD_KIND,
-        BACKFILL_EVENT_RECORD_KIND,
-    ] {
-        let query = journal_query(|| {
-            Ok(tql::pipeline(vec![
-                tql::match_stage(vec![journal_pattern(
-                    "record",
-                    JOURNAL_ENTITY,
-                    &[
-                        (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
-                        (RECORD_KIND, kind),
-                    ],
-                    &[],
-                )?]),
-                tql::delete(vec![tql::delete_thing("record")?]),
-            ]))
-        })?;
-        transaction.query(&query).await.map_err(map_orm_error)?;
-    }
-    Ok(())
+    let plan = data_plan::delete_kinds(
+        JOURNAL_ENTITY,
+        CONTROL_SCOPE,
+        scope.managed_scope_id().as_str(),
+        RECORD_KIND,
+        &[
+            ROLLBACK_PLAN_RECORD_KIND,
+            ROLLBACK_EVENT_RECORD_KIND,
+            BACKFILL_EVENT_RECORD_KIND,
+            DATA_STEP_EVENT_RECORD_KIND,
+        ],
+    )?;
+    execute_data_plan(transaction, &plan).await
 }
 
 async fn open_plan_exists(
@@ -3064,8 +3214,19 @@ fn journal_schema_state(export: &str) -> Result<JournalSchemaState, Diagnostic> 
         return Ok(JournalSchemaState::Empty);
     }
     let document = DocumentId::new("typebridge-journal-control-provider-export.typeql")?;
+    let original = type_bridge_schema_compat::released_typeql_to_declared_lossless_projection(
+        document.clone(),
+        export,
+    )
+    .map_err(|_| {
+        failure(
+            DiagnosticCategory::Integrity,
+            "migration_typedb_export_invalid",
+            "journal schema cannot be decoded losslessly",
+        )
+    })?;
     let partitioned = partition_typeql_export_lossless(document, export)?;
-    if partitioned.full().facts().next().is_none() {
+    if original.facts().next().is_none() {
         return Ok(JournalSchemaState::Empty);
     }
     if partitioned.user().facts().next().is_some()
@@ -3086,9 +3247,7 @@ fn journal_schema_state(export: &str) -> Result<JournalSchemaState, Diagnostic> 
                 "frozen TypeDB control schema cannot be normalized",
             )
         })?;
-    if partitioned.internal().declared_identity_fingerprint()
-        != expected.declared_identity_fingerprint()
-    {
+    if original.declared_identity_fingerprint() != expected.declared_identity_fingerprint() {
         return Err(failure(
             DiagnosticCategory::Integrity,
             "migration_typedb_control_schema_mismatch",
@@ -3102,7 +3261,7 @@ fn journal_schema_state(export: &str) -> Result<JournalSchemaState, Diagnostic> 
 fn insert_journal_owner_query(
     managed_database_name: &str,
     managed_scope_id: &ManagedScopeId,
-) -> Result<String, Diagnostic> {
+) -> Result<QueryPlan, Diagnostic> {
     journal_insert(
         "owner",
         JOURNAL_OWNER_ENTITY,
@@ -3155,6 +3314,9 @@ fn control_schema_matches(
     }
     let document = DocumentId::new(format!("typebridge-{contract}-provider-export.typeql"))?;
     let partitioned = partition_typeql_export(document, export)?;
+    if partitioned.internal().facts().next().is_none() {
+        return Ok(false);
+    }
     let expected_document = DocumentId::new(format!("typebridge-{contract}-schema.typeql"))?;
     let expected = typeql_to_declared(expected_document, expected_schema).map_err(|_| {
         failure(
@@ -3176,77 +3338,27 @@ fn control_schema_matches(
     Ok(true)
 }
 
-fn journal_query(
-    build: impl FnOnce() -> Result<tql::Query, tql::TqlError>,
-) -> Result<String, Diagnostic> {
-    build().and_then(|query| tql::render(&query)).map_err(|_| {
-        failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_typedb_journal_typeql_shape",
-            "journal query cannot be lowered to TypeQL",
-        )
-    })
-}
-fn journal_pattern(
-    variable: &str,
-    kind: &str,
-    fixed: &[(&str, &str)],
-    bound: &[(&str, &str)],
-) -> Result<tql::Pattern, tql::TqlError> {
-    let mut fields = Vec::new();
-    for &(name, value) in fixed {
-        fields.push((name, tql::string(value)?));
-    }
-    for &(name, value) in bound {
-        fields.push((name, tql::var(value)?));
-    }
-    tql::entity(variable, kind, fields)
-}
 fn journal_read(
-    variable: &str,
+    _variable: &str,
     kind: &str,
     fixed: &[(&str, &str)],
     bound: &[(&str, &str)],
-) -> Result<String, Diagnostic> {
-    journal_query(|| {
-        let fields = bound
-            .iter()
-            .map(|&(_, name)| Ok((name, tql::fetch_expr(tql::var(name)?))))
-            .collect::<Result<Vec<_>, tql::TqlError>>()?;
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![journal_pattern(variable, kind, fixed, bound)?]),
-            tql::fetch(fields)?,
-        ]))
-    })
+) -> Result<DataQuery, Diagnostic> {
+    data_plan::read(kind, fixed, bound)
 }
 fn journal_exists(
-    variable: &str,
+    _variable: &str,
     kind: &str,
     fixed: &[(&str, &str)],
-) -> Result<String, Diagnostic> {
-    journal_query(|| {
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![journal_pattern(variable, kind, fixed, &[])?]),
-            tql::fetch(vec![(
-                "exists",
-                tql::fetch_expr(tql::literal_source("true")?),
-            )])?,
-        ]))
-    })
+) -> Result<DataQuery, Diagnostic> {
+    data_plan::read(kind, fixed, &[])
 }
 fn journal_insert(
-    variable: &str,
+    _variable: &str,
     kind: &str,
-    fixed: &[(&str, &str)],
-) -> Result<String, Diagnostic> {
-    journal_query(|| {
-        Ok(tql::pipeline(vec![tql::insert(vec![journal_pattern(
-            variable,
-            kind,
-            fixed,
-            &[],
-        )?])]))
-    })
+    fields: &[(&str, &str)],
+) -> Result<QueryPlan, Diagnostic> {
+    data_plan::insert(kind, fields)
 }
 
 fn payload_digest(payload: &[u8]) -> String {
@@ -3348,33 +3460,51 @@ async fn rollback_and_close(transaction: &mut Transaction) -> Result<(), OrmErro
 
 // Both concrete owners share the released fence validation without changing its API.
 trait MigrationQuery: Send {
-    fn query<'a>(
+    fn execute_plan<'a>(
         &'a mut self,
-        typeql: &'a str,
-    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<QueryResult, OrmError>>;
+        plan: &'a QueryPlan,
+    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<Vec<PlanAnswer>, OrmError>>;
 }
 impl MigrationQuery for Transaction {
-    fn query<'a>(
+    fn execute_plan<'a>(
         &'a mut self,
-        typeql: &'a str,
-    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<QueryResult, OrmError>> {
-        Box::pin(Transaction::query(self, typeql))
+        plan: &'a QueryPlan,
+    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<Vec<PlanAnswer>, OrmError>> {
+        Box::pin(async move {
+            let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
+            self.execute_plans(
+                std::slice::from_ref(plan),
+                &limits,
+                &type_bridge_orm::AnswerCancellation::default(),
+                type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+            )
+            .await
+        })
     }
 }
 impl MigrationQuery for type_bridge_orm::OwnedTransaction {
-    fn query<'a>(
+    fn execute_plan<'a>(
         &'a mut self,
-        typeql: &'a str,
-    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<QueryResult, OrmError>> {
-        Box::pin(type_bridge_orm::OwnedTransaction::query(self, typeql))
+        plan: &'a QueryPlan,
+    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<Vec<PlanAnswer>, OrmError>> {
+        Box::pin(async move {
+            let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
+            self.execute_plans(
+                std::slice::from_ref(plan),
+                &limits,
+                &type_bridge_orm::AnswerCancellation::default(),
+                type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+            )
+            .await
+        })
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
 
-    #[test]
-    fn journal_control_queries_keep_released_asts() {
+    #[tokio::test]
+    async fn journal_owner_plan_preserves_released_values_and_escaping() {
         fn literal(value: &str) -> String {
             serde_json::to_string(value).unwrap()
         }
@@ -3383,7 +3513,7 @@ pub(crate) mod tests {
             managed_scope_id: &ManagedScopeId,
         ) -> String {
             format!(
-                "insert $owner isa {JOURNAL_OWNER_ENTITY}, has {JOURNAL_OWNER_KEY} {}, has {JOURNAL_OWNER_MANAGED_DATABASE} {}, has {JOURNAL_OWNER_MANAGED_SCOPE} {};",
+                "insert $inserted0 isa {JOURNAL_OWNER_ENTITY}, has {JOURNAL_OWNER_KEY} {}, has {JOURNAL_OWNER_MANAGED_DATABASE} {}, has {JOURNAL_OWNER_MANAGED_SCOPE} {};",
                 literal(JOURNAL_OWNER_SINGLETON_KEY),
                 literal(managed_database_name),
                 literal(managed_scope_id.as_str()),
@@ -3395,6 +3525,7 @@ pub(crate) mod tests {
             baseline_insert_journal_owner_query("managed\"database", &scope_id),
         )];
         for (new, old) in cases {
+            let (new, _) = super::lease_tests::lowered(false, &new).await;
             assert!(tql::equivalent(&new, &old).unwrap(), "{new} != {old}");
         }
     }
@@ -3426,6 +3557,7 @@ pub(crate) mod tests {
     }
 
     struct AdministrationBackend {
+        database: String,
         exists: Arc<AtomicBool>,
         schema: String,
         deletes: Arc<AtomicUsize>,
@@ -3452,8 +3584,8 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        fn database_exists(&self, _database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
-            let exists = self.exists.load(Ordering::SeqCst);
+        fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+            let exists = database == self.database && self.exists.load(Ordering::SeqCst);
             Box::pin(async move { Ok(exists) })
         }
 
@@ -3481,8 +3613,10 @@ pub(crate) mod tests {
         schema: impl Into<String>,
         deletes: Arc<AtomicUsize>,
     ) -> Arc<Database> {
+        let name = name.into();
         Arc::new(Database::with_backend_authority(
             Box::new(AdministrationBackend {
+                database: name.clone(),
                 exists,
                 schema: schema.into(),
                 deletes,
@@ -3679,7 +3813,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             administrator.inner.journal_database.database_name(),
-            "managed__tbv2_journal"
+            "managed__tb_journal"
         );
         assert!(
             administrator
@@ -3727,6 +3861,144 @@ pub(crate) mod tests {
         );
         assert!(!journal_exists.load(Ordering::SeqCst));
         assert_eq!(deletes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pair_delete_preserves_old_journal_until_other_deletes_succeed() {
+        #[derive(Clone)]
+        struct DeleteBackend(Arc<std::sync::Mutex<DeleteState>>);
+        struct DeleteState {
+            names: BTreeSet<String>,
+            fail: Option<String>,
+            deleted: Vec<String>,
+        }
+        impl DriverBackend for DeleteBackend {
+            fn is_open(&self) -> bool {
+                true
+            }
+            fn server_version(&self) -> Option<Version> {
+                Some(Version::new(3, 12, 3))
+            }
+            fn database_exists(&self, name: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
+                let exists = self.0.lock().unwrap().names.contains(name);
+                Box::pin(async move { Ok(exists) })
+            }
+            fn schema_text(&self, name: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+                let schema = if name.ends_with("__tbv2_journal") {
+                    type_bridge_contract::reserved::IMPORT_LEGACY_JOURNAL_CONTROL_SCHEMA_TYPEQL
+                } else if name.ends_with("__tb_journal") {
+                    JOURNAL_CONTROL_SCHEMA_TYPEQL
+                } else {
+                    type_bridge_contract::reserved::IMPORT_LEGACY_MANAGED_FENCE_SCHEMA_TYPEQL
+                }
+                .to_owned();
+                Box::pin(async move { Ok(schema) })
+            }
+            fn delete_database(&self, name: &str) -> BoxFuture<'_, Result<(), OrmError>> {
+                let mut state = self.0.lock().unwrap();
+                let result = if state.fail.as_deref() == Some(name) {
+                    Err(OrmError::Connection("injected delete failure".into()))
+                } else {
+                    state.deleted.push(name.to_owned());
+                    state.names.remove(name);
+                    Ok(())
+                };
+                Box::pin(async move { result })
+            }
+            fn open_transaction(
+                &self,
+                _: &str,
+                _: TxType,
+            ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+                let tx: Box<dyn TransactionOps> = Box::new(self.clone());
+                Box::pin(async move { Ok(tx) })
+            }
+        }
+        impl TransactionOps for DeleteBackend {
+            fn query(
+                &mut self,
+                query: &str,
+            ) -> BoxFuture<'_, Result<type_bridge_orm::session::backend::QueryResult, OrmError>>
+            {
+                let fields = if query.contains("journal-owner") {
+                    vec![
+                        ("key", "typebridge-journal-owner/v1"),
+                        ("database", "managed"),
+                        ("scope", "delete-scope"),
+                    ]
+                } else {
+                    vec![("scope", "delete-scope"), ("fence", "1"), ("next", "0")]
+                };
+                let row = fields.into_iter().enumerate().map(|(index,(key,value))| (format!("{key}{}",index+1), serde_json::json!({"kind":"value", "value":{"kind":"string", "value":value}}))).collect::<serde_json::Map<_,_>>();
+                Box::pin(async move {
+                    Ok(type_bridge_orm::session::backend::QueryResult::Rows(vec![
+                        serde_json::Value::Object(row),
+                    ]))
+                })
+            }
+            fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+                panic!("read only")
+            }
+            fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+                panic!("read only")
+            }
+            fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        for controlled in [false, true] {
+            for failure in ["managed__tb_journal", "managed"] {
+                let state = Arc::new(std::sync::Mutex::new(DeleteState {
+                    names: ["managed", "managed__tb_journal", "managed__tbv2_journal"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                    fail: Some(failure.to_owned()),
+                    deleted: vec![],
+                }));
+                let managed = Arc::new(Database::with_backend(
+                    Box::new(DeleteBackend(Arc::clone(&state))),
+                    "managed",
+                ));
+                let journal = Arc::new(managed.derived_journal_database());
+                let admin = ManagedDatabasePairAdministrator::new(
+                    managed,
+                    journal,
+                    ManagedScopeId::new("delete-scope").unwrap(),
+                )
+                .unwrap();
+                let plan = admin.plan_delete().await.unwrap();
+                let result = if controlled {
+                    plan.execute_controlled(&MigrationExecutionControl::default())
+                        .await
+                } else {
+                    plan.execute().await
+                };
+                assert!(result.is_err());
+                assert!(
+                    state
+                        .lock()
+                        .unwrap()
+                        .names
+                        .contains("managed__tbv2_journal")
+                );
+                state.lock().unwrap().fail = None;
+                let plan = admin
+                    .plan_delete()
+                    .await
+                    .expect("failed deletion must remain retryable");
+                if controlled {
+                    plan.execute_controlled(&MigrationExecutionControl::default())
+                        .await
+                        .unwrap();
+                } else {
+                    plan.execute().await.unwrap();
+                }
+                let state = state.lock().unwrap();
+                assert!(state.names.is_empty());
+                assert_eq!(state.deleted.last().unwrap(), "managed__tbv2_journal");
+            }
+        }
     }
 
     #[tokio::test]
@@ -3886,7 +4158,7 @@ pub(crate) mod tests {
                 .expect("empty catalog");
         let store_a = TypeDbMigrationStore::new(&binding_a, catalog_a).expect("first store");
         let store_b = TypeDbMigrationStore::new(&binding_b, catalog_b).expect("second store");
-        let provider_a = TypeDbMigrationProvider::new(&binding_a).expect("first provider");
+        let provider_a = TypeDbMigrationProvider::new(&binding_a, &[]).expect("first provider");
 
         let scope = ExecutionScope::new(scope_id);
         let holder = LeaseHolderId::new("same-holder").expect("holder");
@@ -3938,7 +4210,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn catalog_from_3_11_cannot_be_relabelled_with_a_3_12_execution_context() {
+    fn catalog_from_3_13_cannot_be_relabelled_with_a_3_12_execution_context() {
         let calls = Arc::new(AtomicUsize::new(0));
         let authority = DatabaseConnectionAuthority::isolated();
         let managed = no_io_database(
@@ -3954,7 +4226,7 @@ pub(crate) mod tests {
         let scope = ManagedScopeId::new("profile-relabel-scope").expect("scope");
         let legacy_context = ManagedDeltaContext::new(
             scope.clone(),
-            SemanticProfileId::new("typedb-3.11.5/v1").expect("legacy profile"),
+            SemanticProfileId::new("typedb-3.13.6/v1").expect("legacy profile"),
             CapabilitySet::new(),
         );
         let manifest = verified_manifest_for_context(&legacy_context);
@@ -3965,7 +4237,7 @@ pub(crate) mod tests {
             .expect("the exact supported pair must bind without backend I/O");
         let error = TypeDbMigrationStore::new(&binding, catalog)
             .err()
-            .expect("a 3.11 catalog cannot be relabelled as a 3.12 execution catalog");
+            .expect("a 3.13 catalog cannot be relabelled as a 3.12 execution catalog");
         assert_eq!(
             error.code().as_str(),
             "migration_typedb_manifest_semantic_profile_mismatch"
@@ -4190,7 +4462,7 @@ pub(crate) mod tests {
         );
 
         let partial = journal_schema_state(
-            "define attribute typebridge-internal-v2-control-scope, value string;",
+            "define attribute typebridge-internal-control-scope, value string;",
         )
         .expect_err("partial reserved schema must fail closed");
         assert_eq!(
@@ -4201,21 +4473,21 @@ pub(crate) mod tests {
 
     #[test]
     fn journal_schema_contract_rejects_every_lossy_compatibility_construct() {
-        let payload_ownership = "owns typebridge-internal-v2-record-payload @card(1..1),";
+        let payload_ownership = "owns typebridge-internal-record-payload @card(1..1),";
         for (case, replacement, expected_code) in [
             (
                 "ordered distinct ownership",
-                "owns typebridge-internal-v2-record-payload[] @card(1..1) @distinct,",
+                "owns typebridge-internal-record-payload[] @card(1..1) @distinct,",
                 "migration_typedb_control_schema_mismatch",
             ),
             (
                 "cascade ownership",
-                "owns typebridge-internal-v2-record-payload @card(1..1) @cascade,",
+                "owns typebridge-internal-record-payload @card(1..1) @cascade,",
                 "migration_typedb_export_invalid",
             ),
             (
                 "subkey ownership",
-                "owns typebridge-internal-v2-record-payload @card(1..1) @subkey(journal),",
+                "owns typebridge-internal-record-payload @card(1..1) @subkey(journal),",
                 "migration_typedb_export_invalid",
             ),
         ] {
@@ -4239,10 +4511,11 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn journal_owner_insert_is_literal_escaped_and_binds_both_identities() {
+    #[tokio::test]
+    async fn journal_owner_insert_is_literal_escaped_and_binds_both_identities() {
         let scope = ManagedScopeId::new("scope\"with-quote").unwrap();
-        let query = insert_journal_owner_query("managed\"database", &scope).unwrap();
+        let plan = insert_journal_owner_query("managed\"database", &scope).unwrap();
+        let (query, _) = super::lease_tests::lowered(false, &plan).await;
         assert!(query.contains(JOURNAL_OWNER_SINGLETON_KEY));
         assert!(query.contains("managed\\\"database"));
         assert!(query.contains("scope\\\"with-quote"));
@@ -4317,9 +4590,17 @@ pub(crate) mod tests {
             "digest": payload_digest(payload),
             "sequence": "1",
         });
-        let parsed = parse_stored_row(row).expect("backfill journal row parses");
-        assert_eq!(parsed.kind, BACKFILL_EVENT_RECORD_KIND);
+        let parsed = parse_stored_row(row.clone()).expect("backfill journal row parses");
         assert_eq!(parsed.payload, payload);
+        let mut unknown_kind = row;
+        unknown_kind["kind"] = serde_json::json!("unknown-record-kind");
+        let Err(error) = parse_stored_row(unknown_kind) else {
+            panic!("unknown journal kind must be refused")
+        };
+        assert_eq!(
+            error.code().as_str(),
+            "migration_typedb_record_kind_unknown"
+        );
     }
 }
 
@@ -4377,8 +4658,11 @@ mod lease_tests {
         fn answer(&self, typeql: &str, rows: Option<GivenRowsSpec>) -> QueryResult {
             let mut script = self.0.lock().unwrap();
             script.statements.push((typeql.to_owned(), rows));
-            if typeql.contains("fetch") {
-                QueryResult::Documents(vec![serde_json::json!({"exists": true}); script.settled])
+            if typeql.ends_with("select $root0;") {
+                QueryResult::Rows(vec![
+                    serde_json::json!({"root0":{"kind":"thing", "iid":"0x01", "type_id":{"kind":"entity", "label":CONTROL_ENTITY}}});
+                    script.settled
+                ])
             } else {
                 QueryResult::Rows(vec![serde_json::json!({}); script.matched])
             }
@@ -4495,9 +4779,10 @@ mod lease_tests {
         }
     }
 
-    async fn lowered(given: bool, plan: &QueryPlanV3) -> (String, Option<GivenRowsSpec>) {
+    pub(super) async fn lowered(given: bool, plan: &QueryPlan) -> (String, Option<GivenRowsSpec>) {
         let script = Scripted::new(given, 1, Commit::Ok, 0);
-        commit_lease_plan(&script.database(), plan, "unused")
+        let settled = data_plan::read(CONTROL_ENTITY, &[], &[]).unwrap();
+        commit_lease_plan(&script.database(), plan, &settled)
             .await
             .unwrap();
         let mut statements = script.statements();
@@ -4631,11 +4916,11 @@ mod lease_tests {
         let fixture = Fixture::new();
         let plans = LeasePlans::journal(&profile()).unwrap();
         let plan = plans.take_over(fixture.row(), 7, Some(9), true).unwrap();
-        let settled = "match $control isa! control; fetch { \"exists\": true };";
+        let settled = data_plan::read(CONTROL_ENTITY, &[], &[]).unwrap();
 
         let lost = Scripted::new(true, 0, Commit::Ok, 0);
         assert!(matches!(
-            commit_lease_plan(&lost.database(), &plan, settled)
+            commit_lease_plan(&lost.database(), &plan, &settled)
                 .await
                 .unwrap(),
             LeaseWrite::Lost
@@ -4643,7 +4928,7 @@ mod lease_tests {
 
         // A rejected commit is definite: no reconciling read.
         let conflict = Scripted::new(true, 1, Commit::Conflict, 1);
-        let error = commit_lease_plan(&conflict.database(), &plan, settled)
+        let error = commit_lease_plan(&conflict.database(), &plan, &settled)
             .await
             .err()
             .expect("conflict fails");
@@ -4653,14 +4938,15 @@ mod lease_tests {
         // An unknown outcome is applied only when a fresh read proves it.
         let applied = Scripted::new(true, 1, Commit::Unknown, 1);
         assert!(matches!(
-            commit_lease_plan(&applied.database(), &plan, settled)
+            commit_lease_plan(&applied.database(), &plan, &settled)
                 .await
                 .unwrap(),
             LeaseWrite::Applied
         ));
-        assert_eq!(applied.statements()[1].0, settled);
+        assert!(applied.statements()[1].0.contains(CONTROL_ENTITY));
+        assert!(applied.statements()[1].0.ends_with("select $root0;"));
         let unknown = Scripted::new(true, 1, Commit::Unknown, 0);
-        let error = commit_lease_plan(&unknown.database(), &plan, settled)
+        let error = commit_lease_plan(&unknown.database(), &plan, &settled)
             .await
             .err()
             .expect("unproven outcome stays uncertain");

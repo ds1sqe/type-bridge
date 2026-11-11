@@ -33,80 +33,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anstream"
-version = "0.6.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43d5b281e737544384e969a5ccad3f1cdd24b48086a0fc1b2a5262a26b8f4f4a"
-dependencies = [
- "anstyle",
- "anstyle-parse 0.2.7",
- "anstyle-query",
- "anstyle-wincon",
- "colorchoice",
- "is_terminal_polyfill",
- "utf8parse",
-]
-
-[[package]]
-name = "anstream"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d"
-dependencies = [
- "anstyle",
- "anstyle-parse 1.0.0",
- "anstyle-query",
- "anstyle-wincon",
- "colorchoice",
- "is_terminal_polyfill",
- "utf8parse",
-]
-
-[[package]]
-name = "anstyle"
-version = "1.0.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
-
-[[package]]
-name = "anstyle-parse"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7644824f0aa2c7b9384579234ef10eb7efb6a0deb83f9630a49594dd9c15c2"
-dependencies = [
- "utf8parse",
-]
-
-[[package]]
-name = "anstyle-parse"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e"
-dependencies = [
- "utf8parse",
-]
-
-[[package]]
-name = "anstyle-query"
-version = "1.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
-dependencies = [
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "anstyle-wincon"
-version = "3.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
-dependencies = [
- "anstyle",
- "once_cell_polyfill",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "anyhow"
 version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -251,9 +177,9 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cap-fs-ext"
-version = "4.0.2"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d78e5a3368ae89b7cb68186411452b4b9fac8b41be9c19bf3f47c2d2c8e36e6b"
+checksum = "56ff379b70af8e08307a8f65e7040c7301cb4a572538ade16b4984f0da77847f"
 dependencies = [
  "cap-primitives",
  "cap-std",
@@ -263,9 +189,9 @@ dependencies = [
 
 [[package]]
 name = "cap-primitives"
-version = "4.0.2"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdadbd7c002d3a484b35243669abdae85a0ebaded5a61117169dc3400f9a7ff0"
+checksum = "8b5f74729fd2f44701d1a8eb47e906cdb3ccd9ec0f02baad85a744b791940b18"
 dependencies = [
  "ambient-authority",
  "fs-set-times",
@@ -281,9 +207,9 @@ dependencies = [
 
 [[package]]
 name = "cap-std"
-version = "4.0.2"
+version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7281235d6e96d3544ca18bba9049be92f4190f8d923e3caef1b5f66cfa752608"
+checksum = "c1ec78e242cfa2cfe276807ac2ecc00315a6c97786977414bcd1c3963b6c91b8"
 dependencies = [
  "cap-primitives",
  "io-extras",
@@ -360,52 +286,6 @@ dependencies = [
  "phf_codegen",
  "uncased",
 ]
-
-[[package]]
-name = "clap"
-version = "4.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b193af5b67834b676abd72466a96c1024e6a6ad978a1f484bd90b85c94041351"
-dependencies = [
- "clap_builder",
- "clap_derive",
-]
-
-[[package]]
-name = "clap_builder"
-version = "4.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "714a53001bf66416adb0e2ef5ac857140e7dc3a0c48fb28b2f10762fc4b5069f"
-dependencies = [
- "anstream 1.0.0",
- "anstyle",
- "clap_lex",
- "strsim",
-]
-
-[[package]]
-name = "clap_derive"
-version = "4.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1110bd8a634a1ab8cb04345d8d878267d57c3cf1b38d91b71af6686408bbca6a"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "clap_lex"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
-
-[[package]]
-name = "colorchoice"
-version = "1.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "const-oid"
@@ -832,9 +712,9 @@ dependencies = [
 
 [[package]]
 name = "granit-parser"
-version = "0.0.7"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d03f81ad4732830d85cfd417a9f62cde6dadda4354d37d078a6084a19560aa2d"
+checksum = "da55feca5d1625466bae068f9fd4b87892caeae70c3fe671ddb0f50d41aebf37"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -1199,12 +1079,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "is_terminal_polyfill"
-version = "1.70.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
-
-[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1348,18 +1222,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "network-interface"
-version = "2.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ddcb8865ad3d9950f22f42ffa0ef0aecbfbf191867b3122413602b0a360b2a6"
-dependencies = [
- "cc",
- "libc",
- "thiserror",
- "winapi",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1382,12 +1244,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "once_cell_polyfill"
-version = "1.70.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openssl-probe"
@@ -1853,9 +1709,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.4"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags",
  "errno",
@@ -2031,15 +1887,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_spanned"
-version = "0.6.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2155,12 +2002,6 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
-
-[[package]]
-name = "strsim"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "subtle"
@@ -2327,47 +2168,6 @@ dependencies = [
  "pin-project-lite",
  "tokio",
 ]
-
-[[package]]
-name = "toml"
-version = "0.8.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
-dependencies = [
- "serde",
- "serde_spanned",
- "toml_datetime",
- "toml_edit",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "0.6.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "toml_edit"
-version = "0.22.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
-dependencies = [
- "indexmap 2.13.1",
- "serde",
- "serde_spanned",
- "toml_datetime",
- "toml_write",
- "winnow",
-]
-
-[[package]]
-name = "toml_write"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "tonic"
@@ -2547,7 +2347,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "regex",
  "serde_json",
@@ -2565,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-contract"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2576,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -2587,14 +2387,13 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "type-bridge-contract",
+ "typeql",
  "unicode-ident",
  "ureq",
  "winnow",
  "winx",
- "typeql",
 ]
 
 [[package]]
@@ -2605,33 +2404,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "type-bridge-migration"
-version = "2.3.3"
-dependencies = [
- "anstream 0.6.21",
- "anstyle",
- "cap-fs-ext",
- "cap-primitives",
- "cap-std",
- "chrono",
- "clap",
- "network-interface",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "tokio",
- "type-bridge-contract",
- "type-bridge-core-lib",
- "type-bridge-orm",
- "type-bridge-schema-compat",
- "uuid",
-]
-
-[[package]]
 name = "type-bridge-orm"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "ed25519-dalek",
  "rand_core 0.6.4",
@@ -2642,6 +2416,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "type-bridge-contract",
  "type-bridge-core-lib",
  "type-bridge-query",
@@ -2654,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2664,7 +2439,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-query"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -2684,7 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2698,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-codegen"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -2707,20 +2482,19 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-compat"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
  "type-bridge-contract",
  "type-bridge-core-lib",
  "type-bridge-schema",
- "type-bridge-toml-transpiler",
  "typeql",
 ]
 
 [[package]]
 name = "type-bridge-schema-migration"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -2738,14 +2512,13 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration-typedb"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
  "sha2",
  "type-bridge-contract",
  "type-bridge-core-lib",
- "type-bridge-migration",
  "type-bridge-orm",
  "type-bridge-query",
  "type-bridge-schema",
@@ -2754,50 +2527,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "type-bridge-toml-transpiler"
-version = "2.3.3"
-dependencies = [
- "indexmap 2.13.1",
- "serde",
- "thiserror",
- "toml",
- "type-bridge-core-lib",
-]
-
-[[package]]
-name = "type-bridge-typedb-driver-b8"
-version = "3.11.5"
-dependencies = [
- "chrono",
- "chrono-tz",
- "crossbeam",
- "futures",
- "http",
- "itertools",
- "maybe-async",
- "prost",
- "serde",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-types",
- "tracing",
- "tracing-subscriber",
- "type-bridge-typedb-protocol-b8",
- "uuid",
-]
-
-[[package]]
-name = "type-bridge-typedb-protocol-b8"
-version = "3.11.0"
-dependencies = [
- "prost",
- "tonic",
-]
-
-[[package]]
 name = "type-bridge-typedb-runtime"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2809,7 +2540,6 @@ dependencies = [
  "tracing",
  "type-bridge-contract",
  "type-bridge-core-lib",
- "type-bridge-typedb-driver-b8",
  "typedb-driver",
 ]
 
@@ -2951,12 +2681,6 @@ name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
-
-[[package]]
-name = "utf8parse"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"

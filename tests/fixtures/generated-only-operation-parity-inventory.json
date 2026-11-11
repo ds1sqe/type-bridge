@@ -10,7 +10,8 @@
   "statuses": [
     "accepted_live",
     "accepted_offline",
-    "uniform_unsupported"
+    "uniform_unsupported",
+    "removed_in_3_0"
   ],
   "operations": [
     {
@@ -27,7 +28,7 @@
                 "Import a generated package emitted now or supplied as immutable test evidence",
                 "prepare_generated_live_fixture.sh",
                 "schema-authority.json",
-                "importlib.import_module(\"generated_v2\")"
+                "importlib.import_module(\"generated_package\")"
               ]
             }
           ]
@@ -177,7 +178,7 @@
                 "person_manager.put(person)",
                 "person_manager.get_by_iid(person.iid)",
                 "person_manager.update(person)",
-                "person_manager.get_by_iid(\"not-a-valid-iid\") is None",
+                "with pytest.raises(TypeError):\n        person_manager.get_by_iid(\"not-a-valid-iid\")",
                 "mutation_edge.nickname = None",
                 "cleared_ownerships.aliases == ()",
                 "person_manager.delete(transaction_person)",
@@ -198,7 +199,7 @@
                 "personManager.update",
                 "const specialAlias =",
                 "clearedOwnerships.aliases, []",
-                "personManager.delete(transactionPersonIid)",
+                "personManager.delete(stalePerson.iid)",
                 "personManager.count(), 4n"
               ]
             }
@@ -213,11 +214,11 @@
               "anchors": [
                 "generated_entity_crud_batches_and_scalar_domains",
                 "db.entities::<Person>().put",
-                ".get_by_iid(&iid)",
+                ".get_by_iid(&type_bridge::Iid::new(&iid).unwrap())",
                 ".update(",
                 "special ownership replacement",
                 "cleared_ownerships.aliases().is_empty()",
-                "db.entities::<Person>().delete(&iid)"
+                "db.entities::<Person>().delete(&type_bridge::Iid::new(&iid).unwrap())"
               ]
             }
           ]
@@ -237,8 +238,8 @@
               "anchors": [
                 "person_manager.insert_many(batch_people)",
                 "person_manager.put_many(batch_people)",
-                "batch_manager.insert_many([]) == []",
-                "batch_manager.put_many([]) == []"
+                "batch_manager.insert_many([]).items == []",
+                "batch_manager.put_many([]).items == []"
               ]
             }
           ]
@@ -310,7 +311,7 @@
                 "networkManager.update",
                 "networkManager.getByIid",
                 "filteredNetworks.exists(), true",
-                "networkManager.delete(insertedNetwork)"
+                "membershipManager.delete(insertedMembership)"
               ]
             }
           ]
@@ -346,8 +347,8 @@
               "anchors": [
                 "network_manager.insert_many(relation_batch)",
                 "network_manager.put_many(relation_batch)",
-                "network_batch_manager.insert_many([]) == []",
-                "network_batch_manager.put_many([]) == []"
+                "network_batch_manager.insert_many([]).items == []",
+                "network_batch_manager.put_many([]).items == []"
               ]
             }
           ]
@@ -404,7 +405,7 @@
                 "person_manager.delete_many([batch_people[0], strict_missing], strict=True)",
                 "network_batch_manager.update_many(networks)",
                 "network_batch_manager.delete_many(relation_delete_batch)",
-                "batch_manager.update_many([]) == []",
+                "batch_manager.update_many([]).items == []",
                 "network_batch_manager.delete_many([]) == []",
                 "second update cancelled"
               ]
@@ -419,11 +420,13 @@
               "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
               "anchors": [
                 "generated_lifecycle_hooks_and_atomic_mutation_batches",
-                ".update_many(vec![",
-                ".delete_many(&[first_employment_iid, second_employment_iid])",
+                ".update_many(typed_update_inputs(vec![",
+                ".delete_many(&typed_iids(&[first_employment_iid, second_employment_iid]))",
                 "empty person update batch",
                 "empty relation delete batch",
-                "first_after_rollback.aliases()[0].value()"
+                "assert_eq!(value.aliases()[0].value(), expected)",
+                "assert_eq!(partially_matched.input_indexes(), &[0])",
+                "assert_eq!(first_after_commit.aliases()[0].value(), \"matched-update\")"
               ]
             }
           ]
@@ -477,7 +480,7 @@
     },
     {
       "id": "python_filtered_callback_update_and_filtered_delete",
-      "status": "accepted_live",
+      "status": "removed_in_3_0",
       "required_bindings": [
         "python"
       ],
@@ -486,19 +489,20 @@
           "surface": "generated_filtered_manager",
           "evidence": [
             {
-              "mode": "live",
-              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
               "anchors": [
-                ").update_with(lambda value:",
-                "callback failure sentinel",
-                "filtered-relation",
-                ").delete()",
-                "second delete cancelled"
+                "assert not hasattr(explicit_manager, \"update_with\")",
+                "assert explicit_native.selection.deletes == 1"
               ]
             }
           ]
         }
-      }
+      },
+      "replacements": [
+        "Explicit-IID update/update_many and delete/delete_many operations",
+        "filter(...).update(...) and filter(...).delete() terminals (06.10)"
+      ]
     },
     {
       "id": "python_cross_type_attribute_owner_lookup",
@@ -526,7 +530,7 @@
     },
     {
       "id": "python_key_fallback_update_delete_without_iid",
-      "status": "accepted_live",
+      "status": "removed_in_3_0",
       "required_bindings": [
         "python"
       ],
@@ -535,22 +539,20 @@
           "surface": "generated_entity_and_relation_managers",
           "evidence": [
             {
-              "mode": "live",
-              "path": "tests/integration/schema/test_generated_projection_live.py",
+              "mode": "offline",
+              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
               "anchors": [
-                "assert person_manager.update(detached_update) is detached_update",
-                "assert person_manager.delete(detached_delete) is detached_delete",
-                "assert person_manager.delete(missing_delete) is missing_delete",
-                "assert person_manager.delete_many([missing_delete]) == []",
-                "assert membership_manager.update(detached_membership_update)",
-                "assert membership_manager.delete(detached_membership_delete)",
-                "assert membership_manager.delete(missing_membership) is missing_membership",
-                "assert network_manager.update(detached_network)"
+                "assert not hasattr(OrderedProjectedModelManager, \"_resolve_instance_iid\")",
+                "assert not hasattr(type_bridge_core.PyProjectedModelManager, \"resolve_iid\")"
               ]
             }
           ]
         }
-      }
+      },
+      "replacements": [
+        "Explicit-IID update/update_many and delete/delete_many operations",
+        "filter(...).update(...) and filter(...).delete() terminals (06.10)"
+      ]
     },
     {
       "id": "borrowed_write_commit_rollback_and_reusable_read",
@@ -735,7 +737,7 @@
                 "[Manager.typeKey, insertedManager.iid]",
                 "session.subtypes(Membership)",
                 "subtype_relation: [Employment.typeKey, insertedPerson.iid, false]",
-                "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)"
+                "assertIidsEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)"
               ]
             }
           ]
@@ -770,8 +772,8 @@
               "anchors": [
                 "identifier_field.starts_with",
                 "identifier_field.contains",
-                "identifier_field.regex",
-                "~identifier_field.neq",
+                "identifier_field.like",
+                "~identifier_field.ne",
                 "same_person_var.field"
               ]
             }
@@ -786,7 +788,7 @@
               "anchors": [
                 "identifierField.startsWith",
                 "identifierField.contains",
-                "identifierField.regex",
+                "identifierField.like",
                 "identifierField.ne(identifierValue).not()",
                 ".eqField(personVariable.field(Person.identifier))"
               ]
@@ -802,7 +804,7 @@
               "anchors": [
                 "identifier.starts_with",
                 "identifier.contains",
-                "identifier.regex",
+                "identifier.like",
                 "score.ge(70_i64)",
                 "identifier.eq_field(member_identifier)"
               ]
@@ -822,7 +824,7 @@
               "mode": "live",
               "path": "tests/integration/schema/test_generated_projection_live.py",
               "anchors": [
-                "generated.Employment.employee).connects(person_var)",
+                "generated.Employment.employee).links(person_var)",
                 "generated.EventRef(event.iid)",
                 "stored_employment.employee.iid"
               ]
@@ -836,7 +838,7 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "eventVariable.role(Event.subject).connects(personVariable)",
+                "eventVariable.role(Event.subject).links(personVariable)",
                 "Event.reference(insertedEvent.iid, {})",
                 "storedEmployment.employee.iid"
               ]
@@ -850,7 +852,7 @@
               "mode": "live",
               "path": "type-bridge-core/crates/schema-codegen/tests/rust_projection_live/consumer.rs",
               "anchors": [
-                "employee_role.connects(person_binding)",
+                "employee_role.links(person_binding)",
                 "PersonRef::from_key",
                 "container insert with a relation player"
               ]
@@ -886,7 +888,7 @@
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
                 "session.reachable(",
-                "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
+                "assertIidsEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
                 ".allowCrossJoin(crossLeft, crossRight)"
               ]
             }
@@ -922,7 +924,7 @@
                 "network_session.query_as",
                 ".collect()",
                 ".distinct()",
-                ".order_by(participant_var.field"
+                ".sort(participant_var.field"
               ]
             },
             {
@@ -1207,7 +1209,7 @@
               "path": "type-bridge-core/crates/rust/src/remote.rs",
               "anchors": [
                 "generated_remote_query_preserves_complete_authenticated_structured_diagnostic",
-                "RemoteQueryFailureV2::bound(",
+                "StagedOutcome::Failed {",
                 "error.diagnostic_path()",
                 "crate::ErrorDetail::QueryIdentityList",
                 "assert_eq!(exchanges.lock().unwrap().len(), 1)"
@@ -1243,9 +1245,9 @@
               "mode": "live",
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
-                "const reducers = await terminal(() => allPeopleQuery.aggregate(personVariable, [",
+                "const reducers = await terminal(() => allPeopleQuery.reduce(personVariable, [",
                 "reducers: reducers.slice(0, 6),",
-                "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
+                "assertIidsEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)",
                 "assert.equal(requests.length, requestsBefore + 1)"
               ]
             }
@@ -1262,30 +1264,6 @@
                 ".expect(\"F4 remote aggregate\")",
                 "let remote_tuple_grouped =",
                 "let remote_binding_grouped ="
-              ]
-            }
-          ]
-        }
-      }
-    },
-    {
-      "id": "python_retained_raw_query_builder_generated_models",
-      "status": "accepted_offline",
-      "required_bindings": [
-        "python"
-      ],
-      "support": {
-        "python": {
-          "surface": "retained_root_query_builder_with_generated_projection",
-          "evidence": [
-            {
-              "mode": "offline",
-              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
-              "anchors": [
-                "QueryBuilder.match_entity(",
-                "QueryBuilder.insert_entity(person, \"$person\")",
-                "QueryBuilder.match_relation(",
-                "raw QueryBuilder accepted an uninstalled model class"
               ]
             }
           ]
@@ -1352,7 +1330,7 @@
               "path": "tests/integration/schema/test_generated_projection_live.py",
               "anchors": [
                 "generated.PlainActivity(participant=person)",
-                "plain_activity_var.role(generated.PlainActivity.participant).connects(",
+                "plain_activity_var.role(generated.PlainActivity.participant).links(",
                 "plain_activity_manager.delete(plain_activity)"
               ]
             }
@@ -1366,7 +1344,7 @@
               "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
               "anchors": [
                 "PlainActivity.create({ participant: insertedPerson })",
-                "plainActivityVariable.role(PlainActivity.participant).connects(plainParticipantVariable)",
+                "plainActivityVariable.role(PlainActivity.participant).links(plainParticipantVariable)",
                 "plainActivityManager.delete(insertedPlainActivity)"
               ]
             }
@@ -1400,7 +1378,7 @@
               "path": "tests/integration/schema/test_generated_projection_live.py",
               "anchors": [
                 "detached_counter = generated.Counter",
-                "attached IID or projected key",
+                "^generated manager update and delete require an attached TypeDB IID$",
                 "queried_counter = counter_query.one()",
                 "counter_query.rows(limit=2)"
               ]
@@ -1416,7 +1394,7 @@
               "anchors": [
                 "const detachedCounter = Counter.create",
                 "attached TypeDB IID",
-                "assert.equal((await counterQuery.one()).iid, insertedCounter.iid)",
+                "assertIidsEqual((await counterQuery.one()).iid, insertedCounter.iid)",
                 "counterQuery.rows({ limit: 2n })"
               ]
             }

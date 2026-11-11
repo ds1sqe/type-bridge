@@ -663,12 +663,12 @@ impl BindingHandle {
         ))
     }
 
-    /// Resolve a scalar field while preserving the model type that supplied
-    /// the language-level field reference.
+    /// Resolve an owner-qualified scalar field to its binding's canonical field.
     ///
     /// The reference owner must be this binding's descriptor or a registered
     /// ancestor whose field remains identical in the binding's flattened
-    /// descriptor. Unrelated same-label fields and subtype shadows fail closed.
+    /// descriptor. Unrelated same-label fields and subtype shadows fail closed;
+    /// a compatible inherited reference shares the direct lookup's field identity.
     pub fn field_owned_by(&self, owner_type: &str, field_name: &str) -> Result<FieldHandle> {
         let owner_id = self.reference_owner_id(owner_type, "field")?;
         let (field_id, value_type) = self.resolve_field(&owner_id, field_name)?;
@@ -815,37 +815,27 @@ impl BindingHandle {
         owner_id: &DescriptorId,
         field_name: &str,
     ) -> Result<(FieldId, ValueTypeTag)> {
-        let field = self
+        let missing = || {
+            handle_error(
+                "unknown_field",
+                format!("descriptor '{owner_id}' has no registered field '{field_name}'"),
+            )
+        };
+        let descriptor = self
             .0
             .session
             .registry
-            .field_id(owner_id, field_name)
-            .ok_or_else(|| {
-                handle_error(
-                    "unknown_field",
-                    format!("descriptor '{owner_id}' has no registered field '{field_name}'"),
-                )
-            })?;
-        let type_name = self
-            .0
-            .session
-            .registry
-            .descriptor_type_name(owner_id)
-            .ok_or_else(|| handle_error("unknown_descriptor", "field owner is not registered"))?;
-        let descriptor =
-            self.0.session.registry.get(&type_name).ok_or_else(|| {
-                handle_error("unknown_descriptor", "field owner is not registered")
-            })?;
-        let value_type = match descriptor {
-            TypeDescriptorRef::Entity(descriptor) => descriptor
-                .attribute(&field.name)
-                .map(|field| field.value_type),
-            TypeDescriptorRef::Relation(descriptor) => descriptor
-                .attribute(&field.name)
-                .map(|field| field.value_type),
+            .descriptor_by_id(owner_id)
+            .ok_or_else(missing)?;
+        let attribute = match &descriptor {
+            TypeDescriptorRef::Entity(descriptor) => descriptor.attribute(field_name),
+            TypeDescriptorRef::Relation(descriptor) => descriptor.attribute(field_name),
         }
-        .ok_or_else(|| handle_error("unknown_field", "field is absent from its owner"))?;
-        Ok((field, handle_value_type_tag(value_type)))
+        .ok_or_else(missing)?;
+        Ok((
+            FieldId::new(self.0.descriptor_id.clone(), attribute.field_name.clone()),
+            handle_value_type_tag(attribute.value_type),
+        ))
     }
 }
 

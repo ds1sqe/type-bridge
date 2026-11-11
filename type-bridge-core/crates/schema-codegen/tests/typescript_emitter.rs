@@ -85,7 +85,7 @@ fn emits_exact_deterministic_es_module_package() {
     assert!(runtime.contains("HYDRATE_COMPLETE_BRAND"));
     assert!(runtime.contains("ProjectedModelManager"));
     let index = String::from_utf8(first.get("src/index.ts").unwrap().to_vec()).unwrap();
-    assert!(index.contains("__installRuntimeProjectionPackage"));
+    assert!(index.contains("__installOrderedRuntimeProjectionPackage"));
     assert!(index.contains("export function openMigrationCatalog(): MigrationCatalog"));
     assert!(index.contains("../${MIGRATION_HISTORY_RESOURCE}"));
     assert!(index.contains("RUNTIME_PROJECTION_JSON"));
@@ -106,7 +106,7 @@ fn emits_exact_deterministic_es_module_package() {
     );
     let package_json = String::from_utf8(first.get("package.json").unwrap().to_vec()).unwrap();
     assert!(package_json.contains("\"type\": \"module\""));
-    assert!(package_json.contains("\"@type-bridge/node\": \"^2.3.3\""));
+    assert!(package_json.contains("\"@type-bridge/node\": \"^3.0.0\""));
     assert!(
         String::from_utf8(first.get("tsconfig.json").unwrap().to_vec())
             .unwrap()
@@ -192,17 +192,22 @@ fn rejects_projection_without_exact_resource_evidence() {
 fn rejects_schema_name_colliding_with_runtime_export() {
     let emitter = TypeScriptEmitter::new();
     let resources = emitter.code_resources().unwrap();
-    let (projection, authority) = projected(
-        "format: typebridge.schema/v2\nentities:\n  cardinality: {}\n",
-        &resources,
-    );
-    let error = emitter.emit(&projection, &authority).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("typescript_emitter_name_collision")
-    );
-    assert!(error.to_string().contains("Cardinality"));
+    for (label, name) in [
+        ("cardinality", "Cardinality"),
+        ("write-result", "WriteResult"),
+    ] {
+        let (projection, authority) = projected(
+            &format!("format: typebridge.schema/v2\nentities:\n  {label}: {{}}\n"),
+            &resources,
+        );
+        let error = emitter.emit(&projection, &authority).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("typescript_emitter_name_collision")
+        );
+        assert!(error.to_string().contains(name));
+    }
 }
 
 #[test]

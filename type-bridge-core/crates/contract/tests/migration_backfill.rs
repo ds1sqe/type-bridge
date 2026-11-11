@@ -22,6 +22,7 @@ fn plan() -> AttributeBackfillPlan {
         TypeId::new(TypeKind::Entity, "person").expect("owner"),
         AttributeId::new("legacy-name").expect("source"),
         AttributeId::new("display-name").expect("destination"),
+        type_bridge_contract::query_plan::TypeMatchMode::Isa,
         BackfillPartition::new(
             512,
             AttributeId::new("person-id").expect("stable partition attribute"),
@@ -66,7 +67,8 @@ fn copy_attribute_plan_freezes_closed_semantics_and_canonical_wire() {
         json!({
             "conflict": "skip_equal_reject_different",
             "destination": "display-name",
-            "format": 1,
+            "format": 2,
+            "mode": "isa",
             "managed_semantics": plan.managed_semantics(),
             "owner": {"kind": "entity", "label": "person"},
             "partition": {"batch_rows": 512, "stable_attribute": "person-id"},
@@ -123,6 +125,7 @@ fn copy_attribute_plan_rejects_ambiguous_or_unbounded_work() {
             TypeId::new(TypeKind::Entity, "person").expect("owner"),
             same.clone(),
             same,
+            type_bridge_contract::query_plan::TypeMatchMode::Isa,
             BackfillPartition::new(
                 1,
                 AttributeId::new("person-id").expect("stable partition attribute")
@@ -136,4 +139,59 @@ fn copy_attribute_plan_rejects_ambiguous_or_unbounded_work() {
         .as_str(),
         "migration_backfill_same_attribute"
     );
+}
+
+#[test]
+fn historical_format_one_retains_bytes_fingerprint_and_isa_semantics() {
+    let historical: serde_json::Value = serde_json::from_str(include_str!("../../../../tests/contracts/sdk_conformance/administration/workspace/migrations/v2/0003_backfill-display-name.tbmigration.json")).unwrap();
+    let bytes = to_canonical_json(&historical["steps"][0]["plan"]).unwrap();
+    let plan = decode_attribute_backfill_plan(&bytes).unwrap();
+    assert_eq!(plan.format().get(), 1);
+    assert_eq!(
+        plan.mode(),
+        type_bridge_contract::query_plan::TypeMatchMode::Isa
+    );
+    assert_eq!(plan.canonical_bytes().unwrap(), bytes);
+    assert_eq!(
+        serde_json::to_value(plan.fingerprint().unwrap()).unwrap(),
+        historical["steps"][0]["contract"]["plan_fingerprint"]
+    );
+    assert_eq!(
+        plan.require_new_authoring().unwrap_err().code().as_str(),
+        "migration_backfill_historical_authoring"
+    );
+}
+
+#[test]
+fn format_two_requires_an_explicit_typeql_mode() {
+    let plan = plan();
+    assert_eq!(plan.format().get(), 2);
+    plan.require_new_authoring().unwrap();
+    let mut wire = serde_json::to_value(plan).unwrap();
+    wire.as_object_mut().unwrap().remove("mode");
+    let error = decode_attribute_backfill_plan(&to_canonical_json(&wire).unwrap()).unwrap_err();
+    assert_eq!(error.code().as_str(), "migration_backfill_type_match_mode");
+    assert!(error.message().contains("isa or isa!"));
+    wire["mode"] = json!("isa!");
+    assert_eq!(
+        decode_attribute_backfill_plan(&to_canonical_json(&wire).unwrap())
+            .unwrap()
+            .mode(),
+        type_bridge_contract::query_plan::TypeMatchMode::IsaExact
+    );
+}
+
+#[test]
+fn format_two_fixture_keeps_explicit_mode_and_canonical_bytes() {
+    let bytes = include_bytes!(
+        "../../../../tests/contracts/sdk_conformance/administration/workspace/migrations/v2/copy-display-name.format2.backfill.json"
+    );
+    let plan = decode_attribute_backfill_plan(bytes).unwrap();
+    assert_eq!(plan.format().get(), 2);
+    assert_eq!(
+        plan.mode(),
+        type_bridge_contract::query_plan::TypeMatchMode::Isa
+    );
+    assert_eq!(plan.canonical_bytes().unwrap(), bytes);
+    plan.require_new_authoring().unwrap();
 }

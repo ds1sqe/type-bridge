@@ -18,6 +18,8 @@ use type_bridge_contract::migration_assertion::{
     AssertionExpectation, decode_migration_assertion_plan,
 };
 use type_bridge_contract::migration_backfill::decode_attribute_backfill_plan;
+use type_bridge_contract::migration_data::{DataProgram, DataStep};
+use type_bridge_contract::query_plan::decode_query_plan;
 use type_bridge_contract::schema::{
     DeclaredIdentityFingerprint, DeclaredSchema, decode_schema_delta,
 };
@@ -392,6 +394,18 @@ pub fn build_verified_manifest(
     draft: SchemaMigrationDraft,
     context: (&DeclaredSchema, &ManagedDeltaContext),
 ) -> Result<VerifiedSchemaMigrationManifest, Diagnostic> {
+    for step in &draft.steps {
+        if let Some((_, plan)) = step.as_backfill() {
+            plan.require_new_authoring()?;
+        }
+    }
+    rebuild_verified_manifest(draft, context)
+}
+
+fn rebuild_verified_manifest(
+    draft: SchemaMigrationDraft,
+    context: (&DeclaredSchema, &ManagedDeltaContext),
+) -> Result<VerifiedSchemaMigrationManifest, Diagnostic> {
     let (source_schema, delta_context) = context;
     let source_state =
         managed_schema_state(source_schema, delta_context).map_err(delta_diagnostic)?;
@@ -460,6 +474,38 @@ pub fn build_verified_manifest(
     let mut pending_assertions = Vec::new();
 
     for step in &steps {
+        if let Some(data) = step.as_data() {
+            if !pending_assertions.is_empty() {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "migration_manifest_assertion_before_data",
+                    "assertion steps must be immediately followed by a schema delta",
+                ));
+            }
+            step.validate()?;
+            step.required_capabilities()
+                .ensure_supported_by(delta_context.available_capabilities())?;
+            let intermediate =
+                managed_schema_state(&current_schema, delta_context).map_err(delta_diagnostic)?;
+            for program in std::iter::once(data.forward()).chain(data.reverse()) {
+                if let DataProgram::Plan { plan } = program {
+                    decode_query_plan(&to_canonical_json(plan)?, &current_schema)?;
+                    if plan.managed_semantics() != intermediate.managed_semantic_schema() {
+                        return Err(failure(
+                            DiagnosticCategory::Integrity,
+                            "migration_data_plan_schema_mismatch",
+                            "data plan does not bind its historical intermediate schema",
+                        ));
+                    }
+                }
+            }
+            for capability in step.required_capabilities().iter().cloned() {
+                required_capabilities.insert(capability);
+            }
+            safety = safety.max(SafetyClass::Opaque);
+            reversible &= data.reverse().is_some();
+            continue;
+        }
         if let Some((contract, plan)) = step.as_backfill() {
             if !pending_assertions.is_empty() {
                 return Err(failure(
@@ -710,7 +756,41 @@ fn validate_backfill_historical_schema(
         ("destination", plan.destination()),
         ("partition", plan.partition().stable_attribute()),
     ] {
-        if !owner.owns().contains_key(attribute) {
+        let attribute_type = type_bridge_contract::id::TypeId::new(
+            type_bridge_contract::id::TypeKind::Attribute,
+            attribute.label().as_str(),
+        )?;
+        let resolved_attribute = resolved.types().get(&attribute_type);
+        if role != "partition"
+            && plan.mode() == type_bridge_contract::query_plan::TypeMatchMode::IsaExact
+            && resolved_attribute.is_some_and(|attribute| attribute.is_abstract())
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_abstract_exact_ownership",
+                "abstract ownership labels require isa, not isa!",
+            ));
+        }
+        let source_owned = role == "source"
+            && resolved_attribute.is_some_and(|attribute_type| {
+                std::iter::once(plan.owner())
+                    .chain(owner.subtypes())
+                    .any(|candidate| {
+                        resolved.types().get(candidate).is_some_and(|candidate| {
+                            candidate.is_constructible()
+                                && candidate.owns().keys().any(|owned| {
+                                    owned == attribute
+                                        || (plan.mode()
+                                            == type_bridge_contract::query_plan::TypeMatchMode::Isa
+                                            && attribute_type
+                                                .subtypes()
+                                                .iter()
+                                                .any(|subtype| subtype.label() == owned.label()))
+                                })
+                        })
+                    })
+            });
+        if !source_owned && !owner.owns().contains_key(attribute) {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "migration_manifest_backfill_attribute_not_owned",
@@ -740,8 +820,8 @@ pub fn decode_verified_manifest(
 ) -> Result<VerifiedSchemaMigrationManifest, Diagnostic> {
     let candidate = from_canonical_json::<ManifestCandidate>(bytes)?;
     candidate.validate_header()?;
-    let draft = candidate.to_draft()?;
-    let verified = build_verified_manifest(draft, context)?;
+    let draft = candidate.to_draft(context)?;
+    let verified = rebuild_verified_manifest(draft, context)?;
     if encode_verified_manifest(&verified)? != bytes {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -1252,7 +1332,10 @@ impl ManifestCandidate {
         Ok(())
     }
 
-    fn to_draft(&self) -> Result<SchemaMigrationDraft, Diagnostic> {
+    fn to_draft(
+        &self,
+        context: (&DeclaredSchema, &ManagedDeltaContext),
+    ) -> Result<SchemaMigrationDraft, Diagnostic> {
         if let Some(bridge) = &self.profile_bridge {
             if !self.legacy_parents.is_empty()
                 || self.legacy_applied_set.is_some()
@@ -1316,10 +1399,19 @@ impl ManifestCandidate {
                 .iter()
                 .map(MigrationIdCandidate::rebuild)
                 .collect::<Result<Vec<_>, _>>()?,
-            self.steps
-                .iter()
-                .map(rebuild_step_candidate)
-                .collect::<Result<Vec<_>, _>>()?,
+            {
+                let mut current = context.0.clone();
+                let mut steps = Vec::with_capacity(self.steps.len());
+                for candidate in &self.steps {
+                    let step = rebuild_step_candidate(candidate, &current)?;
+                    if let Some(delta) = step.as_schema_delta() {
+                        current = apply_delta(&current, delta.delta(), context.1)
+                            .map_err(delta_diagnostic)?;
+                    }
+                    steps.push(step);
+                }
+                steps
+            },
         )
     }
 }
@@ -1481,7 +1573,10 @@ impl SchemaStepCandidate {
     }
 }
 
-fn rebuild_step_candidate(value: &Value) -> Result<MigrationStep, Diagnostic> {
+fn rebuild_step_candidate(
+    value: &Value,
+    schema: &DeclaredSchema,
+) -> Result<MigrationStep, Diagnostic> {
     let kind = value
         .as_object()
         .and_then(|object| object.get("kind"))
@@ -1498,6 +1593,7 @@ fn rebuild_step_candidate(value: &Value) -> Result<MigrationStep, Diagnostic> {
         "schema_delta" => from_canonical_json::<SchemaStepCandidate>(&bytes)?.rebuild(),
         "assertion" => from_canonical_json::<AssertionStepCandidate>(&bytes)?.rebuild(),
         "backfill" => from_canonical_json::<BackfillStepCandidate>(&bytes)?.rebuild(),
+        "data" => from_canonical_json::<DataStepCandidate>(&bytes)?.rebuild(schema),
         _ => Err(failure(
             DiagnosticCategory::InvalidContract,
             "migration_manifest_unknown_step_kind",
@@ -1627,5 +1723,58 @@ fn parse_safety(value: &str) -> Result<SafetyClass, Diagnostic> {
             "migration_manifest_unknown_safety",
             "manifest safety classification is not in the closed eight-class vocabulary",
         )),
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DataStepCandidate {
+    kind: String,
+    step: DataStepBodyCandidate,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DataStepBodyCandidate {
+    id: String,
+    forward: DataProgramCandidate,
+    reverse: Option<DataProgramCandidate>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum DataProgramCandidate {
+    Plan { plan: Value },
+    Typeql { text: String },
+    User { step_id: String },
+}
+impl DataProgramCandidate {
+    fn rebuild(self, schema: &DeclaredSchema) -> Result<DataProgram, Diagnostic> {
+        Ok(match self {
+            Self::Plan { plan } => DataProgram::Plan {
+                plan: Box::new(decode_query_plan(&to_canonical_json(&plan)?, schema)?),
+            },
+            Self::Typeql { text } => DataProgram::Typeql { text },
+            Self::User { step_id } => DataProgram::User {
+                step_id: MigrationStepId::new(step_id)?,
+            },
+        })
+    }
+}
+impl DataStepCandidate {
+    fn rebuild(self, schema: &DeclaredSchema) -> Result<MigrationStep, Diagnostic> {
+        if self.kind != "data" {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_data_kind_mismatch",
+                "data step has the wrong kind",
+            ));
+        }
+        Ok(MigrationStep::Data(DataStep::new(
+            MigrationStepId::new(self.step.id)?,
+            self.step.forward.rebuild(schema)?,
+            self.step
+                .reverse
+                .map(|value| value.rebuild(schema))
+                .transpose()?,
+        )?))
     }
 }

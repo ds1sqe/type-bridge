@@ -133,7 +133,7 @@ def test_closed_archive_inventory_requires_all_19_exact_files(tmp_path: Path) ->
         validator.validate_archive_inventory(tmp_path, inventory)
 
     (tmp_path / missing).touch()
-    (tmp_path / "unexpected-2.3.3.crate").touch()
+    (tmp_path / "unexpected-3.0.0.crate").touch()
     with pytest.raises(validator.ExternalConsumerError, match="unexpected"):
         validator.validate_archive_inventory(tmp_path, inventory)
 
@@ -202,7 +202,7 @@ def test_generated_consumers_have_only_exact_registry_declarations(tmp_path: Pat
     assert manifest["dependencies"] == {
         package.name: f"={package.version}" for package in inventory.first_party_packages
     }
-    assert len(manifest["dependencies"]) == 17
+    assert len(manifest["dependencies"]) == 15
     assert "patch" not in manifest
 
     no_default = validator.write_server_consumer(
@@ -210,19 +210,19 @@ def test_generated_consumers_have_only_exact_registry_declarations(tmp_path: Pat
         version=inventory.release_version,
         features=(),
     )
-    v2_only = validator.write_server_consumer(
-        tmp_path / "server-v2-only",
+    transport_only = validator.write_server_consumer(
+        tmp_path / "server-transport-only",
         version=inventory.release_version,
-        features=("v2-query",),
+        features=("axum-transport",),
     )
     assert tomllib.loads(no_default.read_text())["dependencies"]["type-bridge-server"] == {
-        "version": "=2.3.3",
+        "version": "=3.0.0",
         "default-features": False,
     }
-    assert tomllib.loads(v2_only.read_text())["dependencies"]["type-bridge-server"] == {
-        "version": "=2.3.3",
+    assert tomllib.loads(transport_only.read_text())["dependencies"]["type-bridge-server"] == {
+        "version": "=3.0.0",
         "default-features": False,
-        "features": ["v2-query"],
+        "features": ["axum-transport"],
     }
 
 
@@ -233,7 +233,7 @@ def test_only_temporary_cargo_config_patches_exact_extracted_roots(tmp_path: Pat
     patches = tomllib.loads(config.read_text(encoding="utf-8"))["patch"]["crates-io"]
 
     assert set(patches) == set(extracted)
-    assert len(patches) == 19
+    assert len(patches) == 15
     for name, specification in patches.items():
         assert specification == {"path": str(extracted[name].root.resolve())}
 
@@ -256,8 +256,8 @@ def test_metadata_binds_all_public_packages_to_extracted_archives(tmp_path: Path
     validator.write_surface_source(manifest.parent, library_names)
 
     source = (manifest.parent / "src/main.rs").read_text(encoding="utf-8")
-    assert len(library_names) == 17
-    assert source.count("use ::") == 17
+    assert len(library_names) == 15
+    assert source.count("use ::") == 15
 
 
 def test_metadata_rejects_source_tree_or_non_registry_resolution(tmp_path: Path) -> None:
@@ -298,23 +298,23 @@ def test_metadata_rejects_source_tree_or_non_registry_resolution(tmp_path: Path)
 
 
 @pytest.mark.parametrize(
-    ("features", "expected_v2", "accepted"),
+    ("features", "expected_transport", "accepted"),
     (
         ([], False, True),
-        (["v2-query", "axum-transport"], True, True),
-        (["default", "band8", "band9", "typedb", "v2-query"], True, False),
+        (["axum-transport", "axum-transport"], True, True),
+        (["default", "band9", "typedb", "axum-transport"], True, False),
         ([], True, False),
     ),
 )
 def test_server_feature_probes_are_isolated(
-    features: list[str], expected_v2: bool, accepted: bool
+    features: list[str], expected_transport: bool, accepted: bool
 ) -> None:
-    package_id = "path+file:///server#type-bridge-server@2.3.3"
+    package_id = "path+file:///server#type-bridge-server@3.0.0"
     metadata = {
         "packages": [
             {
                 "name": "type-bridge-server",
-                "version": "2.3.3",
+                "version": "3.0.0",
                 "id": package_id,
             }
         ],
@@ -322,13 +322,15 @@ def test_server_feature_probes_are_isolated(
     }
 
     if accepted:
-        validator.validate_server_features(metadata, version="2.3.3", expected_v2=expected_v2)
+        validator.validate_server_features(
+            metadata, version="3.0.0", expected_transport=expected_transport
+        )
     else:
         with pytest.raises(validator.ExternalConsumerError):
             validator.validate_server_features(
                 metadata,
-                version="2.3.3",
-                expected_v2=expected_v2,
+                version="3.0.0",
+                expected_transport=expected_transport,
             )
 
 
@@ -346,9 +348,9 @@ def test_installed_binary_version_must_be_exact(tmp_path: Path) -> None:
     with pytest.raises(validator.ExternalConsumerError, match="version output drifted"):
         validator._install_and_run_binary(
             cargo=("cargo", "+1.94.1"),
-            package_root=tmp_path / "type-bridge-cli-2.3.3",
+            package_root=tmp_path / "type-bridge-cli-3.0.0",
             binary="type-bridge",
-            expected_version="2.3.3",
+            expected_version="3.0.0",
             install_root=tmp_path / "installed",
             work_root=tmp_path,
             environment={},
@@ -390,9 +392,9 @@ def test_release_wires_external_consumers_between_archive_and_identity_gates() -
     ("old", "new"),
     [
         ("", ""),
-        ("type-bridge 2.3.3", "type-bridge 2.1.0"),
+        ("type-bridge 3.0.0", "type-bridge 2.1.0"),
         ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"),
-        ("typedb-3.11.5/v1,typedb-3.12.1/v1,typedb-3.13.6/v1", "typedb-3.12.1/v1"),
+        ("typedb-3.12.1/v1,typedb-3.13.6/v1", "typedb-3.12.1/v1"),
         ("source-commit: development-uncommitted", "source-commit: wrong"),
         ("source-tree: development-uncommitted", "source-tree: wrong"),
         (
@@ -405,9 +407,9 @@ def test_installed_cli_checks_the_complete_build_identity(
     tmp_path: Path, old: str, new: str
 ) -> None:
     report = (
-        "type-bridge 2.3.3\n"
+        "type-bridge 3.0.0\n"
         "target: x86_64-unknown-linux-gnu\n"
-        "semantic-profiles: typedb-3.11.5/v1,typedb-3.12.1/v1,typedb-3.13.6/v1\n"
+        "semantic-profiles: typedb-3.12.1/v1,typedb-3.13.6/v1\n"
         "source-commit: development-uncommitted\n"
         "source-tree: development-uncommitted\n"
     )
@@ -424,9 +426,9 @@ def test_installed_cli_checks_the_complete_build_identity(
     def validate() -> None:
         validator._install_and_run_binary(
             cargo=("cargo", "+1.94.1"),
-            package_root=tmp_path / "type-bridge-cli-2.3.3",
+            package_root=tmp_path / "type-bridge-cli-3.0.0",
             binary="type-bridge",
-            expected_version="2.3.3",
+            expected_version="3.0.0",
             install_root=tmp_path / "installed",
             work_root=tmp_path,
             environment={},

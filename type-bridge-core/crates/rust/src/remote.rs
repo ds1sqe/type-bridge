@@ -7,15 +7,16 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_orm::_registry::DescriptorRegistry;
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
-use type_bridge_orm::session::StagedExchangeFn;
+use type_bridge_orm::plan_authority::QueryAuthority;
+use type_bridge_orm::session::StagedTransport;
 use type_bridge_orm::session::staged::TransactionOptions;
 use type_bridge_orm::{
     AnswerCancellation, AnswerTransport, InstalledRuntimeProjection, ProxyEndpoint,
     ProxyHttpTransport, ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits,
-    QueryTarget, QueryTargetError, RemoteModelQueryV2Error, ValidatedMatchRequest,
+    QueryTarget, QueryTargetError, RemoteModelQueryError, ValidatedMatchRequest,
     ValidatedMatchResult, lower_remote_query_diagnostic,
 };
 
@@ -25,51 +26,41 @@ use crate::query::QuerySession;
 use crate::schema::{Schema, SchemaPackage, Unbound};
 use crate::staged::Transaction;
 
-mod deprecated;
-#[allow(deprecated)]
-pub use deprecated::{
-    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,
-};
-
 /// A caller-owned exchange with a TypeBridge server, for hosts that route or
 /// authenticate requests themselves. [`ProxyConnectionPolicy::new`] uses the
 /// built-in HTTP transport instead.
 ///
-/// Implementations return the exact `/v2/capabilities` bytes and perform
-/// exactly one `/v2/query` exchange per terminal.
+/// Implementations return the exact `/v3/capabilities` bytes and perform
+/// exactly one `/v3/staged` exchange per terminal.
 pub trait ProxyExchange: Send + Sync + 'static {
-    /// Fetch the executor's exact signed capability advertisement.
+    /// Exchange one `/v3/raw` request, preserving raw provider errors.
+    /// The default refuses: raw requests never fall back to typed routes.
+    fn exchange_raw<'a>(
+        &'a self,
+        _request: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<Vec<u8>, crate::RawQueryError>> + Send + 'a>>
+    {
+        Box::pin(async {
+            Err(crate::RawQueryError {
+                code: "raw_unsupported".into(),
+                message: "this proxy exchange does not support raw queries".into(),
+                status: 400,
+                provider_code: None,
+                commit_outcome: None,
+            })
+        })
+    }
+
+    /// Fetch the executor's exact signed `GET /v3/capabilities`
+    /// advertisement.
     fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>>;
 
-    /// Exchange one exact canonical request for one exact signed reply.
+    /// Exchange one exact `POST /v3/staged` request for its exact signed
+    /// reply.
     fn exchange<'a>(
         &'a self,
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>>;
-
-    /// Fetch the executor's staged (`GET /v3/capabilities`) advertisement.
-    /// The default refuses: an exchange that predates staged transactions
-    /// cannot open one.
-    fn staged_capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
-        Box::pin(async { Err(staged_unsupported()) })
-    }
-
-    /// Exchange one exact staged request (`POST /v3/staged`) for its exact
-    /// signed reply. The default refuses.
-    fn exchange_staged<'a>(
-        &'a self,
-        _request: &'a [u8],
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
-        Box::pin(async { Err(staged_unsupported()) })
-    }
-}
-
-fn staged_unsupported() -> Error {
-    connect_error(
-        type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
-            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Connect,
-        ),
-    )
 }
 
 enum ProxyRoute {
@@ -89,9 +80,12 @@ pub struct ProxyConnectionPolicy {
     semantic_profile: Option<String>,
     connection_limits: QueryExecutionResourceLimits,
     answer_limits: QueryExecutionResourceLimits,
+    caller_item_limit: Option<u64>,
     route: ProxyRoute,
     advertisement: Option<Vec<u8>>,
     staged_advertisement: Option<Vec<u8>>,
+    admission_window_milliseconds: std::num::NonZeroU64,
+    query_limits: Option<Arc<QueryLimits>>,
 }
 
 impl std::fmt::Debug for ProxyConnectionPolicy {
@@ -119,10 +113,36 @@ impl ProxyConnectionPolicy {
             semantic_profile: None,
             connection_limits: QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
             answer_limits: QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
+            caller_item_limit: None,
             route,
             advertisement: None,
             staged_advertisement: None,
+            admission_window_milliseconds: std::num::NonZeroU64::new(
+                type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
+            )
+            .unwrap(),
+            query_limits: None,
         }
+    }
+
+    /// Configure the finite request delivery window (default 60000 ms).
+    /// The server may tighten this window; it does not limit execution.
+    #[must_use]
+    pub const fn admission_window_milliseconds(
+        mut self,
+        milliseconds: std::num::NonZeroU64,
+    ) -> Self {
+        self.admission_window_milliseconds = milliseconds;
+        self
+    }
+
+    /// Select independent query limits, tightened by the server advertisement.
+    /// # Errors
+    /// Returns unsupported limits before any connection I/O.
+    pub fn query_limits(mut self, limits: QueryLimits) -> Result<Self> {
+        let limits = limits.validate_plan().map_err(query_limits_error)?;
+        self.query_limits = (limits != QueryLimits::PLAN).then(|| Arc::new(limits));
+        Ok(self)
     }
 
     /// Pin the staged (`GET /v3/capabilities`) advertisement, provisioned
@@ -145,6 +165,7 @@ impl ProxyConnectionPolicy {
     #[must_use]
     pub const fn answer_limits(mut self, limits: QueryExecutionResourceLimits) -> Self {
         self.answer_limits = limits.effective();
+        self.caller_item_limit = Some(limits.items);
         self
     }
 
@@ -170,10 +191,60 @@ impl ProxyConnectionPolicy {
     }
 }
 
+fn query_limits_error(error: QueryLimitsError) -> Error {
+    Error::model_validation(
+        crate::ModelValidationPhase::Input,
+        "query_limits_invalid",
+        vec![],
+        error.to_string(),
+        None,
+    )
+}
+
 struct RemoteRuntime {
     connection: ProxyQueryConnection,
-    // `None` when the built-in route performs the exchange.
-    exchange: Option<Arc<dyn ProxyExchange>>,
+}
+
+struct ExchangeTransport(Arc<dyn ProxyExchange>);
+impl StagedTransport for ExchangeTransport {
+    fn exchange_raw<'a>(
+        &'a self,
+        request: &'a [u8],
+    ) -> type_bridge_orm::session::backend::BoxFuture<
+        'a,
+        std::result::Result<Vec<u8>, crate::RawQueryError>,
+    > {
+        self.0.exchange_raw(request)
+    }
+
+    fn staged_capabilities(
+        &self,
+    ) -> type_bridge_orm::session::backend::BoxFuture<
+        '_,
+        std::result::Result<Vec<u8>, QueryTargetError>,
+    > {
+        Box::pin(async move {
+            self.0
+                .capabilities()
+                .await
+                .map_err(|error| QueryTargetError::Callback(Box::new(error)))
+        })
+    }
+
+    fn exchange_staged<'a>(
+        &'a self,
+        bytes: &'a [u8],
+    ) -> type_bridge_orm::session::backend::BoxFuture<
+        'a,
+        std::result::Result<Vec<u8>, QueryTargetError>,
+    > {
+        Box::pin(async move {
+            self.0
+                .exchange(bytes)
+                .await
+                .map_err(|error| QueryTargetError::Callback(Box::new(error)))
+        })
+    }
 }
 
 /// A proxy connection branded by schema `S`. Each generated query terminal
@@ -217,7 +288,7 @@ impl ProxyDatabase<Unbound> {
         let advertisement = match (options.advertisement.take(), &options.route) {
             (Some(pinned), _) => pinned,
             (None, ProxyRoute::Http(http)) => http
-                .capabilities(deadline, &cancellation)
+                .staged_capabilities(deadline, &cancellation)
                 .await
                 .map_err(connect_error)?,
             (None, ProxyRoute::Exchange(exchange)) => {
@@ -320,17 +391,28 @@ impl ProxyDatabase<Unbound> {
             Arc::new(authority),
             options.answer_limits,
         )
-        .map_err(connect_error)?;
+        .map_err(connect_error)?
+        .with_admission_window_milliseconds(options.admission_window_milliseconds)
+        .with_caller_item_limit(options.caller_item_limit);
+        let connection = match options.query_limits {
+            Some(limits) => connection
+                .with_query_limits(*limits)
+                .map_err(query_limits_error)?,
+            None => connection,
+        };
         let connection = match options.staged_advertisement {
             Some(staged) => connection
                 .with_staged_advertisement(staged)
                 .map_err(connect_error)?,
             None => connection,
         };
-        let runtime = Arc::new(RemoteRuntime {
-            connection,
-            exchange,
-        });
+        let connection = match exchange {
+            Some(exchange) => {
+                connection.with_staged_transport(Arc::new(ExchangeTransport(exchange)))
+            }
+            None => connection,
+        };
+        let runtime = Arc::new(RemoteRuntime { connection });
         Ok(ProxyDatabase {
             options: None,
             runtime: Some(runtime),
@@ -342,6 +424,86 @@ impl ProxyDatabase<Unbound> {
 }
 
 impl<S: Schema> ProxyDatabase<S> {
+    /// Open a single-query raw context. It does not require a schema binding.
+    pub async fn raw_transaction(
+        &self,
+        kind: crate::raw::TransactionKind,
+    ) -> std::result::Result<crate::RawTransaction, crate::RawQueryError> {
+        if let Some(runtime) = &self.runtime {
+            return runtime
+                .connection
+                .raw_transaction(kind.into())
+                .map(crate::RawTransaction::new);
+        }
+        let options = self
+            .options
+            .as_ref()
+            .expect("connected proxy retains its route");
+        let exchange: type_bridge_orm::session::raw::RawExchangeFn = match &options.route {
+            ProxyRoute::Http(http) => http.raw_exchange(kind.into()),
+            ProxyRoute::Exchange(exchange) => {
+                let exchange = Arc::clone(exchange);
+                Arc::new(move |request| {
+                    let exchange = Arc::clone(&exchange);
+                    Box::pin(async move { exchange.exchange_raw(&request).await })
+                })
+            }
+            ProxyRoute::Endpoint(_) => unreachable!("connected endpoint is opened"),
+        };
+        Ok(crate::RawTransaction::new(
+            type_bridge_orm::session::raw::RawTransaction::proxy(
+                exchange,
+                kind.into(),
+                options.admission_window_milliseconds,
+            ),
+        ))
+    }
+
+    /// Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+    /// to TypeDB as written, and TypeDB's output comes back as it
+    /// answered, in this SDK's native data types. TypeBridge adds no
+    /// validation, rewriting, hydration, hooks, limits or extra
+    /// queries. It runs in read, write and schema transactions and
+    /// accepts any TypeQL, schema-breaking changes included. The caller
+    /// owns its correctness; TypeBridge makes no promise about its
+    /// effects. On a proxy connection it posts to the server's opt-in
+    /// `/v3/raw` endpoint, which is off by default.
+    pub async fn execute_query(
+        &self,
+        query: &str,
+        kind: crate::raw::TransactionKind,
+    ) -> std::result::Result<serde_json::Value, crate::RawQueryError> {
+        self.raw_transaction(kind).await?.execute_one(query).await
+    }
+
+    fn manager_target(&self) -> Option<crate::manager_target::ManagerTarget<'_>> {
+        self.installed
+            .as_deref()
+            .zip(self.runtime.as_deref())
+            .map(
+                |(installed, runtime)| crate::manager_target::ManagerTarget {
+                    installed,
+                    target: QueryTarget::Proxy(&runtime.connection),
+                },
+            )
+    }
+
+    /// Create a lightweight exact entity manager using this proxy connection.
+    pub fn entities<M>(&self) -> crate::entity_manager::EntityManager<'_, S, M>
+    where
+        M: crate::__codegen::EntityModel<Schema = S>,
+    {
+        crate::entity_manager::EntityManager::for_target(self.manager_target())
+    }
+
+    /// Create a lightweight exact relation manager using this proxy connection.
+    pub fn relations<M>(&self) -> crate::relation_manager::RelationManager<'_, S, M>
+    where
+        M: crate::__codegen::RelationModel<Schema = S>,
+    {
+        crate::relation_manager::RelationManager::for_target(self.manager_target())
+    }
+
     /// Open a staged transaction over this proxy.
     ///
     /// It has the same API as a direct
@@ -361,41 +523,15 @@ impl<S: Schema> ProxyDatabase<S> {
     pub async fn transaction(&self, options: TransactionOptions) -> Result<Transaction<S>> {
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
         let cancellation = AnswerCancellation::default();
-        let Some(exchange) = &runtime.exchange else {
-            return runtime
-                .connection
-                .staged_transaction(options, &cancellation)
-                .await
-                .map(Transaction::new)
-                .map_err(connect_error);
-        };
-        // A fetched staged advertisement is checked against the connection's
-        // executor and reply key before it is trusted, then reused.
-        let advertisement = match runtime.connection.staged_advertisement() {
-            Some(advertisement) => advertisement.to_vec(),
-            None => {
-                let deadline =
-                    QueryExecutionDeadline::for_limits(runtime.connection.answer_limits());
-                await_proxy(exchange.staged_capabilities(), &cancellation, deadline).await?
-            }
-        };
-        let exchange = Arc::clone(exchange);
-        let send: StagedExchangeFn = Arc::new(move |bytes| {
-            let exchange = Arc::clone(&exchange);
-            Box::pin(async move {
-                // Any exchange error leaves the outcome unknown.
-                exchange.exchange_staged(&bytes).await.map_err(|_| {
-                    type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
-                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
-                    )
-                })
-            })
-        });
         runtime
             .connection
-            .staged_transaction_with_exchange(&advertisement, send, options)
-            .map(Transaction::new)
-            .map_err(connect_error)
+            .staged_transaction_on_target(options, &cancellation)
+            .await
+            .map(|inner| {
+                Transaction::new(inner)
+                    .with_query_schema(self.installed.clone(), self.registry.clone())
+            })
+            .map_err(target_error)
     }
 
     /// Start one owner-branded query session over this proxy connection.
@@ -415,7 +551,11 @@ impl<S: Schema> ProxyDatabase<S> {
         resources: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<QuerySession<'_, S>> {
-        let installed = self.installed.as_deref().ok_or_else(remote_not_bound)?;
+        let installed = self
+            .installed
+            .as_ref()
+            .cloned()
+            .ok_or_else(remote_not_bound)?;
         let registry = self.registry.as_ref().ok_or_else(remote_not_bound)?;
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
         Ok(QuerySession::remote(
@@ -436,23 +576,9 @@ impl<S: Schema> ProxyDatabase<S> {
         deadline: QueryExecutionDeadline,
     ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult)> {
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
-        let Some(exchange) = &runtime.exchange else {
-            return QueryTarget::Proxy(&runtime.connection)
-                .execute(registry, validated, resources, &cancellation, deadline)
-                .await
-                .map_err(target_error);
-        };
-        let pending = runtime
-            .connection
-            .prepare(registry, validated, resources, &cancellation, deadline)
-            .map_err(target_error)?;
-        let response = await_proxy(
-            exchange.exchange(pending.request_bytes()),
-            &cancellation,
-            deadline,
-        )
-        .await?;
-        ProxyQueryConnection::finish(&pending, &response, &cancellation, deadline)
+        QueryTarget::Proxy(&runtime.connection)
+            .execute(registry, validated, resources, &cancellation, deadline)
+            .await
             .map_err(target_error)
     }
 }
@@ -466,7 +592,7 @@ async fn await_proxy(
     tokio::pin!(exchange);
     let cancellation_wait = cancellation.cancelled();
     tokio::pin!(cancellation_wait);
-    let timeout = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline.instant()));
+    let timeout = deadline.elapsed();
     tokio::pin!(timeout);
     let result = tokio::select! {
         biased;
@@ -523,8 +649,17 @@ fn remote_not_bound() -> Error {
 pub(crate) fn target_error(error: QueryTargetError) -> Error {
     match error {
         QueryTargetError::Direct(error) => Error::from_orm_hydration(error),
+        QueryTargetError::Commit(error) => Error::from(*error),
         QueryTargetError::Prepare(error) => remote_model_input_error(error),
         QueryTargetError::Reply(error) => remote_model_hydration_error(error),
+        QueryTargetError::Callback(error) => match error.downcast::<Error>() {
+            Ok(error) => *error,
+            Err(source) => Error::remote(
+                "proxy_transport_failure",
+                "Caller-owned proxy transport failed",
+                Some(source),
+            ),
+        },
         QueryTargetError::Interrupted(error) => {
             Error::from_sdk_execution(error, crate::ModelValidationPhase::Input)
         }
@@ -542,25 +677,31 @@ fn remote_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> Err
     )
 }
 
-fn remote_model_input_error(error: RemoteModelQueryV2Error) -> Error {
+fn remote_model_input_error(error: RemoteModelQueryError) -> Error {
     match error {
-        RemoteModelQueryV2Error::Diagnostic(error) => Error::from_sdk_execution(
+        RemoteModelQueryError::Execution(error) => {
+            Error::from_sdk_execution(error, crate::ModelValidationPhase::Input)
+        }
+        RemoteModelQueryError::Diagnostic(error) => Error::from_sdk_execution(
             lower_remote_query_diagnostic(error),
             crate::ModelValidationPhase::Input,
         ),
-        RemoteModelQueryV2Error::Match(error) => {
+        RemoteModelQueryError::Match(error) => {
             Error::from_match(error, crate::ModelValidationPhase::Input)
         }
     }
 }
 
-fn remote_model_hydration_error(error: RemoteModelQueryV2Error) -> Error {
+fn remote_model_hydration_error(error: RemoteModelQueryError) -> Error {
     match error {
-        RemoteModelQueryV2Error::Diagnostic(error) => Error::from_sdk_execution(
+        RemoteModelQueryError::Execution(error) => {
+            Error::from_sdk_execution(error, crate::ModelValidationPhase::Hydration)
+        }
+        RemoteModelQueryError::Diagnostic(error) => Error::from_sdk_execution(
             lower_remote_query_diagnostic(error),
             crate::ModelValidationPhase::Hydration,
         ),
-        RemoteModelQueryV2Error::Match(error) => {
+        RemoteModelQueryError::Match(error) => {
             Error::from_match(error, crate::ModelValidationPhase::Hydration)
         }
     }
@@ -568,6 +709,29 @@ fn remote_model_hydration_error(error: RemoteModelQueryV2Error) -> Error {
 
 #[cfg(test)]
 mod tests {
+
+    fn typed_iids(iids: &[String]) -> Vec<crate::Iid> {
+        iids.iter()
+            .map(|iid| crate::Iid::new(iid.as_str()).unwrap())
+            .collect()
+    }
+
+    fn typed_update_inputs<T>(inputs: Vec<(String, T)>) -> Vec<(crate::Iid, T)> {
+        inputs
+            .into_iter()
+            .map(|(iid, input)| (crate::Iid::new(iid).unwrap(), input))
+            .collect()
+    }
+    #[test]
+    fn admission_window_defaults_and_round_trips() {
+        let policy = super::ProxyConnectionPolicy::new(type_bridge_orm::ProxyEndpoint::new(
+            "http://localhost:41650",
+        ));
+        assert_eq!(policy.admission_window_milliseconds.get(), 60_000);
+        let policy = policy.admission_window_milliseconds(std::num::NonZeroU64::new(1234).unwrap());
+        assert_eq!(policy.admission_window_milliseconds.get(), 1234);
+    }
+
     #[test]
     fn a_default_proxy_policy_carries_the_proxy_defaults() {
         use super::{
@@ -577,11 +741,33 @@ mod tests {
         let policy = ProxyConnectionPolicy::new(ProxyEndpoint::new("http://127.0.0.1:1"));
         let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
         assert_eq!(policy.answer_limits, proxy);
+        assert_eq!(policy.caller_item_limit, None);
+        let explicit = ProxyConnectionPolicy::new(ProxyEndpoint::new("http://127.0.0.1:1"))
+            .answer_limits(proxy);
+        assert_eq!(explicit.caller_item_limit, Some(proxy.items));
         assert_eq!(policy.connection_limits, proxy);
         assert_ne!(
             proxy,
             QueryExecutionResourceLimits::default(),
             "a proxy connection does not inherit the looser direct defaults"
+        );
+    }
+
+    #[test]
+    fn proxy_connection_policy_admits_independent_query_limits_before_connecting() {
+        let policy = ProxyConnectionPolicy::new(ProxyEndpoint::new("http://127.0.0.1:1"));
+        assert!(policy.query_limits.is_none());
+        let mut limits = crate::QueryLimits::PLAN;
+        limits.structural.bindings = 1024;
+        limits.structural.boolean_terms = 512;
+        let policy = policy.query_limits(limits).unwrap();
+        assert_eq!(policy.query_limits.as_deref(), Some(&limits));
+        let policy = policy.query_limits(crate::QueryLimits::PLAN).unwrap();
+        assert!(policy.query_limits.is_none());
+        limits.structural.bindings = 0;
+        assert_eq!(
+            policy.query_limits(limits).unwrap_err().code(),
+            Some("query_limits_invalid")
         );
     }
 
@@ -601,20 +787,19 @@ mod tests {
     };
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
-    use type_bridge_contract::migration_assertion::BindingId;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-    use type_bridge_contract::query_plan::{ModelQueryV2, query_plan_v2_capability_vocabulary};
+    use type_bridge_contract::query_plan::{Operation, Stage, query_plan_capability_vocabulary};
     use type_bridge_contract::query_remote::RemoteExecutorBinding;
-    use type_bridge_contract::query_remote_v2::{
-        CAP_QUERY_REMOTE_STATEMENT_LIMIT, HydrationGraphV2, RemoteOutcomeV2, RemoteQueryFailureV2,
-        RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReducedValueV2, RemoteReductionRowV2,
-        RemoteResultKindV2, query_remote_v2_required_capabilities,
+
+    use type_bridge_contract::query_remote::{
+        CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED, StagedAnswer, StagedOutcome,
+        StagedReply, StagedRequest,
     };
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_orm::OrmError;
     use type_bridge_orm::match_request::CapabilitySet as MatchCapabilitySet;
     use type_bridge_orm::match_request::SessionHandle;
-    use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+    use type_bridge_orm::remote_signing::RemoteReplySigningKey;
     use type_bridge_orm::session::backend::{
         BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType,
     };
@@ -634,9 +819,13 @@ mod tests {
     struct TestSchema;
     impl sealed::Sealed for TestSchema {}
     impl Schema for TestSchema {}
+    impl crate::plan::StageSchema<TestSchema> for TestSchema {}
 
     #[derive(Debug)]
-    struct Person;
+    struct Person {
+        iid: String,
+        origin: __codegen::ReferenceOrigin,
+    }
     impl sealed::Sealed for Person {}
     impl Model for Person {
         type Schema = TestSchema;
@@ -652,15 +841,18 @@ mod tests {
         type Create = PersonCreate;
 
         fn iid(&self) -> &str {
-            unreachable!()
+            &self.iid
         }
     }
     impl MaterializeModel for Person {
         fn materialize(
-            _: &HydratedRow,
+            row: &HydratedRow,
             _: &HydrationCapability,
         ) -> std::result::Result<Self, ValidationError> {
-            Ok(Self)
+            Ok(Self {
+                iid: row.iid().to_owned(),
+                origin: row.origin().clone(),
+            })
         }
     }
 
@@ -669,7 +861,14 @@ mod tests {
     impl sealed::Sealed for PersonCreate {}
     impl IntoEncodedCreate for PersonCreate {
         fn into_encoded_create(self) -> std::result::Result<EncodedCreate, ValidationError> {
-            Ok(EncodedCreate::new(Person::TYPE_ID_JSON, vec![], vec![]))
+            Ok(EncodedCreate::new(
+                Person::TYPE_ID_JSON,
+                vec![(
+                    r#"{"attribute":"name","owner":{"kind":"entity","label":"person"}}"#,
+                    vec![__codegen::EncodedScalar::String("alice".into())],
+                )],
+                vec![],
+            ))
         }
     }
 
@@ -851,7 +1050,7 @@ mod tests {
             Ok(_) => panic!("missing descriptor unexpectedly resolved"),
         };
         let local = Error::from_orm(OrmError::Match(match_error.clone()));
-        let remote = remote_model_input_error(RemoteModelQueryV2Error::Match(match_error));
+        let remote = remote_model_input_error(RemoteModelQueryError::Match(match_error));
 
         assert_eq!(local.category(), crate::ErrorCategory::QueryAuthoring);
         assert_eq!(remote.category(), local.category());
@@ -885,10 +1084,10 @@ mod tests {
     fn remote_model_resource_limits_use_released_generated_error_codes() {
         let internal = Diagnostic::new(
             DiagnosticCategory::ResourceLimit,
-            DiagnosticCode::new("query_v2_model_role_player_limit").unwrap(),
+            DiagnosticCode::new("query_model_role_player_limit").unwrap(),
             "internal model execution detail",
         );
-        let error = remote_model_hydration_error(RemoteModelQueryV2Error::Diagnostic(internal));
+        let error = remote_model_hydration_error(RemoteModelQueryError::Diagnostic(internal));
 
         assert_eq!(error.category(), crate::ErrorCategory::ResourceLimit);
         assert_eq!(error.code(), Some("hydrated_role_player_limit"));
@@ -915,7 +1114,7 @@ mod tests {
     fn package() -> SchemaPackage<TestSchema> {
         let documents = SchemaDocumentSet::parse([(
             DocumentId::new("remote.yaml").unwrap(),
-            "format: typebridge.schema/v2\nattributes:\n  name: { value: string }\nentities:\n  person:\n    owns: { name: { key: true } }\n",
+            "format: typebridge.schema/v2\nattributes:\n  name: { value: string }\nentities:\n  person:\n    owns: { name: { key: true } }\nrelations:\n  peer:\n    owns: { name: { key: true } }\n    relates: { member: { card: 1 } }\nplays:\n  person:\n    peer: [member]\n",
         )])
         .unwrap();
         let declared = normalize_documents(&documents).unwrap();
@@ -1020,7 +1219,7 @@ mod tests {
                 .authority("other-scope", "typedb-3.12.1/v1")
                 .answer_limits(limits()),
             ProxyConnectionPolicy::with_exchange(UnusedTransport)
-                .authority("rust-client-test", "typedb-3.11.5/v1")
+                .authority("rust-client-test", "typedb-3.13.6/v1")
                 .answer_limits(limits()),
         ] {
             let error = unconnected_remote(mismatched)
@@ -1053,6 +1252,15 @@ mod tests {
         assert!(error.to_string().contains("no embedded managed scope"));
     }
 
+    fn remote_fixture_authority() -> QueryAuthority {
+        QueryAuthority::from_declared_bytes(
+            package().declared_schema_json().unwrap().as_bytes(),
+            "rust-client-test",
+            "typedb-3.12.1/v1",
+        )
+        .unwrap()
+    }
+
     struct Transport {
         advertisement_contract: RemoteCapabilities,
         advertisement: Vec<u8>,
@@ -1075,90 +1283,67 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
             self.exchanges.lock().unwrap().push(request.to_vec());
             let response = (|| {
-                let request = RemoteQueryRequestV2::decode(request).map_err(remote_diagnostic)?;
-                request
-                    .validate_advertisement(&self.advertisement_contract)
-                    .map_err(remote_diagnostic)?;
-                if let Some(diagnostic) = &self.failure {
-                    return RemoteQueryFailureV2::bound(
-                        request.nonce(),
-                        &request.fingerprint().map_err(remote_diagnostic)?,
-                        diagnostic,
-                    )
-                    .and_then(|failure| {
-                        failure.encode_signed(
-                            &self.advertisement_contract.fingerprint()?,
-                            &self.signer,
-                        )
-                    })
-                    .map_err(remote_diagnostic);
-                }
-                let plan = request.plan().map_err(remote_diagnostic)?;
-                let root = BindingId::new(0).map_err(remote_diagnostic)?;
-                let outcome = match request.result_kind() {
-                    RemoteResultKindV2::DistinctCount => {
-                        RemoteOutcomeV2::DistinctCount { root, value: 7 }
-                    }
-                    RemoteResultKindV2::DistinctExists => {
-                        RemoteOutcomeV2::DistinctExists { root, value: true }
-                    }
-                    RemoteResultKindV2::HydratedRows => RemoteOutcomeV2::HydratedRows {
-                        graph: HydrationGraphV2::new(vec![]).map_err(remote_diagnostic)?,
-                        rows: vec![],
-                    },
-                    RemoteResultKindV2::HydratedPage => RemoteOutcomeV2::HydratedPage {
-                        entries: vec![],
-                        graph: HydrationGraphV2::new(vec![]).map_err(remote_diagnostic)?,
-                        limit: 2,
-                        offset: 0,
-                        root,
-                        total: Some(0),
-                    },
-                    RemoteResultKindV2::ModelReduction => {
-                        let Some(ModelQueryV2::Reduction {
-                            root,
-                            group,
-                            reducers,
-                            ..
-                        }) = plan
-                            .v2_compatibility()
-                            .and_then(|compatibility| compatibility.model_query())
-                        else {
-                            return Err(Error::Other {
-                                message: "test reduction lacks its model contract".into(),
-                                source: None,
-                            });
-                        };
-                        RemoteOutcomeV2::ModelReduction {
-                            graph: HydrationGraphV2::new(vec![]).map_err(remote_diagnostic)?,
-                            root: *root,
-                            group: group.clone(),
-                            reducers: reducers.clone(),
-                            rows: vec![RemoteReductionRowV2::new(
-                                None,
-                                vec![RemoteReducedValueV2::Count { value: 7 }],
-                            )],
-                        }
-                    }
-                    _ => {
-                        return Err(Error::Other {
-                            message: "test transport received an unexpected terminal".into(),
-                            source: None,
-                        });
-                    }
-                };
-                RemoteQueryResponseV2::new(
-                    request.nonce(),
-                    &plan,
-                    &request.fingerprint().map_err(remote_diagnostic)?,
-                    request.result_kind(),
-                    outcome,
+                let authority = remote_fixture_authority();
+                let request = StagedRequest::decode(
+                    request,
+                    authority.declared(),
+                    &self.advertisement_contract,
                 )
-                .and_then(|response| {
-                    response
-                        .encode_signed(&self.advertisement_contract.fingerprint()?, &self.signer)
-                })
-                .map_err(remote_diagnostic)
+                .map_err(remote_diagnostic)?;
+                let (outcome, answers) = if let Some(diagnostic) = &self.failure {
+                    (
+                        StagedOutcome::Failed {
+                            diagnostic: type_bridge_orm::lower_remote_query_diagnostic(
+                                diagnostic.clone(),
+                            ),
+                        },
+                        vec![],
+                    )
+                } else {
+                    let has_fetch = request
+                        .plans()
+                        .iter()
+                        .any(|entry| entry.plan().fetch_document_shape().is_some());
+                    let answers = request.plans().iter().map(|entry| {
+                        let plan=entry.plan();
+                        if plan.operation() == Operation::Count { return StagedAnswer::Count {value:7}; }
+                        if plan.operation() == Operation::Exists { return StagedAnswer::Exists {value:true}; }
+                        if let Some(rows) = plan.standalone_entity_rows() {
+                            use type_bridge_contract::query_remote::RemoteFieldValue;
+                            use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+                            let string = |value: &str| RemoteFieldValue::Scalar { value: CanonicalValue::String(CanonicalString::new(value).unwrap()) };
+                            let documents = rows.values.iter().enumerate().map(|(index, values)| {
+                                let fields = rows.fields.iter().zip(values).map(|(field, value)| (
+                                    field.attribute().label().as_str().to_owned(), RemoteFieldValue::Scalar { value: value.clone() },
+                                )).collect();
+                                let mut document = std::collections::BTreeMap::from([
+                                    ("_iid".into(), string(&format!("0x{:x}", 32 + index))),
+                                    ("_type".into(), string(rows.fields[0].owner().label().as_str())),
+                                    ("attributes".into(), RemoteFieldValue::Document { fields }),
+                                ]);
+                                if let Some(fetch) = plan.pipeline().iter().find_map(|stage| match stage { Stage::Fetch(fetch) => Some(fetch), _ => None }) {
+                                    for scalar in &fetch.scalars {
+                                        document.insert(scalar.key.as_str().to_owned(), RemoteFieldValue::Scalar { value: CanonicalValue::Long(index as i64) });
+                                    }
+                                }
+                                document
+                            }).collect();
+                            return StagedAnswer::Documents { documents };
+                        }
+                        if plan.fetch_document_shape().is_some() {return StagedAnswer::Documents {documents:vec![]};}
+                        let rows = if plan.pipeline().iter().any(|stage| matches!(stage, Stage::Reduce {..})) {
+                            let type_bridge_contract::query_plan::QueryOutput::Rows {columns} = plan.output() else {panic!("scalar output");};
+                            vec![columns.iter().map(|_| type_bridge_contract::query_remote::RemoteValue::Value {value:type_bridge_contract::value::CanonicalValue::Long(if has_fetch {0} else {7})}).collect()]
+                        } else {vec![]};
+                        StagedAnswer::Rows {rows}
+                    }).collect();
+                    (StagedOutcome::Committed, answers)
+                };
+                StagedReply::new(&request, outcome, answers)
+                    .and_then(|reply| {
+                        reply.encode_signed(&request, &self.advertisement_contract, &self.signer)
+                    })
+                    .map_err(remote_diagnostic)
             })();
             Box::pin(async move { response })
         }
@@ -1223,13 +1408,515 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct Peer {
+        iid: String,
+        origin: __codegen::ReferenceOrigin,
+    }
+    impl sealed::Sealed for Peer {}
+    impl Model for Peer {
+        type Schema = TestSchema;
+        const TYPE_ID_JSON: &'static str = r#"{"kind":"relation","label":"peer"}"#;
+    }
+    impl ThingModel for Peer {
+        fn thing_kind() -> __codegen::ThingKind {
+            __codegen::ThingKind::Relation
+        }
+    }
+    impl __codegen::RelationModel for Peer {}
+    impl CompleteModel for Peer {
+        type Create = PeerCreate;
+        fn iid(&self) -> &str {
+            &self.iid
+        }
+    }
+    impl MaterializeModel for Peer {
+        fn materialize(
+            row: &HydratedRow,
+            _: &HydrationCapability,
+        ) -> std::result::Result<Self, ValidationError> {
+            Ok(Self {
+                iid: row.iid().to_owned(),
+                origin: row.origin().clone(),
+            })
+        }
+    }
+    impl __codegen::SubtypeRootModel for Peer {
+        type Subtypes = Self;
+        fn __tb_dispatch_subtype(
+            row: &HydratedRow,
+            capability: &HydrationCapability,
+        ) -> std::result::Result<Self, ValidationError> {
+            Self::materialize(row, capability)
+        }
+    }
+    #[derive(Clone)]
+    struct PeerCreate;
+    impl sealed::Sealed for PeerCreate {}
+    impl IntoEncodedCreate for PeerCreate {
+        fn into_encoded_create(self) -> std::result::Result<EncodedCreate, ValidationError> {
+            Ok(EncodedCreate::new(
+                Peer::TYPE_ID_JSON,
+                vec![(
+                    r#"{"attribute":"name","owner":{"kind":"relation","label":"peer"}}"#,
+                    vec![__codegen::EncodedScalar::String("peers".into())],
+                )],
+                vec![(
+                    Box::leak(
+                        String::from_utf8(
+                            to_canonical_json(
+                                &type_bridge_contract::id::RoleId::new("peer", "member").unwrap(),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap()
+                        .into_boxed_str(),
+                    ),
+                    vec![__codegen::EncodedReference::try_new(
+                        Person::TYPE_ID_JSON,
+                        Some("0x10".into()),
+                        vec![],
+                        &__codegen::ValidationPath::root(),
+                    )?],
+                )],
+            ))
+        }
+    }
+
+    struct Name(String);
+    impl sealed::Sealed for Name {}
+    impl Model for Name {
+        type Schema = TestSchema;
+        const TYPE_ID_JSON: &'static str = r#"{"kind":"attribute","label":"name"}"#;
+    }
+    impl __codegen::IntoEncodedScalar for Name {
+        fn into_encoded_scalar(&self) -> __codegen::EncodedScalar {
+            __codegen::EncodedScalar::String(self.0.clone())
+        }
+    }
+    impl __codegen::QueryValued for Name {
+        type Domain = String;
+    }
+
+    impl __codegen::SubtypeRootModel for Person {
+        type Subtypes = Person;
+        fn __tb_dispatch_subtype(
+            row: &HydratedRow,
+            capability: &HydrationCapability,
+        ) -> std::result::Result<Self, ValidationError> {
+            Self::materialize(row, capability)
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_managers_use_one_staged_exchange_per_terminal() {
+        let (transport, exchanges) = sdk_queries_transport(0x7b);
+        let capabilities = Arc::clone(&transport.capabilities);
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(transport))
+            .await
+            .unwrap()
+            .with_schema(package())
+            .unwrap();
+        let connection = crate::Connection::Proxy(remote);
+        macro_rules! exercise_manager {
+            ($manager:expr, $create:expr, $model:ty, $insert_count:expr) => {{
+                let manager = $manager;
+                let base = exchanges.lock().unwrap().len();
+                let mut expected = base;
+                macro_rules! one_exchange {
+                    ($call:expr) => {{
+                        let value = $call
+                            .await
+                            .unwrap_or_else(|error| panic!("{}: {error:?}", stringify!($call)));
+                        expected += 1;
+                        assert_eq!(exchanges.lock().unwrap().len(), expected);
+                        value
+                    }};
+                }
+                assert!(
+                    manager
+                        .insert_many(vec![])
+                        .await
+                        .unwrap()
+                        .items()
+                        .is_empty()
+                );
+                assert!(manager.put_many(vec![]).await.unwrap().items().is_empty());
+                assert!(
+                    manager
+                        .update_many(vec![])
+                        .await
+                        .unwrap()
+                        .items()
+                        .is_empty()
+                );
+                manager.delete_many(&[]).await.unwrap();
+                assert!(
+                    manager
+                        .delete_many_returning(&[])
+                        .await
+                        .unwrap()
+                        .items()
+                        .is_empty()
+                );
+                assert_eq!(exchanges.lock().unwrap().len(), base);
+                assert!(one_exchange!(manager.all()).is_empty());
+                assert_eq!(one_exchange!(manager.count()), 7);
+                assert!(one_exchange!(manager.get_by_iid(&crate::Iid::new("0x10").unwrap())).is_none());
+                assert!(one_exchange!(manager.filter().unwrap().all()).is_empty());
+                let refusal = manager.filter().unwrap().first().await.unwrap_err();
+                assert_eq!(refusal.code(), Some("manager_first_requires_identity"));
+                assert_eq!(exchanges.lock().unwrap().len(), expected);
+                let crate::Connection::Proxy(proxy) = &connection else {
+                    unreachable!()
+                };
+                let field = proxy
+                    .installed
+                    .as_deref()
+                    .unwrap()
+                    .projection()
+                    .models()
+                    .values()
+                    .find(|model| {
+                        to_canonical_json(model.id()).unwrap() == <$model>::TYPE_ID_JSON.as_bytes()
+                    })
+                    .unwrap()
+                    .query_tokens()
+                    .fields()
+                    .values()
+                    .next()
+                    .unwrap();
+                let name = __codegen::FieldToken::<$model, Name>::new(
+                    Box::leak(
+                        String::from_utf8(to_canonical_json(field.declaring_id()).unwrap())
+                            .unwrap()
+                            .into_boxed_str(),
+                    ),
+                    Box::leak(
+                        String::from_utf8(to_canonical_json(field).unwrap())
+                            .unwrap()
+                            .into_boxed_str(),
+                    ),
+                );
+                let keyed = manager
+                    .where_(
+                        name,
+                        type_bridge_orm::ProjectedManagerComparison::Eq,
+                        &Name("alice".into()),
+                    )
+                    .unwrap();
+                assert!(one_exchange!(keyed.first()).is_none());
+                assert_eq!(one_exchange!(manager.filter().unwrap().count()), 7);
+                assert!(one_exchange!(manager.filter().unwrap().exists()));
+                assert!(one_exchange!(manager.subtypes().all()).is_empty());
+                assert_eq!(one_exchange!(manager.subtypes().count()), 7);
+                assert!(one_exchange!(manager.subtypes().get_by_iid(&crate::Iid::new("0x10").unwrap())).is_none());
+                let inserted = one_exchange!(manager.insert($create));
+                assert_eq!(inserted.count(), $insert_count);
+                if let Some(item) = inserted.item() {
+                    assert_eq!(item.iid(), "0x20");
+                    assert!(item.origin.projected().is_some());
+                }
+                assert_eq!(one_exchange!(manager.put($create)).count(), 0);
+                assert_eq!(one_exchange!(manager.update(&crate::Iid::new("0x10").unwrap(), $create)).count(), 0);
+                assert!(
+                    one_exchange!(manager.insert_many(vec![$create]))
+                        .items()
+                        .is_empty()
+                );
+                assert!(
+                    one_exchange!(manager.put_many(vec![$create]))
+                        .items()
+                        .is_empty()
+                );
+                assert!(
+                    one_exchange!(manager.update_many(typed_update_inputs(vec![("0x10".into(), $create)])))
+                        .items()
+                        .is_empty()
+                );
+                one_exchange!(manager.delete(&crate::Iid::new("0x10").unwrap()));
+                one_exchange!(manager.delete_many(&typed_iids(&["0x10".into()])));
+                assert_eq!(one_exchange!(manager.delete_returning(&crate::Iid::new("0x10").unwrap())).count(), 0);
+                assert!(
+                    one_exchange!(manager.delete_many_returning(&typed_iids(&["0x10".into()])))
+                        .items()
+                        .is_empty()
+                );
+                assert_eq!(expected, base + 20);
+            }};
+        }
+        exercise_manager!(connection.entities::<Person>(), PersonCreate, Person, 1);
+        exercise_manager!(connection.relations::<Peer>(), PeerCreate, Peer, 0);
+        assert_eq!(*capabilities.lock().unwrap(), 1);
+        let authority = remote_fixture_authority();
+        let (decoder, _) = sdk_queries_transport(0x7b);
+        assert_eq!(exchanges.lock().unwrap().len(), 40);
+        for (index, bytes) in exchanges.lock().unwrap().iter().enumerate() {
+            let request =
+                StagedRequest::decode(bytes, authority.declared(), &decoder.advertisement_contract)
+                    .unwrap();
+            assert_eq!(request.plans().len(), 1);
+            if index % 20 >= 18 {
+                // One plan owns the snapshot and deletion provider statements.
+                assert_eq!(request.plans()[0].plan().statement_counts(), (1, 1));
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct RejectedPerson;
+    impl sealed::Sealed for RejectedPerson {}
+    impl Model for RejectedPerson {
+        type Schema = TestSchema;
+        const TYPE_ID_JSON: &'static str = Person::TYPE_ID_JSON;
+    }
+    impl ThingModel for RejectedPerson {
+        fn thing_kind() -> __codegen::ThingKind {
+            __codegen::ThingKind::Entity
+        }
+    }
+    impl EntityModel for RejectedPerson {}
+    impl CompleteModel for RejectedPerson {
+        type Create = PersonCreate;
+        fn iid(&self) -> &str {
+            unreachable!()
+        }
+    }
+    impl MaterializeModel for RejectedPerson {
+        fn materialize(
+            row: &HydratedRow,
+            _: &HydrationCapability,
+        ) -> std::result::Result<Self, ValidationError> {
+            assert!(row.origin().projected().is_some());
+            Err(ValidationError::new("name", "rejected_materialization"))
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_manager_materializer_failure_retains_commit_outcome_and_original_cause() {
+        let (transport, exchanges) = sdk_queries_transport(0x7c);
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(transport))
+            .await
+            .unwrap()
+            .with_schema(package())
+            .unwrap();
+        let error = remote
+            .entities::<RejectedPerson>()
+            .insert(PersonCreate)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.failure(),
+            Some(type_bridge_contract::failure::Failure::Indeterminate { .. })
+        ));
+        let commit = std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<type_bridge_orm::session::staged::CommitError>()
+            .unwrap();
+        assert_eq!(
+            commit.diagnostic().code().as_str(),
+            "commit_outcome_unknown"
+        );
+        let callback = std::error::Error::source(commit)
+            .unwrap()
+            .downcast_ref::<QueryTargetError>()
+            .unwrap();
+        assert!(matches!(callback, QueryTargetError::Callback(_)));
+        let original = std::error::Error::source(callback)
+            .unwrap()
+            .downcast_ref::<Error>()
+            .unwrap();
+        assert_eq!(original.code(), Some("rejected_materialization"));
+        assert_eq!(
+            original.model_validation_phase(),
+            Some(crate::ModelValidationPhase::Hydration)
+        );
+        assert_eq!(original.path().unwrap(), &["name"]);
+        assert!(
+            std::error::Error::source(original)
+                .unwrap()
+                .is::<ValidationError>()
+        );
+        assert_eq!(exchanges.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn caller_owned_queries_and_transactions_share_the_staged_transport() {
+        let (transport, exchanges) = sdk_queries_transport(0x79);
+        let capabilities = Arc::clone(&transport.capabilities);
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(transport))
+            .await
+            .unwrap()
+            .with_schema(package())
+            .unwrap();
+        let mut session = remote.query().unwrap();
+        let person = session.exact::<Person>().unwrap();
+        assert_eq!(session.query(person).unwrap().count().await.unwrap(), 7);
+        let mut builder = crate::plan::PlanBuilder::<TestSchema>::new();
+        let _person = builder.exact::<Person>();
+        builder.count();
+        let plan = builder.build(&package()).unwrap();
+        let mut transaction = remote
+            .transaction(TransactionOptions::default())
+            .await
+            .unwrap();
+        let pending = transaction.stage(&plan).unwrap();
+        transaction.commit().await.unwrap();
+        assert!(matches!(
+            pending.get().unwrap().as_ref(),
+            crate::staged::PlanAnswer::Count(7)
+        ));
+        assert_eq!(*capabilities.lock().unwrap(), 1);
+        assert_eq!(exchanges.lock().unwrap().len(), 2);
+    }
+
+    struct FailingStagedTransport(Transport);
+    impl ProxyExchange for FailingStagedTransport {
+        fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
+            self.0.capabilities()
+        }
+        fn exchange<'a>(
+            &'a self,
+            _: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+            Box::pin(async {
+                Err(Error::remote(
+                    "application_transport_down",
+                    "Application transport is unavailable",
+                    Some(Box::new(std::io::Error::other("application cause"))),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_transport_preserves_application_error_codes_and_sources() {
+        let (transport, _) = sdk_queries_transport(0x7a);
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
+            FailingStagedTransport(transport),
+        ))
+        .await
+        .unwrap()
+        .with_schema(package())
+        .unwrap();
+        let mut session = remote.query().unwrap();
+        let person = session.exact::<Person>().unwrap();
+        let error = session.query(person).unwrap().count().await.unwrap_err();
+        assert_eq!(error.category(), crate::ErrorCategory::Remote);
+        assert_eq!(error.code(), Some("application_transport_down"));
+        assert_eq!(
+            std::error::Error::source(&error).unwrap().to_string(),
+            "application cause"
+        );
+        for error in [
+            remote.entities::<Person>().count().await.unwrap_err(),
+            remote.entities::<Person>().all().await.unwrap_err(),
+            remote
+                .entities::<Person>()
+                .get_by_iid(&crate::Iid::new("0x10").unwrap())
+                .await
+                .unwrap_err(),
+            remote
+                .entities::<Person>()
+                .filter()
+                .unwrap()
+                .count()
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(error.category(), crate::ErrorCategory::Remote);
+            assert_eq!(error.code(), Some("application_transport_down"));
+            assert_eq!(
+                std::error::Error::source(&error).unwrap().to_string(),
+                "application cause"
+            );
+        }
+        let installed = remote.installed.as_ref().unwrap();
+        let filter = type_bridge_orm::ProjectedManagerFilter::try_new(
+            installed,
+            type_bridge_contract::id::TypeId::new(
+                type_bridge_contract::id::TypeKind::Entity,
+                "person",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let error = type_bridge_orm::ProjectedManagerFilterExecutor::new(installed)
+            .count_on_target(
+                QueryTarget::Proxy(&remote.runtime.as_ref().unwrap().connection),
+                &filter,
+                type_bridge_orm::ProjectedManagerFilterInvocationControl::capture(
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(format!("{error:?}"), "Callback([REDACTED])");
+        let error = target_error(error);
+        assert_eq!(error.category(), crate::ErrorCategory::Remote);
+        assert_eq!(error.code(), Some("application_transport_down"));
+        assert_eq!(
+            std::error::Error::source(&error).unwrap().to_string(),
+            "application cause"
+        );
+        let mut builder = crate::plan::PlanBuilder::<TestSchema>::new();
+        let _person = builder.exact::<Person>();
+        builder.count();
+        let plan = builder.build(&package()).unwrap();
+        let mut transaction = remote
+            .transaction(TransactionOptions::default())
+            .await
+            .unwrap();
+        let pending = transaction.stage(&plan).unwrap();
+        let commit = transaction.commit().await.unwrap_err();
+        assert_eq!(
+            commit.diagnostic().code().as_str(),
+            "commit_outcome_unknown"
+        );
+        let error = Error::from(commit);
+        assert_eq!(error.category(), crate::ErrorCategory::Transaction);
+        assert_eq!(error.sdk_category(), Some("transaction"));
+        assert!(matches!(
+            error.failure(),
+            Some(type_bridge_contract::failure::Failure::Indeterminate { .. })
+        ));
+        assert!(matches!(
+            pending.get().unwrap_err().failure(),
+            Some(type_bridge_contract::failure::Failure::Indeterminate { .. })
+        ));
+        let source = std::error::Error::source(&error).unwrap();
+        assert!(source.is::<type_bridge_orm::session::staged::CommitError>());
+        let mut cause = Some(source);
+        let mut found = false;
+        while let Some(source) = cause {
+            if let Some(source) = source.downcast_ref::<std::io::Error>() {
+                assert_eq!(source.to_string(), "application cause");
+                found = true;
+                break;
+            }
+            cause = source.source();
+        }
+        assert!(
+            found,
+            "the original application transport cause must survive SDK conversion"
+        );
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains("application cause"));
+        assert!(!rendered.contains("Application transport is unavailable"));
+    }
+
     fn sdk_queries_transport(seed: u8) -> (Transport, Arc<Mutex<Vec<Vec<u8>>>>) {
         let signer = RemoteReplySigningKey::from_secret_bytes([seed; 32]);
-        let mut capabilities = query_plan_v2_capability_vocabulary();
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [
+            CAP_QUERY_REMOTE_STAGED,
+            type_bridge_contract::query_remote::CAP_QUERY_REMOTE_WRITE,
+            type_bridge_contract::query_remote::CAP_QUERY_STAGE_RESULT_REF,
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
         }
-        capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_STATEMENT_LIMIT).unwrap());
         let advertisement_contract = RemoteCapabilities::new(
             capabilities,
             RemoteExecutorBinding::new("rust-client-test", "epoch-00000000003").unwrap(),
@@ -1465,9 +2152,9 @@ mod tests {
 
     async fn observe_sdk_queries_remote_structured_diagnostic() -> serde_json::Value {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
-        let mut capabilities = query_plan_v2_capability_vocabulary();
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
         }
         let advertisement_contract = RemoteCapabilities::new(
             capabilities,
@@ -1632,11 +2319,10 @@ mod tests {
     #[tokio::test]
     async fn remote_database_fetches_capabilities_once_and_exchanges_once_per_terminal() {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x31; 32]);
-        let mut capabilities = query_plan_v2_capability_vocabulary();
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
         }
-        capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_STATEMENT_LIMIT).unwrap());
         let advertisement_contract = RemoteCapabilities::new(
             capabilities,
             RemoteExecutorBinding::new("rust-client-test", "epoch-00000000001").unwrap(),
@@ -1682,28 +2368,27 @@ mod tests {
         assert!(page.items().is_empty());
         assert_eq!(page.total(), Some(0));
         let reduction = query
-            .aggregate((crate::aggregate::count(),))
+            .reduce((crate::aggregate::count(),))
             .await
             .expect("typed reductions use the same authenticated exchange");
         assert_eq!(reduction, (7,));
         assert_eq!(*capability_calls.lock().unwrap(), 1);
 
         let zero_timeout = QueryExecutionResourceLimits {
-            timeout_milliseconds: 0,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
             ..QueryExecutionResourceLimits::default()
         };
         let mut timed_session = remote
             .query_with_resources(zero_timeout, AnswerCancellation::default())
             .unwrap();
         let timed_person = timed_session.exact::<Person>().unwrap();
-        let timed_error = timed_session
+        let count_without_deadline = timed_session
             .query(timed_person)
             .unwrap()
             .count()
             .await
-            .expect_err("zero timeout must reject before caller transport");
-        assert_eq!(timed_error.category(), crate::ErrorCategory::ResourceLimit);
-        assert_eq!(timed_error.code(), Some("transaction_deadline_exceeded"));
+            .expect("no deadline allows the caller transport");
+        assert_eq!(count_without_deadline, 7);
 
         let cancellation = AnswerCancellation::default();
         cancellation.cancel();
@@ -1767,13 +2452,28 @@ mod tests {
         );
 
         let requests = exchanges.lock().unwrap();
-        assert_eq!(requests.len(), 6);
+        assert_eq!(requests.len(), 7);
         assert!(
             std::str::from_utf8(&requests[0])
                 .unwrap()
-                .contains("\"format\":\"typebridge.query-remote-request/v2\"")
+                .contains("\"format\":\"typebridge.query-remote-request/v3\"")
         );
-        let request = RemoteQueryRequestV2::decode(&requests[5]).unwrap();
+        let authority = remote_fixture_authority();
+        let request = StagedRequest::decode(
+            &requests[6],
+            authority.declared(),
+            &RemoteCapabilities::decode(
+                &remote
+                    .runtime
+                    .as_ref()
+                    .unwrap()
+                    .connection
+                    .staged_advertisement()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let limits = request.limits();
         assert!(
             limits
@@ -1783,19 +2483,19 @@ mod tests {
         );
         assert_eq!(limits.max_items, 10);
         assert_eq!(limits.max_bytes, 900_000);
-        assert_eq!(limits.max_graph_nodes, 90);
-        assert_eq!(limits.max_attribute_values, 70);
-        assert_eq!(limits.max_collection_members, 70);
-        assert_eq!(limits.max_role_players, 50);
-        assert_eq!(limits.max_statements, 1);
+        assert_eq!(limits.max_graph_nodes, Some(90));
+        assert_eq!(limits.max_attribute_values, Some(70));
+        assert_eq!(limits.max_collection_members, Some(70));
+        assert_eq!(limits.max_role_players, Some(50));
+        assert_eq!(limits.max_read_statements, 1);
     }
 
     #[tokio::test]
     async fn generated_remote_query_preserves_complete_authenticated_structured_diagnostic() {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
-        let mut capabilities = query_plan_v2_capability_vocabulary();
-        for capability in query_remote_v2_required_capabilities(true) {
-            capabilities.insert(capability);
+        let mut capabilities = query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
         }
         let advertisement_contract = RemoteCapabilities::new(
             capabilities,
@@ -1917,6 +2617,70 @@ mod tests {
         ];
         if let Some((destination, run_nonce)) = requested_sdk_queries_proof_fragment() {
             publish_sdk_queries_rust_proof_fragment(&destination, &run_nonce, results);
+        }
+    }
+    #[tokio::test]
+    async fn raw_pair_works_before_and_after_schema_binding_with_one_proxy_call() {
+        use crate::raw::{RawQueryError, TransactionKind};
+        struct RawOnly(Arc<Mutex<Vec<Vec<u8>>>>);
+        impl ProxyExchange for RawOnly {
+            fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
+                panic!("raw fetched capabilities")
+            }
+            fn exchange<'a>(
+                &'a self,
+                _: &'a [u8],
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+                panic!("raw used typed exchange")
+            }
+            fn exchange_raw<'a>(
+                &'a self,
+                request: &'a [u8],
+            ) -> Pin<
+                Box<dyn Future<Output = std::result::Result<Vec<u8>, RawQueryError>> + Send + 'a>,
+            > {
+                self.0.lock().unwrap().push(request.to_vec());
+                Box::pin(async {
+                    Ok(br#"{"answers":[{"large":9223372036854775807}],"answerType":"conceptDocuments"}"#.to_vec())
+                })
+            }
+        }
+        async fn check<S: Schema>(database: &ProxyDatabase<S>) {
+            let answer = database
+                .execute_query("exact raw query", TransactionKind::Read)
+                .await
+                .unwrap();
+            assert_eq!(answer["answers"][0]["large"].as_i64(), Some(i64::MAX));
+            let mut transaction = database
+                .raw_transaction(TransactionKind::Write)
+                .await
+                .unwrap();
+            transaction.execute_query("exact raw write").await.unwrap();
+            assert_eq!(
+                transaction.execute_query("second").await.unwrap_err().code,
+                "raw_transaction_single_query"
+            );
+            transaction.commit().await.unwrap();
+            assert_eq!(
+                transaction.rollback().await.unwrap_err().code,
+                "raw_transaction_already_committed"
+            );
+        }
+        let requests = Arc::new(Mutex::new(vec![]));
+        let database = unconnected_remote(ProxyConnectionPolicy::with_exchange(RawOnly(
+            requests.clone(),
+        )));
+        check(&database).await;
+        let database = database.with_schema(package()).unwrap();
+        check(&database).await;
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        for (request, query) in requests
+            .iter()
+            .zip(["exact raw query", "exact raw write"].into_iter().cycle())
+        {
+            let request: serde_json::Value = serde_json::from_slice(request).unwrap();
+            assert_eq!(request["query"], query);
         }
     }
 }

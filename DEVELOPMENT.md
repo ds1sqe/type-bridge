@@ -10,7 +10,7 @@ through:
 - the `type-bridge` Python package;
 - the `@type-bridge/node` TypeScript/Node package;
 - the crates.io-distributed generated Rust SDK;
-- the generated C SDK and ABI 1.6.0 shared runtime for Ubuntu 24.04 x86_64;
+- the generated C SDK and ABI 2.0.0 shared runtime for Ubuntu 24.04 x86_64;
 - the `type-bridge` workspace and migration CLI;
 - the `type-bridge-server` container.
 
@@ -30,7 +30,7 @@ generate their own schema packages. See the [C SDK guide](docs/guide/c.md).
 - Node 18+ for the Node package; the primary development matrix uses Node 20
 - CMake 3.20+ plus C17 and C++17 compilers when changing the C
   schema package or native runtime; Unix checks also require `pkg-config`
-- TypeDB 3.x for integration tests
+- TypeDB 3.12–3.14 for supported integration tests (profile floors below)
 - Podman or Docker for the default isolated live suite
 
 ## Set up the source tree
@@ -47,7 +47,7 @@ compatibility override is required. The module retains its GIL requirement.
 
 | Path | Responsibility |
 | --- | --- |
-| `type_bridge/` | Python connection/query facade and read-only archive recovery APIs |
+| `type_bridge/` | Python connection facade and generated runtime projection APIs |
 | `type-bridge-core/crates/` | Rust contracts, engines, ORM, bindings, CLI, and server |
 | `type-bridge-core/crates/node/` | N-API boundary and TypeScript package |
 | `type-bridge-core/crates/rust/` | Public generated-model Rust client |
@@ -62,30 +62,34 @@ duplicated directory snapshot here.
 
 ## Architecture invariants
 
-- Rust is the only semantic engine for V2 behavior.
+- Rust is the only semantic engine for typed plans, CRUD and schema behavior.
 - Python and Node bindings marshal typed values and expose language-native
   facades; they do not reimplement schema, query, migration, or ORM rules.
 - The generated C package and native C ABI share the same semantic engine.
-  ABI 1.6 is the single supported build target, with one header
+  ABI 2.0 is the single supported build target, with one header
   and exact runtime dependencies. Rust owns schema admission, projected
   values, transactions, CRUD, queries, migration, canonical serialization,
   diagnostics, resource limits, and cancellation. Generated nominal models
   enforce package and role boundaries. Ordered schema packages expose typed
-  manager filters; live TypeDB 3.12.3 checks keep ordered attributes and role
-  lists empty because the provider does not accept those instances. Public C
+  manager filters. TypeDB list DML is not implemented on 3.12.3, 3.13.6 or
+  3.14.0 (measured); TypeBridge refuses non-empty ordered writes; populated
+  ordered roles written by other clients are refused at hydration. Public C
   support is limited to the verified Ubuntu 24.04 x86_64 shared-runtime matrix;
   extending that matrix requires complete artifact and public-consumer checks.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
-- Generated packages are Python's only typed query API. The raw TypeQL
-  builders (`Query`, `QueryBuilder`) remain and render through the Rust core;
-  they are not schema authority.
+- Generated packages are Python's only typed query API. Use staged plans
+  for explicit transactions and `raw_transaction` / `execute_query` for raw TypeQL text.
+  All managers, filter terminals and staged typed queries execute native plans;
+  legacy query AST/compiler and HTTP query routes are removed.
+- Canonical `schema-migration` and `schema-migration-typedb` own migrations;
+  the former independent `type-bridge-migration` executor is removed. SDKs
+  execute migrations through generated catalogs.
 - Split-YAML is the only active schema/model authoring authority. Python,
   TypeScript/Node, Rust, and C applications consume generated projections.
-- Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io
-  graph; the historical 2.0.0 SDK resolves from its exact release Git revision.
-- General TypeDB version admission requires at least 3.11.0 and has no upper
-  ceiling. Measured, supported lines remain 3.11–3.14. Newer lines reuse the
+- Rust releases resolve a complete, version-locked crates.io graph.
+- General TypeDB version admission requires at least 3.12.0 and has no upper
+  ceiling. Measured, supported lines remain 3.12–3.14. Newer lines reuse the
   newest measured profile and protocol assumptions, with one warning per
   connection: "not tested or supported by this TypeBridge release".
   Admission does not guarantee compatibility.
@@ -97,7 +101,7 @@ duplicated directory snapshot here.
   boundaries are contracts, not illustrative prose.
 
 See [Internals](docs/development/internals.md),
-[Rust backend](docs/development/rust-backend.md), and the
+[Core engine](docs/development/core-engine.md), and the
 [unified typed-query contract](docs/development/typed-query-contract.md) before
 changing a shared boundary.
 
@@ -154,10 +158,7 @@ publication acceptance remains workflow-only. Local source checks do not
 replace those gates. See [Testing](docs/development/testing.md) for suite
 selection and environment variables.
 
-Python facade builds also run a network-disabled metadata check in the exact
-digest-verified publisher image before entering cross-registry publication.
-
-The separately selected C 2.3.3 path uses `c-release.yml`: read-only verification
+The C release path uses `c-release.yml`: read-only verification
 consumes successful same-source master CI artifacts and runs all SDK suites
 and FULL-C acceptance. Protected promotion consumes that exact verification
 run, signs the unchanged bytes and adds only absent or identical assets to

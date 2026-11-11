@@ -1,0 +1,160 @@
+{
+  "format": "typebridge.sdk-plan-coverage/v1",
+  "observations": {
+    "atomic_multibinding_generation": {
+      "calls": [],
+      "kind": "host_empty",
+      "reason": "Generated values, validation or package publication have no selected provider plan; the existing journey and frozen answers remain required."
+    },
+    "borrowed_transaction_lifecycle": {
+      "calls": [
+        "borrowed_transaction_lifecycle.staged_count"
+      ],
+      "kind": "native"
+    },
+    "complete_connection_policy": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "data_operation_cancellation": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "data_operation_resource_limits": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "data_operation_structured_diagnostic": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "data_resource_lifecycle": {
+      "bindings": [
+        "c",
+        "python",
+        "node",
+        "rust"
+      ],
+      "calls": [
+        "manager_returning_delete.entity",
+        "manager_returning_delete.entity_many",
+        "manager_returning_delete.relation",
+        "manager_returning_delete.relation_many"
+      ],
+      "kind": "native"
+    },
+    "entity_batch_insert_put": {
+      "calls": [
+        "unkeyed_entity_iid_lifecycle.insert",
+        "entity_batch_insert_put.put"
+      ],
+      "kind": "native"
+    },
+    "entity_batch_update_delete_atomic": {
+      "calls": [
+        "entity_batch_update_delete_atomic.update",
+        "unkeyed_entity_iid_lifecycle.delete"
+      ],
+      "kind": "native"
+    },
+    "field_name_identity": {
+      "calls": [],
+      "kind": "host_empty",
+      "reason": "Generated values, validation or package publication have no selected provider plan; the existing journey and frozen answers remain required."
+    },
+    "inherited_relation_role_lifecycle": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "integer_key_polymorphic_role": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "manager_field_token_filter": {
+      "calls": [
+        "manager_field_token_filter.operator.eq",
+        "manager_field_token_filter.operator.ne",
+        "manager_field_token_filter.operator.gt",
+        "manager_field_token_filter.operator.gte",
+        "manager_field_token_filter.operator.lt",
+        "manager_field_token_filter.operator.lte",
+        "manager_field_token_filter.conjunction",
+        "manager_field_token_filter.all",
+        "manager_field_token_filter.count",
+        "manager_field_token_filter.exists",
+        "manager_field_token_filter.first",
+        "manager_field_token_filter.sibling_query_count",
+        "manager_field_token_filter.sibling_filter"
+      ],
+      "kind": "native"
+    },
+    "ordered_distinct_collections": {
+      "calls": [
+        "ordered_distinct_collections.entity_insert",
+        "ordered_distinct_collections.entity_update",
+        "ordered_distinct_collections.entity_read",
+        "ordered_distinct_collections.role_insert",
+        "ordered_distinct_collections.role_update",
+        "ordered_distinct_collections.role_read",
+        "ordered_distinct_collections.entity_put",
+        "ordered_distinct_collections.entity_count",
+        "ordered_distinct_collections.entity_delete",
+        "ordered_distinct_collections.role_put",
+        "ordered_distinct_collections.role_count",
+        "ordered_distinct_collections.role_delete"
+      ],
+      "kind": "native"
+    },
+    "projected_constraint_validation": {
+      "calls": [],
+      "kind": "host_empty",
+      "reason": "Generated values, validation or package publication have no selected provider plan; the existing journey and frozen answers remain required."
+    },
+    "projection_evidence_integrity": {
+      "calls": [],
+      "kind": "host_empty",
+      "reason": "Generated values, validation or package publication have no selected provider plan; the existing journey and frozen answers remain required."
+    },
+    "relation_batch_insert_put": {
+      "calls": [
+        "relation_batch_insert_put.insert",
+        "relation_batch_insert_put.put"
+      ],
+      "kind": "native"
+    },
+    "relation_batch_update_delete_atomic": {
+      "calls": [
+        "relation_batch_update_delete_atomic.update",
+        "relation_batch_update_delete_atomic.delete"
+      ],
+      "kind": "native"
+    },
+    "token_package_fencing": {
+      "calls": [],
+      "kind": "host_empty",
+      "reason": "Generated values, validation or package publication have no selected provider plan; the existing journey and frozen answers remain required."
+    },
+    "unkeyed_entity_iid_lifecycle": {
+      "calls": [
+        "unkeyed_entity_iid_lifecycle.insert",
+        "unkeyed_entity_iid_lifecycle.update",
+        "unkeyed_entity_iid_lifecycle.delete",
+        "unkeyed_entity_iid_lifecycle.get_by_iid",
+        "unkeyed_entity_iid_lifecycle.count"
+      ],
+      "kind": "native"
+    },
+    "unkeyed_relation_iid_lifecycle": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    }
+  },
+  "suite": "models"
+}

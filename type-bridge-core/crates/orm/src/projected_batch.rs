@@ -158,6 +158,7 @@ pub struct ProjectedBatch {
     rows: Vec<NormalizedProjectedBatchRow>,
     measure: ProjectedBatchResourceMeasure,
     resource_ceiling: QueryExecutionResourceLimits,
+    single_write: bool,
 }
 
 #[derive(Debug)]
@@ -224,11 +225,7 @@ impl ProjectedBatchBudgetState {
             control,
         )?;
         next_measure.items = item_count;
-        next_measure.statements = statement_forecast(
-            self.operation,
-            next_measure.role_players > 0,
-            next_row_count,
-        );
+        next_measure.statements = statement_forecast(next_row_count);
         check_control(control)?;
         validate_limits(next_measure, limits)?;
 
@@ -391,7 +388,7 @@ impl ProjectedBatchConstructionControl {
         rows: &mut Vec<ProjectedBatchRow>,
     ) -> Result<ProjectedBatch, SdkExecutionDiagnostic> {
         self.validate_finalization_input(installed, rows)?;
-        ProjectedBatch::try_finalize_internal(
+        ProjectedBatch::try_finalize_internal::<false>(
             installed,
             self.state.model.clone(),
             self.state.operation,
@@ -409,7 +406,7 @@ impl ProjectedBatchConstructionControl {
         probe: ProjectedBatchReservationProbe,
     ) -> Result<ProjectedBatch, SdkExecutionDiagnostic> {
         self.validate_finalization_input(installed, rows)?;
-        ProjectedBatch::try_finalize_internal(
+        ProjectedBatch::try_finalize_internal::<false>(
             installed,
             self.state.model.clone(),
             self.state.operation,
@@ -560,10 +557,50 @@ impl ProjectedBatch {
         control: Option<&ProjectedBatchInvocationControl>,
         probe: ProjectedBatchReservationProbe,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        Self::try_finalize_internal(installed, model, operation, &mut rows, control, probe)
+        Self::try_finalize_internal::<false>(installed, model, operation, &mut rows, control, probe)
     }
 
-    fn try_finalize_internal(
+    /// Validate an exact public single-delete invocation, preserving its plan form.
+    #[doc(hidden)]
+    pub fn try_single_delete(
+        installed: &InstalledRuntimeProjection,
+        model: TypeId,
+        iid: String,
+        control: &ProjectedBatchInvocationControl,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        Self::try_single_write(
+            installed,
+            model,
+            ProjectedBatchOperation::Delete,
+            ProjectedBatchRow::Delete { iid },
+            control,
+        )
+    }
+
+    pub(crate) fn try_single_write(
+        installed: &InstalledRuntimeProjection,
+        model: TypeId,
+        operation: ProjectedBatchOperation,
+        row: ProjectedBatchRow,
+        control: &ProjectedBatchInvocationControl,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        let mut rows = reserved(
+            1,
+            ProjectedBatchReservationSite::Rows,
+            ProjectedBatchReservationProbe::default(),
+        )?;
+        rows.push(row);
+        Self::try_finalize_internal::<true>(
+            installed,
+            model,
+            operation,
+            &mut rows,
+            Some(control),
+            ProjectedBatchReservationProbe::default(),
+        )
+    }
+
+    fn try_finalize_internal<const SINGLE_WRITE: bool>(
         installed: &InstalledRuntimeProjection,
         model: TypeId,
         operation: ProjectedBatchOperation,
@@ -584,6 +621,7 @@ impl ProjectedBatch {
                 rows: Vec::new(),
                 measure: ProjectedBatchResourceMeasure::default(),
                 resource_ceiling,
+                single_write: SINGLE_WRITE,
             });
         }
         check_control(control)?;
@@ -642,7 +680,11 @@ impl ProjectedBatch {
         check_control(control)?;
         reject_duplicate_keys(projected_model, rows, &mut key_rows)?;
         measure.items = item_count;
-        measure.statements = statement_forecast(operation, measure.role_players > 0, row_count);
+        measure.statements = if SINGLE_WRITE {
+            1
+        } else {
+            statement_forecast(row_count)
+        };
         check_control(control)?;
         validate_limits(measure, resource_ceiling)?;
 
@@ -662,7 +704,12 @@ impl ProjectedBatch {
             rows: normalized,
             measure,
             resource_ceiling,
+            single_write: SINGLE_WRITE,
         })
+    }
+
+    pub(crate) const fn is_single_write(&self) -> bool {
+        self.single_write
     }
 
     /// Return the exact projected model identity.
@@ -757,6 +804,34 @@ impl ProjectedBatchInvocationControl {
             #[cfg(test)]
             reference_checks_until_cancel: AtomicUsize::new(usize::MAX),
         }
+    }
+
+    pub(crate) fn from_parts(
+        limits: QueryExecutionResourceLimits,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Self {
+        Self {
+            limits,
+            deadline,
+            cancellation,
+            #[cfg(test)]
+            reference_checks_until_cancel: AtomicUsize::new(usize::MAX),
+        }
+    }
+
+    /// Transfer an invocation to another shared executor without restarting its
+    /// deadline or cloning its cancellation owner.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        QueryExecutionResourceLimits,
+        QueryExecutionDeadline,
+        AnswerCancellation,
+    ) {
+        (self.limits, self.deadline, self.cancellation)
     }
 
     /// Return the absolute deadline captured at terminal entry.
@@ -855,6 +930,17 @@ impl<'batch> PreparedProjectedBatchInvocation<'batch> {
         Ok(prepared)
     }
 
+    // A canonical cut changes dispatch without restarting the captured control.
+    pub(crate) fn into_control(self) -> ProjectedBatchInvocationControl {
+        ProjectedBatchInvocationControl {
+            limits: self.limits,
+            deadline: self.deadline,
+            cancellation: self.cancellation,
+            #[cfg(test)]
+            reference_checks_until_cancel: AtomicUsize::new(usize::MAX),
+        }
+    }
+
     /// Return the immutable batch.
     #[must_use]
     pub const fn batch(&self) -> &'batch ProjectedBatch {
@@ -889,6 +975,90 @@ impl<'batch> PreparedProjectedBatchInvocation<'batch> {
         }
         Ok(())
     }
+}
+
+fn charge_create(
+    model: &ModelProjection,
+    measure: &mut ProjectedBatchResourceMeasure,
+    create: &ProjectedCreate,
+    ordinal: usize,
+    control: Option<&ProjectedBatchInvocationControl>,
+) -> Result<(), SdkExecutionDiagnostic> {
+    measure.bytes = add(
+        measure.bytes,
+        usize_u64(create.resource_measure().bytes(), "bytes", ordinal)?,
+        "bytes",
+        ordinal,
+    )?;
+    for field in model.create().fields() {
+        if let Some(control) = control {
+            control.check()?;
+        }
+        let values = &create.fields()[field.token()];
+        let count = usize_u64(values.len(), "attribute_values", ordinal)?;
+        measure.attribute_values =
+            add(measure.attribute_values, count, "attribute_values", ordinal)?;
+        measure.collection_members = add(
+            measure.collection_members,
+            count,
+            "collection_members",
+            ordinal,
+        )?;
+    }
+    for role_id in model.create().roles().keys() {
+        if let Some(control) = control {
+            control.check()?;
+        }
+        let references = &create.roles()[role_id];
+        let count = usize_u64(references.len(), "role_players", ordinal)?;
+        measure.graph_nodes = add(measure.graph_nodes, count, "graph_nodes", ordinal)?;
+        measure.role_players = add(measure.role_players, count, "role_players", ordinal)?;
+        measure.collection_members = add(
+            measure.collection_members,
+            count,
+            "collection_members",
+            ordinal,
+        )?;
+        for reference in references {
+            if let Some(control) = control {
+                control.check_reference()?;
+            }
+            let key_count = usize_u64(reference.keys().len(), "attribute_values", ordinal)?;
+            measure.attribute_values = add(
+                measure.attribute_values,
+                key_count,
+                "attribute_values",
+                ordinal,
+            )?;
+            measure.collection_members = add(
+                measure.collection_members,
+                key_count,
+                "collection_members",
+                ordinal,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_filtered_replacement(
+    installed: &InstalledRuntimeProjection,
+    model: &TypeId,
+    create: &ProjectedCreate,
+    control: &ProjectedBatchInvocationControl,
+) -> Result<(), SdkExecutionDiagnostic> {
+    control.check()?;
+    let projected = require_batch_model(installed, model, ProjectedBatchOperation::Update)?;
+    validate_create_input(installed, model, ProjectedBatchOperation::Update, 0, create)?;
+    let mut measure = ProjectedBatchResourceMeasure {
+        items: 1,
+        graph_nodes: 1,
+        statements: 1,
+        ..Default::default()
+    };
+    charge_create(projected, &mut measure, create, 0, Some(control))?;
+    validate_limits(measure, control.limits)?;
+    control.check()
 }
 
 fn require_batch_model<'a>(
@@ -928,15 +1098,6 @@ fn require_batch_model<'a>(
             type_path(type_id),
         ));
     }
-    if matches!(operation, ProjectedBatchOperation::Put)
-        && model.reference_read().key_fields().is_empty()
-    {
-        return Err(invalid(
-            "put_requires_projected_key",
-            "Projected put requires an effective reference key",
-            type_path(type_id),
-        ));
-    }
     Ok(model)
 }
 
@@ -968,32 +1129,7 @@ fn validate_row(
         ));
     }
     if let Some(create) = row_create(row) {
-        create
-            .validate_for(installed)
-            .map_err(|error| prefix_row(error, ordinal))?;
-        if create.type_id() != model {
-            return Err(invalid(
-                "batch_row_model_mismatch",
-                "The batch row belongs to a different exact model",
-                {
-                    let mut path = row_path(ordinal);
-                    path.push(SdkDiagnosticPathSegment::Type(create.type_id().clone()));
-                    path
-                },
-            ));
-        }
-        if model.kind() == TypeKind::Relation
-            && !matches!(operation, ProjectedBatchOperation::Delete)
-            && create.roles().values().all(Vec::is_empty)
-        {
-            let mut path = row_path(ordinal);
-            path.push(SdkDiagnosticPathSegment::Type(model.clone()));
-            return Err(invalid(
-                "relation_requires_role_player",
-                "Projected relation writes require at least one final role player",
-                path,
-            ));
-        }
+        validate_create_input(installed, model, operation, ordinal, create)?;
     }
     if let Some(iid) = row_iid(row)
         && !is_canonical_thing_iid(iid)
@@ -1002,6 +1138,42 @@ fn validate_row(
             "noncanonical_iid",
             "The batch target IID is not canonical TypeDB identity text",
             iid_path(ordinal),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_create_input(
+    installed: &InstalledRuntimeProjection,
+    model: &TypeId,
+    operation: ProjectedBatchOperation,
+    ordinal: usize,
+    create: &ProjectedCreate,
+) -> Result<(), SdkExecutionDiagnostic> {
+    create
+        .validate_for(installed)
+        .map_err(|error| prefix_row(error, ordinal))?;
+    if create.type_id() != model {
+        return Err(invalid(
+            "batch_row_model_mismatch",
+            "The batch row belongs to a different exact model",
+            {
+                let mut path = row_path(ordinal);
+                path.push(SdkDiagnosticPathSegment::Type(create.type_id().clone()));
+                path
+            },
+        ));
+    }
+    if model.kind() == TypeKind::Relation
+        && !matches!(operation, ProjectedBatchOperation::Delete)
+        && create.roles().values().all(Vec::is_empty)
+    {
+        let mut path = row_path(ordinal);
+        path.push(SdkDiagnosticPathSegment::Type(model.clone()));
+        return Err(invalid(
+            "relation_requires_role_player",
+            "Projected relation writes require at least one final role player",
+            path,
         ));
     }
     Ok(())
@@ -1016,60 +1188,7 @@ fn charge_row(
 ) -> Result<(), SdkExecutionDiagnostic> {
     measure.graph_nodes = add(measure.graph_nodes, 1, "graph_nodes", ordinal)?;
     if let Some(create) = row_create(row) {
-        measure.bytes = add(
-            measure.bytes,
-            usize_u64(create.resource_measure().bytes(), "bytes", ordinal)?,
-            "bytes",
-            ordinal,
-        )?;
-        for field in model.create().fields() {
-            if let Some(control) = control {
-                control.check()?;
-            }
-            let values = &create.fields()[field.token()];
-            let count = usize_u64(values.len(), "attribute_values", ordinal)?;
-            measure.attribute_values =
-                add(measure.attribute_values, count, "attribute_values", ordinal)?;
-            measure.collection_members = add(
-                measure.collection_members,
-                count,
-                "collection_members",
-                ordinal,
-            )?;
-        }
-        for role_id in model.create().roles().keys() {
-            if let Some(control) = control {
-                control.check()?;
-            }
-            let references = &create.roles()[role_id];
-            let count = usize_u64(references.len(), "role_players", ordinal)?;
-            measure.graph_nodes = add(measure.graph_nodes, count, "graph_nodes", ordinal)?;
-            measure.role_players = add(measure.role_players, count, "role_players", ordinal)?;
-            measure.collection_members = add(
-                measure.collection_members,
-                count,
-                "collection_members",
-                ordinal,
-            )?;
-            for reference in references {
-                if let Some(control) = control {
-                    control.check_reference()?;
-                }
-                let key_count = usize_u64(reference.keys().len(), "attribute_values", ordinal)?;
-                measure.attribute_values = add(
-                    measure.attribute_values,
-                    key_count,
-                    "attribute_values",
-                    ordinal,
-                )?;
-                measure.collection_members = add(
-                    measure.collection_members,
-                    key_count,
-                    "collection_members",
-                    ordinal,
-                )?;
-            }
-        }
+        charge_create(model, measure, create, ordinal, control)?;
     }
     if let Some(iid) = row_iid(row) {
         measure.bytes = add(
@@ -1216,6 +1335,7 @@ fn validate_limits(
     measure: ProjectedBatchResourceMeasure,
     limits: QueryExecutionResourceLimits,
 ) -> Result<(), SdkExecutionDiagnostic> {
+    let limits = limits.for_adapter_statements(measure.statements as usize);
     for (name, code, actual, ceiling) in [
         ("items", "batch_item_limit", measure.items, limits.items),
         ("bytes", "batch_byte_limit", measure.bytes, limits.bytes),
@@ -1247,7 +1367,7 @@ fn validate_limits(
             "statements",
             "batch_statement_limit",
             u64::from(measure.statements),
-            u64::from(limits.statements),
+            u64::from(limits.statement_limit()),
         ),
     ] {
         if actual > ceiling {
@@ -1257,24 +1377,10 @@ fn validate_limits(
     Ok(())
 }
 
-fn statement_forecast(
-    operation: ProjectedBatchOperation,
-    requires_reference_resolution: bool,
-    rows: usize,
-) -> u32 {
-    if rows == 0 {
-        return 0;
-    }
-    match operation {
-        ProjectedBatchOperation::Delete => 1,
-        ProjectedBatchOperation::Put => 3,
-        ProjectedBatchOperation::Insert | ProjectedBatchOperation::Update
-            if requires_reference_resolution =>
-        {
-            3
-        }
-        ProjectedBatchOperation::Insert | ProjectedBatchOperation::Update => 2,
-    }
+/// Forecast statements: one per canonical row chunk. A keyless put may
+/// need more plans; the built program is charged before execution.
+fn statement_forecast(rows: usize) -> u32 {
+    u32::try_from(rows.div_ceil(type_bridge_contract::limits::MAX_INPUT_ROWS)).unwrap_or(u32::MAX)
 }
 
 fn reserved<T>(
@@ -1719,29 +1825,10 @@ plays:
     }
 
     #[test]
-    fn statement_forecast_covers_every_operation_and_never_exceeds_hard_cap() {
-        for operation in [
-            ProjectedBatchOperation::Insert,
-            ProjectedBatchOperation::Put,
-            ProjectedBatchOperation::Update,
-            ProjectedBatchOperation::Delete,
-        ] {
-            for requires_references in [false, true] {
-                assert_eq!(statement_forecast(operation, requires_references, 0), 0);
-                let expected = match operation {
-                    ProjectedBatchOperation::Delete => 1,
-                    ProjectedBatchOperation::Put => 3,
-                    ProjectedBatchOperation::Insert | ProjectedBatchOperation::Update
-                        if requires_references =>
-                    {
-                        3
-                    }
-                    ProjectedBatchOperation::Insert | ProjectedBatchOperation::Update => 2,
-                };
-                let actual = statement_forecast(operation, requires_references, 1);
-                assert_eq!(actual, expected);
-                assert!(actual <= DEFAULT_DIRECT_QUERY_STATEMENTS);
-            }
+    fn statement_forecast_counts_only_canonical_row_chunks() {
+        let ceiling = type_bridge_contract::limits::MAX_INPUT_ROWS;
+        for (rows, expected) in [(0, 0), (1, 1), (ceiling, 1), (ceiling + 1, 2)] {
+            assert_eq!(statement_forecast(rows), expected);
         }
     }
 
@@ -1891,7 +1978,7 @@ plays:
         .unwrap_err();
         assert_eq!(authority.code().as_str(), "wrong_model_kind");
 
-        let expired = ProjectedBatchInvocationControl::capture(
+        let mut expired = ProjectedBatchInvocationControl::capture(
             QueryExecutionResourceLimits::tightened(
                 0,
                 u64::MAX,
@@ -1904,6 +1991,7 @@ plays:
             ),
             AnswerCancellation::default(),
         );
+        expired.deadline = QueryExecutionDeadline::expired();
         let error = ProjectedBatch::try_new_for_invocation_with_reservation_probe(
             &installed,
             keyed.clone(),
@@ -2185,7 +2273,7 @@ plays:
         let retained_storage = rows.as_ptr();
         let retained_capacity = rows.capacity();
         let accepted_measure = expired.resource_measure();
-        expired.control.deadline = QueryExecutionDeadline::from_timeout_milliseconds(0);
+        expired.control.deadline = QueryExecutionDeadline::expired();
         let captured_deadline = expired.control.deadline().instant();
         let error = expired.try_finalize(&installed, &mut rows).unwrap_err();
         assert_eq!(error.code().as_str(), "transaction_deadline_exceeded");

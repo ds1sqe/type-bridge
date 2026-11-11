@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import pickle
-import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,7 +44,7 @@ def test_rust_database_preserves_exact_https_inference_and_normalizes_address(
     expected_address: str,
     expected_tls: bool | None,
 ) -> None:
-    import type_bridge._rust_runtime as rust_runtime
+    import type_bridge._native as rust_runtime
 
     calls: list[tuple[str, dict[str, object]]] = []
 
@@ -64,12 +63,12 @@ def test_rust_database_preserves_exact_https_inference_and_normalizes_address(
 
     monkeypatch.setattr(
         rust_runtime,
-        "rust_core",
-        lambda: SimpleNamespace(PyRustDatabase=FakeRustDatabase),
+        "core_module",
+        lambda: SimpleNamespace(PyDatabase=FakeRustDatabase),
     )
 
     db = Database(address=address, database="tls_unit", tls=tls)
-    rust_runtime.rust_database_for(db)
+    rust_runtime.core_database_for(db)
 
     assert calls[0][0] == expected_address
     assert calls[0][1].get("tls") is expected_tls
@@ -78,18 +77,18 @@ def test_rust_database_preserves_exact_https_inference_and_normalizes_address(
 def test_mixed_case_https_never_downgrades_to_a_plaintext_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import type_bridge._rust_runtime as rust_runtime
+    import type_bridge._native as rust_runtime
     import type_bridge.session as session
 
     rust_host = MagicMock()
     monkeypatch.setattr(
         rust_runtime,
-        "rust_core",
-        lambda: SimpleNamespace(PyRustDatabase=rust_host),
+        "core_module",
+        lambda: SimpleNamespace(PyDatabase=rust_host),
     )
     database = Database(address="HTTPS://db.example:1729", database="tls_unit")
     with pytest.raises(ValueError) as rust_error:
-        rust_runtime.rust_database_for(database)
+        rust_runtime.core_database_for(database)
     assert str(rust_error.value) == (
         "mixed-case HTTPS scheme does not enable TLS; use lowercase https:// "
         "or pass tls=True explicitly"
@@ -109,7 +108,7 @@ def test_custom_root_is_forwarded_only_with_explicit_tls(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import type_bridge._rust_runtime as rust_runtime
+    import type_bridge._native as rust_runtime
 
     calls: list[dict[str, object]] = []
 
@@ -122,14 +121,14 @@ def test_custom_root_is_forwarded_only_with_explicit_tls(
 
     monkeypatch.setattr(
         rust_runtime,
-        "rust_core",
-        lambda: SimpleNamespace(PyRustDatabase=FakeRustDatabase),
+        "core_module",
+        lambda: SimpleNamespace(PyDatabase=FakeRustDatabase),
     )
     root = tmp_path / "root.pem"
     root.write_bytes(VALID_ROOT_CA)
     db = Database(tls=True, tls_root_ca=root)
 
-    rust_runtime.rust_database_for(db)
+    rust_runtime.core_database_for(db)
 
     assert len(calls) == 1
     assert calls[0]["http_port"] == typedb_driver.DEFAULT_HTTP_PORT
@@ -256,21 +255,21 @@ def test_malformed_root_rejects_before_python_native_host_with_version_override(
 def test_low_level_python_tls_configuration_errors_are_typed(tmp_path: Path) -> None:
     missing = tmp_path / "missing-root.pem"
     with pytest.raises(ValueError, match="requires explicit tls=True"):
-        type_bridge_core.PyRustDatabase.connect(
+        type_bridge_core.PyDatabase.connect(
             "127.0.0.1:1",
             "tls_unit",
             server_version="3.12.0",
             tls_root_ca=str(missing),
         )
     with pytest.raises(TypeError, match="tls must be True, False, or None"):
-        type_bridge_core.PyRustDatabase.connect(
+        type_bridge_core.PyDatabase.connect(
             "127.0.0.1:1",
             "tls_unit",
             server_version="3.12.0",
             tls=1,  # type: ignore[arg-type]
         )
     with pytest.raises(ValueError, match="tls_custom_root_ca_unreadable"):
-        type_bridge_core.PyRustDatabase.connect(
+        type_bridge_core.PyDatabase.connect(
             "127.0.0.1:1",
             "tls_unit",
             server_version="3.12.0",
@@ -288,7 +287,7 @@ def test_driver_options_lower_custom_roots_for_each_driver_api(
     custom_tls = object()
     tls_config = MagicMock()
     tls_config.enabled_with_root_ca.return_value = custom_tls
-    banded_version = "3.11.5" if sys.version_info < (3, 14) else "3.14.0"
+    banded_version = "3.14.0"
     monkeypatch.setattr(typedb_driver, "driver_version", lambda: banded_version)
     monkeypatch.setattr(typedb_driver, "_load_tls_config", lambda: tls_config)
 
@@ -434,7 +433,7 @@ def test_rust_connect_and_lazy_python_driver_share_one_custom_root_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import type_bridge._rust_runtime as rust_runtime
+    import type_bridge._native as rust_runtime
     import type_bridge.session as session
 
     configured = tmp_path / "configured-root.pem"
@@ -461,8 +460,8 @@ def test_rust_connect_and_lazy_python_driver_share_one_custom_root_snapshot(
 
     monkeypatch.setattr(
         rust_runtime,
-        "rust_core",
-        lambda: SimpleNamespace(PyRustDatabase=FakeRustDatabase),
+        "core_module",
+        lambda: SimpleNamespace(PyDatabase=FakeRustDatabase),
     )
     monkeypatch.setattr(session.typedb_driver, "driver_version", lambda: "3.12.0")
     monkeypatch.setattr(
@@ -492,7 +491,7 @@ def test_rust_connect_and_lazy_python_driver_share_one_custom_root_snapshot(
         tls=True,
         tls_root_ca=configured,
     )
-    rust_runtime.rust_database_for(database)
+    rust_runtime.core_database_for(database)
     configured.write_bytes(b"replacement is not a certificate")
     _ = database.driver
 
@@ -511,7 +510,7 @@ def test_python_driver_and_later_rust_connect_share_one_custom_root_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import type_bridge._rust_runtime as rust_runtime
+    import type_bridge._native as rust_runtime
     import type_bridge.session as session
 
     configured = tmp_path / "configured-root.pem"
@@ -546,8 +545,8 @@ def test_python_driver_and_later_rust_connect_share_one_custom_root_snapshot(
 
     monkeypatch.setattr(
         rust_runtime,
-        "rust_core",
-        lambda: SimpleNamespace(PyRustDatabase=FakeRustDatabase),
+        "core_module",
+        lambda: SimpleNamespace(PyDatabase=FakeRustDatabase),
     )
 
     database = Database(
@@ -558,7 +557,7 @@ def test_python_driver_and_later_rust_connect_share_one_custom_root_snapshot(
     )
     _ = database.driver
     configured.write_bytes(b"replacement is not a certificate")
-    rust_runtime.rust_database_for(database)
+    rust_runtime.core_database_for(database)
 
     assert python_observed == rust_observed == [VALID_ROOT_CA]
     database.close()
@@ -579,7 +578,7 @@ def test_second_backend_rejects_connection_identity_mutation(
     tmp_path: Path,
     mutation: object,
 ) -> None:
-    import type_bridge._rust_runtime as rust_runtime
+    import type_bridge._native as rust_runtime
     import type_bridge.session as session
 
     root = tmp_path / "root.pem"
@@ -594,8 +593,8 @@ def test_second_backend_rejects_connection_identity_mutation(
 
     monkeypatch.setattr(
         rust_runtime,
-        "rust_core",
-        lambda: SimpleNamespace(PyRustDatabase=FakeRustDatabase),
+        "core_module",
+        lambda: SimpleNamespace(PyDatabase=FakeRustDatabase),
     )
     native_host = MagicMock()
     monkeypatch.setattr(session, "TypeDB", native_host)
@@ -608,7 +607,7 @@ def test_second_backend_rejects_connection_identity_mutation(
         tls=True,
         tls_root_ca=root,
     )
-    rust_runtime.rust_database_for(database)
+    rust_runtime.core_database_for(database)
     mutation(database, tmp_path)  # type: ignore[operator]
 
     with pytest.raises(
@@ -669,7 +668,7 @@ def test_close_waits_for_inflight_rust_connect_and_then_cleans_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import type_bridge._rust_runtime as rust_runtime
+    import type_bridge._native as rust_runtime
 
     root = tmp_path / "root.pem"
     root.write_bytes(VALID_ROOT_CA)
@@ -689,8 +688,8 @@ def test_close_waits_for_inflight_rust_connect_and_then_cleans_snapshot(
 
     monkeypatch.setattr(
         rust_runtime,
-        "rust_core",
-        lambda: SimpleNamespace(PyRustDatabase=FakeRustDatabase),
+        "core_module",
+        lambda: SimpleNamespace(PyDatabase=FakeRustDatabase),
     )
     database = Database(
         database="tls_unit",
@@ -701,7 +700,7 @@ def test_close_waits_for_inflight_rust_connect_and_then_cleans_snapshot(
 
     def connect() -> None:
         try:
-            rust_runtime.rust_database_for(database)
+            rust_runtime.core_database_for(database)
         except BaseException as error:  # noqa: BLE001 - thread assertion transport
             failures.append(error)
 
@@ -718,7 +717,7 @@ def test_close_waits_for_inflight_rust_connect_and_then_cleans_snapshot(
 
     assert not failures
     assert close_finished.is_set()
-    assert not hasattr(database, "_rust_backend_database")
+    assert not hasattr(database, "_native_database")
     assert database._tls_root_ca_snapshot is None
 
 
@@ -816,3 +815,37 @@ def test_pristine_database_pickle_and_legacy_state_restore_tls_defaults() -> Non
     assert legacy.tls_root_ca is None
     assert legacy._current_connection_identity().address == "legacy.example:1729"
     legacy.close()
+
+
+def test_rust_database_captures_full_query_policy_in_prepared_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import type_bridge._native as rust_runtime
+
+    limits = type_bridge_core.QueryLimits(bindings=1024, boolean_terms=512)
+    calls: list[dict[str, object]] = []
+
+    class FakeRustDatabase:
+        @staticmethod
+        def connect(*args: object, **kwargs: object) -> object:
+            calls.append(kwargs)
+            return _CurrentRustDatabaseHandle()
+
+    monkeypatch.setattr(
+        rust_runtime, "core_module", lambda: SimpleNamespace(PyDatabase=FakeRustDatabase)
+    )
+    database = Database(query_limits=limits)
+    rust_runtime.core_database_for(database)
+    assert calls[0]["query_limits"] is limits
+    assert database._prepared_connection_options().identity.query_limits is limits
+    database.query_limits = type_bridge_core.QueryLimits(bindings=512)
+    with pytest.raises(ValueError, match="settings changed"):
+        database._prepared_connection_options()
+
+
+def test_pristine_database_pickle_preserves_independent_query_policy() -> None:
+    limits = type_bridge_core.QueryLimits(bindings=1024, boolean_terms=512)
+    restored = pickle.loads(pickle.dumps(Database(query_limits=limits)))
+    assert restored.query_limits.get("bindings") == 1024
+    assert restored.query_limits.get("boolean_terms") == 512
+    assert restored.query_limits.get("selected_slots") == limits.get("selected_slots")

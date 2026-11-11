@@ -32,7 +32,7 @@ def load_module(name: str, path: Path) -> ModuleType:
 
 
 validator = load_module("validate_python_release_artifacts", VALIDATOR_PATH)
-VERSION = "2.3.3"
+VERSION = "3.0.0"
 SPECS = validator.load_package_specs(ROOT, VERSION)
 CORE_PLATFORMS = {
     "linux-x86_64": "manylinux_2_17_x86_64",
@@ -634,9 +634,9 @@ def test_core_wheel_rejects_elf_newer_than_manylinux_policy(tmp_path: Path) -> N
     "extra_member",
     [
         "hostile/__init__.py",
-        "type_bridge-2.3.3.data/purelib/hostile.py",
-        "type_bridge-2.3.3.data/platlib/hostile.py",
-        "type_bridge-2.3.3.data/scripts/hostile",
+        "type_bridge-3.0.0.data/purelib/hostile.py",
+        "type_bridge-3.0.0.data/platlib/hostile.py",
+        "type_bridge-3.0.0.data/scripts/hostile",
     ],
 )
 def test_root_wheel_rejects_unexpected_install_payload(
@@ -778,11 +778,11 @@ def test_artifacts_reject_unrecognized_license_like_members(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     "source_name",
     [
-        "vendor/typedb-protocol-b8/src/typedb.protocol.rs",
-        "vendor/typedb-driver-b8/Cargo.toml",
+        "crates/typedb-runtime/src/lib.rs",
+        "crates/core/src/version.rs",
     ],
 )
-def test_core_sdist_rejects_changed_vendor_sources(
+def test_core_sdist_rejects_changed_workspace_sources(
     tmp_path: Path,
     source_name: str,
 ) -> None:
@@ -957,13 +957,21 @@ def test_core_sdist_rejects_non_generated_symbolic_and_nonregular_inputs(
         validator.core_sdist_source_authorities(tmp_path)
 
 
-@pytest.mark.parametrize("root", ["crates/orm-derive", "crates/perf-stages"])
+@pytest.mark.parametrize("root", ["crates/orm-derive"])
 def test_core_sdist_optional_path_sources_are_exact_raw_includes(root: str) -> None:
     assert root in validator.CORE_SDIST_SOURCE_ROOTS
     assert root in validator.CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS
     assert root not in validator.CORE_SDIST_WORKSPACE_MEMBERS
     assert f"{root}/Cargo.toml" not in validator.CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS
     assert f"{root}/LICENSE" not in validator.CORE_SDIST_GENERATED_LICENSES
+
+
+def test_core_sdist_perf_stages_is_a_packaged_workspace_member() -> None:
+    root = "crates/perf-stages"
+    assert root in validator.CORE_SDIST_WORKSPACE_MEMBERS
+    assert root not in validator.CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS
+    assert f"{root}/Cargo.toml" in validator.CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS
+    assert f"{root}/LICENSE" in validator.CORE_SDIST_GENERATED_LICENSES
 
 
 def test_core_sdist_rejects_changed_raw_optional_derive_manifest(tmp_path: Path) -> None:
@@ -1048,8 +1056,11 @@ def test_core_sdist_requires_exact_native_and_cli_notices(tmp_path: Path, notice
 
 
 def test_root_artifacts_require_complete_source_inventory(tmp_path: Path) -> None:
-    deep_public_file = "type_bridge/migration/snapshots.py"
-    assert len(SPECS["root"].wheel_members) > 80
+    deep_public_file = "type_bridge/migration/state_schema.py"
+    assert len(SPECS["root"].wheel_members) == 15
+    assert "type_bridge/query_v2.py" not in SPECS["root"].wheel_members
+    assert "type_bridge/proxy.py" not in SPECS["root"].wheel_members
+    assert "type_bridge/write_result.py" in SPECS["root"].wheel_members
     assert deep_public_file in SPECS["root"].wheel_members
 
     wheel = write_wheel(
@@ -1156,10 +1167,10 @@ def test_repository_version_must_match_release_tag() -> None:
 @pytest.mark.parametrize(
     "replacement",
     (
-        "type-bridge-core>=2.3.3",
-        "type-bridge-core==2.3.3; python_version >= '3.12'",
-        "TYPE-BRIDGE-CORE==2.3.3",
-        "type_bridge_core==2.3.3",
+        "type-bridge-core>=3.0.0",
+        "type-bridge-core==3.0.0; python_version >= '3.12'",
+        "TYPE-BRIDGE-CORE==3.0.0",
+        "type_bridge_core==3.0.0",
     ),
 )
 def test_artifact_gate_rejects_noncanonical_root_core_requirements(
@@ -1169,7 +1180,7 @@ def test_artifact_gate_rejects_noncanonical_root_core_requirements(
     manifest, _ = copy_root_python_contract(tmp_path)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            "type-bridge-core==2.3.3",
+            "type-bridge-core==3.0.0",
             replacement,
             1,
         ),
@@ -1186,8 +1197,8 @@ def test_artifact_gate_rejects_duplicate_normalized_root_core_requirements(
     manifest, _ = copy_root_python_contract(tmp_path)
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            '"type-bridge-core==2.3.3",',
-            '"type-bridge-core==2.3.3",\n    "type.bridge.core==2.3.3",',
+            '"type-bridge-core==3.0.0",',
+            '"type-bridge-core==3.0.0",\n    "type.bridge.core==3.0.0",',
             1,
         ),
         encoding="utf-8",
@@ -1201,8 +1212,8 @@ def test_artifact_gate_binds_import_visible_python_version(tmp_path: Path) -> No
     _, package_init = copy_root_python_contract(tmp_path)
     package_init.write_text(
         package_init.read_text(encoding="utf-8").replace(
-            '__version__ = "2.3.3"',
-            '__version__ = "2.3.3rc1"',
+            '__version__ = "3.0.0"',
+            '__version__ = "3.0.0rc1"',
             1,
         ),
         encoding="utf-8",

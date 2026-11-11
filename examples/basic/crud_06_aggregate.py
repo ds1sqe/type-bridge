@@ -13,7 +13,7 @@ async def main() -> None:
     session = Person.query(db)
     person = session.exact(Person)
     age = person.field(Person.age)
-    count, mean_age = await session.query(person).aggregate(
+    count, mean_age = await session.query(person).reduce(
         person,
         aggregate.count(),
         aggregate.mean(age),

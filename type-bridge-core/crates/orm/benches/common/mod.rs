@@ -287,48 +287,14 @@ pub fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
     info
 }
 
-pub const SMALL_CODEGEN_SCHEMA: &str = r#"
-        define
-            attribute name, value string;
-            attribute age, value long;
-            attribute active, value boolean;
-            entity person,
-                owns name @key,
-                owns age;
-            entity company,
-                owns name @key;
-            relation employment,
-                relates employee,
-                relates employer;
-    "#;
-
-/// 15 attributes, 10 entities and 5 relations.
-pub fn medium_codegen_schema() -> String {
-    let mut medium_tql = String::from("define\n");
-    for i in 0..15 {
-        medium_tql.push_str(&format!("    attribute attr-{i}, value string;\n"));
-    }
-    for i in 0..10 {
-        medium_tql.push_str(&format!(
-            "    entity entity-{i},\n        owns attr-0,\n        owns attr-1;\n"
-        ));
-    }
-    for i in 0..5 {
-        medium_tql.push_str(&format!(
-            "    relation rel-{i},\n        relates player-a,\n        relates player-b;\n"
-        ));
-    }
-    medium_tql
-}
-
 // ---------------------------------------------------------------------------
 // Staged commit
 // ---------------------------------------------------------------------------
 
-#[path = "../../tests/support/plan_v3_race.rs"]
+#[path = "../../tests/support/plan_race.rs"]
 mod race;
 
-use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
+use type_bridge_contract::query_plan::{Operation, QueryPlan};
 use type_bridge_orm::OrmError;
 use type_bridge_orm::session::GivenRowsSpec;
 use type_bridge_orm::session::backend::{
@@ -362,14 +328,18 @@ impl DriverBackend for OneRow {
 
 impl TransactionOps for OneRow {
     fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-        Box::pin(async { Ok(QueryResult::Rows(vec![serde_json::json!({})])) })
+        Box::pin(async {
+            Ok(QueryResult::Rows(vec![serde_json::json!({
+                "doctor": {"kind":"thing", "iid":"0x01", "type_id":{"kind":"entity", "label":"doctor"}}
+            })]))
+        })
     }
     fn query_with_rows(
         &mut self,
-        _: &str,
+        typeql: &str,
         _: GivenRowsSpec,
     ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-        Box::pin(async { Ok(QueryResult::Rows(vec![serde_json::json!({})])) })
+        self.query(typeql)
     }
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
         Box::pin(async { Ok(()) })
@@ -386,7 +356,7 @@ impl TransactionOps for OneRow {
 pub struct StagedCommit {
     runtime: tokio::runtime::Runtime,
     database: type_bridge_orm::Database,
-    plans: Vec<QueryPlanV3>,
+    plans: Vec<QueryPlan>,
 }
 
 /// The staged program of mixed plans: the one-query purchase (given row),
@@ -408,8 +378,15 @@ pub fn staged_commit() -> StagedCommit {
 impl StagedCommit {
     /// Stage every plan in one transaction and commit; return the answers.
     pub fn run(&self) -> usize {
+        self.run_with_phase_timestamps(false)
+    }
+
+    /// Measure the same commit with optional phase timestamp collection.
+    pub fn run_with_phase_timestamps(&self, collect: bool) -> usize {
         self.runtime.block_on(async {
-            let mut transaction = self.database.transaction(TransactionOptions::default());
+            let mut transaction = self
+                .database
+                .transaction(TransactionOptions::default().with_collect_phase_timestamps(collect));
             let pending = self
                 .plans
                 .iter()

@@ -61,7 +61,6 @@ mod tests {
             parse_schema(source),
             Err(SchemaError::ParseError { .. })
         ));
-        #[allow(deprecated)]
         crate::_parser::parse_typeql(source).expect("released archive remains readable");
     }
 }

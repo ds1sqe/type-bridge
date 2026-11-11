@@ -37,14 +37,16 @@ pub struct InstalledRuntimeProjection {
     projection: Arc<RuntimeProjection>,
     declared_schema_identity: Option<DeclaredIdentityFingerprint>,
     descriptors: BTreeMap<TypeId, TypeDescriptor>,
-    schema_authority: Option<Arc<InstalledSchemaAuthority>>,
+    schema_authority: OnceLock<Arc<InstalledSchemaAuthority>>,
     /// The authority helper write plans validate against, from the verified
     /// package authority or built once from the projection.
     plan_authority: OnceLock<Arc<PlanAuthority>>,
+    manager_registry:
+        OnceLock<std::result::Result<Arc<DescriptorRegistry>, crate::match_request::MatchError>>,
 }
 
 impl InstalledRuntimeProjection {
-    /// Derive provider descriptors without registering them in the global V1 registry.
+    /// Derive provider descriptors without registering them in a shared registry.
     pub fn try_new(projection: RuntimeProjection) -> Result<Self> {
         let mut descriptors = BTreeMap::new();
         for (id, model) in projection.models() {
@@ -60,9 +62,10 @@ impl InstalledRuntimeProjection {
         Ok(Self {
             projection: Arc::new(projection),
             declared_schema_identity: None,
-            schema_authority: None,
+            schema_authority: OnceLock::new(),
             descriptors,
             plan_authority: OnceLock::new(),
+            manager_registry: OnceLock::new(),
         })
     }
 
@@ -94,8 +97,10 @@ impl InstalledRuntimeProjection {
                 .declared_identity_fingerprint()
                 .clone(),
         );
-        self.schema_authority = Some(Arc::new(InstalledSchemaAuthority::from_verified(authority)));
+        self.schema_authority =
+            OnceLock::from(Arc::new(InstalledSchemaAuthority::from_verified(authority)));
         self.plan_authority = OnceLock::from(Arc::new(PlanAuthority::from_verified(authority)));
+        self.manager_registry = OnceLock::new();
         self
     }
 
@@ -136,6 +141,22 @@ impl InstalledRuntimeProjection {
         }
         let built = Arc::new(PlanAuthority::from_projection(&self.projection)?);
         Ok(Arc::clone(self.plan_authority.get_or_init(|| built)))
+    }
+
+    pub(crate) fn plan_authority_with_query_limits(
+        &self,
+        limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
+    ) -> std::result::Result<Arc<PlanAuthority>, Diagnostic> {
+        let authority = self.plan_authority()?;
+        Ok(match limits {
+            Some(limits) => Arc::new(
+                authority
+                    .as_ref()
+                    .clone()
+                    .with_query_limits(Arc::clone(limits)),
+            ),
+            None => authority,
+        })
     }
 
     /// Return the trusted source projection.
@@ -185,12 +206,19 @@ impl InstalledRuntimeProjection {
     /// executor instead of reconstructing schema authority from lossy dynamic
     /// descriptors.
     pub fn match_registry(&self) -> Result<DescriptorRegistry> {
+        self.registry_with_authority(self.schema_authority.get().cloned())
+    }
+
+    fn registry_with_authority(
+        &self,
+        authority: Option<Arc<InstalledSchemaAuthority>>,
+    ) -> Result<DescriptorRegistry> {
         let registry = DescriptorRegistry::for_installed_projection(
             self.projection.semantic_fingerprint().clone(),
             self.projection.target(),
             self.projection.projection_fingerprint().clone(),
             self.projection.functions().clone(),
-            self.schema_authority.clone(),
+            authority,
         );
         for descriptor in self.descriptors.values().cloned() {
             match descriptor {
@@ -203,6 +231,68 @@ impl InstalledRuntimeProjection {
             }
         }
         Ok(registry)
+    }
+
+    /// Return the cached plan authority for generated manager execution.
+    ///
+    /// Schema-less released projections reconstruct manager authority here;
+    /// typed query admission continues to require the installed schema.
+    #[doc(hidden)]
+    pub fn manager_registry(&self) -> Result<Arc<DescriptorRegistry>> {
+        self.manager_registry
+            .get_or_init(|| {
+                (|| -> Result<Arc<DescriptorRegistry>> {
+                    let authority = self.match_schema_authority()?;
+                    self.registry_with_authority(Some(authority)).map(Arc::new)
+                })()
+                .map_err(|_| {
+                    crate::match_request::MatchError::new(
+                        crate::match_request::MatchErrorCategory::InvalidPlan,
+                        "manager_plan_authority_unavailable",
+                        "Projection cannot form manager schema authority",
+                    )
+                })
+            })
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(|error| error.clone().into())
+    }
+
+    fn match_schema_authority(&self) -> Result<Arc<InstalledSchemaAuthority>> {
+        if let Some(authority) = self.schema_authority.get() {
+            return Ok(Arc::clone(authority));
+        }
+        let plan = self.plan_authority().map_err(|_| {
+            OrmError::QueryExecution("Projection cannot form manager schema authority".into())
+        })?;
+        let profile = plan
+            .managed_semantics()
+            .as_fingerprint()
+            .semantic_profile()
+            .cloned()
+            .ok_or_else(|| {
+                OrmError::QueryExecution("Projection plan authority has no semantic profile".into())
+            })?;
+        let context = type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new(
+                "typebridge-projection-plan-authority",
+            )
+            .expect("static managed scope"),
+            profile,
+            type_bridge_schema::schema_authority_capability_vocabulary(),
+        );
+        let verified = type_bridge_schema::build_schema_authority(
+            plan.declared(),
+            plan.declared().required_capabilities(),
+            &context,
+        )
+        .map_err(|_| {
+            OrmError::QueryExecution(
+                "Projection cannot reconstruct manager schema authority".into(),
+            )
+        })?;
+        let authority = Arc::new(InstalledSchemaAuthority::from_verified(&verified));
+        Ok(authority)
     }
 
     /// Decode one fetched role player's raw provider attribute arrays against

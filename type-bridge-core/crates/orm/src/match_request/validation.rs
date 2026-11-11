@@ -2198,18 +2198,18 @@ fn selected_slot_cap(
     message: &'static str,
     path: MatchErrorPathSegment,
 ) -> Result<(), MatchError> {
-    if count <= limits.selected_slots {
+    let maximum = limits
+        .selected_slots
+        .min(type_bridge_contract::limits::MAX_SELECTED_SLOTS);
+    if count <= maximum {
         return Ok(());
     }
     Err(invalid(code, message)
         .at(path)
         .with_detail("actual", usize_detail(count))
-        .with_detail("maximum", usize_detail(limits.selected_slots))
+        .with_detail("maximum", usize_detail(maximum))
         .with_detail("limit", "selected_slots")
-        .with_detail(
-            "source",
-            limit_source("selected_slots", limits.selected_slots),
-        ))
+        .with_detail("source", limit_source("selected_slots", maximum)))
 }
 
 fn check_limit(
@@ -2271,7 +2271,7 @@ fn usize_detail(value: usize) -> u64 {
 mod tests {
     use std::collections::BTreeSet;
 
-    use type_bridge_contract::query_plan::CompatibilityValueV2;
+    use type_bridge_contract::query_plan::ModelValue;
     use type_bridge_contract::temporal::{CanonicalDateTime, CanonicalDateTimeTz};
 
     use super::*;
@@ -2407,10 +2407,10 @@ mod tests {
     fn v2_datetime_lexical_is_accepted(value: &str, timezone_required: bool) -> bool {
         if timezone_required {
             value.parse::<CanonicalDateTimeTz>().is_ok()
-                || CompatibilityValueV2::released_datetime_tz(value).is_ok()
+                || ModelValue::released_datetime_tz(value).is_ok()
         } else {
             value.parse::<CanonicalDateTime>().is_ok()
-                || CompatibilityValueV2::released_datetime(value).is_ok()
+                || ModelValue::released_datetime(value).is_ok()
         }
     }
 

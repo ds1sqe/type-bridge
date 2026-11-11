@@ -508,7 +508,7 @@ where
     M: type_bridge::__codegen::EntityModel<Schema = AppSchema>
         + type_bridge::__codegen::CompleteModel,
 {
-    live(database.entities::<M>().get_by_iid(iid).await, context)?.ok_or_else(|| {
+    live(database.entities::<M>().get_by_iid(&type_bridge::Iid::new(iid).unwrap()).await, context)?.ok_or_else(|| {
         ProducerError::new("missing_live_record", format!("{context} returned no row"))
     })
 }
@@ -522,13 +522,21 @@ where
     M: type_bridge::__codegen::RelationModel<Schema = AppSchema>
         + type_bridge::__codegen::CompleteModel,
 {
-    live(database.relations::<M>().get_by_iid(iid).await, context)?.ok_or_else(|| {
+    live(database.relations::<M>().get_by_iid(&type_bridge::Iid::new(iid).unwrap()).await, context)?.ok_or_else(|| {
         ProducerError::new("missing_live_record", format!("{context} returned no row"))
     })
 }
 
+fn single_written<T>(result: type_bridge::WriteResult<T>) -> ProducerResult<T> {
+    let mut items = result.into_items();
+    if items.len() != 1 {
+        return Err(ProducerError::new("seed_mismatch", "single-record insert did not return one item"));
+    }
+    Ok(items.pop().expect("one written item"))
+}
+
 async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> ProducerResult<Created> {
-    let ada = live(
+    let ada = single_written(live(
         database
             .entities::<Person>()
             .insert(person_create(PersonFixture {
@@ -547,8 +555,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             })?)
             .await,
         "insert Ada",
-    )?;
-    let dana = live(
+    )?)?;
+    let dana = single_written(live(
         database
             .entities::<Person>()
             .insert(person_create(PersonFixture {
@@ -567,8 +575,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             })?)
             .await,
         "insert Dana",
-    )?;
-    let positive_robot = live(
+    )?)?;
+    let positive_robot = single_written(live(
         database
             .entities::<Robot>()
             .insert(generated(
@@ -581,8 +589,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert positive robot",
-    )?;
-    let negative_robot = live(
+    )?)?;
+    let negative_robot = single_written(live(
         database
             .entities::<Robot>()
             .insert(generated(
@@ -595,9 +603,9 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert negative robot",
-    )?;
+    )?)?;
 
-    let interaction_robot = live(
+    let interaction_robot = single_written(live(
         database
             .relations::<Interaction>()
             .insert(generated(
@@ -614,8 +622,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert robot interaction",
-    )?;
-    let interaction_absent = live(
+    )?)?;
+    let interaction_absent = single_written(live(
         database
             .relations::<Interaction>()
             .insert(generated(
@@ -632,8 +640,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert absent interaction",
-    )?;
-    let interaction_person = live(
+    )?)?;
+    let interaction_person = single_written(live(
         database
             .relations::<Interaction>()
             .insert(generated(
@@ -650,8 +658,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert person interaction",
-    )?;
-    let plain_activity = live(
+    )?)?;
+    let plain_activity = single_written(live(
         database
             .relations::<PlainActivity>()
             .insert(generated(
@@ -660,8 +668,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert plain activity",
-    )?;
-    let event = live(
+    )?)?;
+    let event = single_written(live(
         database
             .relations::<Event>()
             .insert(generated(
@@ -670,8 +678,8 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert event",
-    )?;
-    let container = live(
+    )?)?;
+    let container = single_written(live(
         database
             .relations::<Container>()
             .insert(generated(
@@ -680,19 +688,19 @@ async fn create_live_records(database: &GeneratedDatabase<AppSchema>) -> Produce
             )?)
             .await,
         "insert container",
-    )?;
+    )?)?;
 
     Ok(Created {
-        ada: ada.iid().to_owned(),
-        dana: dana.iid().to_owned(),
-        positive_robot: positive_robot.iid().to_owned(),
-        negative_robot: negative_robot.iid().to_owned(),
-        interaction_robot: interaction_robot.iid().to_owned(),
-        interaction_absent: interaction_absent.iid().to_owned(),
-        interaction_person: interaction_person.iid().to_owned(),
-        plain_activity: plain_activity.iid().to_owned(),
-        event: event.iid().to_owned(),
-        container: container.iid().to_owned(),
+        ada: ada.iid().to_string(),
+        dana: dana.iid().to_string(),
+        positive_robot: positive_robot.iid().to_string(),
+        negative_robot: negative_robot.iid().to_string(),
+        interaction_robot: interaction_robot.iid().to_string(),
+        interaction_absent: interaction_absent.iid().to_string(),
+        interaction_person: interaction_person.iid().to_string(),
+        plain_activity: plain_activity.iid().to_string(),
+        event: event.iid().to_string(),
+        container: container.iid().to_string(),
     })
 }
 
@@ -842,7 +850,7 @@ async fn observe_live_records(
             "container did not hydrate exactly one Event player",
         ));
     };
-    if item.iid() != Some(created.event.as_str()) {
+    if item.iid().map(type_bridge::Iid::as_str) != Some(created.event.as_str()) {
         return Err(ProducerError::new(
             "unexpected_live_value",
             "container Event player lost its relation identity",
@@ -872,7 +880,7 @@ where
     M: type_bridge::__codegen::EntityModel<Schema = AppSchema>
         + type_bridge::__codegen::CompleteModel,
 {
-    if live(database.entities::<M>().get_by_iid(iid).await, context)?.is_some() {
+    if live(database.entities::<M>().get_by_iid(&type_bridge::Iid::new(iid).unwrap()).await, context)?.is_some() {
         return Err(ProducerError::new("delete_not_observed", context));
     }
     Ok(())
@@ -887,7 +895,7 @@ where
     M: type_bridge::__codegen::RelationModel<Schema = AppSchema>
         + type_bridge::__codegen::CompleteModel,
 {
-    if live(database.relations::<M>().get_by_iid(iid).await, context)?.is_some() {
+    if live(database.relations::<M>().get_by_iid(&type_bridge::Iid::new(iid).unwrap()).await, context)?.is_some() {
         return Err(ProducerError::new("delete_not_observed", context));
     }
     Ok(())
@@ -902,7 +910,7 @@ async fn cleanup_live_records(
     live(
         database
             .relations::<Container>()
-            .delete(&created.container)
+            .delete(&type_bridge::Iid::new(&created.container).unwrap())
             .await,
         "delete container",
     )?;
@@ -911,7 +919,7 @@ async fn cleanup_live_records(
     order.push("container-event");
 
     live(
-        database.relations::<Event>().delete(&created.event).await,
+        database.relations::<Event>().delete(&type_bridge::Iid::new(&created.event).unwrap()).await,
         "delete event",
     )?;
     require_relation_absent::<Event>(database, &created.event, "read deleted event").await?;
@@ -920,14 +928,14 @@ async fn cleanup_live_records(
     live(
         database
             .relations::<PlainActivity>()
-            .delete(&created.plain_activity)
+            .delete(&type_bridge::Iid::new(&created.plain_activity).unwrap())
             .await,
         "delete plain activity",
     )?;
     let read_after_delete = live(
         database
             .relations::<PlainActivity>()
-            .get_by_iid(&created.plain_activity)
+            .get_by_iid(&type_bridge::Iid::new(&created.plain_activity).unwrap())
             .await,
         "read deleted plain activity",
     )?
@@ -968,7 +976,7 @@ async fn cleanup_live_records(
         ),
     ] {
         live(
-            database.relations::<Interaction>().delete(iid).await,
+            database.relations::<Interaction>().delete(&type_bridge::Iid::new(iid).unwrap()).await,
             context,
         )?;
         require_relation_absent::<Interaction>(database, iid, "read deleted interaction").await?;
@@ -978,7 +986,7 @@ async fn cleanup_live_records(
     live(
         database
             .entities::<Robot>()
-            .delete(&created.negative_robot)
+            .delete(&type_bridge::Iid::new(&created.negative_robot).unwrap())
             .await,
         "delete negative robot",
     )?;
@@ -993,7 +1001,7 @@ async fn cleanup_live_records(
     live(
         database
             .entities::<Robot>()
-            .delete(&created.positive_robot)
+            .delete(&type_bridge::Iid::new(&created.positive_robot).unwrap())
             .await,
         "delete positive robot",
     )?;
@@ -1006,14 +1014,14 @@ async fn cleanup_live_records(
     order.push("robot-7");
 
     live(
-        database.entities::<Person>().delete(&created.dana).await,
+        database.entities::<Person>().delete(&type_bridge::Iid::new(&created.dana).unwrap()).await,
         "delete Dana",
     )?;
     require_entity_absent::<Person>(database, &created.dana, "read deleted Dana").await?;
     order.push("data-dana");
 
     live(
-        database.entities::<Person>().delete(&created.ada).await,
+        database.entities::<Person>().delete(&type_bridge::Iid::new(&created.ada).unwrap()).await,
         "delete Ada",
     )?;
     require_entity_absent::<Person>(database, &created.ada, "read deleted Ada").await?;

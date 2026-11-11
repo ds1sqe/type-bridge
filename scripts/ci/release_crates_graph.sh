@@ -28,25 +28,17 @@ helper="$script_dir/publish_crate_idempotently.sh"
   exit 1
 }
 
-preexisting_crates=(
-  type-bridge-typedb-protocol-b8
-  type-bridge-typedb-driver-b8
-)
 release_crates=(
   type-bridge-contract
   type-bridge-core-lib
   type-bridge-schema
   type-bridge-query
   type-bridge-schema-migration
-  type-bridge-toml-transpiler
   type-bridge-schema-compat
   type-bridge-schema-codegen
   type-bridge-orm-derive
-  type-bridge-typedb-protocol-b8
-  type-bridge-typedb-driver-b8
   type-bridge-typedb-runtime
   type-bridge-orm
-  type-bridge-migration
   type-bridge-schema-migration-typedb
   type-bridge-server
   type-bridge-workspace
@@ -59,13 +51,11 @@ publish_crates=(
   type-bridge-schema
   type-bridge-query
   type-bridge-schema-migration
-  type-bridge-toml-transpiler
   type-bridge-schema-compat
   type-bridge-schema-codegen
   type-bridge-orm-derive
   type-bridge-typedb-runtime
   type-bridge-orm
-  type-bridge-migration
   type-bridge-schema-migration-typedb
   type-bridge-server
   type-bridge-workspace
@@ -82,25 +72,17 @@ if [[ "$mode" == "--publish" ]]; then
   exit 0
 fi
 
-for crate in "${preexisting_crates[@]}"; do
-  bash "$helper" --verify-preexisting "$crate"
-done
-
 patches=(
   --config 'patch.crates-io.type-bridge-contract.path="crates/contract"'
   --config 'patch.crates-io.type-bridge-core-lib.path="crates/core"'
   --config 'patch.crates-io.type-bridge-schema.path="crates/schema"'
   --config 'patch.crates-io.type-bridge-query.path="crates/query"'
   --config 'patch.crates-io.type-bridge-schema-migration.path="crates/schema-migration"'
-  --config 'patch.crates-io.type-bridge-toml-transpiler.path="crates/toml-transpiler"'
   --config 'patch.crates-io.type-bridge-schema-compat.path="crates/schema-compat"'
   --config 'patch.crates-io.type-bridge-schema-codegen.path="crates/schema-codegen"'
   --config 'patch.crates-io.type-bridge-orm-derive.path="crates/orm-derive"'
-  --config 'patch.crates-io.type-bridge-typedb-protocol-b8.path="vendor/typedb-protocol-b8"'
-  --config 'patch.crates-io.type-bridge-typedb-driver-b8.path="vendor/typedb-driver-b8"'
   --config 'patch.crates-io.type-bridge-typedb-runtime.path="crates/typedb-runtime"'
   --config 'patch.crates-io.type-bridge-orm.path="crates/orm"'
-  --config 'patch.crates-io.type-bridge-migration.path="crates/migration"'
   --config 'patch.crates-io.type-bridge-schema-migration-typedb.path="crates/schema-migration-typedb"'
   --config 'patch.crates-io.type-bridge-server.path="crates/server"'
   --config 'patch.crates-io.type-bridge-workspace.path="crates/workspace"'

@@ -30,9 +30,9 @@ def _write(tmp_path: Path, value: dict[str, Any]) -> Path:
 
 def test_distribution_contract_matches_every_live_source_authority() -> None:
     contract = VALIDATOR.validate()
-    assert contract["abi"]["decision"] == "additive-1.7"
-    assert contract["abi"]["version"] == "1.7.0"
-    assert contract["abi"]["package_metadata_version"] == "1.6.0"
+    assert contract["abi"]["decision"] == "breaking-2.0"
+    assert contract["abi"]["version"] == "2.0.0"
+    assert contract["abi"]["package_metadata_version"] == "2.0.0"
     assert contract["matrix"]["public_supported"] == []
     assert contract["publication_disposition"] == "artifact-only-unpublished-unsupported"
 
@@ -110,3 +110,27 @@ def test_full_c_audit_inventory_is_exactly_the_manifest() -> None:
     ]
     assert audit["output"]["manual_override"] is False
     assert audit["output"]["publication_authority"] is False
+
+
+def test_contract_regeneration_is_reproducible(tmp_path: Path) -> None:
+    import shutil
+
+    contract = _contract()
+    paths = [item["path"] for item in contract["source_authorities"]]
+    paths += [
+        "tests/contracts/c-broad-case-ledger.json",
+        "tests/contracts/c-abi.json",
+        "tests/contracts/c-distribution-v1.json",
+        VALIDATOR.ABI_1_6_HEADER,
+    ]
+    for relative in paths:
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    VALIDATOR.regenerate(tmp_path)
+    for relative in [
+        "tests/contracts/c-abi.json",
+        "tests/contracts/c-distribution-v1.json",
+        "tests/contracts/c-broad-case-ledger.json",
+    ]:
+        assert (tmp_path / relative).read_bytes() == (ROOT / relative).read_bytes()

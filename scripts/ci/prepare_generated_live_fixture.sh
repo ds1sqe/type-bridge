@@ -28,7 +28,6 @@ semantic_profile="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.13.6/v1}"
 output_dir="$(realpath -m "$requested_output")"
 
 case "$semantic_profile" in
-    typedb-3.11.5/v1) schema_source="$ACCEPTANCE_DIR/schema-3.11.5.yaml" ;;
     typedb-3.12.1/v1 | typedb-3.13.6/v1) schema_source="$ACCEPTANCE_DIR/schema.yaml" ;;
     *)
         echo "Unsupported generated-fixture semantic profile: $semantic_profile" >&2
@@ -114,23 +113,23 @@ fi
 primary="$scratch/primary"
 if [[ "$binding" == python* ]]; then
     write_workspace \
-        "$primary" python generated_v2 generated-python-live "$schema_source" yes
+        "$primary" python generated_package schema-codegen-acceptance "$schema_source" yes
     generate_workspace "$primary"
-    cp -R "$primary/generated/generated_v2" "$output_dir/generated_v2"
+    cp -R "$primary/generated/generated_package" "$output_dir/generated_package"
     cp "$primary/generated/schema-authority.json" "$output_dir/schema-authority.json"
 
     if [[ "$binding" == "python-artifact" ]]; then
-        cp -R "$output_dir/generated_v2" "$output_dir/generated_identical"
+        cp -R "$output_dir/generated_package" "$output_dir/generated_identical"
         ordered="$scratch/ordered"
         write_workspace \
-            "$ordered" python generated_ordered generated-python-ordered \
+            "$ordered" python generated_ordered schema-codegen-acceptance \
             "$ACCEPTANCE_DIR/schema-ordered.yaml" no
         generate_workspace "$ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
     elif [[ "$sdk_models_profile" == "yes" ]]; then
         ordered="$scratch/ordered"
         write_workspace \
-            "$ordered" python generated_ordered generated-python-ordered \
+            "$ordered" python generated_ordered schema-codegen-acceptance \
             "$SDK_MODELS_DIR/schema.yaml" yes
         generate_workspace "$ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
@@ -165,9 +164,9 @@ if [[ "$binding" == python* ]]; then
 fi
 
 write_workspace \
-    "$primary" typescript generated_v2 generated-projection-live "$schema_source" yes
+    "$primary" typescript generated_package schema-codegen-acceptance "$schema_source" yes
 generate_workspace "$primary"
-cp -R "$primary/generated/generated_v2" "$output_dir/generated_v2"
+cp -R "$primary/generated/generated_package" "$output_dir/generated_package"
 cp "$primary/generated/schema-authority.json" "$output_dir/schema-authority.json"
 
 foreign="$scratch/foreign"
@@ -179,7 +178,7 @@ cp -R "$foreign/generated/generated_foreign" "$output_dir/generated_foreign"
 if [[ "$sdk_models_profile" == "yes" ]]; then
     ordered="$scratch/ordered"
     write_workspace \
-        "$ordered" typescript generated_ordered generated-node-ordered \
+        "$ordered" typescript generated_ordered schema-codegen-acceptance \
         "$SDK_MODELS_DIR/schema.yaml" yes
     generate_workspace "$ordered"
     cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
@@ -208,7 +207,7 @@ cleanup_runtime_link() {
 trap 'cleanup_runtime_link; cleanup_scratch' EXIT
 
 "$NODE_DIR/node_modules/.bin/tsc" \
-    --project "$output_dir/generated_v2/tsconfig.json"
+    --project "$output_dir/generated_package/tsconfig.json"
 "$NODE_DIR/node_modules/.bin/tsc" \
     --project "$output_dir/generated_foreign/tsconfig.json"
 if [[ -d "$output_dir/generated_ordered" ]]; then

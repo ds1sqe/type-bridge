@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Full source-tree test suite — Rust + Python + Node + the internal C
-# foundation, unit + integration.
+# Full source-tree test suite — Rust + Python + Node + the C SDK and
+# runtime, unit + integration.
 #
 # Reproduces the CI unit/integration tiers locally. Exact wheel and npm release
 # artifact acceptance remains workflow-only; this script does not build or
@@ -69,10 +69,10 @@ pytest_args=()
 usage() {
     cat <<'EOF'
 Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated]
-                 [--typedb <3.11.5|3.12.3|3.13.6|3.14.0|all>] [-- <pytest args>]
+                 [--typedb <3.12.3|3.13.6|3.14.0|all>] [-- <pytest args>]
 
   --no-integration  Run only the offline tiers (Rust, Python unit, Node unit/dts,
-                    and the internal C foundation).
+                    and the C SDK and runtime).
   --proxy           Additionally run the proxy integration suite (-m proxy).
   --tls             Additionally run dedicated TLS transport tests. In isolated
                     mode this starts a test-only TLS endpoint in front of TypeDB.
@@ -171,9 +171,8 @@ CALLER_ACCEPTANCE_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-}"
 # ── TypeDB lanes ─────────────────────────────────────────────────────────────
 # Each supported TypeDB line and the semantic profile its live tier runs under.
 # 3.14.0 is the default line; 3.14 shares the 3.13 profile.
-TYPEDB_LANES=(3.11.5 3.12.3 3.13.6 3.14.0)
+TYPEDB_LANES=(3.12.3 3.13.6 3.14.0)
 declare -A LANE_PROFILES=(
-    [3.11.5]=typedb-3.11.5/v1
     [3.12.3]=typedb-3.12.1/v1
     [3.13.6]=typedb-3.13.6/v1
     [3.14.0]=typedb-3.13.6/v1
@@ -539,8 +538,32 @@ else
 fi
 
 # ── Offline tiers (always) ───────────────────────────────────────────────────
+for tool in uv uvx npm node; do
+    if ! command -v "$tool" >/dev/null; then
+        printf 'required tool is unavailable: %s\n' "$tool" >&2
+        exit 1
+    fi
+done
+bash scripts/ci/run_maturin.sh --version
+run_step "npm ci" bash -c "cd '$NODE_DIR' && npm ci"
+if [[ ! -x "$NODE_DIR/node_modules/.bin/tsc" ]]; then
+    printf 'required tsc is unavailable: %s/node_modules/.bin/tsc; run npm ci\n' "$NODE_DIR" >&2
+    exit 1
+fi
 printf "${BOLD}━━━ Rust ━━━${RESET}\n\n"
 export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+target_directory="$(cargo metadata --no-deps --format-version 1 \
+    --manifest-path type-bridge-core/Cargo.toml \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+case "$(uname -s)" in
+    Darwin) c_shared_filename=libtype_bridge_c.dylib ;;
+    MINGW*|MSYS*|CYGWIN*) c_shared_filename=type_bridge_c.dll ;;
+    *) c_shared_filename=libtype_bridge_c.so ;;
+esac
+export TYPE_BRIDGE_C_SHARED_LIBRARY="$target_directory/debug/$c_shared_filename"
+run_step "build the C ABI shared library" \
+    cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-c --lib
 run_step "cargo test --all-targets" \
     cargo test --manifest-path type-bridge-core/Cargo.toml --all-targets
 
@@ -555,7 +578,7 @@ run_step "generated Rust projection acceptance on MSRV 1.88" \
     -p type-bridge-schema-codegen --test rust_acceptance \
     generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
 
-printf "${BOLD}━━━ C foundation (offline, internal) ━━━${RESET}\n\n"
+printf "${BOLD}━━━ C SDK and runtime (offline) ━━━${RESET}\n\n"
 run_step "generated C package and strict installed-compiler checks" \
     cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
     -p type-bridge-schema-codegen --test c_emitter
@@ -574,9 +597,6 @@ run_step "C typed-query, diagnostic, function, remote ABI, and parity corpus" \
     --test query_function_abi \
     --test query_remote_abi \
     --test typed_query_corpus
-run_step "build the C ABI shared library" \
-    cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
-    -p type-bridge-c --lib
 run_step "C schema-package ABI and standalone consumer" \
     env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
     cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
@@ -587,7 +607,6 @@ run_step "pytest tests/unit/" \
     uv run pytest tests/unit/ --tb=short -q
 
 printf "${BOLD}━━━ Node (build + offline) ━━━${RESET}\n\n"
-run_step "npm ci"            bash -c "cd '$NODE_DIR' && npm ci"
 run_step "npm run build"     bash -c "cd '$NODE_DIR' && npm run build"
 run_step "ordered four-binding generated package compiler smoke" \
     cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
@@ -600,15 +619,13 @@ run_step "npm run test:dts"  bash -c "cd '$NODE_DIR' && npm run test:dts"
 run_step "npm run dts:parity" bash -c "cd '$NODE_DIR' && npm run dts:parity"
 
 # ── Integration tiers (one run per TypeDB lane) ──────────────────────────────
-# Connected migrations need a migration profile, which TypeDB 3.11 lacks.
 run_live_migration_steps() {
     printf "${BOLD}━━━ CLI workspace lifecycle (integration) ━━━${RESET}\n\n"
     for cli_live_test in \
         empty_workspace_to_replayed_history_live \
+        completed_legacy_history_then_evolve_live \
         documented_examples_initial_constraints_apply_and_verify_live \
-        verify_never_creates_databases_live \
-        adopt_legacy_history_then_evolve_live \
-        shipped_python_converter_to_native_adoption_live; do
+        verify_never_creates_databases_live; do
         if [[ "$cli_live_test" == documented_examples_initial_constraints_apply_and_verify_live \
             && "$lane_profile" != typedb-3.13.6/v1 ]]; then
             printf "${CYAN}Skipping documented examples on profile %s: examples require typedb-3.13.6/v1.${RESET}\n\n" "$lane_profile"
@@ -724,17 +741,8 @@ run_live_lane() {
         && [[ "$lane_matrix_server" == "$typedb_server_version" ]]; then
         lane_in_sdk_matrix=1
     fi
-    # TypeDB 3.11 has no migration profile: connected migrations refuse it.
     lane_migrations=1
-    if [[ "$typedb_server_version" == 3.11.* ]]; then
-        lane_migrations=0
-    fi
-    # Staged purchase plans bind given rows, which TypeDB 3.11 lacks; the V3
-    # staged suites skip there, so run them only where they prove something.
     lane_given_rows=1
-    if [[ "$typedb_server_version" == 3.11.* ]]; then
-        lane_given_rows=0
-    fi
     # Live workspace tests author their manifests on
     # TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE; keep it on the lane's profile.
     migration_profile_env=()
@@ -853,7 +861,27 @@ run_live_lane() {
             --test transaction_options_live --test staged_transaction_live \
             --test exact_integer_live
 
-    # The staged V3 suites run on every server of the typedb-3.13.6/v1 profile.
+
+    if [[ "$lane_given_rows" == 1 ]]; then
+        run_step "negated given role IID regression (TypeDB $typedb_server_version)" \
+            run_with_timeout 10m \
+            env TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
+                TYPE_BRIDGE_TRANSACTION_LIVE_VERSION="$typedb_server_version" \
+                TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            cargo test --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-orm --test plan_execute_live \
+                negated_given_role_iid_preserves_the_provider_connection -- --exact
+        run_step "specialized relation manager role matching (TypeDB $typedb_server_version)" \
+            run_with_timeout 10m \
+            env TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
+                TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                plan_builders::manager::tests::specialized_role_manager_callers_preserve_exact_and_inclusive_mutations \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-orm --lib
+    fi
+
+    # The staged suites run on every server of the typedb-3.13.6/v1 profile.
     if [[ "$lane_profile" == typedb-3.13.6/v1 ]]; then
         run_step "staged query-plan/v3 programs resolve at commit (TypeDB $typedb_server_version)" \
             run_with_timeout 10m \
@@ -889,13 +917,13 @@ run_live_lane() {
         # The C staged plans and the four-language writes emit SDK conformance
         # reports, which the profile matrix pairs with one server per profile.
         if [[ "$lane_in_sdk_matrix" == 1 ]]; then
-        run_step "C ABI 1.7 staged contract plans (TypeDB $typedb_server_version)" \
+        run_step "C ABI 2.0 staged contract plans (TypeDB $typedb_server_version)" \
             run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
                 TYPE_BRIDGE_C_INTG_DATABASE="type_bridge_c_staged_live_${$}" \
             bash scripts/ci/run_exact_ignored_rust_test.sh \
-                live_c17_consumer_stages_and_commits_contract_v3_plans \
+                live_c17_consumer_stages_and_commits_contract_plans \
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-c --test schema_package_abi
         run_step "C ABI 1.7 builder purchase race (TypeDB $typedb_server_version)" \
@@ -941,57 +969,47 @@ run_live_lane() {
         -p type-bridge-orm --features integration-tests --test integration -- \
             --nocapture --test-threads=1
 
-    printf "${BOLD}━━━ Production V2 server (integration) ━━━${RESET}\n\n"
-    run_step "type-bridge-server V1 + V2 live smoke" \
+    printf "${BOLD}━━━ Production staged server (integration) ━━━${RESET}\n\n"
+    run_step "type-bridge-server staged binary live smoke" \
         run_with_timeout 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
-            production_binary_serves_v1_health_and_v2_query \
+            production_binary_serves_staged_and_removed_routes \
             --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --features v2-query \
-            --test v2_query_integration_tests
+            -p type-bridge-server --test raw_integration_tests
 
-    run_step "type-bridge-server fetch write commit failure regression" \
-        run_with_timeout 10m \
-        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-        bash scripts/ci/run_exact_ignored_rust_test.sh \
-            fetch_write_commit_failure_reaches_driver_and_v1_query \
-            --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --features v2-query \
-            --test v2_query_integration_tests
-
-    run_step "type-bridge-server classified commit certainty regression" \
-        run_with_timeout 10m \
-        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-        bash scripts/ci/run_exact_ignored_rust_test.sh \
-            typedb::client::tests::integration_classified_commit_isolation_conflict \
-            --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --features v2-query \
-            --lib
+    if [[ "$lane_profile" == typedb-3.13.6/v1 ]]; then
+        run_step "type-bridge-server raw TypeQL HTTP parity and host policy" \
+            run_with_timeout 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                raw_answers_match_typedb_http_and_host_refusal_writes_nothing \
+                --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-server --test raw_integration_tests
+    fi
 
     if [[ "$lane_given_rows" == 1 ]]; then
-        run_step "type-bridge-server V3 staged live acceptance" \
+        run_step "type-bridge-server staged live acceptance" \
             run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             cargo test --manifest-path type-bridge-core/Cargo.toml \
-                -p type-bridge-server --features v2-query \
-                --test v3_staged_integration_tests -- --ignored
+                -p type-bridge-server \
+                --test staged_integration_tests -- --ignored
 
-        run_step "Rust SDK plan builder over the V3 staged proxy (live)" \
+        run_step "Rust SDK plan builder over the staged proxy (live)" \
             run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             cargo test --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge --test plan_builder_live -- --ignored
     fi
 
-    # Connects without an HTTP port, so discovery takes the band-8 gRPC
-    # fallback and must reach the lane server's own band.
-    run_step "runtime gRPC-only fallback discovery" \
+    # An exact version declaration permits a gRPC-only connection.
+    run_step "runtime declared-version gRPC connection" \
         run_with_timeout 10m \
-        env TYPEDB_GRPC_FALLBACK_ADDRESS="$TYPEDB_ADDRESS" \
-            TYPEDB_GRPC_FALLBACK_VERSION="$typedb_server_version" \
+        env TYPEDB_GRPC_DECLARED_ADDRESS="$TYPEDB_ADDRESS" \
+            TYPEDB_GRPC_DECLARED_VERSION="$typedb_server_version" \
         cargo test --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-typedb-runtime --test grpc_fallback_live
+            -p type-bridge-typedb-runtime --test declared_version_live
 
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
     if [[ -n "$sdk_report_dir" ]]; then
@@ -1053,17 +1071,6 @@ run_live_lane() {
 
     if [[ "$lane_migrations" == 1 ]]; then
         run_live_migration_steps
-    else
-        printf "${CYAN}Connected migrations refuse TypeDB %s (no migration profile); skipping the CLI workspace and recovery lifecycles.${RESET}\n\n" \
-            "$typedb_server_version"
-        printf "${BOLD}━━━ Unsupported-server migration refusal (integration) ━━━${RESET}\n\n"
-        run_step "unsupported migration apply creates no databases" \
-            run_with_timeout 10m \
-            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-            bash scripts/ci/run_exact_ignored_rust_test.sh \
-                unsupported_server_apply_creates_neither_database_live \
-                --manifest-path type-bridge-core/Cargo.toml \
-                -p type-bridge-cli --test e2e_workspace_live
     fi
 
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
@@ -1084,6 +1091,7 @@ run_live_lane() {
     run_step "pytest -m integration" \
         run_with_timeout 20m \
         env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_EXPECTED_SERVER_VERSION="$typedb_server_version" \
             "${sdk_python_env[@]}" \
         uv run pytest -m integration --tb=short "${pytest_args[@]}"
 
@@ -1279,18 +1287,6 @@ run_tls_transport_steps() {
             --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-cli --test e2e_workspace_live
 
-    run_step "TLS Python local query + HTTPS remote envelope" \
-        run_with_timeout 10m \
-        env TYPEDB_TLS_ADDRESS="$tls_address" \
-            TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
-            TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
-            SMOKE_TLS_CERT="$fixture_server_cert" \
-            SMOKE_TLS_KEY="$fixture_server_key" \
-            SMOKE_TLS_ROOT_CA="$fixture_root_ca" \
-        uv run pytest \
-            tests/integration/queries/test_query_v2_binding_smoke.py::test_prepared_plan_executes_locally_and_remotely \
-            -m integration --tb=short -q
-
     run_step "TLS generated Python application parity" \
         run_with_timeout 10m \
         env USE_DOCKER=false \
@@ -1303,18 +1299,6 @@ run_tls_transport_steps() {
         uv run pytest \
             tests/integration/schema/test_generated_projection_live.py::test_generated_package_preserves_application_operation_outcomes_live \
             -m integration --tb=short -q
-
-    run_step "TLS Node local query + HTTPS remote envelope" \
-        run_with_timeout 10m \
-        env TYPE_BRIDGE_NODE_NATIVE_PATH="$node_native" \
-            TYPEDB_TLS_ADDRESS="$tls_address" \
-            TYPEDB_TLS_HTTP_PORT="$tls_http_port" \
-            TYPEDB_TLS_ROOT_CA="$tls_root_ca" \
-            SMOKE_TLS_CERT="$fixture_server_cert" \
-            SMOKE_TLS_KEY="$fixture_server_key" \
-            NODE_EXTRA_CA_CERTS="$fixture_root_ca" \
-        node "$NODE_DIR/scripts/run-integration.js" \
-            tests/integration/queries/query-v2-smoke.test.js
 
     run_step "TLS generated Node application parity" \
         run_with_timeout 10m \
@@ -1333,9 +1317,7 @@ run_tls_transport_steps() {
 run_lane_tls() {
     printf "${BOLD}━━━ TLS transport (opt-in) ━━━${RESET}\n\n"
     if [[ "$lane_in_sdk_matrix" != 1 ]]; then
-        # The TLS lane asserts the band-9 driver identity and applies a
-        # workspace migration; TypeDB 3.11 is served by band 8 and refuses
-        # migrations.
+        # TLS acceptance requires a profile in the SDK matrix.
         printf "${CYAN}Skipping TLS transport on TypeDB %s: it needs a profile in the SDK matrix.${RESET}\n\n" \
             "$typedb_server_version"
     elif [[ "$isolated" != 1 ]]; then

@@ -16,15 +16,23 @@
 //! builder handle or an input. Output slots may be unaligned; a fenced
 //! output is cleared before the remaining checks.
 
+pub(crate) mod bulk;
+pub(crate) mod columns;
+pub(crate) mod context;
+pub(crate) mod idioms;
+pub(crate) mod selections;
+pub(crate) mod terminals;
+
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
 use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
-use type_bridge_contract::query_plan::v3::{ArithOp, Builtin, Expr, PlanBuilder};
+use type_bridge_contract::query_plan::{ArithOp, Builtin, DocumentRole, Expr, PlanBuilder};
 use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
@@ -53,18 +61,44 @@ pub const TYPE_BRIDGE_PLAN_OPERAND_INPUT: u32 = 2;
 pub const TYPE_BRIDGE_PLAN_OPERAND_VALUE: u32 = 3;
 pub const TYPE_BRIDGE_PLAN_OPERAND_EXPR: u32 = 4;
 
+/// One registered role included in a fetched thing document.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TypeBridgeFetchRole {
+    /// Registered role identity.
+    pub role: u32,
+    /// Whether a missing player drops the document (0 or 1).
+    pub required: u8,
+}
+
 /// A row cell with no value (an optional input left absent).
 pub const TYPE_BRIDGE_PLAN_VALUE_ABSENT: u32 = u32::MAX;
 
 /// Opaque `query-plan/v3` program under construction. Not thread-safe.
 pub struct TypeBridgePlanBuilder {
     core: PlanBuilder,
+    package: Option<Arc<crate::abi::SchemaPackageState>>,
+    view_layouts: Option<Arc<type_bridge_contract::projection::c_view::CViewLayouts>>,
+    models: Vec<Option<context::ModelRegistration>>,
     types: Vec<Option<TypeId>>,
     fields: Vec<Option<OwnsFactId>>,
     roles: Vec<Option<RoleId>>,
     values: Vec<Option<CanonicalValue>>,
-    exprs: Vec<Option<Expr>>,
+    exprs: Vec<Option<idioms::NativeExpression>>,
+    conditions: Vec<Option<(QueryOperand, ValueComparator, QueryOperand)>>,
     error: Option<SdkExecutionDiagnostic>,
+    frozen: bool,
+    last_rejected: Option<SdkExecutionDiagnostic>,
+    raw_cache: std::cell::OnceCell<CachedRawPlan>,
+    selections: Vec<selections::HeldSelection>,
+    registry: std::cell::OnceCell<
+        Result<Arc<type_bridge_orm::_registry::DescriptorRegistry>, SdkExecutionDiagnostic>,
+    >,
+}
+
+struct CachedRawPlan {
+    package: Arc<crate::abi::SchemaPackageState>,
+    source: Result<Arc<crate::staged::CompiledRawPlan>, SdkExecutionDiagnostic>,
 }
 
 fn label_invalid() -> SdkExecutionDiagnostic {
@@ -139,17 +173,53 @@ impl TypeBridgePlanBuilder {
     fn new() -> Self {
         Self {
             core: PlanBuilder::new(),
+            package: None,
+            view_layouts: None,
+            models: Vec::new(),
             types: Vec::new(),
             fields: Vec::new(),
             roles: Vec::new(),
             values: Vec::new(),
             exprs: Vec::new(),
+            conditions: Vec::new(),
             error: None,
+            frozen: false,
+            last_rejected: None,
+            raw_cache: std::cell::OnceCell::new(),
+            selections: Vec::new(),
+            registry: std::cell::OnceCell::new(),
         }
     }
 
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        outputs: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        if let Some(package) = &self.package {
+            outputs.check_package_borrowed_ranges(package)?;
+        }
+        if let Some(cached) = self.raw_cache.get() {
+            outputs.check_package_borrowed_ranges(&cached.package)?;
+        }
+        Ok(())
+    }
+
     fn fail(&mut self, error: SdkExecutionDiagnostic) {
-        self.error.get_or_insert(error);
+        if self.frozen {
+            self.last_rejected = Some(error);
+        } else {
+            self.error.get_or_insert(error);
+        }
+    }
+    fn require_open(&mut self) -> Result<(), TypeBridgeStatus> {
+        if !self.frozen {
+            return Ok(());
+        }
+        self.last_rejected = Some(invalid(
+            "plan_already_built",
+            "The plan recording is frozen after its first typed stage",
+        ));
+        Err(TypeBridgeStatus::InvalidArgument)
     }
 
     fn get<T: Clone>(&mut self, list: fn(&Self) -> &Vec<Option<T>>, id: u32) -> Option<T> {
@@ -214,7 +284,7 @@ impl TypeBridgePlanBuilder {
 
     fn expr(&mut self, kind: u32, id: u32) -> Option<Expr> {
         if kind == TYPE_BRIDGE_PLAN_OPERAND_EXPR {
-            self.get(|b| &b.exprs, id)
+            self.recorded_expression(id)
         } else {
             self.operand(kind, id).map(Expr::Operand)
         }
@@ -288,7 +358,7 @@ impl TypeBridgePlanBuilder {
     }
 
     fn register_expr(&mut self, expr: Option<Expr>) -> u32 {
-        push(&mut self.exprs, expr)
+        push(&mut self.exprs, expr.map(idioms::NativeExpression::Raw))
     }
 
     fn thing(&mut self, type_id: u32, call: fn(&mut PlanBuilder, TypeId) -> BindingId) -> u32 {
@@ -321,6 +391,10 @@ unsafe fn enter(
     };
     if !builder.is_null() {
         preflight.check_bytes(builder.cast(), size_of::<TypeBridgePlanBuilder>())?;
+        if out.is_some() {
+            // SAFETY: the caller lends the live builder and its immutable captured package.
+            unsafe { &*builder }.check_borrowed_ranges(&preflight)?;
+        }
     }
     for &(pointer, length) in inputs {
         if !pointer.is_null() {
@@ -370,7 +444,11 @@ unsafe fn run(
     }
     guarded(|| {
         // SAFETY: a live handle, fenced against the output slot.
-        let id = call(unsafe { &mut *builder });
+        let recorder = unsafe { &mut *builder };
+        if let Err(status) = recorder.require_open() {
+            return status;
+        }
+        let id = call(recorder);
         if let Some(out) = out {
             // SAFETY: the slot was fenced and cleared above.
             unsafe { out.write_unaligned(id) };
@@ -390,6 +468,7 @@ pub unsafe extern "C" fn type_bridge_plan_builder_new(
     // SAFETY: a writable, possibly unaligned, owner slot by contract.
     unsafe { out_builder.write_unaligned(ptr::null_mut()) };
     guarded(|| {
+        type_bridge_orm::debug::init();
         let handle = Box::new(TypeBridgePlanBuilder::new());
         // SAFETY: as above.
         unsafe { out_builder.write_unaligned(Box::into_raw(handle)) };
@@ -761,6 +840,27 @@ pub unsafe extern "C" fn type_bridge_plan_builder_update_player(
     }
 }
 
+/// Add a role player, preserving the relation's existing players.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_plan_builder_link(
+    builder: *mut TypeBridgePlanBuilder,
+    relation: u32,
+    role: u32,
+    player: u32,
+) -> TypeBridgeStatus {
+    // SAFETY: forwarded pointer contract.
+    unsafe {
+        run(builder, None, &[], |b| {
+            if let (Some(relation), Some(role), Some(player)) =
+                (b.binding(relation), b.role_id(role), b.binding(player))
+            {
+                b.core.link(relation, role, player);
+            }
+            0
+        })
+    }
+}
+
 /// Create a thing of the registered type.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_plan_builder_insert(
@@ -893,6 +993,40 @@ pub unsafe extern "C" fn type_bridge_plan_builder_delete_player(
     }
 }
 
+/// Restrict an existing matched thing to its canonical provider IID.
+/// IID syntax and binding admission remain core validation rules.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_plan_builder_by_iid(
+    builder: *mut TypeBridgePlanBuilder,
+    owner: u32,
+    iid: TypeBridgeByteView,
+) -> TypeBridgeStatus {
+    // SAFETY: the view is fenced and required readable before its bytes are used.
+    unsafe {
+        run(builder, None, &[view_range(iid)], |b| {
+            let Some(owner) = b.binding(owner) else {
+                return 0;
+            };
+            if iid.length > MAX_CANONICAL_STRING_BYTES {
+                b.fail(value_invalid());
+                return 0;
+            }
+            let bytes = if iid.length == 0 {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(iid.data, iid.length)
+            };
+            match std::str::from_utf8(bytes) {
+                Ok(iid) => {
+                    b.core.by_iid(owner, iid);
+                }
+                Err(_) => b.fail(value_invalid()),
+            }
+            0
+        })
+    }
+}
+
 /// Add one input row of `count` value ids, positional by input column.
 /// TYPE_BRIDGE_PLAN_VALUE_ABSENT leaves an optional cell empty.
 #[unsafe(no_mangle)]
@@ -954,6 +1088,40 @@ pub unsafe extern "C" fn type_bridge_plan_builder_returning(
     }
 }
 
+/// Describe one thing and its registered role players.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_plan_builder_fetch(
+    builder: *mut TypeBridgePlanBuilder,
+    thing: u32,
+    roles: *const TypeBridgeFetchRole,
+    count: usize,
+) -> TypeBridgeStatus {
+    let Some(length) = count.checked_mul(size_of::<TypeBridgeFetchRole>()) else {
+        return TypeBridgeStatus::InvalidArgument;
+    };
+    // SAFETY: the array is read only after its pointer contract holds.
+    unsafe {
+        run(builder, None, &[(roles.cast(), length)], |b| {
+            let thing = b.binding(thing);
+            let roles = (0..count)
+                .map(|i| {
+                    let entry = roles.add(i).read_unaligned();
+                    if entry.required > 1 {
+                        b.fail(constant_invalid());
+                        return None;
+                    }
+                    b.role_id(entry.role)
+                        .map(|role| DocumentRole::new(role, entry.required != 0))
+                })
+                .collect::<Option<Vec<_>>>();
+            if let (Some(thing), Some(roles)) = (thing, roles) {
+                b.core.fetch(thing, roles);
+            }
+            0
+        })
+    }
+}
+
 /// Answer the number of matched rows of a read plan.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_plan_builder_count(
@@ -988,12 +1156,25 @@ unsafe fn text_value(
     builder: *mut TypeBridgePlanBuilder,
     input: TypeBridgeByteView,
     out_value: *mut u32,
-    parse: fn(&str) -> Option<CanonicalValue>,
+    parse: fn(&str, type_bridge_contract::limits::CodecLimits) -> Option<CanonicalValue>,
 ) -> TypeBridgeStatus {
     // SAFETY: forwarded caller contract.
     unsafe {
         run(builder, Some(out_value), &[view_range(input)], |b| {
-            let value = text(input).and_then(|text| parse(&text));
+            let limits = b.core.limits().codec;
+            let value = if input.length > limits.max_string_bytes.min(limits.max_bytes) {
+                None
+            } else {
+                let bytes = if input.length == 0 {
+                    &[][..]
+                } else {
+                    // SAFETY: run fenced the caller-readable input before consuming it.
+                    std::slice::from_raw_parts(input.data, input.length)
+                };
+                std::str::from_utf8(bytes)
+                    .ok()
+                    .and_then(|text| parse(text, limits))
+            };
             b.register_value(value)
         })
     }
@@ -1008,8 +1189,10 @@ pub unsafe extern "C" fn type_bridge_plan_builder_value_string(
 ) -> TypeBridgeStatus {
     // SAFETY: forwarded pointer contract.
     unsafe {
-        text_value(builder, input, out_value, |text| {
-            CanonicalString::new(text).ok().map(CanonicalValue::String)
+        text_value(builder, input, out_value, |text, limits| {
+            CanonicalString::new_with_limits(text, limits)
+                .ok()
+                .map(CanonicalValue::String)
         })
     }
 }
@@ -1076,7 +1259,7 @@ pub unsafe extern "C" fn type_bridge_plan_builder_value_date(
 ) -> TypeBridgeStatus {
     // SAFETY: forwarded pointer contract.
     unsafe {
-        text_value(builder, input, out_value, |text| {
+        text_value(builder, input, out_value, |text, _limits| {
             CanonicalDate::from_str(text).ok().map(CanonicalValue::Date)
         })
     }
@@ -1091,7 +1274,7 @@ pub unsafe extern "C" fn type_bridge_plan_builder_value_datetime(
 ) -> TypeBridgeStatus {
     // SAFETY: forwarded pointer contract.
     unsafe {
-        text_value(builder, input, out_value, |text| {
+        text_value(builder, input, out_value, |text, _limits| {
             CanonicalDateTime::from_str(text)
                 .ok()
                 .map(CanonicalValue::DateTime)
@@ -1108,7 +1291,7 @@ pub unsafe extern "C" fn type_bridge_plan_builder_value_datetime_tz(
 ) -> TypeBridgeStatus {
     // SAFETY: forwarded pointer contract.
     unsafe {
-        text_value(builder, input, out_value, |text| {
+        text_value(builder, input, out_value, |text, _limits| {
             parse_provider_datetime_tz(text)
                 .ok()
                 .map(CanonicalValue::DateTimeTz)
@@ -1125,7 +1308,7 @@ pub unsafe extern "C" fn type_bridge_plan_builder_value_decimal(
 ) -> TypeBridgeStatus {
     // SAFETY: forwarded pointer contract.
     unsafe {
-        text_value(builder, input, out_value, |text| {
+        text_value(builder, input, out_value, |text, _limits| {
             DecimalValue::new(text)
                 .ok()
                 .filter(|decimal| decimal.as_str() == text)
@@ -1143,7 +1326,7 @@ pub unsafe extern "C" fn type_bridge_plan_builder_value_duration(
 ) -> TypeBridgeStatus {
     // SAFETY: forwarded pointer contract.
     unsafe {
-        text_value(builder, input, out_value, |text| {
+        text_value(builder, input, out_value, |text, _limits| {
             CanonicalDuration::from_str(text)
                 .ok()
                 .map(CanonicalValue::Duration)
@@ -1167,6 +1350,8 @@ pub unsafe extern "C" fn type_bridge_plan_builder_build(
     let inputs = |outputs: &DirectOutputPreflight| {
         if !builder.is_null() {
             outputs.check_bytes(builder.cast(), size_of::<TypeBridgePlanBuilder>())?;
+            // SAFETY: the caller lends this live builder and its captured package.
+            unsafe { &*builder }.check_borrowed_ranges(outputs)?;
         }
         outputs.check_object_kind(GENERATED_INPUT_SCHEMA_PACKAGE, package.cast())?;
         if !package.is_null() {
@@ -1188,26 +1373,252 @@ pub unsafe extern "C" fn type_bridge_plan_builder_build(
         if let Some(error) = &builder.error {
             return return_execution_error(error.clone(), out_diagnostics);
         }
-        let authority = &package.state()._authority;
-        let built = builder
-            .core
-            .build(
-                authority.declared_schema(),
-                authority.managed_state().managed_semantic_schema().clone(),
-            )
-            .and_then(|plan| plan.canonical_bytes().map(|canonical| (plan, canonical)));
-        let (plan, canonical) = match built {
-            Ok(value) => value,
-            Err(error) => {
+        if builder.package.as_ref().is_some_and(|captured| {
+            !crate::projected_value::same_package_brand(captured, package.state())
+        }) {
+            return return_execution_error(
+                SdkExecutionDiagnostic::generated_token_package_mismatch(),
+                out_diagnostics,
+            );
+        }
+        let compile = || {
+            let authority = &package.state()._authority;
+            builder
+                .core
+                .build(
+                    authority.declared_schema(),
+                    authority.managed_state().managed_semantic_schema().clone(),
+                )
+                .and_then(|plan| {
+                    plan.canonical_bytes().map(|canonical| {
+                        Arc::new(crate::staged::CompiledRawPlan { plan, canonical })
+                    })
+                })
+                .map_err(|error| contract_error(&error, "the plan builder program is invalid"))
+        };
+        let source = if builder.frozen {
+            let cached = builder.raw_cache.get_or_init(|| CachedRawPlan {
+                package: Arc::clone(package.state()),
+                source: compile(),
+            });
+            if !crate::projected_value::same_package_brand(&cached.package, package.state()) {
                 return return_execution_error(
-                    contract_error(&error, "the plan builder program is invalid"),
+                    SdkExecutionDiagnostic::generated_token_package_mismatch(),
                     out_diagnostics,
                 );
             }
+            cached.source.clone()
+        } else {
+            compile()
         };
-        let handle = Box::new(TypeBridgePlan::new(plan, canonical));
+        let source = match source {
+            Ok(source) => source,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
+        let handle = Box::new(TypeBridgePlan::from_shared(source));
         // SAFETY: the output slot was fenced and initialized above.
         unsafe { out_plan.write_unaligned(Box::into_raw(handle)) };
         TypeBridgeStatus::Ok
     })
+}
+
+/// Refuse a generated recording mutation after the first typed stage.
+/// # Safety
+/// A non-null builder is live and exclusively borrowed for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_plan_builder_require_open(
+    builder: *mut TypeBridgePlanBuilder,
+) -> TypeBridgeStatus {
+    if builder.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    guarded(|| {
+        // SAFETY: caller lends the live builder exclusively.
+        unsafe { &mut *builder }
+            .require_open()
+            .err()
+            .unwrap_or(TypeBridgeStatus::Ok)
+    })
+}
+
+/// Snapshot the latest rejected frozen mutation's diagnostics without clearing it.
+/// An untouched recording returns an empty owned diagnostics handle.
+/// # Safety
+/// Builder is live; output is writable, possibly unaligned, and disjoint from inputs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_plan_builder_diagnostics(
+    builder: *const TypeBridgePlanBuilder,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        let outputs = match direct_output_preflight(&[(
+            out_diagnostics.cast(),
+            size_of::<*mut TypeBridgeExecutionDiagnostics>(),
+        )]) {
+            Ok(outputs) => outputs,
+            Err(status) => return status,
+        };
+        if !builder.is_null() {
+            if let Err(status) =
+                outputs.check_bytes(builder.cast(), size_of::<TypeBridgePlanBuilder>())
+            {
+                return status;
+            }
+            // SAFETY: caller lends the live recording and captured package.
+            if let Err(status) = unsafe { &*builder }.check_borrowed_ranges(&outputs) {
+                return status;
+            }
+        }
+        if out_diagnostics.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: the output is writable and disjoint from all retained inputs.
+        unsafe { out_diagnostics.write_unaligned(ptr::null_mut()) };
+        if builder.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: the input recording remains live and immutably borrowed.
+        let diagnostics = unsafe { &*builder }.last_rejected.iter().cloned().collect();
+        let handle = Box::new(crate::execution_diagnostic::execution_diagnostics_handle(
+            diagnostics,
+        ));
+        // SAFETY: as above; snapshot owns its diagnostics independently.
+        unsafe { out_diagnostics.write_unaligned(Box::into_raw(handle)) };
+        TypeBridgeStatus::Ok
+    })
+}
+
+#[cfg(test)]
+mod frozen_tests {
+    use super::*;
+    use crate::execution_diagnostic::{
+        type_bridge_execution_diagnostics_close, type_bridge_execution_diagnostics_count,
+    };
+    #[test]
+    fn frozen_mutations_preserve_the_cached_raw_source_and_diagnostic_snapshot() {
+        let package = crate::entity_crud::tests::package("frozen");
+        let matching = crate::entity_crud::tests::package("frozen");
+        let foreign = crate::entity_crud::tests::package("foreign_frozen");
+        let mut builder = TypeBridgePlanBuilder::new();
+        builder.package = Some(Arc::clone(package.state()));
+        let model = builder.register_type(TYPE_BRIDGE_PLAN_THING_ENTITY, Some("person".into()));
+        let field = builder.register_field(model, Some("department".into()));
+        let owner = builder.thing(model, PlanBuilder::exact);
+        builder.core.count();
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_plan_builder_diagnostics(&builder, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        let mut count = usize::MAX;
+        assert_eq!(
+            unsafe { type_bridge_execution_diagnostics_count(diagnostics, &mut count) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(count, 0);
+        unsafe { type_bridge_execution_diagnostics_close(&mut diagnostics) };
+        let mut before = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_plan_builder_build(&builder, &package, &mut before, &mut diagnostics)
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(builder.raw_cache.get().is_none());
+        builder.frozen = true;
+        let mut first = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_plan_builder_build(&builder, &matching, &mut first, &mut diagnostics)
+            },
+            TypeBridgeStatus::Ok
+        );
+        let canonical = unsafe { &*first }.source.canonical.clone();
+        let field_value =
+            unsafe { idioms::type_bridge_plan_string_field(&mut builder, owner, field) };
+        assert!(builder.error.is_none());
+        let sizes = (
+            builder.types.len(),
+            builder.exprs.len(),
+            builder.conditions.len(),
+        );
+        assert_eq!(
+            unsafe { type_bridge_plan_builder_exists(&mut builder) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        let rejected = unsafe {
+            idioms::type_bridge_plan_string_eq(
+                field_value,
+                idioms::type_bridge_plan_string_literal(TypeBridgeByteView {
+                    data: b"value".as_ptr(),
+                    length: 5,
+                }),
+            )
+        };
+        assert_eq!(
+            unsafe { idioms::type_bridge_plan_require(&mut builder, rejected) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert!(builder.error.is_none());
+        assert_eq!(
+            sizes,
+            (
+                builder.types.len(),
+                builder.exprs.len(),
+                builder.conditions.len()
+            )
+        );
+        assert_eq!(
+            builder.last_rejected.as_ref().unwrap().code().as_str(),
+            "plan_already_built"
+        );
+        assert_eq!(
+            unsafe { type_bridge_plan_builder_diagnostics(&builder, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        let retained = diagnostics;
+        let mut second = ptr::null_mut();
+        let mut build_diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_plan_builder_build(
+                    &builder,
+                    &package,
+                    &mut second,
+                    &mut build_diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(Arc::ptr_eq(
+            &unsafe { &*first }.source,
+            &unsafe { &*second }.source
+        ));
+        assert_eq!(canonical, unsafe { &*second }.source.canonical);
+        unsafe { crate::staged::type_bridge_plan_free(&mut second) };
+        assert_eq!(
+            unsafe {
+                type_bridge_plan_builder_build(
+                    &builder,
+                    &foreign,
+                    &mut second,
+                    &mut build_diagnostics,
+                )
+            },
+            TypeBridgeStatus::ExecutionFailed
+        );
+        assert!(second.is_null());
+        unsafe { type_bridge_execution_diagnostics_close(&mut build_diagnostics) };
+        drop(builder);
+        assert_eq!(
+            unsafe { type_bridge_execution_diagnostics_count(retained, &mut count) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(count, 1);
+        unsafe {
+            type_bridge_execution_diagnostics_close(&mut diagnostics);
+            crate::staged::type_bridge_plan_free(&mut before);
+            crate::staged::type_bridge_plan_free(&mut first);
+        }
+    }
 }

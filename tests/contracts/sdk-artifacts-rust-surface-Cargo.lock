@@ -316,12 +316,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
-name = "equivalent"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
-
-[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -454,19 +448,13 @@ dependencies = [
 
 [[package]]
 name = "granit-parser"
-version = "0.0.7"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d03f81ad4732830d85cfd417a9f62cde6dadda4354d37d078a6084a19560aa2d"
+checksum = "da55feca5d1625466bae068f9fd4b87892caeae70c3fe671ddb0f50d41aebf37"
 dependencies = [
  "arraydeque",
  "smallvec",
 ]
-
-[[package]]
-name = "hashbrown"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "iana-time-zone"
@@ -597,18 +585,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "indexmap"
-version = "2.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07aa2048142242915a31d35844fb311e0e53fcca590c3a0a40dcf1b841fa09eb"
-dependencies = [
- "equivalent",
- "hashbrown",
- "serde",
- "serde_core",
-]
-
-[[package]]
 name = "io-extras"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -663,6 +639,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -694,6 +676,15 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
 
 [[package]]
 name = "maybe-owned"
@@ -997,9 +988,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.4"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags",
  "errno",
@@ -1167,15 +1158,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_spanned"
-version = "0.6.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1184,6 +1166,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]
@@ -1334,6 +1325,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "tinystr"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1387,47 +1387,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "toml"
-version = "0.8.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
-dependencies = [
- "serde",
- "serde_spanned",
- "toml_datetime",
- "toml_edit",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "0.6.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "toml_edit"
-version = "0.22.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
-dependencies = [
- "indexmap",
- "serde",
- "serde_spanned",
- "toml_datetime",
- "toml_write",
- "winnow",
-]
-
-[[package]]
-name = "toml_write"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
-
-[[package]]
 name = "tracing"
 version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1459,8 +1418,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "matchers",
+ "once_cell",
+ "regex-automata",
+ "sharded-slab",
+ "thread_local",
+ "tracing",
+ "tracing-core",
+]
+
+[[package]]
 name = "type-bridge"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "regex",
  "serde_json",
@@ -1477,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-contract"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1488,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -1499,14 +1473,13 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "type-bridge-contract",
+ "typeql",
  "unicode-ident",
  "ureq",
  "winnow",
  "winx",
- "typeql",
 ]
 
 [[package]]
@@ -1518,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "ed25519-dalek",
  "rand_core",
@@ -1529,6 +1502,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "type-bridge-contract",
  "type-bridge-core-lib",
  "type-bridge-query",
@@ -1540,7 +1514,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1550,7 +1524,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-query"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -1558,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -1572,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-codegen"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -1581,20 +1555,19 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-compat"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
  "type-bridge-contract",
  "type-bridge-core-lib",
  "type-bridge-schema",
- "type-bridge-toml-transpiler",
  "typeql",
 ]
 
 [[package]]
 name = "type-bridge-schema-migration"
-version = "2.3.3"
+version = "3.0.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -1608,17 +1581,6 @@ dependencies = [
  "type-bridge-core-lib",
  "type-bridge-query",
  "type-bridge-schema",
-]
-
-[[package]]
-name = "type-bridge-toml-transpiler"
-version = "2.3.3"
-dependencies = [
- "indexmap",
- "serde",
- "thiserror",
- "toml",
- "type-bridge-core-lib",
 ]
 
 [[package]]

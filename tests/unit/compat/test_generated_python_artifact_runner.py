@@ -111,14 +111,14 @@ def test_safe_wheel_extraction_rejects_traversal_links_and_collisions(tmp_path: 
 def test_generated_tree_copy_rejects_links(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
-    (source / "generated_v2").mkdir()
-    (source / "generated_v2/__init__.py").write_text("# fixture\n", encoding="utf-8")
+    (source / "generated_package").mkdir()
+    (source / "generated_package/__init__.py").write_text("# fixture\n", encoding="utf-8")
     runner.copy_tree_without_links(source, tmp_path / "copied")
-    assert (tmp_path / "copied/generated_v2/__init__.py").is_file()
+    assert (tmp_path / "copied/generated_package/__init__.py").is_file()
 
     linked = tmp_path / "linked"
     linked.mkdir()
-    (linked / "escape").symlink_to(source / "generated_v2")
+    (linked / "escape").symlink_to(source / "generated_package")
     with pytest.raises(runner.RunnerError, match="symbolic links"):
         runner.copy_tree_without_links(linked, tmp_path / "unused")
 

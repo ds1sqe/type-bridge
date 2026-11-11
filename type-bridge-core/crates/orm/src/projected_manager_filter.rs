@@ -1,9 +1,10 @@
-//! Immutable exact-model filters and bounded generated-manager terminals.
+//! Immutable projected-model filters and bounded generated-manager terminals.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use type_bridge_contract::id::{TypeId, TypeKind};
+use type_bridge_contract::id::{Iid, TypeId, TypeKind};
 use type_bridge_contract::projection::ProjectedTokenIdentity;
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::{
@@ -25,12 +26,15 @@ use crate::projected_query::{
     ProjectedQueryOrigin, materialize_projected_manager_things_with_budget,
 };
 use crate::query_execution_limits::{
-    DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES, DEFAULT_PROXY_QUERY_BYTES, QueryExecutionDeadline,
-    QueryExecutionResourceLimits,
+    DEFAULT_DIRECT_QUERY_BYTES, DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES, DEFAULT_PROXY_QUERY_BYTES,
+    QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
 use crate::runtime_projection::InstalledRuntimeProjection;
 use crate::session::backend::AnswerCancellation;
 use crate::session::{Database, TransactionContext};
+
+#[path = "projected_manager_mutation.rs"]
+mod mutation;
 
 const MAX_MANAGER_FILTER_PREDICATES: usize = crate::match_request::MAX_BOOLEAN_TERMS;
 
@@ -125,14 +129,23 @@ impl ProjectedManagerFilterResourceMeasure {
     }
 }
 
+// Keep existing field predicates inline; boxing would add a default-path allocation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
-struct ProjectedManagerPredicate {
+enum ProjectedManagerPredicate {
+    Field(ProjectedManagerFieldPredicate),
+    Iid(Iid),
+    Iids(Arc<[Iid]>),
+}
+
+#[derive(Clone, Debug)]
+struct ProjectedManagerFieldPredicate {
     field: OwnsFactId,
     comparison: ProjectedManagerComparison,
     value: ProjectedAttributeValue,
 }
 
-/// One persistent, exact-model, generated-field filter.
+/// One persistent generated-field filter, exact by default.
 ///
 /// Every transition returns a new value. Field-token provenance is nominally
 /// fenced by generated facades before they pass the resolved
@@ -143,6 +156,8 @@ pub struct ProjectedManagerFilter {
     brand: ProjectionBrand,
     model: TypeId,
     predicates: Arc<[ProjectedManagerPredicate]>,
+    matches_none: bool,
+    match_mode: MatchMode,
     measure: ProjectedManagerFilterResourceMeasure,
 }
 
@@ -162,7 +177,16 @@ impl ProjectedManagerFilter {
             },
             model,
             predicates: Arc::from([]),
+            matches_none: false,
+            match_mode: MatchMode::Exact,
         })
+    }
+
+    /// Include concrete descendants in read terminals. Mutations require exact scope.
+    #[must_use]
+    pub fn including_subtypes(mut self) -> Self {
+        self.match_mode = MatchMode::Subtypes;
+        self
     }
 
     /// Append one exact generated-field comparison without mutating this filter.
@@ -175,12 +199,12 @@ impl ProjectedManagerFilter {
     ) -> Result<Self, SdkExecutionDiagnostic> {
         self.validate_for(installed)?;
         let index = self.predicates.len();
-        if index >= MAX_MANAGER_FILTER_PREDICATES {
+        if self.measure.items >= MAX_MANAGER_FILTER_PREDICATES {
             return Err(resource_limit(
                 "manager_filter_predicate_limit",
                 "The manager filter exceeds the canonical predicate ceiling",
                 predicate_collection_path(&self.model),
-                u64::try_from(index.saturating_add(1)).unwrap_or(u64::MAX),
+                u64::try_from(self.measure.items.saturating_add(1)).unwrap_or(u64::MAX),
                 u64::try_from(MAX_MANAGER_FILTER_PREDICATES).unwrap_or(u64::MAX),
                 false,
             ));
@@ -310,21 +334,147 @@ impl ProjectedManagerFilter {
                 )
             })?;
         predicates.extend(self.predicates.iter().cloned());
-        predicates.push(ProjectedManagerPredicate {
-            field: field_id.clone(),
-            comparison,
-            value: value.clone(),
+        predicates.push(ProjectedManagerPredicate::Field(
+            ProjectedManagerFieldPredicate {
+                field: field_id.clone(),
+                comparison,
+                value: value.clone(),
+            },
+        ));
+        Ok(Self {
+            brand: self.brand.clone(),
+            model: self.model.clone(),
+            predicates: Arc::from(predicates),
+            matches_none: self.matches_none,
+            match_mode: self.match_mode,
+            measure: ProjectedManagerFilterResourceMeasure {
+                items: self.measure.items.saturating_add(1),
+                bytes: next_bytes,
+                attribute_values: next_attribute_values,
+            },
+        })
+    }
+
+    /// Append one IID while retaining the single-write plan form.
+    pub fn try_and_iid(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        iid: &Iid,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        self.try_and_iid_selection(installed, Cow::Borrowed(std::slice::from_ref(iid)), true)
+    }
+
+    /// Pure IID selection in authored order, for per-input lifecycle events.
+    #[doc(hidden)]
+    pub fn exact_iids(&self) -> Option<&[Iid]> {
+        match self.predicates.as_ref() {
+            [ProjectedManagerPredicate::Iid(iid)] => Some(std::slice::from_ref(iid)),
+            [ProjectedManagerPredicate::Iids(iids)] => Some(iids),
+            _ => None,
+        }
+    }
+
+    /// Whether the filter is exactly one authored IID list, including a singleton.
+    #[doc(hidden)]
+    pub fn is_iid_list(&self) -> bool {
+        matches!(
+            self.predicates.as_ref(),
+            [ProjectedManagerPredicate::Iids(_)]
+        )
+    }
+
+    /// Append a bounded IID set; an empty set proves that no thing matches.
+    /// Pure lists admit the batch input ceiling for ordinal deletes. Read and update
+    /// terminals retain the Boolean predicate ceiling when compiling an IID disjunction.
+    /// A singleton uses the same native IID predicate as an exact by-IID lookup.
+    pub fn try_and_iids(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        iids: &[Iid],
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        self.try_and_iid_selection(installed, Cow::Borrowed(iids), false)
+    }
+
+    /// Retain a binding-owned list without cloning its validated identifier strings.
+    #[doc(hidden)]
+    pub fn try_and_owned_iids(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        iids: Vec<Iid>,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        self.try_and_iid_selection(installed, Cow::Owned(iids), false)
+    }
+
+    fn try_and_iid_selection(
+        &self,
+        installed: &InstalledRuntimeProjection,
+        iids: Cow<'_, [Iid]>,
+        single: bool,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        self.validate_for(installed)?;
+        let next_items = self.measure.items.saturating_add(iids.len().max(1));
+        let pure_list = self.predicates.is_empty() && !single;
+        if pure_list {
+            crate::ProjectedBatch::validate_binding_row_count(iids.len())?;
+        } else if next_items > MAX_MANAGER_FILTER_PREDICATES {
+            return Err(self.boolean_predicate_limit(next_items));
+        }
+        let byte_ceiling = if pure_list {
+            DEFAULT_DIRECT_QUERY_BYTES
+        } else {
+            DEFAULT_PROXY_QUERY_BYTES
+        };
+        let bytes = iids
+            .iter()
+            .try_fold(self.measure.bytes, |bytes, iid| {
+                bytes.checked_add(iid.as_str().len())
+            })
+            .filter(|bytes| *bytes as u64 <= byte_ceiling)
+            .ok_or_else(|| {
+                resource_exhausted(
+                    "manager_filter_byte_limit",
+                    "The IID filter exceeds the canonical byte ceiling",
+                    predicate_collection_path(&self.model),
+                )
+            })?;
+        let mut predicates = Vec::new();
+        predicates
+            .try_reserve_exact(self.predicates.len() + 1)
+            .map_err(|_| {
+                resource_exhausted(
+                    "manager_filter_allocation_exhausted",
+                    "The manager filter could not reserve bounded predicate storage",
+                    predicate_collection_path(&self.model),
+                )
+            })?;
+        predicates.extend(self.predicates.iter().cloned());
+        let matches_none = self.matches_none || iids.is_empty();
+        predicates.push(if single {
+            ProjectedManagerPredicate::Iid(iids[0].clone())
+        } else {
+            ProjectedManagerPredicate::Iids(match iids {
+                Cow::Borrowed(values) => Arc::from(values),
+                Cow::Owned(values) => Arc::from(values),
+            })
         });
         Ok(Self {
             brand: self.brand.clone(),
             model: self.model.clone(),
             predicates: Arc::from(predicates),
+            matches_none,
+            match_mode: self.match_mode,
             measure: ProjectedManagerFilterResourceMeasure {
-                items: index + 1,
-                bytes: next_bytes,
-                attribute_values: next_attribute_values,
+                items: next_items,
+                bytes,
+                attribute_values: self.measure.attribute_values,
             },
         })
+    }
+
+    /// Whether an authored empty IID set proves that no thing can match.
+    #[doc(hidden)]
+    pub const fn matches_none(&self) -> bool {
+        self.matches_none
     }
 
     /// Return the exact model selected by this filter.
@@ -359,6 +509,9 @@ impl ProjectedManagerFilter {
         self.brand.validate(installed, type_path(&self.model))?;
         require_manager_model(installed, &self.model)?;
         for (index, predicate) in self.predicates.iter().enumerate() {
+            let ProjectedManagerPredicate::Field(predicate) = predicate else {
+                continue;
+            };
             let identity = ProjectedTokenIdentity::Field {
                 owner: self.model.clone(),
                 field: predicate.field.clone(),
@@ -441,6 +594,13 @@ impl ProjectedManagerFilter {
         &self,
         installed: &InstalledRuntimeProjection,
     ) -> Result<(), SdkExecutionDiagnostic> {
+        if self.predicates.iter().any(|predicate| match predicate {
+            ProjectedManagerPredicate::Iid(_) => true,
+            ProjectedManagerPredicate::Iids(iids) => iids.len() == 1,
+            _ => false,
+        }) {
+            return Ok(());
+        }
         let model = installed
             .projection()
             .models()
@@ -457,6 +617,9 @@ impl ProjectedManagerFilter {
         for key in keys {
             let mut selected: Option<(&CanonicalValue, usize)> = None;
             for (index, predicate) in self.predicates.iter().enumerate() {
+                let ProjectedManagerPredicate::Field(predicate) = predicate else {
+                    continue;
+                };
                 if &predicate.field != key || predicate.comparison != ProjectedManagerComparison::Eq
                 {
                     continue;
@@ -483,6 +646,24 @@ impl ProjectedManagerFilter {
                     ],
                 ));
             }
+        }
+        Ok(())
+    }
+
+    fn boolean_predicate_limit(&self, items: usize) -> SdkExecutionDiagnostic {
+        resource_limit(
+            "manager_filter_predicate_limit",
+            "The IID filter exceeds the canonical predicate ceiling",
+            predicate_collection_path(&self.model),
+            items as u64,
+            MAX_MANAGER_FILTER_PREDICATES as u64,
+            false,
+        )
+    }
+
+    fn require_boolean_predicates(&self) -> Result<(), SdkExecutionDiagnostic> {
+        if self.measure.items > MAX_MANAGER_FILTER_PREDICATES {
+            return Err(self.boolean_predicate_limit(self.measure.items));
         }
         Ok(())
     }
@@ -549,6 +730,24 @@ fn append_validated_manager_expression(
                     filter,
                 )?;
             }
+            Ok(())
+        }
+        MatchExpr::Or { expressions } => {
+            let iids = expressions
+                .iter()
+                .map(|expression| match expression {
+                    MatchExpr::BindingIid { binding, iid } if *binding == root => {
+                        Iid::new(iid.clone()).map_err(|_| manager_query_shape_invalid())
+                    }
+                    _ => Err(manager_query_shape_invalid()),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            *filter = filter.try_and_iids(installed, &iids)?;
+            Ok(())
+        }
+        MatchExpr::BindingIid { binding, iid } if *binding == root => {
+            let iid = Iid::new(iid.clone()).map_err(|_| manager_query_shape_invalid())?;
+            *filter = filter.try_and_iid(installed, &iid)?;
             Ok(())
         }
         MatchExpr::FieldValue {
@@ -665,6 +864,340 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         Self { installed }
     }
 
+    /// Preserve keyword-filter selection while using the native plan and hydration owners.
+    #[doc(hidden)]
+    pub async fn compatibility_all_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        self.compatibility_fetch_on_target(
+            target,
+            model,
+            expressions,
+            MatchMode::Exact,
+            None,
+            control,
+        )
+        .await
+    }
+
+    /// Return the released arbitrary first match without an identity-only precondition.
+    #[doc(hidden)]
+    pub async fn compatibility_first_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Option<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        let values = self
+            .compatibility_fetch_on_target(
+                target,
+                model,
+                expressions,
+                MatchMode::Exact,
+                Some(1),
+                control,
+            )
+            .await?;
+        Ok(values.into_iter().next())
+    }
+
+    /// Read a generated subtype association through the common native materializer.
+    #[doc(hidden)]
+    pub async fn all_including_subtypes_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        self.compatibility_fetch_on_target(target, model, &[], MatchMode::Subtypes, None, control)
+            .await
+    }
+
+    /// Read one IID across a generated subtype association, retaining its concrete model.
+    #[doc(hidden)]
+    pub async fn get_by_iid_including_subtypes_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        iid: &str,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Option<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        crate::projected_crud::validate_iid(model, iid)?;
+        let expressions = [crate::_dynamic::DynamicExpr::Iid {
+            iid: iid.to_owned(),
+        }];
+        let mut values = self
+            .compatibility_fetch_on_target(
+                target,
+                model,
+                &expressions,
+                MatchMode::Subtypes,
+                None,
+                control,
+            )
+            .await?;
+        if values.len() > 1 {
+            return Err(integrity(
+                "manager_iid_cardinality_invalid",
+                "A manager IID lookup returned multiple roots",
+                type_path(model),
+            )
+            .into());
+        }
+        if let Some(value) = values.last() {
+            crate::projected_crud::validate_returned_iid(value.iid(), iid, model)?;
+        }
+        Ok(values.pop())
+    }
+
+    /// Count a generated subtype association using the common scalar answer owner.
+    #[doc(hidden)]
+    pub async fn count_including_subtypes_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<u64, crate::QueryTargetError> {
+        let (program, answer) = self
+            .compatibility_scalar_on_target(
+                target,
+                model,
+                &[],
+                crate::plan_builders::manager::ReadTerminal::Count,
+                MatchMode::Subtypes,
+                control,
+            )
+            .await?;
+        self.compatibility_count_answer(model, &program, answer)
+    }
+
+    /// Count exact keyword-filter matches through the common plan target.
+    #[doc(hidden)]
+    pub async fn compatibility_count_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<u64, crate::QueryTargetError> {
+        let (program, answer) = self
+            .compatibility_scalar_on_target(
+                target,
+                model,
+                expressions,
+                crate::plan_builders::manager::ReadTerminal::Count,
+                MatchMode::Exact,
+                control,
+            )
+            .await?;
+        self.compatibility_count_answer(model, &program, answer)
+    }
+
+    fn compatibility_count_answer(
+        &self,
+        model: &TypeId,
+        program: &crate::plan_builders::manager::ManagerRead,
+        answer: crate::query_plan_exec::PlanAnswer,
+    ) -> Result<u64, crate::QueryTargetError> {
+        let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } =
+            answer.to_staged(&program.plans()[0]).map_err(|error| {
+                crate::QueryTargetError::Direct(crate::plan_builders::manager::diagnostic(error))
+            })?
+        else {
+            return Err(SdkExecutionDiagnostic::internal_failure().into());
+        };
+        let invalid_count = || {
+            integrity(
+                "provider_count_cardinality_invalid",
+                "The provider count query did not return one nonnegative integer",
+                type_path(model),
+            )
+        };
+        match rows.as_slice() {
+            [row] => match row.as_slice() {
+                [
+                    type_bridge_contract::query_remote::RemoteValue::Value {
+                        value: CanonicalValue::Long(count),
+                    },
+                ] => u64::try_from(*count).map_err(|_| invalid_count().into()),
+                _ => Err(invalid_count().into()),
+            },
+            _ => Err(invalid_count().into()),
+        }
+    }
+
+    /// Test exact keyword-filter existence through the common plan target.
+    #[doc(hidden)]
+    pub async fn compatibility_exists_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<bool, crate::QueryTargetError> {
+        let (_, answer) = self
+            .compatibility_scalar_on_target(
+                target,
+                model,
+                expressions,
+                crate::plan_builders::manager::ReadTerminal::Exists,
+                MatchMode::Exact,
+                control,
+            )
+            .await?;
+        match answer {
+            crate::query_plan_exec::PlanAnswer::Exists(value) => Ok(value),
+            _ => Err(SdkExecutionDiagnostic::internal_failure().into()),
+        }
+    }
+
+    fn compatibility_preflight(
+        &self,
+        model: &TypeId,
+        control: &ProjectedManagerFilterInvocationControl,
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        require_manager_model(self.installed, model)?;
+        let bytes = type_id_bytes(model) as u64;
+        if bytes > control.limits.bytes {
+            return Err(resource_limit(
+                "manager_filter_byte_limit",
+                "The manager filter exceeds the captured byte ceiling",
+                predicate_collection_path(model),
+                bytes,
+                control.limits.bytes,
+                true,
+            ));
+        }
+        control.checkpoint(model)
+    }
+
+    async fn compatibility_scalar_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        terminal: crate::plan_builders::manager::ReadTerminal,
+        mode: MatchMode,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<
+        (
+            crate::plan_builders::manager::ManagerRead,
+            crate::query_plan_exec::PlanAnswer,
+        ),
+        crate::QueryTargetError,
+    > {
+        let control = control.constrained_by(target.answer_limits());
+        self.compatibility_preflight(model, &control)?;
+        let limits = target
+            .manager_query_limits(control.deadline, &control.cancellation)
+            .await?;
+        let registry = self
+            .installed
+            .manager_registry()
+            .map_err(crate::QueryTargetError::Direct)?;
+        let plans = crate::plan_builders::manager::ManagerPlans::new(registry)
+            .with_query_limits(limits.as_ref());
+        let program = plans.read(
+            model.label().as_str(),
+            mode == MatchMode::Exact,
+            expressions,
+            &[],
+            None,
+            None,
+            &[],
+            terminal,
+        )?;
+        let mut answers = target
+            .execute_manager_read(
+                &program,
+                control.limits,
+                &control.cancellation,
+                control.deadline,
+            )
+            .await?;
+        if answers.len() != 1 {
+            return Err(SdkExecutionDiagnostic::internal_failure().into());
+        }
+        Ok((program, answers.pop().expect("one scalar plan answer")))
+    }
+
+    async fn compatibility_fetch_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        expressions: &[crate::_dynamic::DynamicExpr],
+        mode: MatchMode,
+        limit: Option<u64>,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        let control = control.constrained_by(target.answer_limits());
+        self.compatibility_preflight(model, &control)?;
+        let limits = target
+            .manager_query_limits(control.deadline, &control.cancellation)
+            .await?;
+        let registry = self
+            .installed
+            .manager_registry()
+            .map_err(crate::QueryTargetError::Direct)?;
+        let plans = crate::plan_builders::manager::ManagerPlans::new(Arc::clone(&registry))
+            .with_query_limits(limits.as_ref());
+        let program = plans.read(
+            model.label().as_str(),
+            mode == MatchMode::Exact,
+            expressions,
+            &[],
+            limit,
+            None,
+            &[],
+            crate::plan_builders::manager::ReadTerminal::Fetch,
+        )?;
+        let answers = target
+            .execute_manager_read(
+                &program,
+                control.limits,
+                &control.cancellation,
+                control.deadline,
+            )
+            .await?;
+        let crate::plan_builders::manager::ManagerRead::Fetch(stack) = program else {
+            return Err(SdkExecutionDiagnostic::internal_failure().into());
+        };
+        let proof = stack
+            .resolve(&registry, &answers, stack.execution_limits(control.limits))
+            .map_err(|error| reply_error(lower_match_error(&error)))?;
+        let roots = collect_manager_roots(proof.request(), proof.result()).map_err(reply_error)?;
+        match mode {
+            MatchMode::Exact => materialize_projected_manager_things_with_budget(
+                self.installed,
+                &registry,
+                ProjectedQueryOrigin::for_manager_target(&target)?,
+                model,
+                &roots,
+                control.limits.projected(),
+                &control.cancellation,
+                Some(control.deadline),
+            ),
+            MatchMode::Subtypes => {
+                crate::projected_query::materialize_projected_manager_subtypes_with_budget(
+                    self.installed,
+                    &registry,
+                    ProjectedQueryOrigin::for_manager_target(&target)?,
+                    model,
+                    &roots,
+                    control.limits.projected(),
+                    &control.cancellation,
+                    Some(control.deadline),
+                )
+            }
+        }
+        .map_err(reply_error)
+    }
+
     /// Return all distinct exact-model matches in an owned read transaction.
     pub async fn all(
         &self,
@@ -689,27 +1222,46 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
-        let control = control.constrained_by(database.answer_limits());
-        self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, ManagerTerminal::all(&control))?;
-        let result = database
-            .execute_match_with_limits(
-                &registry,
-                &request,
-                control
-                    .limits
-                    .direct_with_deadline(control.cancellation.clone(), control.deadline),
-            )
+        self.all_on_target(crate::QueryTarget::Database(database), filter, control)
             .await
-            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
-        let roots = manager_roots(&request, &result)?;
+            .map_err(|error| lower_target_error(error, None))
+    }
+
+    /// Run this terminal on the connection's direct, borrowed or proxy target.
+    #[doc(hidden)]
+    pub async fn all_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        filter: &ProjectedManagerFilter,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        let terminal = ManagerTerminal::all(&control, target.manager_item_limit());
+        let control = control.constrained_by(target.answer_limits());
+        self.preflight(filter, &control, false)?;
+        target.require_manager_read_target()?;
+        filter.require_boolean_predicates()?;
+        if filter.matches_none {
+            return Ok(Vec::new());
+        }
+        let (registry, request) = self.build_request(filter, terminal)?;
+        let (request, result) = target
+            .execute_manager_match(
+                &registry,
+                request,
+                control.limits,
+                &control.cancellation,
+                control.deadline,
+            )
+            .await?;
+        let roots = manager_roots(&request, &result).map_err(reply_error)?;
         self.materialize_roots(
             &registry,
-            ProjectedQueryOrigin::for_database(database),
+            ProjectedQueryOrigin::for_manager_target(&target).map_err(reply_error)?,
             filter,
             &roots,
             &control,
         )
+        .map_err(reply_error)
     }
 
     /// Return all matches without consuming one caller-owned read transaction.
@@ -736,27 +1288,13 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
-        let control = control.constrained_by(transaction.answer_limits());
-        self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, ManagerTerminal::all(&control))?;
-        let result = transaction
-            .execute_match_with_limits(
-                &registry,
-                &request,
-                control
-                    .limits
-                    .direct_with_deadline(control.cancellation.clone(), control.deadline),
-            )
-            .await
-            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
-        let roots = manager_roots(&request, &result)?;
-        self.materialize_roots(
-            &registry,
-            ProjectedQueryOrigin::for_transaction(transaction)?,
+        self.all_on_target(
+            crate::QueryTarget::Transaction(transaction),
             filter,
-            &roots,
-            &control,
+            control,
         )
+        .await
+        .map_err(|error| lower_target_error(error, None))
     }
 
     /// Return the optional identity-proven first match in an owned read transaction.
@@ -783,27 +1321,74 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Option<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
-        let control = control.constrained_by(database.answer_limits());
+        self.first_on_target(crate::QueryTarget::Database(database), filter, control)
+            .await
+            .map_err(|error| lower_target_error(error, Some(filter.model())))
+    }
+
+    /// Run this terminal on the connection's direct, borrowed or proxy target.
+    #[doc(hidden)]
+    pub async fn first_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        filter: &ProjectedManagerFilter,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Option<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, true)?;
+        target.require_manager_read_target()?;
+        filter.require_boolean_predicates()?;
+        if filter.matches_none {
+            return Ok(None);
+        }
+        if let [ProjectedManagerPredicate::Iid(iid)] = filter.predicates.as_ref() {
+            let expressions = [crate::_dynamic::DynamicExpr::Iid {
+                iid: iid.as_str().to_owned(),
+            }];
+            let mut values = self
+                .compatibility_fetch_on_target(
+                    target,
+                    filter.model(),
+                    &expressions,
+                    filter.match_mode,
+                    None,
+                    control,
+                )
+                .await?;
+            if values.len() > 1 {
+                return Err(integrity(
+                    "manager_iid_cardinality_invalid",
+                    "A manager IID lookup returned multiple roots",
+                    type_path(filter.model()),
+                )
+                .into());
+            }
+            return Ok(values.pop());
+        }
         let (registry, request) = self.build_request(filter, ManagerTerminal::first())?;
-        let result = database
-            .execute_match_with_limits(
+        let (request, result) = target
+            .execute_manager_match(
                 &registry,
-                &request,
-                control
-                    .limits
-                    .direct_with_deadline(control.cancellation.clone(), control.deadline),
+                request,
+                control.limits,
+                &control.cancellation,
+                control.deadline,
             )
             .await
-            .map_err(|error| lower_manager_first(error, filter.model()))?;
-        let roots = manager_roots(&request, &result)?;
-        let mut projected = self.materialize_roots(
-            &registry,
-            ProjectedQueryOrigin::for_database(database),
-            filter,
-            &roots,
-            &control,
-        )?;
+            .map_err(|error| match error {
+                crate::QueryTargetError::Callback(_) => error,
+                error => reply_error(lower_target_error(error, Some(filter.model()))),
+            })?;
+        let roots = manager_roots(&request, &result).map_err(reply_error)?;
+        let mut projected = self
+            .materialize_roots(
+                &registry,
+                ProjectedQueryOrigin::for_manager_target(&target).map_err(reply_error)?,
+                filter,
+                &roots,
+                &control,
+            )
+            .map_err(reply_error)?;
         Ok(projected.pop())
     }
 
@@ -831,28 +1416,13 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Option<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
-        let control = control.constrained_by(transaction.answer_limits());
-        self.preflight(filter, &control, true)?;
-        let (registry, request) = self.build_request(filter, ManagerTerminal::first())?;
-        let result = transaction
-            .execute_match_with_limits(
-                &registry,
-                &request,
-                control
-                    .limits
-                    .direct_with_deadline(control.cancellation.clone(), control.deadline),
-            )
-            .await
-            .map_err(|error| lower_manager_first(error, filter.model()))?;
-        let roots = manager_roots(&request, &result)?;
-        let mut projected = self.materialize_roots(
-            &registry,
-            ProjectedQueryOrigin::for_transaction(transaction)?,
+        self.first_on_target(
+            crate::QueryTarget::Transaction(transaction),
             filter,
-            &roots,
-            &control,
-        )?;
-        Ok(projected.pop())
+            control,
+        )
+        .await
+        .map_err(|error| lower_target_error(error, Some(filter.model())))
     }
 
     /// Count all distinct exact-model matches in an owned read transaction.
@@ -879,24 +1449,41 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<u64, SdkExecutionDiagnostic> {
-        let control = control.constrained_by(database.answer_limits());
-        self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, ManagerTerminal::Count)?;
-        let result = database
-            .execute_match_with_limits(
-                &registry,
-                &request,
-                control
-                    .limits
-                    .direct_with_deadline(control.cancellation.clone(), control.deadline),
-            )
+        self.count_on_target(crate::QueryTarget::Database(database), filter, control)
             .await
-            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
-        let canonical = result
-            .for_request(&request)
-            .map_err(|error| lower_match_error(&error))?;
+            .map_err(|error| lower_target_error(error, None))
+    }
+
+    /// Run this terminal on the connection's direct, borrowed or proxy target.
+    #[doc(hidden)]
+    pub async fn count_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        filter: &ProjectedManagerFilter,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<u64, crate::QueryTargetError> {
+        let control = control.constrained_by(target.answer_limits());
+        self.preflight(filter, &control, false)?;
+        target.require_manager_read_target()?;
+        filter.require_boolean_predicates()?;
+        if filter.matches_none {
+            return Ok(0);
+        }
+        let (registry, request) = self.build_request(filter, ManagerTerminal::Count)?;
+        let (request, result) = target
+            .execute_manager_match(
+                &registry,
+                request,
+                control.limits,
+                &control.cancellation,
+                control.deadline,
+            )
+            .await?;
+        let canonical = result.for_request(&request).map_err(|error| {
+            crate::QueryTargetError::Reply(crate::RemoteModelQueryError::Match(error))
+        })?;
         let crate::match_request::MatchResult::Count { value, .. } = canonical else {
-            return Err(SdkExecutionDiagnostic::internal_failure());
+            return Err(reply_error(SdkExecutionDiagnostic::internal_failure()));
         };
         Ok(*value)
     }
@@ -925,26 +1512,13 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<u64, SdkExecutionDiagnostic> {
-        let control = control.constrained_by(transaction.answer_limits());
-        self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, ManagerTerminal::Count)?;
-        let result = transaction
-            .execute_match_with_limits(
-                &registry,
-                &request,
-                control
-                    .limits
-                    .direct_with_deadline(control.cancellation.clone(), control.deadline),
-            )
-            .await
-            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
-        let canonical = result
-            .for_request(&request)
-            .map_err(|error| lower_match_error(&error))?;
-        let crate::match_request::MatchResult::Count { value, .. } = canonical else {
-            return Err(SdkExecutionDiagnostic::internal_failure());
-        };
-        Ok(*value)
+        self.count_on_target(
+            crate::QueryTarget::Transaction(transaction),
+            filter,
+            control,
+        )
+        .await
+        .map_err(|error| lower_target_error(error, None))
     }
 
     /// Test whether any exact-model match exists in an owned read transaction.
@@ -971,24 +1545,41 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<bool, SdkExecutionDiagnostic> {
-        let control = control.constrained_by(database.answer_limits());
-        self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, ManagerTerminal::Exists)?;
-        let result = database
-            .execute_match_with_limits(
-                &registry,
-                &request,
-                control
-                    .limits
-                    .direct_with_deadline(control.cancellation.clone(), control.deadline),
-            )
+        self.exists_on_target(crate::QueryTarget::Database(database), filter, control)
             .await
-            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
-        let canonical = result
-            .for_request(&request)
-            .map_err(|error| lower_match_error(&error))?;
+            .map_err(|error| lower_target_error(error, None))
+    }
+
+    /// Run this terminal on the connection's direct, borrowed or proxy target.
+    #[doc(hidden)]
+    pub async fn exists_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        filter: &ProjectedManagerFilter,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<bool, crate::QueryTargetError> {
+        let control = control.constrained_by(target.answer_limits());
+        self.preflight(filter, &control, false)?;
+        target.require_manager_read_target()?;
+        filter.require_boolean_predicates()?;
+        if filter.matches_none {
+            return Ok(false);
+        }
+        let (registry, request) = self.build_request(filter, ManagerTerminal::Exists)?;
+        let (request, result) = target
+            .execute_manager_match(
+                &registry,
+                request,
+                control.limits,
+                &control.cancellation,
+                control.deadline,
+            )
+            .await?;
+        let canonical = result.for_request(&request).map_err(|error| {
+            crate::QueryTargetError::Reply(crate::RemoteModelQueryError::Match(error))
+        })?;
         let crate::match_request::MatchResult::Exists { value, .. } = canonical else {
-            return Err(SdkExecutionDiagnostic::internal_failure());
+            return Err(reply_error(SdkExecutionDiagnostic::internal_failure()));
         };
         Ok(*value)
     }
@@ -1017,26 +1608,13 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<bool, SdkExecutionDiagnostic> {
-        let control = control.constrained_by(transaction.answer_limits());
-        self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, ManagerTerminal::Exists)?;
-        let result = transaction
-            .execute_match_with_limits(
-                &registry,
-                &request,
-                control
-                    .limits
-                    .direct_with_deadline(control.cancellation.clone(), control.deadline),
-            )
-            .await
-            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
-        let canonical = result
-            .for_request(&request)
-            .map_err(|error| lower_match_error(&error))?;
-        let crate::match_request::MatchResult::Exists { value, .. } = canonical else {
-            return Err(SdkExecutionDiagnostic::internal_failure());
-        };
-        Ok(*value)
+        self.exists_on_target(
+            crate::QueryTarget::Transaction(transaction),
+            filter,
+            control,
+        )
+        .await
+        .map_err(|error| lower_target_error(error, None))
     }
 
     fn preflight(
@@ -1048,7 +1626,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         control.checkpoint(filter.model())?;
         filter.validate_for(self.installed)?;
         filter.check_terminal_resources(control.limits)?;
-        if first {
+        if first && !filter.matches_none {
             filter.require_first_identity(self.installed)?;
         }
         control.checkpoint(filter.model())
@@ -1071,9 +1649,11 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?,
         );
         let session = SessionHandle::new(Arc::clone(&registry));
-        let root = session
-            .exact(filter.model.label().as_str())
-            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
+        let root = match filter.match_mode {
+            MatchMode::Exact => session.exact(filter.model.label().as_str()),
+            MatchMode::Subtypes => session.subtypes(filter.model.label().as_str()),
+        }
+        .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
         let shape = session
             .positional([root.one()])
             .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
@@ -1107,16 +1687,30 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         roots: &[&HydratedThing],
         control: &ProjectedManagerFilterInvocationControl,
     ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
-        materialize_projected_manager_things_with_budget(
-            self.installed,
-            registry,
-            origin,
-            filter.model(),
-            roots,
-            control.limits.projected(),
-            &control.cancellation,
-            Some(control.deadline),
-        )
+        match filter.match_mode {
+            MatchMode::Exact => materialize_projected_manager_things_with_budget(
+                self.installed,
+                registry,
+                origin,
+                filter.model(),
+                roots,
+                control.limits.projected(),
+                &control.cancellation,
+                Some(control.deadline),
+            ),
+            MatchMode::Subtypes => {
+                crate::projected_query::materialize_projected_manager_subtypes_with_budget(
+                    self.installed,
+                    registry,
+                    origin,
+                    filter.model(),
+                    roots,
+                    control.limits.projected(),
+                    &control.cancellation,
+                    Some(control.deadline),
+                )
+            }
+        }
     }
 
     fn build_predicates(
@@ -1141,6 +1735,25 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 )
             })?;
         for predicate in filter.predicates.iter() {
+            let predicate = match predicate {
+                ProjectedManagerPredicate::Iid(iid) => {
+                    predicates.push(root.iid(iid.as_str()).map_err(|error| {
+                        lower_execution_error(error, SdkProviderOperation::Read)
+                    })?);
+                    continue;
+                }
+                ProjectedManagerPredicate::Iids(iids) => {
+                    let predicate = if let [iid] = iids.as_ref() {
+                        root.iid(iid.as_str())
+                    } else {
+                        root.iid_in(iids.iter().map(Iid::as_str))
+                    }
+                    .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
+                    predicates.push(predicate);
+                    continue;
+                }
+                ProjectedManagerPredicate::Field(predicate) => predicate,
+            };
             let projected = model
                 .query_tokens()
                 .fields()
@@ -1172,9 +1785,11 @@ enum ManagerTerminal {
 
 impl ManagerTerminal {
     /// Every match the terminal's item ceiling can hold.
-    fn all(control: &ProjectedManagerFilterInvocationControl) -> Self {
+    fn all(control: &ProjectedManagerFilterInvocationControl, caller_items: Option<u64>) -> Self {
         Self::Rows {
-            limit: control.limits.items,
+            limit: caller_items.map_or(control.limits.items, |items| {
+                items.min(control.limits.items)
+            }),
         }
     }
 
@@ -1187,7 +1802,7 @@ impl ManagerTerminal {
 }
 
 /// Borrow the root of every row of a manager `Rows` result, in result order.
-fn manager_roots<'result>(
+fn collect_manager_roots<'result>(
     request: &ValidatedMatchRequest,
     result: &'result ValidatedMatchResult,
 ) -> Result<Vec<&'result HydratedThing>, SdkExecutionDiagnostic> {
@@ -1207,12 +1822,50 @@ fn manager_roots<'result>(
         };
         roots.push(root);
     }
+    Ok(roots)
+}
+
+fn manager_roots<'result>(
+    request: &ValidatedMatchRequest,
+    result: &'result ValidatedMatchResult,
+) -> Result<Vec<&'result HydratedThing>, SdkExecutionDiagnostic> {
+    let roots = collect_manager_roots(request, result)?;
     let [binding] = request.request().plan.bindings.as_slice() else {
         return Err(SdkExecutionDiagnostic::internal_failure());
     };
     validate_manager_roots(request, binding.id, &roots)
         .map_err(|error| lower_execution_error(error.into(), SdkProviderOperation::Read))?;
     Ok(roots)
+}
+
+fn reply_error(error: SdkExecutionDiagnostic) -> crate::QueryTargetError {
+    crate::QueryTargetError::Reply(crate::RemoteModelQueryError::Execution(error))
+}
+
+fn lower_target_error(
+    error: crate::QueryTargetError,
+    first: Option<&TypeId>,
+) -> SdkExecutionDiagnostic {
+    use crate::{QueryTargetError, RemoteModelQueryError};
+    match error {
+        QueryTargetError::Commit(error) => error.diagnostic(),
+        QueryTargetError::Direct(error) => match first {
+            Some(model) => lower_manager_first(error, model),
+            None => lower_execution_error(error, SdkProviderOperation::Read),
+        },
+        QueryTargetError::Prepare(error) | QueryTargetError::Reply(error) => match error {
+            RemoteModelQueryError::Diagnostic(error) => {
+                crate::execution_diagnostic::lower_remote_query_diagnostic(error)
+            }
+            RemoteModelQueryError::Match(error) => match first {
+                Some(model) => lower_manager_first(crate::OrmError::Match(error), model),
+                None => lower_match_error(&error),
+            },
+            RemoteModelQueryError::Execution(error) => error,
+        },
+        QueryTargetError::Interrupted(error) => error,
+        error @ QueryTargetError::Callback(_) => error.into_diagnostic(SdkProviderOperation::Read),
+    }
 }
 
 fn lower_manager_first(error: crate::OrmError, model: &TypeId) -> SdkExecutionDiagnostic {
@@ -1479,17 +2132,300 @@ mod invocation_control_tests {
             AnswerCancellation::default(),
         );
         let ceiling = QueryExecutionResourceLimits {
-            timeout_milliseconds: 0,
+            timeout_milliseconds: crate::QueryTimeout::from_milliseconds(1),
             items: 3,
             ..QueryExecutionResourceLimits::default()
         };
         let model = TypeId::new(TypeKind::Entity, "person").unwrap();
 
         assert!(control.checkpoint(&model).is_ok());
+        let original_deadline = control.deadline.instant();
         let control = control.constrained_by(Some(ceiling));
         assert_eq!(control.limits, requested.constrained_by(ceiling));
-        // The ceiling's zero timeout must bind the absolute deadline the
-        // binding captured with its wider request.
-        assert!(control.checkpoint(&model).is_err());
+        assert!(control.deadline.instant() < original_deadline);
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+    use crate::plan_authority::QueryAuthority;
+    use type_bridge_contract::capability::CapabilityId;
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::limits::QueryLimits;
+    use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
+    use type_bridge_contract::query_remote::{
+        CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED, StagedRequest,
+    };
+    use type_bridge_contract::query_remote::{
+        RemoteCapabilities, RemoteExecutorBinding, RemoteSigningPublicKey,
+    };
+    use type_bridge_contract::schema::DocumentId;
+
+    #[test]
+    fn equal_policy_filter_terminals_share_direct_and_proxy_plan_bytes() {
+        let documents = type_bridge_schema::SchemaDocumentSet::parse([(
+            DocumentId::new("filter-target.yaml").unwrap(),
+            "format: typebridge.schema/v2\nattributes:\n  filter-key: { value: string }\nentities:\n  filter-person:\n    owns:\n      filter-key: { key: true }\n",
+        )]).unwrap();
+        let declared = type_bridge_schema::normalize_documents(&documents).unwrap();
+        let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
+        let resolved = type_bridge_schema::resolve(&declared, &profile).unwrap();
+        let installed = InstalledRuntimeProjection::try_new(
+            type_bridge_schema::project(
+                &resolved,
+                BindingTarget::Rust,
+                &ProjectionConfig::rust(),
+                &[ProjectionHandler::rust_v1()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let context = type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new("filter-target").unwrap(),
+            profile.clone(),
+            type_bridge_schema::schema_authority_capability_vocabulary(),
+        );
+        let verified = type_bridge_schema::build_schema_authority(
+            &declared,
+            declared.required_capabilities(),
+            &context,
+        )
+        .unwrap();
+        let installed = installed.with_schema_authority(&verified);
+        let authority = Arc::new(
+            QueryAuthority::from_declared_bytes(
+                &type_bridge_contract::schema::encode_declared_schema(&declared).unwrap(),
+                "filter-target",
+                profile.as_str(),
+            )
+            .unwrap()
+            .with_limits(QueryLimits::PLAN),
+        );
+        let cached = authority.adapter_authority();
+        assert!(Arc::ptr_eq(&cached, &authority.adapter_authority()));
+        assert!(Arc::ptr_eq(
+            &cached,
+            &authority
+                .rebound_with_limits(QueryLimits::PLAN)
+                .adapter_authority()
+        ));
+        let mut caps = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
+        for capability in [CAP_QUERY_REMOTE_STAGED, CAP_QUERY_REMOTE_ANSWER_DIMENSIONS] {
+            caps.insert(CapabilityId::new(capability).unwrap());
+        }
+        let advertisement = RemoteCapabilities::new(
+            caps,
+            RemoteExecutorBinding::new("filter-target-executor", "epoch-filter-target").unwrap(),
+            RemoteSigningPublicKey::from_bytes([7; 32]),
+        )
+        .with_query_limits(QueryLimits::PLAN)
+        .unwrap();
+        let policy = QueryExecutionResourceLimits {
+            items: 100,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let proxy = crate::ProxyQueryConnection::with_exchange(
+            advertisement.encode().unwrap(),
+            Arc::clone(&authority),
+            policy,
+        )
+        .unwrap();
+        let model = TypeId::new(TypeKind::Entity, "filter-person").unwrap();
+        let field = OwnsFactId::new(
+            model.clone(),
+            type_bridge_contract::id::AttributeId::new("filter-key").unwrap(),
+        )
+        .unwrap();
+        let value = ProjectedAttributeValue::try_new(
+            &installed,
+            TypeId::new(TypeKind::Attribute, "filter-key").unwrap(),
+            CanonicalValue::String(
+                type_bridge_contract::value::CanonicalString::new("alice").unwrap(),
+            ),
+        )
+        .unwrap();
+        let filter = ProjectedManagerFilter::try_new(&installed, model.clone())
+            .unwrap()
+            .try_and(
+                &installed,
+                &ProjectedTokenIdentity::Field {
+                    owner: model,
+                    field,
+                },
+                ProjectedManagerComparison::Eq,
+                &value,
+            )
+            .unwrap();
+        let executor = ProjectedManagerFilterExecutor::new(&installed);
+        let control =
+            ProjectedManagerFilterInvocationControl::capture(policy, AnswerCancellation::default());
+        let empty = ProjectedManagerFilter::try_new(&installed, filter.model().clone()).unwrap();
+        let iid = Iid::new("0xAbCd").unwrap();
+        let iid_filter = empty
+            .try_and_iids(&installed, std::slice::from_ref(&iid))
+            .unwrap();
+        let iid_set_filter = empty
+            .try_and_iids(&installed, &[iid.clone(), Iid::new("0x1234").unwrap()])
+            .unwrap();
+        assert!(empty.is_empty());
+        assert!(iid_filter.require_first_identity(&installed).is_ok());
+        assert_eq!(
+            iid_set_filter
+                .require_first_identity(&installed)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "manager_first_requires_identity"
+        );
+        let no_matches = empty.try_and_iids(&installed, &[]).unwrap();
+        assert!(no_matches.matches_none());
+        assert_eq!(no_matches.resource_measure().items(), 1);
+        assert!(!empty.matches_none());
+        let mut bounded_empty = empty.clone();
+        for _ in 0..MAX_MANAGER_FILTER_PREDICATES {
+            bounded_empty = bounded_empty.try_and_iids(&installed, &[]).unwrap();
+        }
+        assert_eq!(
+            bounded_empty
+                .try_and_iids(&installed, &[])
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "manager_filter_predicate_limit"
+        );
+        assert_eq!(
+            empty
+                .try_and_iids(&installed, &vec![iid; MAX_MANAGER_FILTER_PREDICATES + 1])
+                .unwrap()
+                .require_boolean_predicates()
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "manager_filter_predicate_limit"
+        );
+        assert_eq!(iid_set_filter.resource_measure().items(), 2);
+        let mixed = filter
+            .try_and_iids(&installed, &[Iid::new("0xabc").unwrap()])
+            .unwrap();
+        assert_eq!(mixed.resource_measure().items(), 2);
+        assert_eq!(mixed.resource_measure().attribute_values(), 1);
+        assert_eq!(
+            mixed.resource_measure().bytes(),
+            filter.resource_measure().bytes() + 5
+        );
+        assert!(
+            mixed
+                .check_terminal_resources(QueryExecutionResourceLimits { items: 1, ..policy })
+                .is_err()
+        );
+        for filter in [&filter, &iid_filter, &iid_set_filter, &mixed] {
+            let (_, count) = executor
+                .build_request(filter, ManagerTerminal::Count)
+                .unwrap();
+            let restored =
+                ProjectedManagerFilter::try_from_validated_exact_query(&installed, &count).unwrap();
+            let (_, rebuilt) = executor
+                .build_request(&restored, ManagerTerminal::Count)
+                .unwrap();
+            assert_eq!(count.request(), rebuilt.request());
+            for scoped in [filter.clone(), filter.clone().including_subtypes()] {
+                for terminal in [
+                    ManagerTerminal::all(&control, None),
+                    ManagerTerminal::first(),
+                    ManagerTerminal::Count,
+                    ManagerTerminal::Exists,
+                ] {
+                    let (registry, request) = executor.build_request(&scoped, terminal).unwrap();
+                    assert_eq!(
+                        request.request().plan.bindings[0].match_mode,
+                        scoped.match_mode
+                    );
+                    let direct = crate::match_request::plan_adapter::adapt_match_request(
+                        &registry, &request,
+                    )
+                    .unwrap();
+                    let pending = proxy
+                        .prepare(
+                            &registry,
+                            request,
+                            policy,
+                            &control.cancellation,
+                            control.deadline,
+                        )
+                        .unwrap();
+                    let staged =
+                        StagedRequest::decode(pending.request_bytes(), &declared, &advertisement)
+                            .unwrap();
+                    assert_eq!(staged.plans().len(), 1);
+                    assert_eq!(direct.plans.len(), 1);
+                    assert_eq!(
+                        staged.plans()[0].plan().canonical_bytes().unwrap(),
+                        direct.plans[0].canonical_bytes().unwrap()
+                    );
+                }
+            }
+        }
+        // A binding's implicit proxy execution default must not author a
+        // smaller manager window than the same direct caller policy.
+        for (caller_items, requested_items, expected_window) in [
+            (None, 100_000, 100_000),
+            (Some(100), 100_000, 100),
+            (Some(65_536), 100_000, 65_536),
+            (Some(100), 50, 50),
+        ] {
+            let requested = QueryExecutionResourceLimits {
+                items: requested_items,
+                ..Default::default()
+            };
+            let control = ProjectedManagerFilterInvocationControl::capture(
+                requested,
+                AnswerCancellation::default(),
+            );
+            let proxy = crate::ProxyQueryConnection::with_exchange(
+                advertisement.encode().unwrap(),
+                Arc::clone(&authority),
+                QueryExecutionResourceLimits {
+                    items: caller_items.unwrap_or(65_536),
+                    ..QueryExecutionResourceLimits::default_for(crate::AnswerTransport::Proxy)
+                },
+            )
+            .unwrap()
+            .with_caller_item_limit(caller_items);
+            let target = crate::QueryTarget::Proxy(&proxy);
+            let terminal = ManagerTerminal::all(&control, target.manager_item_limit());
+            assert!(
+                matches!(terminal, ManagerTerminal::Rows { limit } if limit == expected_window)
+            );
+            let execution = target.constrain(requested);
+            assert_eq!(
+                execution.items,
+                requested_items.min(caller_items.unwrap_or(65_536))
+            );
+            let (registry, direct_request) = executor
+                .build_request(&filter, ManagerTerminal::all(&control, caller_items))
+                .unwrap();
+            let direct =
+                crate::match_request::plan_adapter::adapt_match_request(&registry, &direct_request)
+                    .unwrap();
+            let (_, request) = executor.build_request(&filter, terminal).unwrap();
+            let pending = proxy
+                .prepare(
+                    &registry,
+                    request,
+                    execution,
+                    &control.cancellation,
+                    control.deadline,
+                )
+                .unwrap();
+            let staged =
+                StagedRequest::decode(pending.request_bytes(), &declared, &advertisement).unwrap();
+            assert_eq!(
+                staged.plans()[0].plan().canonical_bytes().unwrap(),
+                direct.plans[0].canonical_bytes().unwrap()
+            );
+            assert_eq!(staged.limits().max_items, execution.items);
+        }
     }
 }

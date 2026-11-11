@@ -14,7 +14,7 @@ use crate::_schema::SchemaError;
 use crate::error::{ClassifiedCommitError, CommitFailureCertainty, OrmError};
 use crate::hooks::HookError;
 use crate::match_request::result_validation::exactly_one_cardinality_error;
-use crate::match_request::selected_result_executor::released_model_execution_error;
+use crate::match_request::selected_result_executor::released_plan_execution_error;
 use crate::match_request::{
     MatchError, MatchErrorCategory, MatchErrorDetailValue, MatchErrorPathSegment,
 };
@@ -23,11 +23,14 @@ pub(crate) fn lower_orm_error(
     error: &OrmError,
     provider_operation: SdkProviderOperation,
 ) -> SdkExecutionDiagnostic {
+    if let OrmError::ExecutionDiagnostic(diagnostic) = error {
+        return crate::execution_phases::annotate((**diagnostic).clone());
+    }
     let base = lower_orm_error_base(error, provider_operation);
-    match error.failure() {
+    crate::execution_phases::annotate(match error.failure() {
         Some(failure) => base.with_failure(&failure, Default::default()),
         None => base,
-    }
+    })
 }
 
 fn lower_orm_error_base(
@@ -35,6 +38,7 @@ fn lower_orm_error_base(
     provider_operation: SdkProviderOperation,
 ) -> SdkExecutionDiagnostic {
     match error {
+        OrmError::ExecutionDiagnostic(error) => (**error).clone(),
         OrmError::Match(error) => lower_match_error(error),
         OrmError::UnsupportedVersion(error) => match error {
             VersionError::Probe(_) | VersionError::Parse(_) => {
@@ -81,9 +85,6 @@ fn lower_orm_error_base(
                 "schema_authority_mismatch",
                 "Schema authority does not match the installed runtime projection",
             ),
-            SchemaError::Sync(_) => {
-                SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Schema)
-            }
         },
         OrmError::Hook(error) => match error {
             HookError::Rejected { .. } => invalid_input(
@@ -214,7 +215,10 @@ pub fn lower_match_error(error: &MatchError) -> SdkExecutionDiagnostic {
 #[doc(hidden)]
 #[must_use]
 pub fn lower_remote_query_diagnostic(error: Diagnostic) -> SdkExecutionDiagnostic {
-    if error.code().as_str() == "query_v2_model_exactly_one" {
+    if error.code().as_str() == PUT_AMBIGUOUS_MATCH {
+        return put_ambiguous_match();
+    }
+    if error.code().as_str() == "query_model_exactly_one" {
         let Some(actual) = error.details().get("actual").and_then(|value| match value {
             DiagnosticDetailValue::Long(value) => usize::try_from(*value).ok(),
             DiagnosticDetailValue::Text(_)
@@ -229,8 +233,8 @@ pub fn lower_remote_query_diagnostic(error: Diagnostic) -> SdkExecutionDiagnosti
         return lower_match_error(&error);
     }
 
-    if error.code().as_str().starts_with("query_v2_model_") {
-        return lower_match_error(&released_model_execution_error(&error));
+    if error.code().as_str().starts_with("query_model_") {
+        return lower_match_error(&released_plan_execution_error(&error));
     }
 
     let category = match error.category() {
@@ -293,6 +297,9 @@ fn lower_remote_detail(
         DiagnosticDetailValue::Long(value) => Some(SdkDiagnosticDetailValue::Signed(*value)),
         DiagnosticDetailValue::Boolean(value) => {
             Some(SdkDiagnosticDetailValue::Boolean(*value))
+        }
+        DiagnosticDetailValue::Text(value) if key == "reason" && matches!(value.as_str(),"nonce" | "request") => {
+            SdkQueryDiagnosticIdentity::new(value.clone()).ok().map(SdkDiagnosticDetailValue::QueryIdentity)
         }
         DiagnosticDetailValue::Text(value) if is_admissible_remote_identity_detail(key) => {
             SdkQueryDiagnosticIdentity::new(value.clone())
@@ -468,6 +475,30 @@ fn is_admissible_query_identity_list_detail(key: &str) -> bool {
         key,
         "allowed_type_domains" | "missing" | "unexpected_fields" | "unreachable_bindings"
     )
+}
+
+pub(crate) const PUT_AMBIGUOUS_MATCH: &str = "put_ambiguous_match";
+
+/// A single-row put whose pattern matched several existing instances.
+pub(crate) fn put_ambiguous_match() -> SdkExecutionDiagnostic {
+    invalid_input(
+        PUT_AMBIGUOUS_MATCH,
+        "The put pattern matched more than one existing instance",
+    )
+}
+
+/// Map a plan-answer diagnostic to its ORM error; an ambiguous put is
+/// invalid input, every other answer failure is a result-decode error.
+pub(crate) fn plan_answer_error(diagnostic: Diagnostic) -> OrmError {
+    if diagnostic.code().as_str() == PUT_AMBIGUOUS_MATCH {
+        return OrmError::ExecutionDiagnostic(Box::new(put_ambiguous_match()));
+    }
+    crate::match_request::MatchError::new(
+        crate::match_request::MatchErrorCategory::ResultDecode,
+        diagnostic.code().as_str(),
+        diagnostic.message(),
+    )
+    .into()
 }
 
 fn invalid_input(code: &'static str, message: &'static str) -> SdkExecutionDiagnostic {
@@ -695,7 +726,7 @@ mod tests {
         for (actual, code) in [(0_i64, "no_result"), (2_i64, "not_unique")] {
             let error = Diagnostic::new(
                 DiagnosticCategory::InvalidContract,
-                type_bridge_contract::diagnostic::DiagnosticCode::new("query_v2_model_exactly_one")
+                type_bridge_contract::diagnostic::DiagnosticCode::new("query_model_exactly_one")
                     .unwrap(),
                 "internal model execution detail",
             )
@@ -735,10 +766,8 @@ mod tests {
     fn authenticated_remote_model_limit_uses_the_released_resource_surface() {
         let error = Diagnostic::new(
             DiagnosticCategory::ResourceLimit,
-            type_bridge_contract::diagnostic::DiagnosticCode::new(
-                "query_v2_model_role_player_limit",
-            )
-            .unwrap(),
+            type_bridge_contract::diagnostic::DiagnosticCode::new("query_model_role_player_limit")
+                .unwrap(),
             "internal model execution detail",
         );
 
@@ -766,13 +795,13 @@ mod tests {
         for error in [
             Diagnostic::new(
                 DiagnosticCategory::InvalidContract,
-                type_bridge_contract::diagnostic::DiagnosticCode::new("query_v2_model_exactly_one")
+                type_bridge_contract::diagnostic::DiagnosticCode::new("query_model_exactly_one")
                     .unwrap(),
                 "missing cardinality detail",
             ),
             Diagnostic::new(
                 DiagnosticCategory::InvalidContract,
-                type_bridge_contract::diagnostic::DiagnosticCode::new("query_v2_model_exactly_one")
+                type_bridge_contract::diagnostic::DiagnosticCode::new("query_model_exactly_one")
                     .unwrap(),
                 "impossible exactly-one success",
             )

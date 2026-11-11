@@ -1,11 +1,11 @@
 //! Single-thing insert, update and delete plans.
 //!
-//! Each is one pipeline that answers the written thing's hydration
-//! document (`Stage::Fetch`), so a helper call is one query.
+//! Each builds one logical plan. A returning delete captures its hydration
+//! document (`Stage::Fetch`) before the deletion statement in the same transaction.
 
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{RoleId, TypeId};
-use type_bridge_contract::query_plan::v3::{
+use type_bridge_contract::query_plan::{
     AttachItem, DeleteItem, DocumentRole, InsertThing, Operation, Pattern, Stage, ThingDocument,
     WriteReturns,
 };
@@ -15,7 +15,7 @@ use type_bridge_contract::value::CanonicalValue;
 
 use super::authority::PlanAuthority;
 use super::reference::{Reference, reference_binding};
-use super::{BuiltPlan, PlanDraft, ValueTransport};
+use super::{BuiltPlan, ValueTransport};
 
 const ROWS: Operation = Operation::Write {
     returns: WriteReturns::Rows,
@@ -34,7 +34,7 @@ pub(crate) fn entity_insert(
     type_id: &TypeId,
     fields: &[(OwnsFactId, CanonicalValue)],
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(transport);
+    let mut draft = authority.draft(transport);
     let thing = draft.bind("thing")?;
     let fields = fields
         .iter()
@@ -58,12 +58,17 @@ pub(crate) fn entity_insert(
     )
 }
 
-/// One update of the thing of exactly `type_id` at `iid`: every listed
+pub(crate) enum UpdateSelection<'a> {
+    Iid(&'a str),
+    Filter(&'a crate::ProjectedManagerFilter),
+}
+
+/// Replace every selected thing of exactly `type_id`: every listed
 /// ownership and role is cleared, then the given values and players are
 /// attached. This is the helpers' complete replacement.
 pub(crate) struct ThingUpdate<'a> {
     pub(crate) type_id: &'a TypeId,
-    pub(crate) iid: &'a str,
+    pub(crate) selection: UpdateSelection<'a>,
     pub(crate) cleared_fields: &'a [OwnsFactId],
     pub(crate) fields: &'a [(OwnsFactId, CanonicalValue)],
     pub(crate) cleared_roles: &'a [RoleId],
@@ -73,12 +78,12 @@ pub(crate) struct ThingUpdate<'a> {
 
 /// Build the update. Zero documents mean the thing (or a reference) did not
 /// match, and nothing was written.
-pub(crate) fn update_by_iid(
+pub(crate) fn update(
     authority: &PlanAuthority,
     transport: ValueTransport,
     update: ThingUpdate<'_>,
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(transport);
+    let mut draft = authority.draft(transport);
     let thing = draft.bind("thing")?;
     let mut patterns: Vec<Pattern> = vec![
         QueryPattern::Isa {
@@ -92,20 +97,27 @@ pub(crate) fn update_by_iid(
     for (role, reference) in update.players {
         let player = reference_binding(&mut draft, reference, &mut patterns)?;
         links.push(AttachItem::Links {
+            optional: false,
             relation: thing,
             role: role.clone(),
             player,
         });
     }
-    patterns.push(Pattern::Iid {
-        binding: thing,
-        iid: update.iid.to_owned(),
-    });
+    match update.selection {
+        UpdateSelection::Iid(iid) => patterns.push(Pattern::Iid {
+            binding: thing,
+            iid: iid.to_owned(),
+        }),
+        UpdateSelection::Filter(filter) => {
+            filter.append_write_predicates(&mut draft, thing, &mut patterns)?
+        }
+    }
     let mut attached = update
         .fields
         .iter()
         .map(|(field, value)| {
             Ok(AttachItem::Has {
+                optional: false,
                 owner: thing,
                 field: field.clone(),
                 operand: draft.value(value.clone())?,
@@ -125,6 +137,11 @@ pub(crate) fn update_by_iid(
             role: role.clone(),
         }))
         .collect();
+    let operation = if deleted.is_empty() && attached.is_empty() {
+        Operation::Rows
+    } else {
+        ROWS
+    };
     let mut pipeline = vec![Stage::Match { patterns }];
     if !deleted.is_empty() {
         pipeline.push(Stage::Delete { items: deleted });
@@ -142,7 +159,7 @@ pub(crate) fn update_by_iid(
         thing,
         update.document_roles,
     )));
-    draft.finish(authority, pipeline, ROWS, no_columns())
+    draft.finish(authority, pipeline, operation, no_columns())
 }
 
 /// Delete the thing of exactly `type_id` at `iid`; absent is not an error.
@@ -151,32 +168,51 @@ pub(crate) fn delete_by_iid(
     type_id: &TypeId,
     iid: &str,
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(ValueTransport::Literal);
+    delete_plan(authority, type_id, iid, None)
+}
+
+/// Capture the complete requested evidence before deleting an exact IID.
+pub(crate) fn delete_by_iid_returning(
+    authority: &PlanAuthority,
+    type_id: &TypeId,
+    iid: &str,
+    roles: Vec<DocumentRole>,
+) -> Result<BuiltPlan, Diagnostic> {
+    delete_plan(authority, type_id, iid, Some(roles))
+}
+
+fn delete_plan(
+    authority: &PlanAuthority,
+    type_id: &TypeId,
+    iid: &str,
+    roles: Option<Vec<DocumentRole>>,
+) -> Result<BuiltPlan, Diagnostic> {
+    let mut draft = authority.draft(ValueTransport::Literal);
     let thing = draft.bind("thing")?;
-    draft.finish(
-        authority,
-        vec![
-            Stage::Match {
-                patterns: vec![
-                    QueryPattern::Isa {
-                        binding: thing,
-                        include_subtypes: false,
-                        type_id: type_id.clone(),
-                    }
-                    .into(),
-                    Pattern::Iid {
-                        binding: thing,
-                        iid: iid.to_owned(),
-                    },
-                ],
-            },
-            Stage::Delete {
-                items: vec![DeleteItem::Thing { binding: thing }],
+    let mut pipeline = vec![Stage::Match {
+        patterns: vec![
+            QueryPattern::Isa {
+                binding: thing,
+                include_subtypes: false,
+                type_id: type_id.clone(),
+            }
+            .into(),
+            Pattern::Iid {
+                binding: thing,
+                iid: iid.to_owned(),
             },
         ],
+    }];
+    let operation = if let Some(roles) = roles {
+        pipeline.push(Stage::Fetch(ThingDocument::new(thing, roles)));
+        ROWS
+    } else {
         Operation::Write {
             returns: WriteReturns::Matched,
-        },
-        no_columns(),
-    )
+        }
+    };
+    pipeline.push(Stage::Delete {
+        items: vec![DeleteItem::Thing { binding: thing }],
+    });
+    draft.finish(authority, pipeline, operation, no_columns())
 }

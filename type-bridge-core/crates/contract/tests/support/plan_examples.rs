@@ -1,0 +1,590 @@
+use crate::support::*;
+use std::collections::BTreeMap;
+use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+use type_bridge_contract::migration_assertion::ValueComparator;
+use type_bridge_contract::query_plan::{
+    ArithOp, Builtin, DeleteItem, Expr, InsertThing, Operation, Pattern, QueryPlan, Set, Stage,
+    WriteReturns,
+};
+use type_bridge_contract::query_plan::{
+    InputColumn, InputColumnId, InputRow, QueryOperand, QueryPattern,
+};
+use type_bridge_contract::schema::OwnsFactId;
+use type_bridge_contract::value::{
+    CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
+};
+
+fn operand(binding: u16) -> QueryOperand {
+    QueryOperand::Binding {
+        binding: id(binding),
+    }
+}
+fn input(column: u16) -> QueryOperand {
+    QueryOperand::Input {
+        column: InputColumnId::new(column),
+    }
+}
+fn owns(owner: &str, attribute: &str) -> OwnsFactId {
+    OwnsFactId::new(
+        if owner == "purchase" {
+            TypeId::new(TypeKind::Relation, owner).unwrap()
+        } else {
+            entity(owner)
+        },
+        AttributeId::new(attribute).unwrap(),
+    )
+    .unwrap()
+}
+fn has(owner: u16, attribute: u16, name: &str) -> Pattern {
+    QueryPattern::Has {
+        owner: id(owner),
+        attribute: id(attribute),
+        attribute_id: AttributeId::new(name).unwrap(),
+    }
+    .into()
+}
+fn column(n: u16, name: &str, domain: ValueTypeTag) -> InputColumn {
+    InputColumn::new(
+        InputColumnId::new(n),
+        type_bridge_contract::migration_assertion::QueryVariable::new(name).unwrap(),
+        domain,
+        false,
+    )
+}
+fn sub(left: QueryOperand, right: QueryOperand) -> Expr {
+    Expr::Arith {
+        op: ArithOp::Sub,
+        lhs: Box::new(Expr::Operand(left)),
+        rhs: Box::new(Expr::Operand(right)),
+    }
+}
+fn text(value: &str) -> CanonicalValue {
+    CanonicalValue::String(CanonicalString::new(value).unwrap())
+}
+
+pub fn purchase() -> QueryPlan {
+    let patterns = vec![
+        pat(0, entity("item")),
+        pat(1, entity("account")),
+        has(0, 2, "stock"),
+        has(1, 3, "balance"),
+        has(0, 4, "price"),
+        has(0, 8, "item-id"),
+        has(1, 9, "id"),
+        QueryPattern::Value {
+            comparator: ValueComparator::Equal,
+            left: operand(8),
+            right: input(1),
+        }
+        .into(),
+        QueryPattern::Value {
+            comparator: ValueComparator::Equal,
+            left: operand(9),
+            right: input(2),
+        }
+        .into(),
+        QueryPattern::Value {
+            comparator: ValueComparator::Greater,
+            left: operand(2),
+            right: literal(0),
+        }
+        .into(),
+        QueryPattern::Value {
+            comparator: ValueComparator::GreaterOrEqual,
+            left: operand(3),
+            right: operand(4),
+        }
+        .into(),
+        Pattern::Let {
+            binding: id(5),
+            expr: sub(operand(2), literal(1)),
+        },
+        Pattern::Let {
+            binding: id(6),
+            expr: sub(operand(3), operand(4)),
+        },
+    ];
+    let mut plan = spec(
+        vec![
+            Stage::Match { patterns },
+            Stage::Update {
+                sets: vec![
+                    Set::Field {
+                        owner: id(0),
+                        field: owns("item", "stock"),
+                        operand: operand(5),
+                    },
+                    Set::Field {
+                        owner: id(1),
+                        field: owns("account", "balance"),
+                        operand: operand(6),
+                    },
+                ],
+            },
+            Stage::Insert {
+                things: vec![InsertThing {
+                    binding: id(7),
+                    type_id: TypeId::new(TypeKind::Relation, "purchase").unwrap(),
+                    fields: vec![(owns("purchase", "purchase-id"), input(0))],
+                    players: vec![
+                        (RoleId::new("purchase", "buyer").unwrap(), id(1)),
+                        (RoleId::new("purchase", "item").unwrap(), id(0)),
+                    ],
+                }],
+            },
+        ],
+        vec![7],
+    );
+    plan.bindings = [
+        "item",
+        "buyer",
+        "stock",
+        "balance",
+        "price",
+        "next_stock",
+        "next_balance",
+        "purchase",
+        "item_key",
+        "buyer_key",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(n, name)| binding(n as u16, name))
+    .collect();
+    plan.inputs = vec![
+        column(0, "new_purchase_id", ValueTypeTag::String),
+        column(1, "expected_item_id", ValueTypeTag::String),
+        column(2, "expected_buyer_id", ValueTypeTag::String),
+    ];
+    plan.given_rows = Some(vec![InputRow::new(vec![
+        Some(text("purchase-1")),
+        Some(text("item-1")),
+        Some(text("buyer-1")),
+    ])]);
+    QueryPlan::new(plan, &schema()).unwrap()
+}
+
+pub fn touch() -> QueryPlan {
+    QueryPlan::new(
+        spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("doctor")), has(0, 1, "on-call")],
+                },
+                Stage::Update {
+                    sets: vec![Set::Field {
+                        owner: id(0),
+                        field: owns("doctor", "on-call"),
+                        operand: operand(1),
+                    }],
+                },
+            ],
+            vec![0],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+pub fn relation_assign() -> QueryPlan {
+    QueryPlan::new(
+        spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![
+                        pat(0, entity("account")),
+                        pat(1, relation()),
+                        pat(2, entity("account")),
+                    ],
+                },
+                Stage::Delete {
+                    items: vec![DeleteItem::Links {
+                        relation: id(1),
+                        role: role(),
+                        player: id(0),
+                    }],
+                },
+                Stage::Update {
+                    sets: vec![Set::Link {
+                        relation: id(1),
+                        role: role(),
+                        player: id(2),
+                    }],
+                },
+            ],
+            vec![1],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+pub fn batch() -> QueryPlan {
+    let mut plan = spec(
+        vec![Stage::Insert {
+            things: vec![InsertThing {
+                binding: id(0),
+                type_id: entity("account"),
+                fields: vec![(field("id"), input(0)), (field("score"), input(1))],
+                players: vec![],
+            }],
+        }],
+        vec![],
+    );
+    plan.inputs = vec![
+        column(0, "new_id", ValueTypeTag::String),
+        column(1, "new_score", ValueTypeTag::Long),
+    ];
+    plan.given_rows = Some(vec![
+        InputRow::new(vec![Some(text("account-1")), Some(CanonicalValue::Long(1))]),
+        InputRow::new(vec![Some(text("account-2")), Some(CanonicalValue::Long(2))]),
+    ]);
+    QueryPlan::new(plan, &schema()).unwrap()
+}
+
+pub fn expression_plan(expr: Expr) -> QueryPlan {
+    QueryPlan::new(
+        spec(
+            vec![Stage::Match {
+                patterns: vec![Pattern::Let {
+                    binding: id(0),
+                    expr,
+                }],
+            }],
+            vec![0],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+pub fn decimal() -> QueryOperand {
+    QueryOperand::Literal {
+        value: CanonicalValue::Decimal(DecimalValue::new("1.5").unwrap()),
+    }
+}
+pub fn double() -> QueryOperand {
+    QueryOperand::Literal {
+        value: CanonicalValue::Double(CanonicalDouble::new(1.5).unwrap()),
+    }
+}
+
+/// Write a thing and fetch its hydration document in the same pipeline.
+pub fn fetch_written(relation_players: bool) -> QueryPlan {
+    use type_bridge_contract::query_plan::{DocumentRole, ThingDocument};
+    let mut pipeline = Vec::new();
+    let document = if relation_players {
+        pipeline.push(Stage::Match {
+            patterns: vec![pat(0, entity("account"))],
+        });
+        pipeline.push(Stage::Insert {
+            things: vec![InsertThing {
+                binding: id(1),
+                type_id: relation(),
+                fields: vec![],
+                players: vec![(role(), id(0))],
+            }],
+        });
+        ThingDocument::new(id(1), vec![DocumentRole::new(role(), true)])
+    } else {
+        pipeline.push(Stage::Insert {
+            things: vec![thing(0)],
+        });
+        ThingDocument::new(id(0), vec![])
+    };
+    pipeline.push(Stage::Fetch(document));
+    let mut plan = spec(pipeline, vec![]);
+    plan.operation = Operation::Write {
+        returns: WriteReturns::Rows,
+    };
+    QueryPlan::new(plan, &schema()).unwrap()
+}
+
+/// Add a score value and a member to bound things, keeping existing ones.
+pub fn attach() -> QueryPlan {
+    use type_bridge_contract::query_plan::AttachItem;
+    QueryPlan::new(
+        spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("account")), pat(1, relation())],
+                },
+                Stage::Attach {
+                    items: vec![
+                        AttachItem::Has {
+                            optional: false,
+                            owner: id(0),
+                            field: field("score"),
+                            operand: literal(3),
+                        },
+                        AttachItem::Links {
+                            optional: false,
+                            relation: id(1),
+                            role: role(),
+                            player: id(0),
+                        },
+                    ],
+                },
+            ],
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// Remove every member of a membership, then attach a new one.
+pub fn replace_players() -> QueryPlan {
+    use type_bridge_contract::query_plan::AttachItem;
+    QueryPlan::new(
+        spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("account")), pat(1, relation())],
+                },
+                Stage::Delete {
+                    items: vec![DeleteItem::Players {
+                        relation: id(1),
+                        role: role(),
+                    }],
+                },
+                Stage::Attach {
+                    items: vec![AttachItem::Links {
+                        optional: false,
+                        relation: id(1),
+                        role: role(),
+                        player: id(0),
+                    }],
+                },
+            ],
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+pub fn plans() -> BTreeMap<&'static str, QueryPlan> {
+    let mut result = BTreeMap::from([
+        ("purchase", purchase()),
+        ("touch", touch()),
+        ("relation_assign", relation_assign()),
+        ("batch", batch()),
+    ]);
+    for (name, op) in [
+        ("add", ArithOp::Add),
+        ("sub", ArithOp::Sub),
+        ("mul", ArithOp::Mul),
+        ("div", ArithOp::Div),
+        ("mod", ArithOp::Mod),
+        ("pow", ArithOp::Pow),
+    ] {
+        result.insert(
+            name,
+            expression_plan(Expr::Arith {
+                op,
+                lhs: Box::new(Expr::Operand(literal(5))),
+                rhs: Box::new(Expr::Operand(literal(2))),
+            }),
+        );
+    }
+    for (name, func, args) in [
+        ("abs", Builtin::Abs, vec![literal(-2)]),
+        ("ceil", Builtin::Ceil, vec![decimal()]),
+        ("floor", Builtin::Floor, vec![double()]),
+        ("round", Builtin::Round, vec![double()]),
+        ("min", Builtin::Min, vec![literal(2), literal(3)]),
+        ("max", Builtin::Max, vec![literal(2), literal(3)]),
+        ("length", Builtin::Length, vec![string("abc")]),
+    ] {
+        result.insert(
+            name,
+            expression_plan(Expr::Call {
+                func,
+                args: args.into_iter().map(Expr::Operand).collect(),
+            }),
+        );
+    }
+    for (name, operation) in [
+        ("rows", Operation::Rows),
+        ("count", Operation::Count),
+        ("exists", Operation::Exists),
+    ] {
+        let mut plan = spec(
+            vec![matched()],
+            if operation == Operation::Rows {
+                vec![0]
+            } else {
+                vec![]
+            },
+        );
+        plan.operation = operation;
+        result.insert(name, QueryPlan::new(plan, &schema()).unwrap());
+    }
+    let matched = touch()
+        .with_operation(
+            Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            &schema(),
+        )
+        .unwrap();
+    result.insert("write_rows", matched);
+    result
+}
+
+/// Capture an existing entity or relation immediately before deleting it.
+pub fn delete_returning(relation_players: bool) -> QueryPlan {
+    use type_bridge_contract::query_plan::{DocumentRole, ThingDocument};
+    let root = if relation_players {
+        relation()
+    } else {
+        entity("account")
+    };
+    let roles = if relation_players {
+        vec![DocumentRole::new(role(), false)]
+    } else {
+        vec![]
+    };
+    let mut plan = spec(
+        vec![
+            Stage::Match {
+                patterns: vec![pat(0, root)],
+            },
+            Stage::Fetch(ThingDocument::new(id(0), roles)),
+            Stage::Delete {
+                items: vec![DeleteItem::Thing { binding: id(0) }],
+            },
+        ],
+        vec![],
+    );
+    plan.operation = Operation::Write {
+        returns: WriteReturns::Rows,
+    };
+    QueryPlan::new(plan, &schema()).unwrap()
+}
+
+/// Purchase hydration through the public builder, shared by all wrappers.
+pub fn purchase_read_back() -> QueryPlan {
+    use type_bridge_contract::query_plan::{DocumentRole, PlanBuilder};
+    let mut plan = PlanBuilder::new();
+    let purchase = plan.exact(TypeId::new(TypeKind::Relation, "purchase").unwrap());
+    let key = plan.field(purchase, AttributeId::new("purchase-id").unwrap());
+    let order_id = plan.input("purchase_id", ValueTypeTag::String, false);
+    plan.compare(
+        QueryOperand::Binding { binding: key },
+        ValueComparator::Equal,
+        QueryOperand::Input { column: order_id },
+    );
+    plan.fetch(
+        purchase,
+        vec![
+            DocumentRole::new(RoleId::new("purchase", "buyer").unwrap(), true),
+            DocumentRole::new(RoleId::new("purchase", "item").unwrap(), true),
+        ],
+    );
+    plan.row(vec![Some(CanonicalValue::String(
+        CanonicalString::new("purchase-1").unwrap(),
+    ))]);
+    plan.build(&schema(), semantics()).unwrap()
+}
+
+/// String comparator template with given input values.
+pub fn compare_string(comparator: ValueComparator) -> QueryPlan {
+    let mut spec = spec(
+        vec![Stage::Match {
+            patterns: vec![
+                pat(0, entity("account")),
+                has(0, 1, "id"),
+                QueryPattern::Value {
+                    comparator,
+                    left: operand(1),
+                    right: input(0),
+                }
+                .into(),
+            ],
+        }],
+        vec![0],
+    );
+    spec.inputs = vec![column(0, "needle", ValueTypeTag::String)];
+    spec.given_rows = Some(vec![InputRow::new(vec![Some(text("Ada"))])]);
+    QueryPlan::new(spec, &schema()).unwrap()
+}
+
+/// Rehydrate a discarded binding under an already selected, ordered window.
+pub fn rematch_window() -> QueryPlan {
+    QueryPlan::new(
+        spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![
+                        pat(0, entity("account")),
+                        pat(1, entity("account")),
+                        has(0, 2, "id"),
+                        has(1, 2, "id"),
+                    ],
+                },
+                Stage::Select {
+                    bindings: vec![id(0), id(2)],
+                },
+                Stage::Distinct,
+                Stage::Sort {
+                    terms: vec![type_bridge_contract::query_plan::OrderTerm::new(
+                        id(2),
+                        type_bridge_contract::query_plan::OrderDirection::Ascending,
+                    )],
+                },
+                Stage::Offset { rows: 0 },
+                Stage::Limit { rows: 2 },
+                Stage::Match {
+                    patterns: vec![pat(1, entity("account")), has(1, 2, "id")],
+                },
+                Stage::Fetch(type_bridge_contract::query_plan::ThingDocument::new(
+                    id(1),
+                    vec![],
+                )),
+            ],
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// Compare a canonical thing IID as a scalar inside a boolean scope.
+pub fn iid_expression() -> QueryPlan {
+    let mut spec = spec(
+        vec![Stage::Match {
+            patterns: vec![
+                pat(0, entity("account")),
+                Pattern::Let {
+                    binding: id(2),
+                    expr: Expr::Iid { binding: id(0) },
+                },
+                QueryPattern::Or {
+                    branches: vec![
+                        vec![QueryPattern::Value {
+                            comparator: ValueComparator::Equal,
+                            left: operand(2),
+                            right: input(0),
+                        }],
+                        vec![QueryPattern::Not {
+                            patterns: vec![QueryPattern::Value {
+                                comparator: ValueComparator::Equal,
+                                left: operand(2),
+                                right: input(0),
+                            }],
+                        }],
+                    ],
+                }
+                .into(),
+            ],
+        }],
+        vec![0],
+    );
+    spec.inputs = vec![column(0, "wanted_iid", ValueTypeTag::String)];
+    spec.given_rows = Some(vec![InputRow::new(vec![Some(text(
+        "0x1e00000000000000000001",
+    ))])]);
+    QueryPlan::new(spec, &schema()).unwrap()
+}

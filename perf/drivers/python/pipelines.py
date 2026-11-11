@@ -36,10 +36,9 @@ from typing import Any, Literal
 
 import type_bridge_core
 from type_bridge_core import (
-    PyRustDatabase,
-    QueryV2Authority,
-    query_v2_authority,
-    query_v2_query_only_authority,
+    PlanAuthority,
+    PyDatabase,
+    plan_authority,
 )
 
 from perf.drivers.workspace import PROFILE, SCOPE, Workspace, drop
@@ -106,7 +105,7 @@ BUYER, BOUGHT = _role(Purchase, "buyer"), _role(Purchase, "item")
 # ------------------------------------------------------------------- plans
 
 
-def insert_items(authority: QueryV2Authority, prefix: str, numbers: range) -> Plan:
+def insert_items(authority: PlanAuthority, prefix: str, numbers: range) -> Plan:
     plan = Plan.builder()
     item_id = plan.input("item_id", "string")
     stock = plan.input("stock", "long")
@@ -117,52 +116,52 @@ def insert_items(authority: QueryV2Authority, prefix: str, numbers: range) -> Pl
     return plan.build(authority)
 
 
-def fetch_by_key(authority: QueryV2Authority, key: str) -> Plan:
+def fetch_by_key(authority: PlanAuthority, key: str) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     item_id = plan.input("item_id", "string")
     stock, price = plan.field(item, STOCK), plan.field(item, PRICE)
-    plan.where_(plan.field(item, ITEM_ID).eq(item_id)).returning([stock, price])
+    plan.where(plan.field(item, ITEM_ID).eq(item_id)).returning([stock, price])
     plan.row([item_id.value(key)])
     return plan.build(authority)
 
 
-def fetch_filtered(authority: QueryV2Authority) -> Plan:
+def fetch_filtered(authority: PlanAuthority) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     item_key, stock = plan.field(item, ITEM_ID), plan.field(item, STOCK)
-    plan.where_(stock.ge(FILTER_STOCK)).returning([item_key, stock])
+    plan.where(stock.ge(FILTER_STOCK)).returning([item_key, stock])
     return plan.build(authority)
 
 
-def restock(authority: QueryV2Authority, key: str) -> Plan:
+def restock(authority: PlanAuthority, key: str) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     item_id = plan.input("item_id", "string")
     stock = plan.field(item, STOCK)
-    plan.where_(plan.field(item, ITEM_ID).eq(item_id))
-    plan.update(item, STOCK, plan.let_("next_stock", stock + 1))
+    plan.where(plan.field(item, ITEM_ID).eq(item_id))
+    plan.update(item, STOCK, plan.let("next_stock", stock + 1))
     plan.row([item_id.value(key)])
     return plan.build(authority)
 
 
-def delete_item(authority: QueryV2Authority, key: str) -> Plan:
+def delete_item(authority: PlanAuthority, key: str) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     item_id = plan.input("item_id", "string")
-    plan.where_(plan.field(item, ITEM_ID).eq(item_id)).delete(item)
+    plan.where(plan.field(item, ITEM_ID).eq(item_id)).delete(item)
     plan.row([item_id.value(key)])
     return plan.build(authority)
 
 
-def owners(authority: QueryV2Authority) -> Plan:
+def owners(authority: PlanAuthority) -> Plan:
     plan = Plan.builder()
     plan.insert(Item).field(ITEM_ID, "I1").field(STOCK, 1_000_000).field(PRICE, 1)
     plan.insert(Account).field(ACCOUNT_ID, "A1").field(BALANCE, 1_000_000_000)
     return plan.build(authority)
 
 
-def doctors(authority: QueryV2Authority) -> Plan:
+def doctors(authority: PlanAuthority) -> Plan:
     plan = Plan.builder()
     name = plan.input("name", "string")
     plan.insert(Doctor).field(NAME, name).field(ON_CALL, True)
@@ -171,37 +170,37 @@ def doctors(authority: QueryV2Authority) -> Plan:
     return plan.build(authority)
 
 
-def purchase(authority: QueryV2Authority, order: str) -> Plan:
+def purchase(authority: PlanAuthority, order: str) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     buyer = plan.exact(Account)
     order_id = plan.input("order_id", "string")
     stock, price = plan.field(item, STOCK), plan.field(item, PRICE)
     balance = plan.field(buyer, BALANCE)
-    plan.where_(plan.field(item, ITEM_ID).eq("I1"))
-    plan.where_(plan.field(buyer, ACCOUNT_ID).eq("A1"))
-    plan.where_(stock.gt(0)).where_(balance.ge(price))
-    plan.update(item, STOCK, plan.let_("next_stock", stock - 1))
-    plan.update(buyer, BALANCE, plan.let_("next_balance", balance - price))
+    plan.where(plan.field(item, ITEM_ID).eq("I1"))
+    plan.where(plan.field(buyer, ACCOUNT_ID).eq("A1"))
+    plan.where(stock.gt(0)).where(balance.ge(price))
+    plan.update(item, STOCK, plan.let("next_stock", stock - 1))
+    plan.update(buyer, BALANCE, plan.let("next_balance", balance - price))
     plan.insert(Purchase).field(ORDER_ID, order_id).player(BUYER, buyer).player(BOUGHT, item)
     plan.row([order_id.value(order)])
     return plan.build(authority)
 
 
-def touch(authority: QueryV2Authority) -> Plan:
+def touch(authority: PlanAuthority) -> Plan:
     plan = Plan.builder()
     doctor = plan.exact(Doctor)
     plan.update(doctor, ON_CALL, plan.field(doctor, ON_CALL))
     return plan.build(authority)
 
 
-def orders(authority: QueryV2Authority, prefix: str, rows: int) -> Plan:
+def orders(authority: PlanAuthority, prefix: str, rows: int) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     buyer = plan.exact(Account)
     order_id = plan.input("order_id", "string")
-    plan.where_(plan.field(item, ITEM_ID).eq("I1"))
-    plan.where_(plan.field(buyer, ACCOUNT_ID).eq("A1"))
+    plan.where(plan.field(item, ITEM_ID).eq("I1"))
+    plan.where(plan.field(buyer, ACCOUNT_ID).eq("A1"))
     plan.insert(Purchase).field(ORDER_ID, order_id).player(BUYER, buyer).player(BOUGHT, item)
     for number in range(rows):
         plan.row([order_id.value(f"{prefix}{number}")])
@@ -211,9 +210,7 @@ def orders(authority: QueryV2Authority, prefix: str, rows: int) -> Plan:
 # --------------------------------------------------------------- iterations
 
 
-def commit(
-    db: PyRustDatabase, kind: Literal["read", "write"], plans: Sequence[Plan]
-) -> list[object]:
+def commit(db: PyDatabase, kind: Literal["read", "write"], plans: Sequence[Plan]) -> list[object]:
     """Stage ``plans`` in one transaction, commit, and decode their answers."""
     tx = db.staged_transaction(kind)
     try:
@@ -237,7 +234,7 @@ def expect(answer: object, rows: int) -> None:
         raise AssertionError(f"{actual} rows, expected {rows}")
 
 
-def seed(name: str, db: PyRustDatabase, authority: QueryV2Authority, iterations: int) -> None:
+def seed(name: str, db: PyDatabase, authority: PlanAuthority, iterations: int) -> None:
     if name in ("fetch_by_key", "fetch_filtered", "update"):
         commit(db, "write", [insert_items(authority, "item-", range(SEEDED_ITEMS))])
     elif name == "delete":
@@ -246,7 +243,7 @@ def seed(name: str, db: PyRustDatabase, authority: QueryV2Authority, iterations:
         commit(db, "write", [owners(authority), doctors(authority)])
 
 
-def iteration(name: str, db: PyRustDatabase, authority: QueryV2Authority, number: int) -> None:
+def iteration(name: str, db: PyDatabase, authority: PlanAuthority, number: int) -> None:
     key = f"item-{number % SEEDED_ITEMS}"
     if name == "insert_one":
         expect(
@@ -305,8 +302,8 @@ def _stage_reader() -> Callable[[], dict[str, int]]:
     return reader
 
 
-def connect(config: Config, database: str) -> PyRustDatabase:
-    return PyRustDatabase.connect(
+def connect(config: Config, database: str) -> PyDatabase:
+    return PyDatabase.connect(
         config.address,
         database,
         username=config.username,
@@ -327,7 +324,7 @@ def run_pipeline(
         workspace.apply(database)
         db = connect(config, database)
         try:
-            authority = query_v2_query_only_authority(db, declared, SCOPE, PROFILE)
+            authority = plan_authority(declared, SCOPE, PROFILE)
             seed(name, db, authority, config.warmup + config.iterations)
             samples: list[dict[str, object]] = []
             for number in range(config.warmup + config.iterations):
@@ -377,7 +374,7 @@ def parse(argv: Sequence[str] | None, env: dict[str, str]) -> Config:
 
 def binding(config: Config, declared: bytes) -> dict[str, object]:
     """Time the offline ops: no database opens, since staging needs a connected one."""
-    authority = query_v2_authority(declared, SCOPE, PROFILE)
+    authority = plan_authority(declared, SCOPE, PROFILE)
     rows = insert_items(authority, "batch-", range(BATCH_ROWS))
     calls: dict[str, Callable[[], object]] = {
         "build_purchase": lambda: purchase(authority, "O0"),

@@ -41,6 +41,13 @@
       ]
     },
     {
+      "name": "read_back",
+      "kind": "read",
+      "plans": [
+        "read_back"
+      ]
+    },
+    {
       "name": "after",
       "kind": "read",
       "plans": [
@@ -291,6 +298,26 @@
     "kept": {
       "note": "insert doctor D4 off call in the same transaction after the rollback, and commit",
       "insert": "doctor"
+    },
+    "read_back": {
+      "match": {
+        "purchase": {
+          "order_id": "R1"
+        }
+      },
+      "fetch": {
+        "thing": "purchase",
+        "roles": [
+          {
+            "role": "buyer",
+            "required": true
+          },
+          {
+            "role": "item",
+            "required": true
+          }
+        ]
+      }
     }
   }
 }

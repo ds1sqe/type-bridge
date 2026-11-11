@@ -43,7 +43,7 @@ test("an unknown enum spelling is the golden SDK diagnostic JSON", () => {
 test("a malformed schema authority is the golden contract diagnostic JSON", () => {
   const native = loadNative();
   assert.deepEqual(
-    nativeJson(() => native.queryV2Authority(Buffer.from("{"), "scope", "profile")),
+    nativeJson(() => native.planAuthority(Buffer.from("{"), "scope", "profile")),
     expected("contract.malformed_canonical_json"),
   );
 });

@@ -79,20 +79,17 @@ CORE_SDIST_WORKSPACE_MEMBERS = (
     "crates/workspace",
     "crates/cli",
     "crates/core",
-    "crates/migration",
     "crates/python",
     "crates/typedb-runtime",
     "crates/orm",
-    "crates/toml-transpiler",
-    "vendor/typedb-protocol-b8",
-    "vendor/typedb-driver-b8",
+    "crates/perf-stages",
 )
-# Maturin 1.14.1 does not discover the optional orm-derive and perf-stages path dependencies
+# Maturin 1.14.1 does not discover the optional orm-derive path dependency
 # while constructing the Python sdist. pyproject.toml therefore includes this
 # source root explicitly. Unlike Cargo-packaged workspace members, the explicit
 # include is copied byte-for-byte: its manifest keeps workspace inheritance,
 # and Cargo resolves license-file to the archive's canonical root LICENSE.
-CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS = ("crates/orm-derive", "crates/perf-stages")
+CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS = ("crates/orm-derive",)
 CORE_SDIST_SOURCE_ROOTS = (
     CORE_SDIST_WORKSPACE_MEMBERS
     + CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS
@@ -147,12 +144,6 @@ CORE_SDIST_README_TRANSFORMS = frozenset(
 )
 CORE_SDIST_TRANSFORMED_MANIFESTS = (
     CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS | CORE_SDIST_README_TRANSFORMS | {"Cargo.toml"}
-)
-CORE_SDIST_VENDOR_LICENSES = frozenset(
-    {
-        "vendor/typedb-driver-b8/LICENSE",
-        "vendor/typedb-protocol-b8/LICENSE",
-    }
 )
 
 
@@ -1283,7 +1274,6 @@ def validate_sdist(path: Path, spec: PackageSpec) -> dict[str, Any]:
                 CORE_SDIST_NOTICE,
                 *CORE_SDIST_CRATE_NOTICES,
                 *CORE_SDIST_GENERATED_LICENSES,
-                *CORE_SDIST_VENDOR_LICENSES,
             }
         )
         actual_license_members = {name for name in members if is_license_like_member(name)}

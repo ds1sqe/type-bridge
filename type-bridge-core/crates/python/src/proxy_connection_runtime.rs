@@ -17,25 +17,29 @@ use type_bridge_orm::{
 };
 
 use crate::match_runtime::{
-    PyQueryCancellation, PyQueryExecutionResourceLimits, py_sdk_diagnostic,
+    PyQueryCancellation, PyQueryExecutionResourceLimits, PyQueryLimits, py_sdk_diagnostic,
 };
 use crate::orm_runtime::provider_block_on;
-use crate::query_v2_runtime::{PyQueryV2Authority, PythonBytes};
+use crate::plan_runtime::{PyPlanAuthority, PythonBytes};
 use crate::runtime_projection::direct_tls_from_python;
 use crate::staged_transaction_runtime::{PyStagedTransaction, parse_kind};
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::plan_authority::QueryAuthority;
 use type_bridge_orm::session::staged::TransactionOptions;
 
 /// One connection to a TypeBridge server reached over its HTTP routes.
 #[pyclass(name = "ProxyConnection", frozen)]
 pub(crate) struct PyProxyConnection {
-    connection: ProxyQueryConnection,
+    connection: Arc<ProxyQueryConnection>,
     runtime: Arc<ProviderRuntimeOwner>,
     authority: Arc<QueryAuthority>,
 }
 
 impl PyProxyConnection {
-    pub(crate) const fn connection(&self) -> &ProxyQueryConnection {
+    pub(crate) fn handles(&self) -> (Arc<ProxyQueryConnection>, Arc<ProviderRuntimeOwner>) {
+        (Arc::clone(&self.connection), Arc::clone(&self.runtime))
+    }
+
+    pub(crate) fn connection(&self) -> &ProxyQueryConnection {
         &self.connection
     }
 
@@ -46,6 +50,33 @@ impl PyProxyConnection {
 
 #[pymethods]
 impl PyProxyConnection {
+    /// Open an explicit raw context; clean context-manager exit commits by default.
+    #[pyo3(signature = (kind="read", *, commit_on_exit=true))]
+    fn raw_transaction(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        commit_on_exit: bool,
+    ) -> PyResult<crate::raw_runtime::PyRawTransaction> {
+        let _ = py;
+        crate::raw_runtime::PyRawTransaction::proxy(self, kind, commit_on_exit)
+    }
+
+    /// Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+    /// to TypeDB as written, and TypeDB's output comes back as it
+    /// answered, in this SDK's native data types. TypeBridge adds no
+    /// validation, rewriting, hydration, hooks, limits or extra
+    /// queries. It runs in read, write and schema transactions and
+    /// accepts any TypeQL, schema-breaking changes included. The caller
+    /// owns its correctness; TypeBridge makes no promise about its
+    /// effects. On a proxy connection it posts to the server's opt-in
+    /// `/v3/raw` endpoint, which is off by default.
+
+    #[pyo3(signature = (query, kind="read"))]
+    fn execute_query(&self, py: Python<'_>, query: &str, kind: &str) -> PyResult<Py<PyAny>> {
+        self.raw_transaction(py, kind, true)?.execute_one(py, query)
+    }
+
     /// Open `endpoint` and fetch its capability advertisement, or validate
     /// the pinned `advertisement` without fetching; `staged_advertisement`
     /// likewise pins the `/v3/capabilities` body. `connection_limits`
@@ -64,11 +95,13 @@ impl PyProxyConnection {
         answer_limits=None,
         cancellation=None,
         staged_advertisement=None,
+        admission_window_milliseconds=std::num::NonZeroU64::new(60_000).unwrap(),
+        query_limits=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn connect(
         py: Python<'_>,
-        authority: &PyQueryV2Authority,
+        authority: &PyPlanAuthority,
         endpoint: String,
         tls_mode: &str,
         tls_root_ca: Option<PathBuf>,
@@ -78,7 +111,13 @@ impl PyProxyConnection {
         answer_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
         cancellation: Option<PyRef<'_, PyQueryCancellation>>,
         staged_advertisement: Option<&Bound<'_, PyAny>>,
+        admission_window_milliseconds: std::num::NonZeroU64,
+        query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<Self> {
+        let query_limits = query_limits
+            .map(|limits| limits.inner().validate_plan())
+            .transpose()
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         let tls = direct_tls_from_python(tls_mode, tls_root_ca)?;
         let endpoint = headers.into_iter().flatten().fold(
             ProxyEndpoint::new(endpoint).tls(tls),
@@ -107,6 +146,7 @@ impl PyProxyConnection {
             )
         };
         let connection_limits = limits(connection_limits);
+        let caller_item_limit = answer_limits.as_ref().map(|limits| limits.inner().items);
         let answer_limits = limits(answer_limits);
         let cancellation: AnswerCancellation =
             cancellation.map(|value| value.inner()).unwrap_or_default();
@@ -127,7 +167,15 @@ impl PyProxyConnection {
                 &cancellation,
             ),
         )
-        .map_err(py_sdk_diagnostic)?;
+        .map_err(py_sdk_diagnostic)?
+        .with_admission_window_milliseconds(admission_window_milliseconds)
+        .with_caller_item_limit(caller_item_limit);
+        let connection = match query_limits {
+            Some(limits) => connection
+                .with_query_limits(limits)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?,
+            None => connection,
+        };
         // A pinned staged advertisement must name the same executor and
         // reply key as the connection's advertisement.
         let connection = match staged_advertisement {
@@ -137,10 +185,16 @@ impl PyProxyConnection {
             None => connection,
         };
         Ok(Self {
-            connection,
+            connection: Arc::new(connection),
             runtime,
             authority: authority.authority(),
         })
+    }
+
+    /// Configured request delivery window, default 60000 ms; execution is independent.
+    #[getter]
+    fn admission_window_milliseconds(&self) -> u64 {
+        self.connection.admission_window_milliseconds()
     }
 
     /// Open a staged transaction over this connection. Nothing is sent
@@ -175,9 +229,15 @@ impl PyProxyConnection {
         ))
     }
 
+    /// Query policy tightened by the currently pinned staged server ceiling.
+    #[getter]
+    fn query_limits(&self) -> PyQueryLimits {
+        PyQueryLimits::from_inner(self.connection.query_limits())
+    }
+
     /// The ceiling every terminal on this connection is constrained by.
     #[getter]
-    const fn answer_limits(&self) -> PyQueryExecutionResourceLimits {
+    fn answer_limits(&self) -> PyQueryExecutionResourceLimits {
         PyQueryExecutionResourceLimits::from_inner(self.connection.answer_limits())
     }
 }

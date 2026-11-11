@@ -1,43 +1,26 @@
 # C SDK
 
-**Security update:** Upgrade to TypeBridge 2.2.5. Its prebuilt distributions
-use rustls 0.23.46, which fixes RUSTSEC-2026-0346 through RUSTSEC-2026-0349
-and the earlier
-[RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
-The [2.2.1 post-release notice](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.1)
-records the affected earlier release.
+TypeBridge 3.0 uses native ABI 2.0 for **Ubuntu 24.04, x86_64 GNU/Linux,
+shared runtime**. C17 and C++17 applications consume generated schema packages
+through CMake or pkg-config. This is the 3.0 development guide; release
+publication and platform claims follow the [C release procedure](../development/c-release.md).
 
-TypeBridge 2.2.5 provides a generated C SDK with native ABI 1.6.0 for
-**Ubuntu 24.04, x86_64 GNU/Linux, shared runtime**. C17 and C++17 applications
-consume generated schema packages through CMake or pkg-config. The public
-release was independently verified on 2026-10-15.
-
-The SDK uses the same Rust-owned schema, CRUD, query, migration, serialization,
-cancellation, diagnostics, and resource-limit contracts as the other SDKs.
-Connected acceptance uses exactly TypeDB 3.12.3; the canonical semantic profile
-is `typedb-3.12.1/v1`. The selected C distribution does not cover static linking,
-macOS, Windows, or other architectures.
+The SDK shares Rust-owned schema, CRUD, query, migration, serialization,
+cancellation, diagnostics and resource policies with the other SDKs. Supported
+TypeDB lines are 3.12–3.14, subject to each generated package's profile floor.
+The selected distribution does not cover static linking or other platforms.
 
 ## Install the runtime
 
-Download the runtime archive and its Sigstore bundle from the
-[2.2.5 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.5):
+Use a matching ABI 2.0 runtime archive and CLI from the release assets. Verify
+the signed files using the [documented signing identity and provenance](../development/c-release.md#protected-promotion).
+The runtime contains `type_bridge.h`, `libtype_bridge_c.so`, CMake configuration
+and pkg-config metadata. The standalone CLI provides `bin/type-bridge`.
 
-- `type-bridge-c-runtime-2.2.5-abi-1.6-x86_64-unknown-linux-gnu.tar.gz`
-- `type-bridge-cli-2.2.5-x86_64-unknown-linux-gnu.tar.gz` for standalone generation
-  and migration commands
-- `type-bridge-c-sdk-example-2.2.5.tar.gz` for the verified `tb_sdkv3` example
-
-Verify the signed release files using the
-[documented signing identity and provenance](../development/c-release.md#protected-promotion).
-Extract the runtime into a private installation prefix. It contains the public
-header, `libtype_bridge_c.so`, CMake configuration, and pkg-config metadata.
-The standalone CLI archive has its own `bin/type-bridge` executable.
-
-Application execution needs the shared runtime and its system-library
-dependencies. Building an application additionally needs a C17 or C++17
-compiler and CMake 3.20+ or pkg-config. Python and Cargo are not application
-runtime dependencies.
+Application execution needs the shared runtime and its system libraries.
+Builds additionally need a C17 or C++17 compiler and CMake 3.20+ or pkg-config;
+Python and Cargo are not application runtime dependencies. Regenerate 2.3.x
+packages (ABI 1.7 and later 1.x descriptors) before linking against ABI 2.0.
 
 ## Generate an application schema package
 
@@ -63,28 +46,28 @@ regenerate rather than editing emitted declarations or runtime resources.
 
 ## Link an application
 
-For the released example, CMake discovers both the runtime and generated
+For a generated example, CMake discovers both the runtime and generated
 schema package:
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
 project(example LANGUAGES C CXX)
-find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)
-find_package(tb_sdkv3 1.0.0 EXACT CONFIG REQUIRED)
+find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)
+find_package(tb_sdk 1.0.0 EXACT CONFIG REQUIRED)
 add_executable(example main.c)
 set_target_properties(example PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED YES)
-target_link_libraries(example PRIVATE tb_sdkv3::schema)
+target_link_libraries(example PRIVATE tb_sdk::schema)
 ```
 
 Set `TypeBridge_DIR` to the runtime's `lib/cmake/TypeBridge` directory and
-`tb_sdkv3_DIR` to the example package's `lib/cmake/tb_sdkv3` directory. Include
-`<tb_sdkv3/tb_sdkv3.h>` from the application. Use the package name emitted for
+`tb_sdk_DIR` to the example package's `lib/cmake/tb_sdk` directory. Include
+`<tb_sdk/tb_sdk.h>` from the application. Use the package name emitted for
 your own schema when replacing the example.
 
 For pkg-config, add both packages' `lib/pkgconfig` directories to
 `PKG_CONFIG_PATH`. Compile the source returned by
-`pkg-config --variable=generated_source tb_sdkv3` together with your application,
-using `pkg-config --cflags --libs tb_sdkv3`. Configure the dynamic loader to find
+`pkg-config --variable=generated_source tb_sdk` together with your application,
+using `pkg-config --cflags --libs tb_sdk`. Configure the dynamic loader to find
 the installed runtime's `lib` directory.
 
 ## Run a query on a database or a TypeBridge server
@@ -95,15 +78,13 @@ diagnostics:
 
 | Connection | Execute call |
 | --- | --- |
-| `type_bridge_database_t` | `type_bridge_database_query_execute_v1` |
-| `type_bridge_read_transaction_t` | `type_bridge_read_transaction_query_execute_v1` |
-| `type_bridge_proxy_connection_t` | `type_bridge_proxy_query_execute_v1` |
+| `type_bridge_database_t` | `type_bridge_database_query_execute` |
+| `type_bridge_read_transaction_t` | `type_bridge_read_transaction_query_execute` |
+| `type_bridge_proxy_connection_t` | `type_bridge_proxy_query_execute` |
 
 So one program runs unchanged against TypeDB directly or through a
 TypeBridge server; only the connection it opens differs. The proxy
-connection, `type_bridge_query_session_open_with_limits_v1`, and their types
-are ABI 1.7; the ABI 1.6 header of 2.2.6 does not declare them. The proxy connection
-is synchronous and blocks the calling thread:
+connection is synchronous and blocks the calling thread:
 
 ```c
 type_bridge_proxy_header_v1_t auth = {
@@ -124,7 +105,7 @@ type_bridge_execution_diagnostics_t *diagnostics = NULL;
 status = type_bridge_proxy_connection_open_v1(
     package, &options, NULL, &proxy, &diagnostics);
 /* ... */
-status = type_bridge_proxy_query_execute_v1(
+status = type_bridge_proxy_query_execute(
     proxy, terminal, kind, NULL, NULL, &result, &diagnostics);
 /* ... */
 type_bridge_proxy_connection_close(&proxy);
@@ -135,22 +116,68 @@ PEM bundle. An empty `pinned_advertisement` fetches the server's capability
 advertisement during open, bounded by `connection_limits`; a nonempty one is
 used as is. `answer_limits` is a ceiling: every terminal on the connection
 runs under its own limits constrained by it, and limit values are kept or
-refused, never clamped. Manager terminals run only on a database or a read
-transaction.
+refused, never clamped. Manager read terminals support database, borrowed read/write and proxy
+targets; mutations use database, borrowed write or proxy targets.
 
-ABI 1.6 rollback consumes the write transaction and clears its owner slot,
-just like commit and close. Keep-open rollback requires the later ABI 1.7 API.
+Independent connection query limits use
+`type_bridge_database_open_with_query_limits` or
+`type_bridge_proxy_connection_open_with_query_limits_v1`. Pass the existing
+transport configuration plus an array of `type_bridge_query_limit_override_v1_t`
+entries and its count. Names and values follow the shared `QueryLimits` policy:
+for example, `bindings = 1024` and `boolean_terms = 512` raise those dimensions
+independently. The binding default is 256, with a supported ceiling of 65,536.
+The constructor captures the values before provider I/O; override storage may
+be released after it returns. Proxy limits intersect the staged server ceiling.
+The original open functions keep their defaults and existing configuration
+layouts and reserved words retain their meanings.
+
+`type_bridge_write_transaction_rollback` consumes its owner slot.
+Use `type_bridge_write_transaction_rollback_keep` to retain a reusable owner.
+
+### Typed reads in a staged transaction
+
+Open a staged transaction with `type_bridge_database_transaction` or
+`type_bridge_proxy_connection_transaction`. Stage writes with the plan authoring
+API, then stage the same immutable typed terminal used by execute:
+
+```c
+type_bridge_pending_t *pending = NULL;
+status = type_bridge_staged_query_stage(
+    transaction, terminal, kind, NULL, NULL, &pending, &diagnostics);
+/* No I/O yet. The pending result reports IN_USE before commit. */
+status = type_bridge_staged_transaction_commit(transaction, &diagnostics);
+status = type_bridge_pending_query_result(pending, &result, &diagnostics);
+/* Use the existing query-result accessors. */
+type_bridge_query_result_close(&result);
+type_bridge_pending_free(&pending);
+type_bridge_staged_transaction_close(&transaction);
+```
+
+A staged read sees earlier writes in the same transaction, directly or through
+`/v3/staged`. NULL limits select defaults; explicit limits and cancellation use
+the same checks as execute. A pending retains its query and schema proof, so
+query sessions and terminals may close before commit. After commit, its result
+remains readable after the transaction closes; repeated result calls share the
+cached projection. A rollback or failed commit publishes no result.
+
+Generated manager filter terminals accept direct databases, borrowed read
+contexts and proxy connections through the same execute-call shape. Proxy calls
+send one plan to `/v3/staged` and use the same result accessors. Staging one fails
+with `c_query_manager_staged_unsupported` before I/O.
+C schema packages always require canonical schema authority at admission;
+unlike registry-only managers in other bindings, C has no schema-less package
+mode.
 
 ### Caller-owned exchange
 
 A host that owns the route to the server (its own HTTP stack, a message bus,
 or an in-process server) uses the remote context instead of the built-in
 proxy connection. It is the exchange extension point, not a second session:
-`type_bridge_query_remote_context_open_v1` validates the advertisement,
-`type_bridge_query_remote_prepare_v1` returns a pending request whose bytes
+`type_bridge_query_remote_context_open` validates the advertisement,
+`type_bridge_query_remote_prepare` returns a pending request whose bytes
 (`type_bridge_query_remote_pending_request_bytes`) the host sends, and the
 reply goes through the one-shot `type_bridge_query_remote_pending_claim` and
-`type_bridge_query_remote_claim_decode_v1`. Both paths prepare and validate
+`type_bridge_query_remote_claim_decode`. Both paths prepare and validate
 requests through the same Rust proxy connection.
 
 The release evidence covers relocated installation, strict C17/C++17 headers,
@@ -159,20 +186,18 @@ serialization, cancellation, resource limits, and cleanup. See the
 [release procedure](../development/c-release.md#public-verification-and-support)
 for the public verification record and exact support boundary.
 
-Provider commit status is selected from the typed commit outcome. ABI 1.6
-continues to return `TYPE_BRIDGE_STATUS_EXECUTION_FAILED` for proven rejections
+Provider commit status is selected from the typed commit outcome. It returns `TYPE_BRIDGE_STATUS_EXECUTION_FAILED` for proven rejections
 and `TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN` when a commit may have applied.
 Rejection diagnostics keep the released `commit_definitely_aborted` and
 `provider_operation_failed` codes, paths and details. The typed failure
 details other SDKs expose (`retry_safe`, `code`, `rejection`, `lock_kind`,
-`annotation`) belong to ABI 1.7, rather than changing what ABI 1.6 consumers
-count and read; see [Typed failures](#typed-failures).
+`annotation`) are available through execution diagnostics; see [Typed failures](#typed-failures).
 
-## Stage plans in one transaction (ABI 1.7)
+## Stage plans in one transaction
 
-ABI 1.7 adds deferred transactions over `query-plan/v3` plans. A plan comes
+Deferred transactions execute `query-plan/v3` plans. A plan comes
 from the plan builder or from canonical plan bytes
-(`type_bridge_plan_v3_decode`); C never serializes plans itself. Staging sends
+(`type_bridge_plan_decode`); C never serializes plans itself. Staging sends
 nothing: `type_bridge_staged_transaction_commit` runs every staged plan in one
 provider transaction, and each pending answer is read after the commit.
 
@@ -272,6 +297,161 @@ diagnostics; only a broken pointer contract returns
 `TYPE_BRIDGE_STATUS_INVALID_ARGUMENT` from the call itself. `build` validates
 against the schema package's compiled authority and leaves the builder usable.
 
+### Generated plan fields
+
+The specification's `type_bridge_plan_open()` is the generated package-scoped
+`shop_plan_open(options, out_builder, out_diagnostics)` in C. Passing NULL options selects the
+canonical query limits. Opening captures the verified package and selected
+limits once; later staging uses that retained context.
+
+```c
+type_bridge_plan_builder_t *p = NULL;
+type_bridge_execution_diagnostics_t *diagnostics = NULL;
+type_bridge_status_t status = shop_plan_open(NULL, &p, &diagnostics);
+```
+
+Generated initializers always check their projection brand against the captured
+package. A helper from another package refuses with
+`generated_token_package_mismatch`. A generated helper on an unbound raw builder
+reports `plan_context_missing`; its typed argument path names the required
+package opener. Raw `type_bridge_plan_builder_new` and explicit-package `build`
+remain available for the core-builder escape hatch.
+
+Generated plan-value getters use `<model>_plan_<field>`. For example,
+`shop_item_plan_stock(builder, item)` returns `tb_long_t`. The authoring
+specification's `shop_item_stock(p, h)` maps to this name because
+`shop_item_stock` already reads an attribute from a hydrated `shop_item`.
+Match, set, and insert helpers keep their model names, such as
+`shop_item_match`, `shop_item_set`, and `shop_item_insert`.
+
+The 3.0 C naming mappings preserve the existing owned models and getters:
+
+| Specification name | Generated C name |
+| --- | --- |
+| `<model>_<field>(p, h)` plan getter | `<model>_plan_<field>(p, h)` |
+| `<model>_t` borrowed result view | `<model>_plan_view_t` |
+| Nested role-player view | `<model>_plan_player_view_t` |
+| Held set returning hydrated models | `<model>_set`, then `<model>_row` |
+
+`<model>_row(p, handle, &plan)` projects the handle as a model in the plan's
+answer. Use it after a match, set, or link statement. It refuses a handle from
+another recording. Insert and put return their model marker through the output
+parameter; plain delete returns a matched marker and `delete_returning` returns
+a model marker.
+
+```c
+shop_item_plan_t updated;
+shop_item_set_t changes = { .stock = tb_long(0) };
+CHECK(shop_item_set(p, item, &changes));
+CHECK(shop_item_row(p, item, &updated));
+```
+
+Markers borrow their recording until `type_bridge_plan_builder_free`. The first
+typed stage freezes it. All mutations then refuse with `plan_already_built`;
+read-only lazy field getters still work. Each held marker compiles only on its
+first stage, and later stages retain the same compiled source. Unstaged markers
+are never compiled. Pending and result owners may outlive the recording.
+`type_bridge_plan_builder_diagnostics` snapshots the latest rejected frozen
+mutation without clearing it; before any rejection it returns an empty snapshot.
+Rejected mutations do not poison already compiled plans.
+
+The specification's `returning(model, scalar)` is a held rows plan in C.
+Column constructors record nothing; `type_bridge_plan_returning` consumes the
+array in order, so argument evaluation order cannot reorder the projection.
+
+```c
+type_bridge_plan_column_t columns[] = {
+  shop_item_column(item), tb_long_column(shop_item_plan_stock(p, item))
+};
+type_bridge_rows_plan_t plan;
+CHECK(type_bridge_plan_returning(p, columns, 2u, &plan));
+type_bridge_rows_pending_t *pending = NULL;
+CHECK(type_bridge_rows_stage(tx, plan, &pending, &diagnostics));
+CHECK(type_bridge_staged_transaction_commit(tx, &diagnostics));
+type_bridge_rows_result_t *rows = NULL;
+CHECK(type_bridge_rows_pending_result(pending, &rows, &diagnostics));
+const shop_item_plan_view_t *model = NULL;
+int64_t stock = 0;
+CHECK(shop_item_rows_model_at(rows, 0u, 0u, &model, &diagnostics));
+CHECK(type_bridge_rows_result_long(rows, 0u, 1u, &stock, &diagnostics));
+/* model and all its pointers borrow rows. */
+type_bridge_rows_result_free(&rows);
+type_bridge_rows_pending_free(&pending);
+```
+
+Each cell getter checks its column's kind and scalar domain. A model through a
+scalar getter, a long through a string getter, or an out-of-range row or column
+returns a typed diagnostic. Empty results retain their declared column count.
+Model cells use the same precommit proof and core ordinals as per-model results.
+
+A result view borrows its result owner. Freeing that owner invalidates every
+view obtained from it, including nested players and strings. Nested players are
+one level deep, following the core's complete or reference role-player form;
+their `deleted` flag is false. Textual fields use canonical NUL-terminated UTF-8.
+An embedded NUL refuses result construction with `c_plan_view_embedded_nul`.
+
+
+Generated model handles occupy 16 bytes with 8-byte alignment on the supported
+x86_64 ABI, regardless of schema width: a recording pointer, binding ID, and
+model ordinal. The recording caches field and role IDs on first use of each
+model. Repeated initializers check the package brand and reuse that metadata;
+field getters allocate nothing and record nothing until consumed.
+
+Constructors record nothing until consumed; operands are recorded depth-first,
+left to right. A field carrier borrows its builder until
+`type_bridge_plan_builder_free`, like a generated model plan. Reusing a carrier
+uses the same core field binding.
+
+Generated names share the existing C identifier namespace; real collisions
+refuse with `c_emitter_generated_symbol_collision`. Physical `-`, `_`, and `z`
+are escaped as `zh`, `zu`, and `zz`, keeping physical members distinct from
+helper names. Thus `plan-stock` becomes `planzhstock`, `plan_stock` becomes
+`planzustock`, and `has-stock` becomes `haszhstock`. New struct members that
+are C17 or C++17 keywords append `zk`: `class` becomes `classzk`, while physical
+`classz` remains `classzz`.
+
+Required insert and bulk values are raw host members. An optional scalar also
+has a `bool has_<field>` member. For a schema with optional `stock`, these rows
+write zero stock and omit stock, respectively:
+
+```c
+shop_item_values_t rows[] = {
+  {.itemzhid = "I1", .price = 3, .stock = 0, .has_stock = true},
+  {.itemzhid = "I2", .price = 3}
+};
+```
+
+Generated bulk helpers read these host structs directly through one offset table
+per model. They allocate no temporary cell frame: a 10,000-row, three-column
+call avoids 720,000 temporary bytes. Row extents, field offsets, host alignment,
+and presence offsets are checked before payload reads. Rows and their strings
+are borrowed only during the call and may be freed immediately afterwards.
+The explicit native cell-frame API remains available for raw callers.
+
+An optional string uses the same presence flag. `has_<field> = true` with a
+NULL string is an invalid-value build refusal; it does not omit the field.
+Generated presence companions share the struct's member namespace; real
+collisions refuse generation. Physical `has-stock` remains `haszhstock`,
+separate from the generated `has_stock` flag. Set structs
+continue to use typed `tb_*` handles: a zero handle leaves its field untouched.
+
+Ownership removal uses a boolean selection struct. Zero leaves every field
+untouched; designated initializers select the ownerships to remove:
+
+```c
+shop_item_unset_t removed = { .stock = true };
+CHECK(shop_item_unset(builder, item, &removed));
+```
+
+Unordered role edits use `<model>_link_t` and `<model>_unlink_t`. A role with one
+accepted model takes that model's handle. A role with multiple accepted models
+uses a generated tagged union; its explicit `none = 0` tag means no player.
+Unknown tags produce a typed builder diagnostic. Many-role members take a
+pointer and count. Their arrays are borrowed only during the call, so callers
+may free them immediately afterwards; the recording retains the player IDs.
+A zeroed link or unlink struct records nothing. Linking adds players while
+preserving existing players; unlinking removes the specified role edges.
+
 ### Stage and commit
 
 ```c
@@ -306,6 +486,60 @@ opens the same transaction on a proxy connection. It fetches the server's
 staged advertisement at open; commit is one signed exchange that carries every
 staged plan. The transaction may outlive the connection.
 
+### Reading answers
+
+`type_bridge_pending_answer` reports `DOCUMENTS` with its document count for
+a fetch plan, or `ROWS` with its row count for a projected row plan. Read
+individual values through borrowed cursors after commit:
+
+```c
+const type_bridge_document_t *doc = NULL, *buyer = NULL;
+type_bridge_byte_view_t type = {NULL, 0u}, order_id = {NULL, 0u};
+size_t count = 0u;
+assert(type_bridge_pending_document_count(pending, &count) == TYPE_BRIDGE_STATUS_OK);
+assert(count == 1u);
+assert(type_bridge_pending_document(pending, 0u, &doc) == TYPE_BRIDGE_STATUS_OK);
+assert(type_bridge_document_type(doc, &type) == TYPE_BRIDGE_STATUS_OK);
+assert(type_bridge_document_attribute_string(doc, view("order-id"), 0u, &order_id)
+       == TYPE_BRIDGE_STATUS_OK);
+assert(type_bridge_document_role(doc, 0u, &buyer) == TYPE_BRIDGE_STATUS_OK);
+```
+
+For a row plan that projects a scalar variable:
+
+```c
+const type_bridge_row_t *row = NULL;
+type_bridge_value_kind_t kind;
+type_bridge_byte_view_t order_id = {NULL, 0u};
+assert(type_bridge_pending_row(pending, 0u, &row) == TYPE_BRIDGE_STATUS_OK);
+assert(type_bridge_row_value_kind(row, view("purchase_order_id"), &kind)
+       == TYPE_BRIDGE_STATUS_OK);
+assert(kind == TYPE_BRIDGE_VALUE_STRING);
+assert(type_bridge_row_value_string(row, view("purchase_order_id"), &order_id)
+       == TYPE_BRIDGE_STATUS_OK);
+```
+
+Include `<assert.h>` for these checked examples. Cursors and all returned
+byte views borrow from `pending` until `type_bridge_pending_free`; the plan
+and transaction may be freed earlier. Copy any bytes that must outlive the
+pending handle. Cursor calls allocate nothing.
+
+`document_attribute_count` returns zero for an absent schema-owned attribute;
+a scalar has one value and a collection is indexed in its returned order.
+`document_attribute_kind` lets callers select the typed getter for an element.
+`document_role` returns `OK` and null for an absent optional player.
+Unknown fields, wrong kinds, foreign cursor kinds and out-of-range indices
+return `INVALID_ARGUMENT`. Before commit, pending cursors return `IN_USE`;
+failed or discarded answers return `EXECUTION_FAILED`. Disjoint outputs are
+zeroed on failure; overlapping outputs are rejected without changing inputs.
+
+Both cursor types have string, long, double, boolean, date, datetime,
+datetime_tz, decimal and duration getters. Doubles return IEEE-754 bits,
+booleans return 0/1, and temporal/decimal getters borrow canonical UTF-8
+text. Row names are projected variables without `$`; absent, thing and list
+row cells expose their kind and refuse scalar getters. Use a document fetch
+to inspect a thing's identity, attributes and players.
+
 ### Typed failures
 
 `type_bridge_execution_diagnostics_failure_get_v1` reads the typed provider
@@ -318,22 +552,37 @@ purchases racing for the last item end with one commit and one rejected
 commit whose failure is a retry-safe `STC2` conflict with
 `TYPE_BRIDGE_FAILURE_LOCK_EXCLUSIVE`; see [Concurrency](concurrency.md).
 
-### Require ABI 1.7
+<a id="require-abi-17"></a>
 
-The 1.7 runtime serves 1.6 consumers unchanged: CMake accepts
-`find_package(TypeBridge 1.6.0 EXACT)` and pkg-config keeps
-`type-bridge = 1.6.0` resolving. Applications that use the 1.7 surface
-require it explicitly:
+### Require ABI 2.0
+
+ABI 2.0 is a breaking target. Rebuild consumers and regenerate schema packages;
+old 1.x descriptors and binaries are not supported by this header/runtime pair.
 
 ```cmake
-find_package(TypeBridge 1.7 CONFIG REQUIRED)
+find_package(TypeBridge 2.0.0 EXACT CONFIG REQUIRED)
 ```
 
 ```text
-Requires: type-bridge-abi >= 1.7.0
+Requires: type-bridge = 2.0.0
 ```
 
-The runtime's pkg-config file keeps `Version: 1.6.0` and provides
-`type-bridge-abi` at the native ABI version (pkgconf, the Ubuntu 24.04
-`pkg-config`, resolves provided modules). At run time,
-`type_bridge_c_abi_minor()` reports the loaded runtime's minor.
+Check `type_bridge_c_abi_major()` and `type_bridge_c_abi_minor()` when inspecting
+the loaded runtime. C policies default to 60,000 ms; a nonpositive signed
+execution timeout means no deadline. Pass `NULL` policy pointers for defaults.
+
+### Explain and database debug callbacks
+
+`type_bridge_plan_explain(plan, &bytes, &diagnostics)` returns owned canonical
+JSON describing the exact executed statements. Caller values transported in
+`given` rows are omitted; embedded plan constants remain visible. Read it with
+`type_bridge_canonical_bytes_view` and close it with
+`type_bridge_canonical_bytes_close`.
+
+`type_bridge_debug_listener_set(database, callback, context)` receives that
+handle's stage, commit, provider and answer records as borrowed JSON bytes.
+Keep the context alive until clearing the callback or closing the database.
+The callback must not retain the byte pointer, unwind or reenter TypeBridge.
+Schema-only build events use tracing or `RUST_LOG`, since they have no database
+handle. A null callback clears the listener. See [Debugging plans](debugging.md)
+for examples and record fields.

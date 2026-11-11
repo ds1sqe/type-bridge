@@ -1,16 +1,16 @@
 //! # type-bridge-core-lib
 //!
-//! Pure-Rust core library for **type-bridge**, providing a TypeQL AST,
-//! schema parser, query compiler, value coercer, and validation engine.
+//! Shared core for **type-bridge**, providing typed query operations,
+//! checked TypeQL construction, value coercion, and validation.
+//! The upstream TypeQL representation and rendering remain private.
 //!
 //! ## Modules
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`ast`] | TypeQL Abstract Syntax Tree — patterns, statements, clauses, and values |
+//! | [`ast`] | Typed query operands, predicates, and operations |
 //! | [`validation`] | Schema-aware query validation plus a custom validation-rule DSL |
-//! | [`compiler`] | Compiles an AST back into a TypeQL query string |
-//! | [`query_parser`] | Parses a TypeQL query string into the AST |
+//! | [`compiler`] | Checked lowering of typed query operations |
 //! | [`value_coercion`] | Coerces raw values into TypeDB value-types and formats TypeQL literals |
 //! | [`reserved_words`] | TypeQL reserved-word detection |
 //! | [`version`] | TypeDB compatibility window, protocol-band map, and version gate (SSOT) |
@@ -21,10 +21,6 @@
 #[doc = include_str!("../README.md")]
 pub mod readme_doctests {}
 
-/// Frozen direct-TypeQL renderer retained behind compatibility tooling.
-#[doc(hidden)]
-#[path = "bindgen.rs"]
-pub mod _bindgen;
 /// Frozen released-TypeQL parser retained behind compatibility tooling.
 #[doc(hidden)]
 #[path = "archive_parser.rs"]
@@ -33,17 +29,15 @@ pub mod _parser;
 #[doc(hidden)]
 #[path = "schema.rs"]
 pub mod _schema;
-/// TypeQL Abstract Syntax Tree — patterns, statements, clauses, and values.
+/// Typed query operands, predicates, and operations.
 pub mod ast;
-/// Compiles an AST back into a TypeQL query string.
+/// Checked lowering of typed query operations into TypeQL.
 pub mod compiler;
 /// Canonical TypeDB decimal parsing and semantic comparison.
 pub mod decimal;
 mod parser;
-/// Plaintext or TLS HTTP client for a TypeBridge proxy's `/v2` routes.
+/// Plaintext or TLS HTTP client for a TypeBridge proxy's `/v3` routes.
 pub mod proxy_http;
-/// Parses a TypeQL query string into the AST.
-pub mod query_parser;
 /// TypeQL reserved-word detection.
 pub mod reserved_words;
 mod tql;
@@ -53,6 +47,21 @@ mod validation_rule_wire;
 /// Implementation-only TypeQL construction boundary for sibling crates.
 #[doc(hidden)]
 pub mod __internal {
+    /// Frozen schema recovery for internal compatibility comparisons only.
+    #[doc(hidden)]
+    pub mod archive {
+        use crate::_schema::{SchemaError, TypeSchema};
+
+        /// Decode released schema syntax without resolving inheritance.
+        pub fn parse_unresolved(input: &str) -> Result<TypeSchema, SchemaError> {
+            crate::_parser::parse_typeql(input)
+        }
+
+        /// Decode and resolve released schema syntax without changing its grammar.
+        pub fn parse_resolved(input: &str) -> Result<TypeSchema, SchemaError> {
+            parse_unresolved(input)?.validate_and_resolve()
+        }
+    }
     pub use crate::tql::*;
 }
 /// Coerces raw values into TypeDB value-types and formats TypeQL literals.

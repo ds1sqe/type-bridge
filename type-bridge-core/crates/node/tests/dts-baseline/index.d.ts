@@ -1,9 +1,11 @@
+import { RawTransaction, type NativeRawTransaction, type RawValue } from "./raw-query.js";
+export { RawQueryError, RawTransaction, type RawValue } from "./raw-query.js";
 import type { QueryLimits } from "./runtime-projection.js";
-import type { NativeStagedTransaction } from "./native.js";
+import type { NativeStagedTransaction, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
-import { type NativeQueryV2Authority, type NativeQueryV2BuilderRuntime } from "./query-v2-internals.js";
-export { QueryV2Error } from "./query-v2-internals.js";
-export type { ProviderFailure, QueryV2ErrorCategory, QueryV2ErrorDetail, QueryV2ErrorPathSegment, } from "./query-v2-internals.js";
+import { type NativePlanAuthority } from "./plan-internals.js";
+export { PlanError } from "./plan-internals.js";
+export type { ProviderFailure, PlanErrorCategory, PlanErrorDetail, PlanErrorPathSegment, } from "./plan-internals.js";
 export type ValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime-tz" | "decimal" | "duration";
 export type TransactionType = "read" | "write" | "schema";
 export type AttributeValue = {
@@ -64,66 +66,6 @@ export type RuntimeAttributeValue = {
 } | {
     Duration: string;
 };
-export { AggregateSpec, BooleanExpr, ComparisonExpr, NotExpr, QueryExpr, SortExpr, TypedGroupByQuery, TypedQuery, TypedQueryError, agg, type QueryGroupField, } from "./query.js";
-export interface DynamicEntityRow {
-    iid: string | null;
-    type_name: string | null;
-    attributes: [string, RuntimeAttributeValue][];
-}
-export interface DynamicRolePlayer {
-    role_name: string;
-    player_iid: string | null;
-    player_type_name: string | null;
-    attributes: [string, unknown][];
-}
-export interface DynamicRelationRow extends DynamicEntityRow {
-    role_players: DynamicRolePlayer[];
-}
-/** Wire shape accepted by the separately retained V1 query facade. */
-export type DynamicComparisonOp = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" | "like" | "starts_with" | "ends_with";
-export type DynamicExpr = {
-    kind: "compare";
-    attr_name: string;
-    operator: DynamicComparisonOp;
-    value: AttributeValue;
-} | {
-    kind: "iid";
-    iid: string;
-} | {
-    kind: "is_null";
-    attr_name: string;
-    is_null: boolean;
-} | {
-    kind: "and";
-    exprs: DynamicExpr[];
-} | {
-    kind: "or";
-    exprs: DynamicExpr[];
-} | {
-    kind: "not";
-    expr: DynamicExpr;
-} | {
-    kind: "role_player";
-    role_name: string;
-    expr: DynamicExpr;
-};
-export type DynamicSortDir = "Asc" | "Desc";
-export type DynamicSort = {
-    kind: "attribute";
-    attr_name: string;
-    direction: DynamicSortDir;
-} | {
-    kind: "role_player_attribute";
-    role_name: string;
-    attr_name: string;
-    direction: DynamicSortDir;
-};
-export interface DynamicQuerySpec {
-    expr?: DynamicExpr[];
-    sort?: DynamicSort[];
-    limit?: number | null;
-    offset?: number | null;
-}
 export declare function string(value: string): AttributeValue;
 export declare function long(value: bigint): AttributeValue;
 export declare function longFromNumberUnsafe(value: number): AttributeValue;
@@ -134,7 +76,9 @@ export declare function datetime(value: string): AttributeValue;
 export declare function datetimetz(value: string): AttributeValue;
 export declare function decimal(value: string): AttributeValue;
 export declare function duration(value: string): AttributeValue;
-export interface NativeRustDatabase {
+export interface NativeDatabase {
+    rawTransaction(kind: TransactionType): Promise<NativeRawTransaction>;
+    executeQuery(query: string, kind: TransactionType): Promise<RawValue>;
     isConnected(): boolean;
     close(): void;
     databaseName(): string;
@@ -151,8 +95,8 @@ export interface NativeRustDatabase {
     planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
     planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
     resetDatabase(): void;
-    transaction(transactionType?: TransactionType): NativeRustTransactionContext;
-    stagedTransaction(kind?: string): NativeStagedTransaction;
+    transaction(transactionType?: TransactionType): NativeTransactionContext;
+    stagedTransaction(kind?: string, timeoutMilliseconds?: bigint, collectPhaseTimestamps?: boolean): NativeStagedTransaction;
 }
 export interface NativeManagedDatabaseDeletionPlan {
     inspectedState(): ManagedDatabasePairState;
@@ -166,7 +110,7 @@ export interface AdministrationExecutionOptions {
 }
 export type DatabaseCreateOutcome = "created" | "already_exists";
 export type DatabaseDeleteOutcome = "deleted" | "already_absent";
-export type ManagedDatabasePairState = "absent" | "standalone_managed" | "owned_pair" | "owned_journal_orphan";
+export type ManagedDatabasePairState = "absent" | "standalone_managed" | "owned_pair" | "owned_journal_orphan" | "import_pending";
 export type ManagedDatabaseDeleteOutcome = "already_absent" | "deleted_standalone_managed" | "deleted_owned_pair" | "deleted_owned_journal_orphan";
 export interface MigrationIdentity {
     readonly appLabel: string;
@@ -207,8 +151,8 @@ interface NativeMigrationApprovalSet {
 }
 interface NativeMigrationPlan {
     readonly executionAuthorized: boolean;
-    execute(database: NativeRustDatabase, holder: string): MigrationExecutionReport;
-    executeControlled(database: NativeRustDatabase, holder: string, timeoutMilliseconds?: number | null, resources?: NativeMigrationExecutionResources | null, cancellation?: NativeMigrationCancellation | null): MigrationExecutionReport;
+    execute(database: NativeDatabase, holder: string): Promise<MigrationExecutionReport>;
+    executeControlled(database: NativeDatabase, holder: string, timeoutMilliseconds?: number | null, resources?: NativeMigrationExecutionResources | null, cancellation?: NativeMigrationCancellation | null): Promise<MigrationExecutionReport>;
 }
 interface NativeMigrationCancellation {
     readonly cancelled: boolean;
@@ -227,13 +171,14 @@ interface NativeMigrationPreview {
     authorize(approvals: NativeMigrationApprovalSet): NativeMigrationPlan;
 }
 interface NativeMigrationCatalog {
+    register(stepId: string, forward: (tx: NativeTransactionContext) => Promise<void>, reverse?: (tx: NativeTransactionContext) => Promise<void>): void;
     readonly length: number;
     fingerprintJson(): string;
     isEmpty(): boolean;
     heads(): MigrationIdentity[];
     entry(index: number): MigrationHistoryEntry | null;
-    verify(database: NativeRustDatabase): MigrationVerificationReport;
-    appliedMigrations(database: NativeRustDatabase): MigrationIdentity[];
+    verify(database: NativeDatabase): MigrationVerificationReport;
+    appliedMigrations(database: NativeDatabase): MigrationIdentity[];
     previewApply(applied: MigrationIdentity[], targets?: MigrationIdentity[] | null): NativeMigrationPreview;
     previewRollback(applied: MigrationIdentity[], removals: MigrationIdentity[]): NativeMigrationPreview;
 }
@@ -259,48 +204,46 @@ export interface MigrationBackfillObservation {
     readonly skipped: number;
     readonly transactionGroups: number;
 }
-export interface NativeRustTransactionContext {
-    queryJson(query: string): string;
+export interface NativeTransactionContext {
+    executeQuery(query: string): Promise<RawValue>;
     commit(): void;
     rollback(): void;
     close(): void;
     transactionType(): TransactionType;
 }
-interface NativePendingQueryV2Remote {
-    requestBytes(): Uint8Array;
-    decodeReply(response: Uint8Array): Promise<string>;
-}
-export interface PendingQueryV2Remote {
-    requestBytes(): Uint8Array;
-    decodeReply(response: Uint8Array): Promise<string>;
-}
-interface NativeQueryV2Runtime {
-    queryV2Authority(declaredSchema: Uint8Array, scope: string, profile: string): NativeQueryV2Authority;
-    queryV2AuthorityFromSchemaAuthority(schemaAuthorityJson: string, semanticFingerprintJson: string): NativeQueryV2Authority;
-    queryV2QueryOnlyAuthority(database: NativeRustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): NativeQueryV2Authority;
-    queryV2ExecuteLocal(database: NativeRustDatabase, authority: NativeQueryV2Authority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
-    queryV2RemoteCapabilities(advertisement: Uint8Array): string[];
-    queryV2PrepareRemote(authority: NativeQueryV2Authority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, deadlineMs?: bigint | null): NativePendingQueryV2Remote;
+interface NativePlanAuthorityRuntime {
+    planAuthority(declaredSchema: Uint8Array, scope: string, profile: string): NativePlanAuthority;
+    planAuthorityFromSchemaAuthority(schemaAuthorityJson: string, semanticFingerprintJson: string): NativePlanAuthority;
 }
 export interface NativeRuntime {
     NodeMigrationCancellation: new () => NativeMigrationCancellation;
     NodeMigrationExecutionResources: new (transactionGroups: number, backfillObservations: number) => NativeMigrationExecutionResources;
     openMigrationCatalog(schemaAuthority: Uint8Array, historyBundle: Uint8Array): NativeMigrationCatalog;
     ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null): void;
-    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null): NativeRustDatabase;
+    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null, queryLimits?: NativeQueryLimits | null): NativeDatabase;
 }
 /** Package-private native contract used by retained runtime entry points. */
-export interface NativeModule extends NativeRuntime, NativeQueryV2Runtime, NativeQueryV2BuilderRuntime {
+export interface NativeModule extends NativeRuntime, NativePlanAuthorityRuntime {
+    validateIid(value: string): string;
 }
-export interface RustDatabaseConnectOptions {
+/** A validated provider Thing IID; a plain string is not an Iid. */
+export declare class Iid {
+    #private;
+    constructor(value: string);
+    toString(): string;
+    toJSON(): string;
+    equals(other: unknown): boolean;
+}
+export interface DatabaseConnectOptions {
     username?: string | null;
     password?: string | null;
     httpPort?: number;
     serverVersion?: string | null;
     tlsEnabled?: boolean;
     tlsRootCa?: string;
+    queryLimits?: QueryLimits;
 }
-export interface EnsureDatabaseOptions extends RustDatabaseConnectOptions {
+export interface EnsureDatabaseOptions extends DatabaseConnectOptions {
 }
 export declare class MigrationApprovalSet {
     #private;
@@ -322,12 +265,12 @@ export declare class MigrationPlan {
     /** @internal */
     constructor(native: NativeMigrationPlan);
     get executionAuthorized(): boolean;
-    execute(database: RustDatabase, holder: string): MigrationExecutionReport;
-    executeControlled(database: RustDatabase, holder: string, options?: {
+    execute(database: Database, holder: string): Promise<MigrationExecutionReport>;
+    executeControlled(database: Database, holder: string, options?: {
         timeoutMilliseconds?: number;
         resources?: MigrationExecutionResources;
         cancellation?: MigrationCancellation;
-    }): MigrationExecutionReport;
+    }): Promise<MigrationExecutionReport>;
 }
 export declare class MigrationCancellation {
     #private;
@@ -360,42 +303,50 @@ export declare class MigrationCatalog {
     #private;
     /** @internal */
     constructor(native: NativeMigrationCatalog);
+    /** Register async user code before creating a migration preview. */
+    register(stepId: string, forward: (tx: MigrationTransaction) => Promise<void>, reverse?: (tx: MigrationTransaction) => Promise<void>): void;
     get length(): number;
     fingerprintJson(): string;
     isEmpty(): boolean;
     heads(): MigrationIdentity[];
     entry(index: number): MigrationHistoryEntry | null;
-    verify(database: RustDatabase): MigrationVerificationReport;
-    appliedMigrations(database: RustDatabase): MigrationIdentity[];
+    verify(database: Database): MigrationVerificationReport;
+    appliedMigrations(database: Database): MigrationIdentity[];
     previewApply(applied: MigrationIdentity[], targets?: MigrationIdentity[]): MigrationPreview;
     previewRollback(applied: MigrationIdentity[], removals: MigrationIdentity[]): MigrationPreview;
 }
 export declare function openMigrationCatalog(schemaAuthority: Uint8Array, historyBundle: Uint8Array): MigrationCatalog;
 export declare function ensureDatabase(address: string, database: string, options?: EnsureDatabaseOptions): void;
-/** Opaque declared-schema authority for prepared V2 plan execution. */
-export declare class QueryV2Authority {
+/** Opaque declared-schema authority for staged plan execution. */
+export declare class PlanAuthority {
     #private;
     constructor(declaredSchema: Uint8Array, scope: string, profile: string);
     /**
      * Derive an authority over the same schema whose plans are authored,
      * decoded, and validated under `queryLimits`.
      */
-    withQueryLimits(queryLimits: QueryLimits): QueryV2Authority;
-    static queryOnly(database: RustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): QueryV2Authority;
+    withQueryLimits(queryLimits: QueryLimits): PlanAuthority;
 }
-export interface QueryV2RemoteLimits {
-    readonly maxItems: bigint;
-    readonly maxBytes: bigint;
-    readonly maxCollectionMembers: bigint;
-    readonly deadlineMs?: bigint | null;
-}
-export declare function queryV2ExecuteLocal(database: RustDatabase, authority: QueryV2Authority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
-export declare function queryV2RemoteCapabilities(advertisement: Uint8Array): readonly string[];
-export declare function queryV2PrepareRemote(authority: QueryV2Authority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, limits: QueryV2RemoteLimits): PendingQueryV2Remote;
-export declare class RustDatabase {
+export declare class Database {
     #private;
+    /** Open an eager raw transaction. The caller commits, rolls back or closes it. */
+    rawTransaction(kind?: TransactionType): Promise<RawTransaction>;
+    /**
+     * Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+     * to TypeDB as written, and TypeDB's output comes back as it
+     * answered, in this SDK's native data types. TypeBridge adds no
+     * validation, rewriting, hydration, hooks, limits or extra
+     * queries. It runs in read, write and schema transactions and
+     * accepts any TypeQL, schema-breaking changes included. The caller
+     * owns its correctness; TypeBridge makes no promise about its
+     * effects. On a proxy connection it posts to the server's opt-in
+     * `/v3/raw` endpoint, which is off by default.
+     *
+     * Integer tokens outside the JavaScript safe range become bigint; safe integers and doubles stay number.
+     */
+    executeQuery(query: string, kind?: TransactionType): Promise<RawValue>;
     private constructor();
-    static connect(address: string, databaseName: string, options?: RustDatabaseConnectOptions): RustDatabase;
+    static connect(address: string, databaseName: string, options?: DatabaseConnectOptions): Database;
     isConnected(): boolean;
     close(): void;
     databaseName(): string;
@@ -412,13 +363,13 @@ export declare class RustDatabase {
     planDatabaseDelete(): ManagedDatabaseDeletionPlan;
     planDatabaseDeleteControlled(options?: AdministrationExecutionOptions): ManagedDatabaseDeletionPlan;
     resetDatabase(): void;
-    transaction(transactionType?: TransactionType): RustTransactionContext;
+    transaction(transactionType?: TransactionType): TransactionContext;
     /**
      * Create a deferred staged transaction; nothing opens until commit. An
      * omitted kind is inferred from the staged writes. Stage plans from
      * `PlanBuilder`; TypeScript never commits implicitly.
      */
-    stagedTransaction(kind?: StagedTransactionKind): StagedTransaction;
+    stagedTransaction(kind?: StagedTransactionKind, options?: import("./staged-transaction.js").StagedTransactionOptions): StagedTransaction;
 }
 export declare class ManagedDatabaseDeletionPlan {
     #private;
@@ -430,16 +381,32 @@ export declare class ManagedDatabaseDeletionPlan {
     close(): void;
 }
 /** @internal Wrap a generated-package-owned native database handle. */
-export declare function createRustDatabaseFromNative(native: NativeRustDatabase): RustDatabase;
-export declare class RustTransactionContext {
+export declare function createRustDatabaseFromNative(native: NativeDatabase): Database;
+/** Callback-scoped managers, typed queries and raw TypeQL on the engine transaction. */
+export declare class MigrationTransaction {
     #private;
     private constructor();
-    query(query: string): unknown[];
+    executeQuery(query: string): Promise<RawValue>;
+}
+export declare class TransactionContext {
+    #private;
+    private constructor();
     commit(): void;
     /** Roll back writes and keep this transaction usable. */
     rollback(): void;
     close(): void;
     transactionType(): TransactionType;
 }
-export { PendingPlanAnswer, StagedTransaction, type PlanAnswer, type StagedTransactionKind, } from "./staged-transaction.js";
-export { Plan, PlanBuilder, PlanCondition, PlanExpr, PlanInput, PlanInputValue, PlanNewThing, PlanThing, PlanValue, type PlanFieldToken, type PlanLiteral, type PlanModelToken, type PlanOperand, type PlanRoleToken, type PlanValueType, } from "./plan.js";
+export { Pending, StagedTransaction, type PlanAnswer, type StagedTransactionKind, type StagedTransactionOptions, } from "./staged-transaction.js";
+export { Plan, PlanBuilder, PlanCondition, PlanCondition as Condition, PlanExpr, PlanInput, PlanInputValue, PlanNewThing, PlanRecording, PlanTemplate, Handle, planFieldToken, planMatch, planInsert, planInsertMany, PlanThing, PlanValue, type PlanExplanation, type PlanFieldToken, type PlanLiteral, type PlanModelToken, type PlanOperand, type PlanRoleToken, type PlanValueType, Matched, type FieldToken, type PlanModelAuthoring, type PlanOptions, StagedPlan, type StagedResultRef, } from "./plan.js";
+/** Metadata from Rust plan execution; transported input values are omitted. */
+export interface DebugEvent {
+    readonly name: string;
+    readonly target: string;
+    readonly level: string;
+    readonly fields: Readonly<Record<string, string | number | boolean>>;
+}
+/** Forward Rust debug records to the host logger; null disables forwarding. */
+export declare function setDebugListener(listener: ((event: DebugEvent) => void) | null): void;
+export { Expr, Value } from "./plan-values.js";
+export type { BatchWriteResult, WriteResult } from "./runtime-projection.js";

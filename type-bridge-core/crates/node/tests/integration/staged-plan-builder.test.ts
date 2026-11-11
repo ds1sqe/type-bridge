@@ -12,7 +12,7 @@ import type {
 // Load the built package like the shared helpers do, so classes are shared.
 const packageRoot = process.env["TYPE_BRIDGE_NODE_PACKAGE_ROOT"] ?? process.cwd();
 const requirePackage = createRequire(import.meta.url);
-const { Plan, QueryV2Authority, QueryV2Error, RustDatabase } = requirePackage(packageRoot) as typeof import(
+const { Plan, PlanAuthority, PlanError, Database } = requirePackage(packageRoot) as typeof import(
   "../../typescript/public.js"
 );
 const { ProxyConnection } = requirePackage(
@@ -20,10 +20,10 @@ const { ProxyConnection } = requirePackage(
 ) as typeof import("../../typescript/runtime-projection.js");
 
 type Plan = InstanceType<typeof Plan>;
-type QueryV2Authority = InstanceType<typeof QueryV2Authority>;
+type PlanAuthority = InstanceType<typeof PlanAuthority>;
 
 // A fresh instance of the live fixture `sdk_staged_fixture_serves_until_stopped`
-// (crates/server/tests/v3_staged_integration_tests.rs), separate from the one
+// (crates/server/tests/staged_integration_tests.rs), separate from the one
 // staged-proxy.test.ts consumes: every purchase here needs unbought stock.
 interface Fixture {
   readonly direct_database: string;
@@ -47,7 +47,7 @@ function fixture(): Fixture {
 }
 
 function connect(database: string) {
-  return RustDatabase.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1730", database, {
+  return Database.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1730", database, {
     httpPort: Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
   });
 }
@@ -71,7 +71,7 @@ const Account = model<"account">("entity", "account");
 const Purchase = model<"purchase">("relation", "purchase");
 
 /** The one-query purchase, built in TypeScript. */
-function purchase(authority: QueryV2Authority, order: string): Plan {
+function purchase(authority: PlanAuthority, order: string): Plan {
   const plan = Plan.builder();
   const item = plan.exact(Item);
   const buyer = plan.exact(Account);
@@ -99,8 +99,8 @@ function purchase(authority: QueryV2Authority, order: string): Plan {
   return plan.build(authority);
 }
 
-function authorityFor(live: Fixture): QueryV2Authority {
-  return new QueryV2Authority(
+function authorityFor(live: Fixture): PlanAuthority {
+  return new PlanAuthority(
     Buffer.from(live.declared_hex, "hex"),
     live.proxies.purchase.scope,
     live.profile,
@@ -120,12 +120,12 @@ test("the TypeScript purchase commits directly and over the proxy with the same 
   const connection = await ProxyConnection.connect(authority, live.proxies.purchase.endpoint);
   const remote = await connection.transaction();
   const remoteAnswers = plans.map((plan) => remote.stage(plan));
-  assert.throws(() => remoteAnswers[0]?.get(), /not committed/i);
+  assert.throws(() => remoteAnswers[0]?.result(), /not committed/i);
   await remote.commit();
 
   const expected = [{ kind: "matched", value: 1 }, { kind: "matched", value: 0 }];
-  assert.deepEqual(directAnswers.map((answer) => answer.get()), expected);
-  assert.deepEqual(remoteAnswers.map((answer) => answer.get()), expected);
+  assert.deepEqual(directAnswers.map((answer) => answer.result()), expected);
+  assert.deepEqual(remoteAnswers.map((answer) => answer.result()), expected);
 
   // Dispose closes without committing; a closed transaction refuses work.
   await direct[Symbol.asyncDispose]();
@@ -142,13 +142,13 @@ test("await using closes without committing", { skip }, async () => {
   {
     await using tx = db.stagedTransaction();
     const answer = tx.stage(plan);
-    assert.throws(() => answer.get(), /not committed/i);
+    assert.throws(() => answer.result(), /not committed/i);
   }
   // Nothing was bought: the next purchase still finds the stock.
   const tx = db.stagedTransaction("write");
   const answer = tx.stage(purchase(authorityFor(live), "O-after"));
   await tx.commit();
-  assert.deepEqual(answer.get(), { kind: "matched", value: 1 });
+  assert.deepEqual(answer.result(), { kind: "matched", value: 1 });
   tx.close();
   db.close();
 });
@@ -173,7 +173,7 @@ test("two TypeScript transactions race for the last item and never oversell", { 
     const answer = tx.stage(purchase(authority, order));
     try {
       await tx.commit();
-      return answer.get();
+      return answer.result();
     } catch (error) {
       return error;
     } finally {
@@ -187,7 +187,7 @@ test("two TypeScript transactions race for the last item and never oversell", { 
   assert.equal(bought.length, 1, `exactly one racer buys: ${JSON.stringify(outcomes)}`);
   for (const outcome of outcomes) {
     if (outcome instanceof Error) {
-      assert.ok(outcome instanceof QueryV2Error, String(outcome));
+      assert.ok(outcome instanceof PlanError, String(outcome));
       assert.ok(outcome.failure, `the loser carries a typed failure: ${outcome.code}`);
     } else {
       assert.equal((outcome as { kind: string }).kind, "matched");

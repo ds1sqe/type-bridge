@@ -252,7 +252,9 @@ async fn runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge_and_replays_
         .duration_since(UNIX_EPOCH)
         .expect("system clock follows Unix epoch")
         .as_nanos();
-    let managed_name = format!("type_bridge_v2_upgrade_{}_{unique:x}", std::process::id());
+    let prefix =
+        env::var("TYPE_BRIDGE_TEST_DATABASE_PREFIX").unwrap_or_else(|_| "type_bridge_".into());
+    let managed_name = format!("{prefix}upgrade_{}_{unique:x}", std::process::id());
     let journal_name = derived_journal_database_name(&managed_name);
     let history = TempDirectory::new("history");
     let holder = LeaseHolderId::new("live-upgrade").expect("holder");
