@@ -946,7 +946,7 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   Pipeline `v2_request_context`, `begin_v2_request`, and `finish_v2_request`
   become `request_context`, `begin_request`, and `finish_request`;
   `validate_v2_coverage` is removed and `authorize_v2_request` is replaced by
-  `authorize_plan`. `InterceptorChain::execute_request`,
+  `authorize_plan`. `InterceptorChain::execute_request`, the former
   `execute_response`, `ensure_v2_coverage`, and `execute_v2_request` are
   replaced by the staged chain hooks; `execute_v2_transport` and
   `execute_v2_response` become `execute_transport` and `execute_response`.

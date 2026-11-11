@@ -71,7 +71,6 @@ pub const REMOTE_ENVELOPE_CODEC_LIMITS: CodecLimits = CodecLimits {
 
 /// staged opaque plan-byte strings may use the envelope budget. Embedded plans
 /// and canonical scalar values still enforce their independent codec ceilings.
-/// Embedded plans keep the canonical per-string ceiling.
 pub const STAGED_REMOTE_CODEC_LIMITS: CodecLimits = CodecLimits {
     max_string_bytes: MAX_REMOTE_ENVELOPE_BYTES,
     ..REMOTE_ENVELOPE_CODEC_LIMITS
