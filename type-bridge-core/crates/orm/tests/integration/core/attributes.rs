@@ -62,6 +62,7 @@ async fn dynamic_entity_all_primitive_attribute_values_against_typedb() {
         attr_value(&rows[0], &schema.balance_attr),
         Some(AttributeValue::Decimal(value)) if value.starts_with("1234.56")
     ));
+    // ISO-8601 input PT2H30M is stored and read back canonically.
     assert_eq!(
         attr_value(&rows[0], &schema.session_length_attr),
         Some(&AttributeValue::Duration("PT9000S".into()))
@@ -93,7 +94,7 @@ async fn dynamic_entity_all_primitive_attribute_values_against_typedb() {
         ),
         (
             schema.session_length_attr.clone(),
-            AttributeValue::Duration("PT2700S".into()),
+            AttributeValue::Duration("PT45M".into()),
         ),
     ];
     manager

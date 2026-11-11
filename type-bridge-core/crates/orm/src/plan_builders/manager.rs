@@ -58,6 +58,18 @@ pub(crate) fn diagnostic(error: Diagnostic) -> OrmError {
 }
 
 fn canonical(value: &crate::AttributeValue) -> Result<CanonicalValue> {
+    // Dynamic callers may spell a duration in any valid ISO-8601 form; fold it
+    // losslessly (months, days and time stay separate) as native match inputs do.
+    if let crate::AttributeValue::Duration(spelling) = value {
+        return crate::match_request::result_validation::native_duration(spelling)
+            .map(CanonicalValue::Duration)
+            .ok_or_else(|| {
+                invalid(
+                    "manager_value_invalid",
+                    "A manager value is outside its canonical scalar domain",
+                )
+            });
+    }
     crate::runtime_projection::canonical_attribute_value(value).map_err(|_| {
         invalid(
             "manager_value_invalid",
@@ -1842,6 +1854,26 @@ impl ManagerRead {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manager_durations_accept_iso_spellings_and_keep_components() {
+        let canonical_of =
+            |spelling: &str| match canonical(&crate::AttributeValue::Duration(spelling.into())) {
+                Ok(CanonicalValue::Duration(value)) => Some(value.to_string()),
+                Ok(other) => panic!("unexpected value {other:?}"),
+                Err(_) => None,
+            };
+        // Time units fold into seconds; months and days stay separate.
+        assert_eq!(canonical_of("PT2H30M").as_deref(), Some("PT9000S"));
+        assert_eq!(canonical_of("PT9000S").as_deref(), Some("PT9000S"));
+        assert_eq!(canonical_of("PT0.5S").as_deref(), Some("PT0.5S"));
+        assert_eq!(canonical_of("P1D").as_deref(), Some("P1D"));
+        assert_eq!(canonical_of("PT24H").as_deref(), Some("PT86400S"));
+        assert_eq!(canonical_of("P1Y2M3DT4H").as_deref(), Some("P14M3DT14400S"));
+        for garbage in ["", "P", "PT", "2H30M", "PT2X", "PT1.5H", "provider-secret"] {
+            assert_eq!(canonical_of(garbage), None, "{garbage}");
+        }
+    }
 
     #[test]
     fn inherited_key_order_and_write_ownership_keep_their_canonical_identities() {
