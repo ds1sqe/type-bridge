@@ -4,10 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::value::AttributeValue;
 
-/// An equality filter for querying entities by attribute value.
+/// An attribute comparison filter for querying entities by attribute value.
 ///
-/// Phase 1 supports exact-match equality filters only.
-/// Later phases will add comparison operators, ranges, etc.
+/// `operator` is one TypeQL comparator: `==`, `!=`, `>`, `>=`, `<`, `<=`,
+/// `contains` or `like`. Registry-backed dynamic managers refuse any other
+/// operator with `manager_filter_operator_invalid`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Filter {
     /// The TypeDB attribute type name to filter on.
