@@ -370,7 +370,8 @@ pub(crate) fn hydration_roles(
             effective.cardinality(),
             registered_role.ordered,
             registered_role.distinct,
-        ));
+        )
+        .with_specialized_roles(effective.replaced_roles().iter().cloned().collect()));
     }
     roles.sort_by(|left, right| left.role().cmp(right.role()));
     Ok(roles)

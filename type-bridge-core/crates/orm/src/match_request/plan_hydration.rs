@@ -712,6 +712,9 @@ pub(crate) fn decode_wildcard_roles(
     };
     let mut players = BTreeMap::<RoleId, Vec<PlayerDraft>>::new();
     let mut nested = Vec::new();
+    // Parent-role evidence on a specializing subtype repeats players the
+    // specializing role already lists; keep it only where it adds a player.
+    let mut specialized = Vec::new();
     for document in documents {
         let document = document.as_object().ok_or_else(|| {
             evidence_error(
@@ -748,18 +751,28 @@ pub(crate) fn decode_wildcard_roles(
         let projected = authority.descriptor_by_label(concrete_label)?;
         let declared = declared_player_type(role, projected.descriptor())?;
         let attributes = decode_wildcard_attributes(projected, document.get("attributes"))?;
-        nested.push(NodeDraft {
+        let node = NodeDraft {
             iid: iid.clone(),
             concrete: projected.descriptor().clone(),
             kind: node_kind(projected.descriptor().kind())?,
             attributes,
             roles: Vec::new(),
             full: false,
-        });
-        players
-            .entry(role.role().clone())
-            .or_default()
-            .push(PlayerDraft { declared, iid });
+        };
+        let player = PlayerDraft { declared, iid };
+        if is_specialized_evidence(role, role_label) {
+            specialized.push((role.role().clone(), player, node));
+            continue;
+        }
+        nested.push(node);
+        players.entry(role.role().clone()).or_default().push(player);
+    }
+    for (role, player, node) in specialized {
+        let listed = players.entry(role).or_default();
+        if !listed.iter().any(|existing| existing.iid == player.iid) {
+            nested.push(node);
+            listed.push(player);
+        }
     }
     complete_roles(descriptor, players, nested)
 }
@@ -861,12 +874,9 @@ pub(crate) fn projected_role<'a>(
                     })
             })
     });
-    let role = matches.next().ok_or_else(|| {
-        evidence_error(
-            "query_model_hydration_roles",
-            "hydration returned an undeclared relation role",
-        )
-    })?;
+    let Some(role) = matches.next() else {
+        return specializing_role(descriptor, owner, role_label);
+    };
     if matches.next().is_some() {
         return Err(evidence_error(
             "query_model_hydration_roles",
@@ -874,6 +884,47 @@ pub(crate) fn projected_role<'a>(
         ));
     }
     Ok(role)
+}
+
+/// TypeDB answers a parent role on a relation subtype that specializes it
+/// (`relates worker as member`) with the specializing role's players. Map
+/// that evidence to the specializing role; any other role stays undeclared.
+fn specializing_role<'a>(
+    descriptor: &'a HydrationDescriptor,
+    owner: Option<&str>,
+    role_label: &str,
+) -> ExecResult<&'a HydrationRole> {
+    let undeclared = || {
+        evidence_error(
+            "query_model_hydration_roles",
+            "hydration returned an undeclared relation role",
+        )
+    };
+    let owner = owner.ok_or_else(undeclared)?;
+    let mut matches = descriptor.roles().iter().filter(|role| {
+        role.specialized_roles().iter().any(|replaced| {
+            replaced.declaring_relation().as_str() == owner
+                && replaced.label().as_str() == role_label
+        })
+    });
+    let role = matches.next().ok_or_else(undeclared)?;
+    if matches.next().is_some() {
+        return Err(evidence_error(
+            "query_model_hydration_roles",
+            "hydration role label is ambiguous under the concrete relation",
+        ));
+    }
+    Ok(role)
+}
+
+/// Whether a role label reached its projected role through specialization.
+fn is_specialized_evidence(role: &HydrationRole, label: &str) -> bool {
+    label.rsplit_once(':').is_some_and(|(owner, role_label)| {
+        role.specialized_roles().iter().any(|replaced| {
+            replaced.declaring_relation().as_str() == owner
+                && replaced.label().as_str() == role_label
+        })
+    })
 }
 
 pub(crate) fn declared_player_type(role: &HydrationRole, concrete: &TypeId) -> ExecResult<TypeId> {
@@ -2147,5 +2198,59 @@ mod predicate_recheck_tests {
             !evaluate_pattern_with_witnesses(&hydrated("Grace"), &solution, &graph, native)
                 .unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod specialized_role_tests {
+    use super::*;
+    use type_bridge_contract::query_plan::HydrationPlayer;
+    use type_bridge_contract::value::Cardinality;
+
+    fn employment() -> HydrationDescriptor {
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        HydrationDescriptor::new(
+            TypeId::new(TypeKind::Relation, "employment").unwrap(),
+            vec![],
+            vec![
+                HydrationRole::new(
+                    RoleId::new("employment", "worker").unwrap(),
+                    vec![RoleId::new("employment", "worker").unwrap()],
+                    vec![HydrationPlayer::new(person.clone(), vec![person])],
+                    Cardinality::new(1, Some(1)).unwrap(),
+                    false,
+                    false,
+                )
+                .with_specialized_roles(vec![RoleId::new("membership", "member").unwrap()]),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_specialized_parent_role_maps_to_its_specializing_role() {
+        let descriptor = employment();
+        for label in ["employment:worker", "membership:member"] {
+            assert_eq!(
+                projected_role(&descriptor, label).unwrap().role(),
+                &RoleId::new("employment", "worker").unwrap(),
+                "{label}"
+            );
+        }
+        assert!(is_specialized_evidence(
+            projected_role(&descriptor, "membership:member").unwrap(),
+            "membership:member"
+        ));
+    }
+
+    #[test]
+    fn a_parent_role_the_subtype_does_not_specialize_stays_undeclared() {
+        let descriptor = employment();
+        for label in ["membership:sponsor", "other:member", "member"] {
+            let Err(PlanExecutionError::Validation(error)) = projected_role(&descriptor, label)
+            else {
+                panic!("{label} must be refused");
+            };
+            assert_eq!(error.code().as_str(), "query_model_hydration_roles", "{label}");
+        }
     }
 }

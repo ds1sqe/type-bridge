@@ -1174,6 +1174,11 @@ pub struct HydrationRole {
     pub(super) players: Vec<HydrationPlayer>,
     pub(super) reference_roles: Vec<RoleId>,
     pub(super) role: RoleId,
+    /// Parent roles this role replaces by specialization (`relates worker as
+    /// member`). Absent for roles that specialize nothing, so existing
+    /// encodings are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) specialized_roles: Vec<RoleId>,
 }
 
 impl HydrationRole {
@@ -1194,7 +1199,24 @@ impl HydrationRole {
             players,
             reference_roles,
             role,
+            specialized_roles: Vec::new(),
         }
+    }
+
+    /// Record the parent roles this role replaces by specialization.
+    #[must_use]
+    pub fn with_specialized_roles(mut self, mut roles: Vec<RoleId>) -> Self {
+        roles.sort();
+        roles.dedup();
+        self.specialized_roles = roles;
+        self
+    }
+
+    /// Return the parent roles this role replaces by specialization. TypeDB
+    /// answers a replaced parent role on this relation with this role's players.
+    #[must_use]
+    pub fn specialized_roles(&self) -> &[RoleId] {
+        &self.specialized_roles
     }
 
     /// Return the descriptor-qualified role.
