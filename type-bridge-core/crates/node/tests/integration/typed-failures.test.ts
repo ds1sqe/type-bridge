@@ -30,7 +30,7 @@ for (const scenario of ["stc2", "cnt5", "cnt9"] as const) {
 
 async function rawFailure(scenario: "stc2" | "cnt5" | "cnt9" | "paused", address: string, database: string, container?: string): Promise<void> {
     const db = Database.connect(address, database, {
-      httpPort: Number(process.env["TYPEDB_HTTP_PORT"]),
+      httpPort: Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
     });
     const contexts: RawTransaction[] = [];
     db.createDatabase();
