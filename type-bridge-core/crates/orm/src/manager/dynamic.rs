@@ -298,7 +298,7 @@ impl<'db> DynamicEntityManager<'db> {
         let program = plans.read(
             &self.descriptor.type_name,
             false,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
             &[],
             None,
             None,
@@ -314,7 +314,7 @@ impl<'db> DynamicEntityManager<'db> {
         let program = plans.read(
             &self.descriptor.type_name,
             true,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
             &[],
             None,
             None,
@@ -523,7 +523,7 @@ impl<'db> DynamicEntityManager<'db> {
             plans,
             &self.descriptor.type_name,
             false,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
         )
         .await;
     }
@@ -582,7 +582,7 @@ impl<'db> DynamicEntityManager<'db> {
         let plans = &self.plans;
         let program = plans.aggregate(
             &self.descriptor.type_name,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
             &[],
             aggregates,
         )?;
@@ -610,7 +610,7 @@ impl<'db> DynamicEntityManager<'db> {
         let plans = &self.plans;
         let program = plans.aggregate(
             &self.descriptor.type_name,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
             group_fields,
             aggregates,
         )?;
@@ -1236,7 +1236,7 @@ impl<'db> DynamicRelationManager<'db> {
         let program = plans.read(
             &self.descriptor.type_name,
             false,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
             &[],
             None,
             None,
@@ -1252,7 +1252,7 @@ impl<'db> DynamicRelationManager<'db> {
         let program = plans.read(
             &self.descriptor.type_name,
             true,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
             &[],
             None,
             None,
@@ -1338,7 +1338,7 @@ impl<'db> DynamicRelationManager<'db> {
         let program = plans.read(
             &self.descriptor.type_name,
             false,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
             &[],
             None,
             None,
@@ -1537,7 +1537,7 @@ impl<'db> DynamicRelationManager<'db> {
             plans,
             &self.descriptor.type_name,
             false,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
         )
         .await;
     }
@@ -1596,7 +1596,7 @@ impl<'db> DynamicRelationManager<'db> {
         let plans = &self.plans;
         let program = plans.aggregate(
             &self.descriptor.type_name,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
             &[],
             aggregates,
         )?;
@@ -1624,7 +1624,7 @@ impl<'db> DynamicRelationManager<'db> {
         let plans = &self.plans;
         let program = plans.aggregate(
             &self.descriptor.type_name,
-            &equality_expressions(filters),
+            &filter_expressions(filters)?,
             group_fields,
             aggregates,
         )?;
@@ -2498,13 +2498,32 @@ fn plan_fetch<T>(
     }
 }
 
-fn equality_expressions(filters: &[Filter]) -> Vec<DynamicExpr> {
+fn filter_expressions(filters: &[Filter]) -> Result<Vec<DynamicExpr>> {
+    use crate::_dynamic::DynamicComparisonOp as Op;
     filters
         .iter()
-        .map(|filter| DynamicExpr::Compare {
-            attr_name: filter.attr_name.clone(),
-            operator: crate::_dynamic::DynamicComparisonOp::Eq,
-            value: filter.value.clone(),
+        .map(|filter| {
+            let operator = match filter.operator.as_str() {
+                "==" => Op::Eq,
+                "!=" => Op::Neq,
+                ">" => Op::Gt,
+                ">=" => Op::Gte,
+                "<" => Op::Lt,
+                "<=" => Op::Lte,
+                "contains" => Op::Contains,
+                "like" => Op::Like,
+                _ => {
+                    return Err(crate::plan_builders::manager::invalid(
+                        "manager_filter_operator_invalid",
+                        "A manager filter operator is not a TypeQL comparator",
+                    ));
+                }
+            };
+            Ok(DynamicExpr::Compare {
+                attr_name: filter.attr_name.clone(),
+                operator,
+                value: filter.value.clone(),
+            })
         })
         .collect()
 }

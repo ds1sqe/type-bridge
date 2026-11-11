@@ -664,3 +664,27 @@ async fn native_write_holds_the_borrowed_mutation_lease_through_materialization(
         tx.rollback().await.unwrap();
     }
 }
+
+#[test]
+fn filter_expressions_keep_the_requested_comparator() {
+    let filters = [
+        Filter::compare("age", ">=", AttributeValue::Long(40)),
+        Filter::compare("name", "contains", AttributeValue::String("o".into())),
+    ];
+    let operators: Vec<_> = filter_expressions(&filters)
+        .unwrap()
+        .into_iter()
+        .map(|expr| match expr {
+            DynamicExpr::Compare { operator, .. } => operator,
+            other => panic!("unexpected expression {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        operators,
+        [
+            crate::_dynamic::DynamicComparisonOp::Gte,
+            crate::_dynamic::DynamicComparisonOp::Contains
+        ]
+    );
+    assert!(filter_expressions(&[Filter::compare("age", "~", AttributeValue::Long(1))]).is_err());
+}
