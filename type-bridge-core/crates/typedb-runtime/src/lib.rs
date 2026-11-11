@@ -1357,8 +1357,26 @@ async fn await_connection_work<T>(
 const HTTP_VERSION_ENDPOINT_REQUIRED: &str =
     "TypeDB version discovery requires a reachable HTTP version endpoint";
 
+const HTTP_PROBE_FAILED: &str = "HTTP version probe failed: ";
+
+/// The refusal for failed HTTP discovery, keeping only the probe's fixed,
+/// credential-free transport description (for example a TLS failure kind).
+fn http_discovery_failure(probe: &core_version::VersionError) -> core_version::VersionError {
+    core_version::VersionError::Probe(format!(
+        "{HTTP_VERSION_ENDPOINT_REQUIRED}; {HTTP_PROBE_FAILED}{}",
+        probe.redacted_probe_description()
+    ))
+}
+
 fn is_redacted_discovery_failure(message: &str) -> bool {
-    message == HTTP_VERSION_ENDPOINT_REQUIRED
+    message
+        .strip_prefix(HTTP_VERSION_ENDPOINT_REQUIRED)
+        .and_then(|rest| rest.strip_prefix("; "))
+        .and_then(|rest| rest.strip_prefix(HTTP_PROBE_FAILED))
+        .is_some_and(|probe| {
+            core_version::VersionError::Probe(probe.to_owned()).redacted_probe_description()
+                == probe
+        })
 }
 
 fn controlled_connection_error(error: SecureConnectError) -> SecureConnectError {
@@ -1812,13 +1830,10 @@ where
                     .await?;
                     (driver, Some(server_version))
                 }
-                Err(core_version::VersionProbeError::Probe(_)) => {
-                    return Err(RuntimeError::UnsupportedVersion(
-                        core_version::VersionError::Probe(
-                            HTTP_VERSION_ENDPOINT_REQUIRED.to_owned(),
-                        ),
-                    )
-                    .into());
+                Err(core_version::VersionProbeError::Probe(probe)) => {
+                    return Err(
+                        RuntimeError::UnsupportedVersion(http_discovery_failure(&probe)).into(),
+                    );
                 }
                 Err(core_version::VersionProbeError::TlsConfiguration(error)) => {
                     return Err(SecureConnectError::TlsConfiguration(error));
@@ -5628,7 +5643,8 @@ mod tests {
         assert!(matches!(
             result,
             Err(RuntimeError::UnsupportedVersion(core_version::VersionError::Probe(message)))
-                if message == HTTP_VERSION_ENDPOINT_REQUIRED
+                if message.starts_with(HTTP_VERSION_ENDPOINT_REQUIRED)
+                    && !message.contains("PROVIDER_SECRET")
         ));
     }
 
@@ -6041,11 +6057,12 @@ mod fixed_transport_control_tests {
         assert_eq!(error.to_string(), format!("Connection error: {message}"));
         assert_eq!(error.credential_safe_diagnostic(), Some(error.to_string()));
         let error = controlled_connection_error(SecureConnectError::Runtime(
-            RuntimeError::UnsupportedVersion(core_version::VersionError::Probe(
-                HTTP_VERSION_ENDPOINT_REQUIRED.to_owned(),
+            RuntimeError::UnsupportedVersion(http_discovery_failure(
+                &core_version::VersionError::Probe("PROVIDER_SECRET".to_owned()),
             )),
         ));
         assert!(error.to_string().contains(HTTP_VERSION_ENDPOINT_REQUIRED));
+        assert!(!error.to_string().contains("PROVIDER_SECRET"));
         assert_eq!(error.credential_safe_diagnostic(), Some(error.to_string()));
         let forged = format!("{message} SECRET_SENTINEL");
         let error = controlled_connection_error(SecureConnectError::Runtime(
