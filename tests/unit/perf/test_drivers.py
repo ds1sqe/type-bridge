@@ -7,6 +7,7 @@ check the shared schema and seed sizes.
 
 from __future__ import annotations
 
+import inspect
 import re
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ import pytest
 from perf.drivers import workspace
 from perf.drivers.python import pipelines as python_driver
 from perf.harness import binding
+from type_bridge.plan import PlanBuilder
 
 ROOT = Path(__file__).resolve().parents[3]
 RUST_DRIVER = ROOT / "type-bridge-core/crates/perf/src/bin/pipelines.rs"
@@ -42,6 +44,14 @@ def test_drop_removes_current_journal_and_closes_both_handles(
     for handle in (managed, journal):
         handle.delete_database.assert_called_once_with()
         handle.close.assert_called_once_with()
+
+
+def test_the_python_driver_calls_only_current_plan_builder_methods() -> None:
+    # The driver only runs in the Perf workflow, so a renamed builder method
+    # would otherwise surface there first.
+    used = set(re.findall(r"\bplan\.(\w+)\(", inspect.getsource(python_driver)))
+    assert {"where", "let", "build"} <= used
+    assert [name for name in sorted(used) if not hasattr(PlanBuilder, name)] == []
 
 
 def _rust_pipelines() -> dict[str, str]:
