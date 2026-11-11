@@ -2473,6 +2473,13 @@ jobs:
         if: matrix.target == 'examples'
         run: uv run type-bridge --manifest examples/typebridge.yaml schema generate
 
+      - name: Generate walkthrough Python package
+        if: matrix.target == 'examples'
+        run: >-
+          uv run python examples/walkthrough/run.py
+          --output "$RUNNER_TEMP/walkthrough"
+          --python-models examples/generated/python/walkthrough_models
+
       - name: Run pyright on ${{ matrix.target }}
         run: uv run pyright ${{ matrix.target }}/
 

@@ -319,7 +319,9 @@ with db.staged_transaction() as tx:
         )
         values = [model for value in pending for model in value.result()]
         emit("staged_transaction", "models", models(values))
-        assert values[-1].buyer.account_id.value == "A2" and values[-1].item.sku.value == "I2"
+        order = values[-1]
+        assert isinstance(order, OrderLine) and order.buyer is not None and order.item is not None
+        assert order.buyer.account_id.value == "A2" and order.item.sku.value == "I2"
 
         emit(
             "raw_unchecked",

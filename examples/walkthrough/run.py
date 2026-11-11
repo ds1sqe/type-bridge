@@ -27,15 +27,7 @@ def run(
             subprocess.run(command, cwd=cwd, env=env, stdout=stream, stderr=errors, check=True)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sdk", action="append", choices=["python", "typescript", "rust", "c"])
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
-    print(f"Walkthrough output: {output}", flush=True)
-    workspace = output / "workspace"
+def stage_workspace(workspace: Path) -> None:
     workspace.mkdir()
     for name in ("typebridge.yaml", "schema.yaml", "documents.yaml"):
         shutil.copy2(HERE / name, workspace / name)
@@ -43,6 +35,28 @@ def main() -> None:
         ROOT / "tests/contracts/sdk_conformance/writes/shop/schema/fragments/shop.yaml",
         workspace / "shop.yaml",
     )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sdk", action="append", choices=["python", "typescript", "rust", "c"])
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--python-models",
+        type=Path,
+        help="only generate walkthrough_models into this directory with the installed CLI",
+    )
+    args = parser.parse_args()
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    print(f"Walkthrough output: {output}", flush=True)
+    workspace = output / "workspace"
+    stage_workspace(workspace)
+    if args.python_models is not None:
+        # Static checkers resolve program.py's generated import from here.
+        run(["type-bridge", "schema", "generate"], cwd=workspace, env=dict(os.environ))
+        shutil.copytree(workspace / "generated/python", args.python_models)
+        return
     environment = dict(os.environ)
     environment.setdefault("TMPDIR", str(Path.home() / ".cache/type-bridge-walkthrough"))
     Path(environment["TMPDIR"]).mkdir(parents=True, exist_ok=True)
