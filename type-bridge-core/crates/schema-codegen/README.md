@@ -23,7 +23,8 @@ runtime dependencies. Schema features select the projection format. Ordered
 packages provide nominal CRUD, typed mutation batches, and field-token
 manager filters with database and borrowed read-transaction terminals.
 Generated handles retain their native owners and share the C boundary's
-close, recovery, and alias checks.
+close, recovery, and alias checks. The package remains unpublished until
+its release acceptance checks pass.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
 3.0.0 and requires Rust 1.88+. Generated runtime packages follow the TypeBridge
