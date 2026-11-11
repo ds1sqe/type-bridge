@@ -785,7 +785,7 @@ pub(crate) unsafe fn run_write_thing_call_controlled(
         diagnostics: out_diagnostics,
     } = prepared;
     guarded(|| {
-        // SAFETY: CRUD V2 preflight fenced both optional outer inputs.
+        // SAFETY: policy CRUD preflight fenced both optional outer inputs.
         let control = match unsafe {
             controlled_crud_call(target.answer_ceiling(), limits, cancellation)
         } {
@@ -858,7 +858,7 @@ pub(crate) unsafe fn run_put_call_controlled(
         diagnostics: out_diagnostics,
     } = prepared;
     guarded(|| {
-        // SAFETY: CRUD V2 preflight fenced both optional outer inputs.
+        // SAFETY: policy CRUD preflight fenced both optional outer inputs.
         let control = match unsafe {
             controlled_crud_call(target.answer_ceiling(), limits, cancellation)
         } {
@@ -918,7 +918,7 @@ pub(crate) unsafe fn run_get_call_controlled(
         diagnostics: out_diagnostics,
     } = prepared;
     guarded(|| {
-        // SAFETY: CRUD V2 preflight fenced both optional outer inputs.
+        // SAFETY: policy CRUD preflight fenced both optional outer inputs.
         let control =
             match unsafe { controlled_crud_call(target.answer_ceiling(), limits, cancellation) } {
                 Ok(call) => {
@@ -969,7 +969,7 @@ pub(crate) unsafe fn run_delete_call_controlled(
 ) -> TypeBridgeStatus {
     let out_diagnostics = prepared.diagnostics;
     guarded(|| {
-        // SAFETY: CRUD V2 preflight fenced both optional outer inputs.
+        // SAFETY: policy CRUD preflight fenced both optional outer inputs.
         let control = match unsafe {
             controlled_crud_call(target.answer_ceiling(), limits, cancellation)
         } {
@@ -1010,7 +1010,7 @@ pub(crate) unsafe fn run_count_call_controlled(
         diagnostics: out_diagnostics,
     } = prepared;
     guarded(|| {
-        // SAFETY: CRUD V2 preflight fenced both optional outer inputs.
+        // SAFETY: policy CRUD preflight fenced both optional outer inputs.
         let control =
             match unsafe { controlled_crud_call(target.answer_ceiling(), limits, cancellation) } {
                 Ok(call) => ProjectedCrudInvocationControl::capture(call.limits, call.cancellation),

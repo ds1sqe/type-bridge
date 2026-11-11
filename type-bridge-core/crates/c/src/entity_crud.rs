@@ -2,9 +2,9 @@
 #![cfg(test)]
 
 use crate::abi::TypeBridgeStatus;
-use crate::crud_v2::*;
 use crate::execution_diagnostic::TypeBridgeExecutionDiagnostics;
 use crate::iid::TypeBridgeIid;
+use crate::policy_crud::*;
 use crate::projected_batch::TypeBridgeProjectedBatchResult;
 use crate::projected_model::{TypeBridgeProjectedCreate, TypeBridgeProjectedThing};
 use crate::projected_token::TypeBridgeProjectedTokenV1;
@@ -1284,7 +1284,7 @@ functions:
             let mut thing = ptr::null_mut();
             let mut diagnostics = ptr::null_mut();
             let get = if relation {
-                crate::crud_v2::type_bridge_database_relation_get_by_iid
+                crate::policy_crud::type_bridge_database_relation_get_by_iid
             } else {
                 type_bridge_database_entity_get_by_iid
             };
@@ -1337,12 +1337,12 @@ functions:
             );
             close_thing(&mut thing);
             let update = if relation {
-                crate::crud_v2::type_bridge_database_relation_update
+                crate::policy_crud::type_bridge_database_relation_update
             } else {
                 type_bridge_database_entity_update
             };
             let delete = if relation {
-                crate::crud_v2::type_bridge_database_relation_delete_by_iid
+                crate::policy_crud::type_bridge_database_relation_delete_by_iid
             } else {
                 type_bridge_database_entity_delete_by_iid
             };

@@ -1619,7 +1619,7 @@ mod tests {
             unsafe { type_bridge_cancellation_request(cancellation) },
             TypeBridgeStatus::Ok
         );
-        // SAFETY: the V2 call retains the requested signal and all immutable inputs.
+        // SAFETY: the policy-aware call retains the requested signal and all immutable inputs.
         assert_eq!(
             unsafe {
                 type_bridge_database_entity_insert(
@@ -1975,7 +1975,7 @@ mod tests {
             .cast::<*mut TypeBridgeProjectedThing>();
         let mut diagnostics = ptr::dangling_mut();
         let diagnostics_sentinel = diagnostics;
-        // SAFETY: the hostile thing output aliases the V2-origin database's
+        // SAFETY: the hostile thing output aliases the policy-opened database's
         // retained server-version bytes and must be rejected without writing.
         assert_eq!(
             unsafe {
@@ -2025,7 +2025,7 @@ mod tests {
         let forged_count = package_bytes.as_ptr().cast_mut().cast::<u64>();
         diagnostics = diagnostics_sentinel;
         // SAFETY: the hostile count output aliases package storage retained by
-        // the V2-origin read transaction and must not be initialized.
+        // the policy-opened read transaction and must not be initialized.
         assert_eq!(
             unsafe {
                 type_bridge_read_transaction_relation_count(
@@ -2082,7 +2082,7 @@ mod tests {
             .cast::<*mut TypeBridgeExecutionDiagnostics>();
         let opens_before = write.state.opened_transactions();
         // SAFETY: the hostile diagnostics output aliases server-version bytes
-        // retained by the V2-origin write transaction and must not be cleared.
+        // retained by the policy-opened write transaction and must not be cleared.
         assert_eq!(
             unsafe {
                 type_bridge_write_transaction_entity_delete_by_iid(
@@ -2222,7 +2222,7 @@ mod tests {
                 u32::MAX,
             )),
         );
-        // SAFETY: The enclosing V2 answer ceiling applies without a new argument.
+        // SAFETY: The enclosing answer ceiling applies without a new argument.
         assert_eq!(
             unsafe {
                 type_bridge_database_entity_insert(

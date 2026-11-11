@@ -7,7 +7,6 @@
 mod abi;
 mod allocation;
 mod canonical_archive;
-mod crud_v2;
 mod diagnostic;
 mod entity_crud;
 mod execution_diagnostic;
@@ -21,6 +20,7 @@ mod manager_target;
 mod manager_write;
 mod migration_abi;
 mod migration_user_steps;
+mod policy_crud;
 pub use migration_user_steps::TypeBridgeMigrationCallback;
 mod migration_runtime;
 mod perf_stages;

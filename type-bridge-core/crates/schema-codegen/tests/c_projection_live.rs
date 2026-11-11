@@ -1536,7 +1536,7 @@ fn failed_live_setup_still_runs_idempotent_database_cleanup() {
 /// Membership CRUD, typed direct query, schema-function, and caller-transport
 /// remote query facades against one isolated database on the exact TypeDB
 /// server of the requested SDK profile (`TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`).
-/// Rust is used only for schema setup, the V2 acceptance server, and guaranteed
+/// Rust is used only for schema setup, the staged acceptance server, and guaranteed
 /// process/database cleanup; the C caller performs the sole remote exchange.
 #[test]
 #[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]

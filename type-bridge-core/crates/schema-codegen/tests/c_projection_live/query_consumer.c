@@ -1135,7 +1135,7 @@ run_robot_batches(const type_bridge_schema_package_t *package,
             TYPE_BRIDGE_STATUS_OK &&
         count == 1u);
 
-  /* Repeat the later-row collision through a borrowed V2 write owner. The
+  /* Repeat the later-row collision through a borrowed write owner. The
    * failure latches the provider transaction rollback-only. Commit must reject
    * before provider dispatch and retain the owner for explicit rollback. */
   CHECK(open_robot_create(package, 103, 14, &create, out_diagnostics) == 0);
@@ -1366,7 +1366,7 @@ run_interaction_batches(const type_bridge_schema_package_t *package,
   return 0;
 }
 
-/* A V2 database's answer ceiling binds every call on it: a default-limit
+/* A database's answer ceiling binds every call on it: a default-limit
  * count on a zero-timeout ceiling refuses before provider work, with the
  * same refusal a zero-timeout call limit yields on an unbounded database. */
 static int check_answer_ceiling_binds_calls(

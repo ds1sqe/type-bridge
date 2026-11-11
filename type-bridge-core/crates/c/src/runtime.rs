@@ -303,14 +303,14 @@ impl TypeBridgeDatabase {
         Arc::clone(&self.state.database)
     }
 
-    /// The answer ceiling for C V2 entry points; a V1-origin handle has
-    /// none and falls back to the default policy.
+    /// The answer ceiling for C policy-aware entry points; a handle opened
+    /// without one falls back to the default policy.
     pub(crate) fn answer_ceiling(&self) -> QueryExecutionResourceLimits {
         self.answer_limits().unwrap_or_default()
     }
 
     /// The orm connection's immutable answer ceiling; `Some` exactly for a
-    /// V2-origin handle.
+    /// handle opened with one.
     pub(crate) fn answer_limits(&self) -> Option<QueryExecutionResourceLimits> {
         self.state.database.answer_limits()
     }
@@ -376,7 +376,7 @@ impl TypeBridgeDatabase {
 }
 
 /// Build one custom-backend orm database for C ABI tests; `Some` stands for a
-/// V2-origin connection carrying that immutable answer ceiling.
+/// connection carrying that immutable answer ceiling.
 #[cfg(test)]
 pub(crate) fn test_orm_database(
     backend: Box<dyn type_bridge_orm::session::backend::DriverBackend>,
@@ -809,7 +809,7 @@ unsafe fn check_policy_database_terminal_ranges(
     database: *mut *mut TypeBridgeDatabase,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<(), TypeBridgeStatus> {
-    // SAFETY: the shared helper performs no writes and fences a V2-origin
+    // SAFETY: the shared helper performs no writes and fences a policy-opened
     // database's complete retained graph before its terminal may write.
     unsafe {
         check_policy_terminal_ranges(
@@ -825,7 +825,7 @@ unsafe fn check_policy_read_transaction_terminal_ranges(
     transaction: *mut *mut TypeBridgeReadTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<(), TypeBridgeStatus> {
-    // SAFETY: the shared helper performs no writes and fences a V2-origin
+    // SAFETY: the shared helper performs no writes and fences a policy-opened
     // transaction's complete retained graph before its terminal may write.
     unsafe {
         check_policy_terminal_ranges(
@@ -841,7 +841,7 @@ unsafe fn check_policy_write_transaction_terminal_ranges(
     transaction: *mut *mut TypeBridgeWriteTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<(), TypeBridgeStatus> {
-    // SAFETY: the shared helper performs no writes and fences a V2-origin
+    // SAFETY: the shared helper performs no writes and fences a policy-opened
     // transaction's complete retained graph before its terminal may write.
     unsafe {
         check_policy_terminal_ranges(
@@ -1713,7 +1713,7 @@ pub unsafe extern "C" fn type_bridge_database_close(
     if database.cast::<()>() == out_diagnostics.cast::<()>() {
         return TypeBridgeStatus::InvalidArgument;
     }
-    // SAFETY: V2-origin handles require their complete retained package and
+    // SAFETY: policy-opened handles require their complete retained package and
     // server-version bytes fenced before the diagnostic slot can be written.
     if let Err(status) = unsafe { check_policy_database_terminal_ranges(database, out_diagnostics) }
     {
@@ -1983,7 +1983,7 @@ pub unsafe extern "C" fn type_bridge_read_transaction_close(
     if transaction.cast::<()>() == out_diagnostics.cast::<()>() {
         return TypeBridgeStatus::InvalidArgument;
     }
-    // SAFETY: V2-origin handles require their complete retained package and
+    // SAFETY: policy-opened handles require their complete retained package and
     // server-version bytes fenced before the diagnostic slot can be written.
     if let Err(status) =
         unsafe { check_policy_read_transaction_terminal_ranges(transaction, out_diagnostics) }
@@ -2204,7 +2204,7 @@ unsafe fn rollback_write_transaction(
     if transaction.cast::<()>() == out_diagnostics.cast::<()>() {
         return TypeBridgeStatus::InvalidArgument;
     }
-    // SAFETY: V2-origin handles require their complete retained package and
+    // SAFETY: policy-opened handles require their complete retained package and
     // server-version bytes fenced before rollback or close consumes the owner.
     if let Err(status) =
         unsafe { check_policy_write_transaction_terminal_ranges(transaction, out_diagnostics) }
@@ -2412,7 +2412,7 @@ entities:
         let root = sdk_models_repository_root();
         let sources = [
             "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-            "type-bridge-core/crates/c/src/crud_v2.rs",
+            "type-bridge-core/crates/c/src/policy_crud.rs",
             "type-bridge-core/crates/c/src/projected_model.rs",
             "type-bridge-core/crates/c/src/runtime.rs",
             "type-bridge-core/crates/contract/src/sdk_diagnostic.rs",

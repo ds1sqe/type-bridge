@@ -221,7 +221,7 @@ EXPECTED_FRAGMENT_PRODUCERS: dict[str, dict[str, dict[str, Any]]] = {
             "sources": COMMON_DATA_SOURCES
             | {
                 "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-                "type-bridge-core/crates/c/src/crud_v2.rs",
+                "type-bridge-core/crates/c/src/policy_crud.rs",
                 "type-bridge-core/crates/c/src/projected_model.rs",
                 "type-bridge-core/crates/c/src/runtime.rs",
             },
