@@ -679,6 +679,10 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   `decode_remote_reply_v2`, `decode_signed_remote_failure_v2`,
   `validate_remote_outcome_v2`. Use native `query_plan` / `query_remote` plans
   and staged envelopes.
+- Removed `limits::REMOTE_REQUEST_CODEC_LIMITS` and
+  `QueryLimits::remote_request_codec` from `type-bridge-contract`; they framed
+  the removed V1 remote request envelope. Staged requests carry plans as
+  opaque strings under `STAGED_REMOTE_CODEC_LIMITS`.
 - Removed `node::query_v2_builder_runtime` symbols: `NodePlanAuthorityIdentity`,
   `NodeQueryV2BindingHandle`, `NodeQueryV2InputHandle`, `NodeQueryV2OperandHandle`,
   `NodeQueryV2PatternHandle`, `NodeQueryV2OrderHandle`,

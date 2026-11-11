@@ -71,23 +71,10 @@ pub const REMOTE_ENVELOPE_CODEC_LIMITS: CodecLimits = CodecLimits {
 
 /// staged opaque plan-byte strings may use the envelope budget. Embedded plans
 /// and canonical scalar values still enforce their independent codec ceilings.
-/// Frozen V1/V2 envelopes retain their original per-string ceiling.
+/// Embedded plans keep the canonical per-string ceiling.
 pub const STAGED_REMOTE_CODEC_LIMITS: CodecLimits = CodecLimits {
     max_string_bytes: MAX_REMOTE_ENVELOPE_BYTES,
     ..REMOTE_ENVELOPE_CODEC_LIMITS
-};
-
-/// Owning-format limits for V1 remote query request envelopes.
-///
-/// A request embeds an independently canonical plan beneath exactly one
-/// framing object. The extra level admits a standalone plan at the canonical
-/// depth boundary without relaxing that plan's own revalidation or the limits
-/// for replies and capability advertisements.
-pub const REMOTE_REQUEST_CODEC_LIMITS: CodecLimits = CodecLimits {
-    max_bytes: MAX_REMOTE_ENVELOPE_BYTES,
-    max_depth: MAX_CANONICAL_DEPTH + 1,
-    max_collection_len: MAX_CANONICAL_COLLECTION_LEN,
-    max_string_bytes: MAX_CANONICAL_STRING_BYTES,
 };
 
 /// Maximum number of selected output slots in one typed plan.
@@ -234,7 +221,7 @@ impl Default for StructuralLimits {
     }
 }
 
-/// Canonical structural limits shared by V1 and V2 typed plans.
+/// Canonical structural limits shared by typed plans and model requests.
 pub const CANONICAL_STRUCTURAL_LIMITS: StructuralLimits = StructuralLimits::CANONICAL;
 
 /// Deepest canonical JSON nesting the codec can decode.
@@ -426,7 +413,7 @@ impl QueryLimits {
     };
 
     /// Native staged columns may expose every bounded binding as identity evidence.
-    /// Released V1/V2 and typed model output slots retain `CANONICAL`.
+    /// Typed model output slots retain `CANONICAL`.
     pub const PLAN: Self = Self {
         structural: StructuralLimits {
             selected_slots: MAX_BINDINGS,
@@ -513,19 +500,6 @@ impl QueryLimits {
             self.set(name, stricter);
         }
         self
-    }
-
-    /// Codec limits for one remote request envelope.
-    ///
-    /// A request embeds an independently canonical plan beneath exactly one
-    /// framing object, hence the extra level.
-    #[must_use]
-    pub const fn remote_request_codec(self) -> CodecLimits {
-        CodecLimits {
-            max_bytes: self.remote_request_bytes,
-            max_depth: self.codec.max_depth + 1,
-            ..self.codec
-        }
     }
 
     /// Maximum canonical bytes in one complete plan-bound invocation.
@@ -782,7 +756,6 @@ mod query_limits_tests {
     #[test]
     fn canonical_limits_are_the_released_constants_and_validate() {
         let limits = QueryLimits::CANONICAL.validate().expect("canonical limits");
-        assert_eq!(limits.remote_request_codec(), REMOTE_REQUEST_CODEC_LIMITS);
         assert_eq!(limits.invocation_bytes(), MAX_QUERY_INVOCATION_BYTES);
         assert_eq!(QueryLimits::default(), limits);
     }
@@ -970,10 +943,12 @@ mod query_limits_tests {
     fn the_supported_depth_is_what_the_parser_decodes_inside_a_request_frame() {
         let mut limits = QueryLimits::CANONICAL;
         limits.codec.max_depth = MAX_SUPPORTED_CANONICAL_DEPTH;
-        let request = limits
-            .validate()
-            .expect("supported depth")
-            .remote_request_codec();
+        let validated = limits.validate().expect("supported depth");
+        // A framing object embeds the plan one level deeper.
+        let request = CodecLimits {
+            max_depth: validated.codec.max_depth + 1,
+            ..validated.codec
+        };
         let deepest = nested(MAX_SUPPORTED_CANONICAL_DEPTH + 1);
         let bytes = to_canonical_json_with_limits(&deepest, request).expect("encodes");
         from_canonical_json_with_limits::<serde_json::Value>(&bytes, request)
