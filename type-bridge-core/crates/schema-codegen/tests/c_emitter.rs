@@ -1836,6 +1836,16 @@ fn large_embedded_resources_are_byte_exact_portable_chunks() {
     );
 }
 
+/// True only for GNU GCC; `gcc` may be a clang alias (macOS).
+fn is_real_gcc(compiler: &str) -> bool {
+    Command::new(compiler)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| {
+            String::from_utf8_lossy(&output.stdout).contains("Free Software Foundation")
+        })
+}
+
 #[test]
 fn high_variant_role_union_keeps_constant_alias_stack() {
     // Keep the wide union within the identifier budget of the complete ABI header.
@@ -1910,9 +1920,11 @@ fn high_variant_role_union_keeps_constant_alias_stack() {
             "-Wframe-larger-than=3072",
             "-pedantic-errors",
         ]);
-        if compiler == "gcc" {
-            // Emit unused header inlines and keep scoped locals apart, as MSVC's
-            // stack analysis does; -fsyntax-only never measures a frame.
+        // Only real GCC on Linux (the supported C target ABI) measures frames:
+        // emit unused header inlines and keep scoped locals apart, as MSVC's
+        // stack analysis does. Apple's `gcc` is clang and rejects these flags,
+        // and -fsyntax-only never measures a frame.
+        if cfg!(target_os = "linux") && is_real_gcc(compiler) {
             command
                 .args(["-fkeep-inline-functions", "-fstack-reuse=none", "-c", "-o"])
                 .arg(stage.path().join("high-variant.o"));
