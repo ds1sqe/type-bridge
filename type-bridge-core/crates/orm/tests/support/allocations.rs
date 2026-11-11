@@ -75,7 +75,7 @@ pub async fn count_from<F: Future>(
     assert!(bytes > 0);
     assert!(
         origin.is_none() || !cfg!(target_os = "macos"),
-        "allocation origin filtering is unreliable on macOS"
+        "backtrace origin unavailable in macOS global allocator"
     );
     assert_eq!(TARGET.get(), 0);
     COUNT.set(0);
@@ -93,6 +93,7 @@ fn allocation_origin_probe(bytes: usize) -> Box<[u8]> {
     vec![0; bytes].into_boxed_slice()
 }
 
+// Backtrace origin unavailable in macOS global allocator.
 #[cfg(not(target_os = "macos"))]
 #[tokio::test]
 async fn allocation_origin_filter_keeps_matching_allocations() {

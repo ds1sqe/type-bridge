@@ -3011,8 +3011,9 @@ fn native_manager_future_sizes_stay_bounded() {
     }
 }
 
-// Origin-filtered allocation counting is unreliable on macOS (see
-// allocations::count_from); there a zero count would prove nothing.
+// Backtrace origin unavailable in macOS global allocator (see
+// allocations::count_from); the bulk-allocation invariant is platform
+// independent and stays covered on Linux and Windows.
 #[cfg(not(target_os = "macos"))]
 #[tokio::test]
 async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
