@@ -32,7 +32,7 @@ use type_bridge_orm::{
 
 #[cfg(test)]
 use crate::NodeDescriptorRegistry;
-use crate::{NodeRustDatabase, NodeRustTransactionContext};
+use crate::{NodeDatabase, NodeRustTransactionContext};
 
 pub(crate) fn napi_match_error(error: MatchError) -> napi::Error {
     napi_sdk_diagnostic(lower_match_error(&error))
@@ -1141,7 +1141,7 @@ impl NodeMatchQueryHandle {
     fn execute_owned(
         &self,
         env: &Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         validated: ValidatedMatchRequest,
         deadline: QueryExecutionDeadline,
         cancellation: AnswerCancellation,
@@ -1323,7 +1323,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_fetch_rows_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         orders: Vec<Reference<NodeMatchOrderHandle>>,
         offset: BigInt,
         limit: BigInt,
@@ -1383,7 +1383,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_page_by_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
         orders: Vec<Reference<NodeMatchOrderHandle>>,
         offset: BigInt,
@@ -1447,7 +1447,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_count_by_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
     ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
@@ -1483,7 +1483,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_exists_by_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
     ) -> Result<Object<'static>> {
         let (deadline, cancellation) = self.begin_invocation()?;
@@ -1582,7 +1582,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_reduce_by_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
         group: Option<&NodeMatchBindingHandle>,
         reducers: Vec<String>,
@@ -1646,7 +1646,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_reduce_by_field_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
         group: &NodeMatchFieldHandle,
         reducers: Vec<String>,
@@ -1711,7 +1711,7 @@ impl NodeMatchQueryHandle {
     pub fn execute_reduce_by_fields_owned(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         root: &NodeMatchBindingHandle,
         groups: Vec<Reference<NodeMatchFieldHandle>>,
         reducers: Vec<String>,

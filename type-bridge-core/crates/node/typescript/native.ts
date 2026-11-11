@@ -3,8 +3,8 @@ import * as fs from "fs";
 import * as path from "path";
 import type {
   NativeModule,
-  NativeRustDatabase,
-  NativeRustTransactionContext,
+  NativeDatabase,
+  NativeTransactionContext,
 } from "./index.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
 import type { NativePlanAuthority } from "./plan-internals.js";
@@ -164,21 +164,21 @@ interface NativeMatchQueryHandle {
     cardinality: NativeMatchRowCardinality,
   ): string;
   executeFetchRowsOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     orders: NativeMatchOrderHandle[],
     offset: bigint,
     limit: bigint,
     cardinality: NativeMatchRowCardinality,
   ): Promise<NativeValidatedMatchResultHandle>;
   executeFetchRowsBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     orders: NativeMatchOrderHandle[],
     offset: bigint,
     limit: bigint,
     cardinality: NativeMatchRowCardinality,
   ): Promise<NativeValidatedMatchResultHandle>;
   executePageByOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
     orders: NativeMatchOrderHandle[],
     offset: bigint,
@@ -186,7 +186,7 @@ interface NativeMatchQueryHandle {
     includeTotal: boolean,
   ): Promise<NativeValidatedMatchResultHandle>;
   executePageByBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
     orders: NativeMatchOrderHandle[],
     offset: bigint,
@@ -194,19 +194,19 @@ interface NativeMatchQueryHandle {
     includeTotal: boolean,
   ): Promise<NativeValidatedMatchResultHandle>;
   executeCountByOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
   ): Promise<NativeValidatedMatchResultHandle>;
   executeCountByBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
   ): Promise<NativeValidatedMatchResultHandle>;
   executeExistsByOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
   ): Promise<NativeValidatedMatchResultHandle>;
   executeExistsByBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
   ): Promise<NativeValidatedMatchResultHandle>;
   pageByDiagnostic(
@@ -225,14 +225,14 @@ interface NativeMatchQueryHandle {
     inputs: (NativeMatchFieldHandle | null)[],
   ): string;
   executeReduceByOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
     group: NativeMatchBindingHandle | null,
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): Promise<NativeValidatedMatchResultHandle>;
   executeReduceByBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
     group: NativeMatchBindingHandle | null,
     reducers: NativeMatchReduction[],
@@ -245,14 +245,14 @@ interface NativeMatchQueryHandle {
     inputs: (NativeMatchFieldHandle | null)[],
   ): string;
   executeReduceByFieldOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
     group: NativeMatchFieldHandle,
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): Promise<NativeValidatedMatchResultHandle>;
   executeReduceByFieldBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
     group: NativeMatchFieldHandle,
     reducers: NativeMatchReduction[],
@@ -265,14 +265,14 @@ interface NativeMatchQueryHandle {
     inputs: (NativeMatchFieldHandle | null)[],
   ): string;
   executeReduceByFieldsOwned(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     root: NativeMatchBindingHandle,
     groups: NativeMatchFieldHandle[],
     reducers: NativeMatchReduction[],
     inputs: (NativeMatchFieldHandle | null)[],
   ): Promise<NativeValidatedMatchResultHandle>;
   executeReduceByFieldsBorrowed(
-    transaction: NativeRustTransactionContext,
+    transaction: NativeTransactionContext,
     root: NativeMatchBindingHandle,
     groups: NativeMatchFieldHandle[],
     reducers: NativeMatchReduction[],
@@ -706,10 +706,10 @@ interface NativeRuntimeProjectionHandle {
     connectionLimits?: NativeQueryExecutionResources,
     answerLimits?: NativeQueryExecutionResources,
     cancellation?: NativeQueryCancellation,
-  ): NativeRustDatabase;
+  ): NativeDatabase;
   managerForProxy(typeKey: string, connection: NativeProxyConnection): NativeProjectedManager;
-  managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
-  managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
+  managerForDatabase(typeKey: string, database: NativeDatabase): NativeProjectedManager;
+  managerForTransaction(typeKey: string, transaction: NativeTransactionContext): NativeProjectedManager;
   matchSessionWithResources(
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,

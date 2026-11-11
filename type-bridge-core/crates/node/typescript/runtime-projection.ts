@@ -2,8 +2,8 @@ import { RawTransaction, rawNativeCall, rawNativePromise, type RawValue } from "
 import {
   createRustDatabaseFromNative,
   PlanAuthority,
-  type NativeRustDatabase,
-  type NativeRustTransactionContext,
+  type NativeDatabase,
+  type NativeTransactionContext,
   type Database,
   type TransactionContext,
   type MigrationTransaction,
@@ -30,7 +30,7 @@ import {
   registerPlanAuthorityHandle,
 } from "./plan-internals.js";
 import {
-  isRegisteredRustConnection,
+  isRegisteredConnection,
   rustDatabaseHandle,
   rustTransactionHandle,
 } from "./runtime-handles.js";
@@ -485,10 +485,10 @@ export interface NativeProjectionHandle {
     answerLimits?: NativeQueryExecutionResources,
     cancellation?: NativeQueryCancellation,
     queryLimits?: NativeQueryLimits,
-  ): NativeRustDatabase;
+  ): NativeDatabase;
   managerForProxy(typeKey: string, connection: NativeProxyConnection): NativeProjectedManager;
-  managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
-  managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
+  managerForDatabase(typeKey: string, database: NativeDatabase): NativeProjectedManager;
+  managerForTransaction(typeKey: string, transaction: NativeTransactionContext): NativeProjectedManager;
   matchSessionWithResources(
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
@@ -623,7 +623,7 @@ export class InstalledRuntimeProjection {
     if (proxy !== undefined) {
       return this.#native.managerForProxy(typeKey, proxy);
     }
-    if (!isRegisteredRustConnection(connection)) {
+    if (!isRegisteredConnection(connection)) {
       throw new TypeError("projected manager requires a registered Database or TransactionContext");
     }
     const database = rustDatabaseHandle(connection);
@@ -834,7 +834,7 @@ export class InstalledRuntimeProjection {
   /** @internal Reject structural or foreign connection lookalikes. */
   assertConnection(connection: RuntimeProjectionConnection): void {
     if (!proxyConnectionHandles.has(connection as ProxyConnection)
-      && !isRegisteredRustConnection(connection)) {
+      && !isRegisteredConnection(connection)) {
       throw new TypeError("generated query requires a registered Database or TransactionContext");
     }
   }
@@ -865,7 +865,7 @@ export class InstalledRuntimeProjection {
     if (proxyConnectionHandles.has(connection as ProxyConnection)) {
       return connection as ProxyConnection;
     }
-    if (!isRegisteredRustConnection(connection)) {
+    if (!isRegisteredConnection(connection)) {
       throw new TypeError("generated query requires a registered Rust connection");
     }
     const database = rustDatabaseHandle(connection);
@@ -926,8 +926,8 @@ export class InstalledRuntimeProjection {
 }
 
 type DirectTarget =
-  | { readonly kind: "owned"; readonly database: NativeRustDatabase }
-  | { readonly kind: "borrowed"; readonly transaction: NativeRustTransactionContext };
+  | { readonly kind: "owned"; readonly database: NativeDatabase }
+  | { readonly kind: "borrowed"; readonly transaction: NativeTransactionContext };
 
 /** Verified direct execution bound to one registered Rust database or transaction. */
 class InstalledRuntimeProjectionStaged implements RuntimeProjectionRemote<NativePendingPlanAnswer> {
@@ -1106,9 +1106,9 @@ class InstalledRuntimeProjectionDirect implements RuntimeProjectionRemote {
   /** Revalidate the request, then run it on the owned or borrowed entry point. */
   async #run(
     diagnostic: () => string,
-    owned: (database: NativeRustDatabase) => Promise<RuntimeProjectionMatchResult>,
+    owned: (database: NativeDatabase) => Promise<RuntimeProjectionMatchResult>,
     borrowed: (
-      transaction: NativeRustTransactionContext,
+      transaction: NativeTransactionContext,
     ) => Promise<RuntimeProjectionMatchResult>,
   ): Promise<RuntimeProjectionMatchResult> {
     const target = this.#target;

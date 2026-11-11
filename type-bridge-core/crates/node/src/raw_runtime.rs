@@ -1,7 +1,7 @@
 //! Raw-query lifecycle and lossless JavaScript value marshalling.
 
 use crate::proxy_connection_runtime::settle;
-use crate::{NodeProxyConnection, NodeRustDatabase};
+use crate::{NodeDatabase, NodeProxyConnection};
 use napi::{
     Property, PropertyAttributes,
     bindgen_prelude::{BigInt, Env, JsObjectValue, JsValue, Object, ToNapiValue, Unknown},
@@ -174,7 +174,7 @@ impl NodeRawTransaction {
 }
 
 #[napi]
-impl NodeRustDatabase {
+impl NodeDatabase {
     #[napi(
         js_name = "rawTransaction",
         ts_return_type = "Promise<NodeRawTransaction>"

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MigrationCatalog, MigrationTransaction } from "../../typescript/index.js";
-import { isRegisteredRustConnection, rustTransactionHandle } from "../../typescript/runtime-handles.js";
+import { isRegisteredConnection, rustTransactionHandle } from "../../typescript/runtime-handles.js";
 
 test("migration registration wraps the same native transaction without lifecycle methods", async () => {
   type NativeCatalog = ConstructorParameters<typeof MigrationCatalog>[0];
@@ -15,7 +15,7 @@ test("migration registration wraps the same native transaction without lifecycle
   catalog.register("derive-gender", async (tx) => {
     escaped = tx;
     assert.ok(tx instanceof MigrationTransaction);
-    assert.ok(isRegisteredRustConnection(tx));
+    assert.ok(isRegisteredConnection(tx));
     assert.equal(await tx.executeQuery("match exact;"), answer);
     for (const method of ["commit", "rollback", "close"]) assert.equal(method in tx, false);
   });
@@ -38,5 +38,5 @@ test("migration registration wraps the same native transaction without lifecycle
 test("migration transaction constructors cannot forge generated execution connections", () => {
   const Constructor = MigrationTransaction as unknown as new (native: object) => MigrationTransaction;
   assert.throws(() => new Constructor({}), /created by migration callbacks/);
-  assert.equal(isRegisteredRustConnection(Object.create(MigrationTransaction.prototype)), false);
+  assert.equal(isRegisteredConnection(Object.create(MigrationTransaction.prototype)), false);
 });

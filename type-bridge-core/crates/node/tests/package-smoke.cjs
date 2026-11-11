@@ -144,11 +144,11 @@ assert.throws(
   "match sessions must come from a verified runtime projection",
 );
 assert.equal(
-  Object.hasOwn(native.NodeRustDatabase.prototype, "entityManagerJson"),
+  Object.hasOwn(native.NodeDatabase.prototype, "entityManagerJson"),
   false,
 );
 assert.equal(
-  Object.hasOwn(native.NodeRustDatabase.prototype, "relationManagerJson"),
+  Object.hasOwn(native.NodeDatabase.prototype, "relationManagerJson"),
   false,
 );
 assert.equal(

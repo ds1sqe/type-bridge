@@ -75,7 +75,7 @@ function constantString(node) {
 // Raw TypeQL is forwarded unchanged to the core; it is not a host query compiler.
 // Restrict exemptions to the existing facade owners and exact forwarding body.
 const RAW_TYPESCRIPT_OWNERS = new Map([
-  ["typescript/index.ts", new Set(["Database", "MigrationTransaction", "NativeRustDatabase", "NativeRustTransactionContext"])],
+  ["typescript/index.ts", new Set(["Database", "MigrationTransaction", "NativeDatabase", "NativeTransactionContext"])],
   ["typescript/native.ts", new Set(["NativeProxyConnection"])],
   ["typescript/raw-query.ts", new Set(["RawTransaction", "NativeRawTransaction"])],
   ["typescript/runtime-projection.ts", new Set(["ProxyConnection"])],
@@ -320,7 +320,7 @@ function isRawRustForwarding(file, code, match, scopes) {
   const migration = relative === "src/lib.rs" && owner === "NodeRustTransactionContext";
   const raw = relative === "src/raw_runtime.rs";
   const declaration = method.method === "execute_query" &&
-    (migration || (raw && ["NodeRawTransaction", "NodeRustDatabase", "NodeProxyConnection"].includes(owner)));
+    (migration || (raw && ["NodeRawTransaction", "NodeDatabase", "NodeProxyConnection"].includes(owner)));
   if (declaration && match.index < method.open && /\bquery\s*:\s*String\b/.test(code.slice(method.start, method.open))) return true;
   const receiver = migration ? "tx" : "transaction";
   const call = declaration && (migration || owner === "NodeRawTransaction") ||

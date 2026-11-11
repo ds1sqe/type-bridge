@@ -16,7 +16,7 @@ use type_bridge_schema_migration::{
     VerifiedMigrationRollbackPlan, migration_runtime_capability_vocabulary,
 };
 
-use crate::NodeRustDatabase;
+use crate::NodeDatabase;
 
 /// Wakeable cancellation owner for migration execution.
 #[napi]
@@ -248,7 +248,7 @@ impl NodeMigrationCatalog {
     }
 
     #[napi]
-    pub fn verify(&self, database: &NodeRustDatabase) -> Result<NodeMigrationVerificationReport> {
+    pub fn verify(&self, database: &NodeDatabase) -> Result<NodeMigrationVerificationReport> {
         let (database, runtime) = database.handles();
         runtime
             .block_on(type_bridge_schema_migration_typedb::verify_catalog_state(
@@ -262,7 +262,7 @@ impl NodeMigrationCatalog {
     #[napi]
     pub fn applied_migrations(
         &self,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
     ) -> Result<Vec<NodeMigrationIdentity>> {
         let (database, runtime) = database.handles();
         runtime
@@ -443,7 +443,7 @@ impl NodeMigrationPlan {
     pub fn execute(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         holder: String,
     ) -> Result<Object<'static>> {
         self.execute_controlled(env, database, holder, None, None, None)
@@ -453,7 +453,7 @@ impl NodeMigrationPlan {
     pub fn execute_controlled(
         &self,
         env: Env,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
         holder: String,
         timeout_milliseconds: Option<i64>,
         resources: Option<&NodeMigrationExecutionResources>,

@@ -1,7 +1,7 @@
 //! Generated-projection and query runtime for the Node binding.
 //!
-//! The addon exposes connection, transaction, verified projection, and Query
-//! V2 handles. Arbitrary descriptor registration, handwritten dynamic managers,
+//! The addon exposes connection, transaction, verified projection, and staged
+//! plan handles. Arbitrary descriptor registration, handwritten dynamic managers,
 //! parser/generator entry points, and descriptor-marshalling functions are not
 //! part of this boundary.
 
@@ -165,13 +165,13 @@ impl NodeDescriptorRegistry {
 
 /// JavaScript-facing Rust database handle backed by the shared ORM runtime.
 #[napi]
-pub struct NodeRustDatabase {
+pub struct NodeDatabase {
     db: Arc<type_bridge_orm::Database>,
     runtime: Arc<ProviderRuntimeOwner>,
     managed_scope_id: Option<type_bridge_contract::managed_scope::ManagedScopeId>,
 }
 
-impl NodeRustDatabase {
+impl NodeDatabase {
     pub(crate) fn from_handles(
         db: Arc<type_bridge_orm::Database>,
         runtime: Arc<ProviderRuntimeOwner>,
@@ -299,7 +299,7 @@ fn napi_administration_error(error: type_bridge_contract::diagnostic::Diagnostic
 }
 
 #[napi]
-impl NodeRustDatabase {
+impl NodeDatabase {
     #[napi(js_name = "isConnected")]
     pub fn is_connected(&self) -> bool {
         self.db.is_connected()
@@ -519,7 +519,7 @@ impl NodeRustDatabase {
 }
 
 #[napi]
-impl NodeRustDatabase {
+impl NodeDatabase {
     /// Create a deferred staged transaction; nothing opens until commit.
     /// An omitted kind is inferred from the staged writes. Timeout defaults to
     /// 60000 ms; zero or negative disables it. Phase collection defaults off.
@@ -679,7 +679,7 @@ pub fn connect_rust_database(
     tls_enabled: Option<bool>,
     tls_root_ca: Option<String>,
     query_limits: Option<&match_runtime::NodeQueryLimits>,
-) -> Result<NodeRustDatabase> {
+) -> Result<NodeDatabase> {
     let query_limits = query_limits
         .map(|limits| limits.inner().validate_plan())
         .transpose()
@@ -711,7 +711,7 @@ pub fn connect_rust_database(
         None => db,
     };
 
-    Ok(NodeRustDatabase {
+    Ok(NodeDatabase {
         db: Arc::new(db),
         runtime,
         managed_scope_id: None,
@@ -955,7 +955,7 @@ mod tests {
     #[test]
     fn node_transaction_queries_and_commits_after_rollback_on_the_same_provider() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let database = NodeRustDatabase {
+        let database = NodeDatabase {
             db: Arc::new(type_bridge_orm::Database::with_backend(
                 Box::new(ReusableBackend(Arc::clone(&events))),
                 "test",
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn node_double_commit_keeps_the_released_lifecycle_error() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let database = NodeRustDatabase {
+        let database = NodeDatabase {
             db: Arc::new(type_bridge_orm::Database::with_backend(
                 Box::new(ReusableBackend(Arc::clone(&events))),
                 "test",
@@ -1066,7 +1066,7 @@ mod tests {
     #[test]
     fn node_generated_administration_is_pair_aware_and_plan_owned() {
         let databases = Arc::new(Mutex::new(BTreeSet::new()));
-        let database = NodeRustDatabase {
+        let database = NodeDatabase {
             db: Arc::new(type_bridge_orm::Database::with_backend(
                 Box::new(AdministrationBackend {
                     databases: Arc::clone(&databases),

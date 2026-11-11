@@ -70,7 +70,7 @@ use crate::match_runtime::{
     parse_enum, revalidate_diagnostic,
 };
 use crate::{
-    NodeMatchSessionHandle, NodeRustDatabase, NodeRustTransactionContext, NodeValidatedThingHandle,
+    NodeDatabase, NodeMatchSessionHandle, NodeRustTransactionContext, NodeValidatedThingHandle,
 };
 
 struct NodeCanonicalControl {
@@ -2351,7 +2351,7 @@ impl NodeRuntimeProjection {
         answer_limits: Option<&NodeQueryExecutionResources>,
         cancellation: Option<&NodeQueryCancellation>,
         query_limits: Option<&NodeQueryLimits>,
-    ) -> napi::Result<NodeRustDatabase> {
+    ) -> napi::Result<NodeDatabase> {
         let tls = direct_tls_from_node(&tls_mode, tls_root_ca)?;
         let mut policy =
             type_bridge_orm::DirectConnectionPolicy::new(endpoint, database, username, password)
@@ -2381,7 +2381,7 @@ impl NodeRuntimeProjection {
                 cancellation,
             ))
             .map_err(napi_sdk_diagnostic)?;
-        Ok(NodeRustDatabase::from_handles(
+        Ok(NodeDatabase::from_handles(
             Arc::new(database),
             runtime,
             self.package.managed_scope_id.clone(),
@@ -2393,7 +2393,7 @@ impl NodeRuntimeProjection {
     pub fn manager_for_database(
         &self,
         type_key: String,
-        database: &NodeRustDatabase,
+        database: &NodeDatabase,
     ) -> napi::Result<NodeProjectedModelManager> {
         let type_id = manageable_type(self.package.as_ref(), &type_key)?;
         let (database, runtime) = database.handles();

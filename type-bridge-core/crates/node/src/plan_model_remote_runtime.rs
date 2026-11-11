@@ -2,7 +2,7 @@
 //!
 //! JavaScript retains the caller-owned async exchange. This module snapshots
 //! immutable authority/capability/limit context, prepares released match
-//! terminals through the shared V1-to-V2 adapter, and returns the same opaque
+//! terminals through the shared match-request adapter, and returns the same opaque
 //! validated result proof consumed by direct typed queries.
 
 use std::sync::Arc;

@@ -20,7 +20,7 @@ use type_bridge_orm::{
     ProviderRuntimeOwner, TxType,
 };
 
-use crate::NodeRustDatabase;
+use crate::NodeDatabase;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ContractFoundationProbe {
@@ -248,7 +248,7 @@ pub fn new_projection_recording_authority() -> External<DatabaseConnectionAuthor
 /// One feature-gated database plus stable provider-I/O counters.
 #[napi(js_name = "__ProjectionRecordingFixture")]
 pub struct ProjectionRecordingFixture {
-    database: Option<NodeRustDatabase>,
+    database: Option<NodeDatabase>,
     state: Arc<Mutex<ProjectionRecordingState>>,
 }
 
@@ -298,7 +298,7 @@ impl ProjectionRecordingFixture {
             )
         })?;
         Ok(Self {
-            database: Some(NodeRustDatabase {
+            database: Some(NodeDatabase {
                 db: Arc::new(database),
                 runtime,
                 managed_scope_id: None,
@@ -308,7 +308,7 @@ impl ProjectionRecordingFixture {
     }
 
     #[napi(js_name = "takeDatabase")]
-    pub fn take_database(&mut self) -> Result<NodeRustDatabase> {
+    pub fn take_database(&mut self) -> Result<NodeDatabase> {
         self.database.take().ok_or_else(|| {
             Error::new(
                 Status::InvalidArg,

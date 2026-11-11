@@ -16,8 +16,8 @@ import {
   type NativePlanAuthority,
 } from "./plan-internals.js";
 import {
-  registerRustDatabaseHandle,
-  registerRustTransactionHandle,
+  registerDatabaseHandle,
+  registerTransactionHandle,
   rustDatabaseHandle,
 } from "./runtime-handles.js";
 
@@ -81,68 +81,6 @@ export type RuntimeAttributeValue =
   | { Decimal: string }
   | { Duration: string };
 
-export interface DynamicEntityRow {
-  iid: string | null;
-  type_name: string | null;
-  attributes: [string, RuntimeAttributeValue][];
-}
-
-export interface DynamicRolePlayer {
-  role_name: string;
-  player_iid: string | null;
-  player_type_name: string | null;
-  attributes: [string, unknown][];
-}
-
-export interface DynamicRelationRow extends DynamicEntityRow {
-  role_players: DynamicRolePlayer[];
-}
-
-/** Wire shape accepted by the separately retained V1 query facade. */
-export type DynamicComparisonOp =
-  | "eq"
-  | "neq"
-  | "gt"
-  | "gte"
-  | "lt"
-  | "lte"
-  | "contains"
-  | "like"
-  | "starts_with"
-  | "ends_with";
-
-export type DynamicExpr =
-  | {
-      kind: "compare";
-      attr_name: string;
-      operator: DynamicComparisonOp;
-      value: AttributeValue;
-    }
-  | { kind: "iid"; iid: string }
-  | { kind: "is_null"; attr_name: string; is_null: boolean }
-  | { kind: "and"; exprs: DynamicExpr[] }
-  | { kind: "or"; exprs: DynamicExpr[] }
-  | { kind: "not"; expr: DynamicExpr }
-  | { kind: "role_player"; role_name: string; expr: DynamicExpr };
-
-export type DynamicSortDir = "Asc" | "Desc";
-
-export type DynamicSort =
-  | { kind: "attribute"; attr_name: string; direction: DynamicSortDir }
-  | {
-      kind: "role_player_attribute";
-      role_name: string;
-      attr_name: string;
-      direction: DynamicSortDir;
-    };
-
-export interface DynamicQuerySpec {
-  expr?: DynamicExpr[];
-  sort?: DynamicSort[];
-  limit?: number | null;
-  offset?: number | null;
-}
-
 export function string(value: string): AttributeValue {
   return { value_type: "string", value };
 }
@@ -194,7 +132,7 @@ export function duration(value: string): AttributeValue {
   return { value_type: "duration", value };
 }
 
-export interface NativeRustDatabase {
+export interface NativeDatabase {
   rawTransaction(kind: TransactionType): Promise<NativeRawTransaction>;
   executeQuery(query: string, kind: TransactionType): Promise<RawValue>;
   isConnected(): boolean;
@@ -213,7 +151,7 @@ export interface NativeRustDatabase {
   planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
   planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
   resetDatabase(): void;
-  transaction(transactionType?: TransactionType): NativeRustTransactionContext;
+  transaction(transactionType?: TransactionType): NativeTransactionContext;
   stagedTransaction(kind?: string, timeoutMilliseconds?: bigint, collectPhaseTimestamps?: boolean): NativeStagedTransaction;
 }
 
@@ -294,9 +232,9 @@ interface NativeMigrationApprovalSet {
 
 interface NativeMigrationPlan {
   readonly executionAuthorized: boolean;
-  execute(database: NativeRustDatabase, holder: string): Promise<MigrationExecutionReport>;
+  execute(database: NativeDatabase, holder: string): Promise<MigrationExecutionReport>;
   executeControlled(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     holder: string,
     timeoutMilliseconds?: number | null,
     resources?: NativeMigrationExecutionResources | null,
@@ -324,14 +262,14 @@ interface NativeMigrationPreview {
 }
 
 interface NativeMigrationCatalog {
-  register(stepId: string, forward: (tx: NativeRustTransactionContext) => Promise<void>, reverse?: (tx: NativeRustTransactionContext) => Promise<void>): void;
+  register(stepId: string, forward: (tx: NativeTransactionContext) => Promise<void>, reverse?: (tx: NativeTransactionContext) => Promise<void>): void;
   readonly length: number;
   fingerprintJson(): string;
   isEmpty(): boolean;
   heads(): MigrationIdentity[];
   entry(index: number): MigrationHistoryEntry | null;
-  verify(database: NativeRustDatabase): MigrationVerificationReport;
-  appliedMigrations(database: NativeRustDatabase): MigrationIdentity[];
+  verify(database: NativeDatabase): MigrationVerificationReport;
+  appliedMigrations(database: NativeDatabase): MigrationIdentity[];
   previewApply(
     applied: MigrationIdentity[],
     targets?: MigrationIdentity[] | null,
@@ -376,7 +314,7 @@ export interface MigrationBackfillObservation {
   readonly transactionGroups: number;
 }
 
-export interface NativeRustTransactionContext {
+export interface NativeTransactionContext {
   executeQuery(query: string): Promise<RawValue>;
   commit(): void;
   rollback(): void;
@@ -426,7 +364,7 @@ export interface NativeRuntime {
     tlsEnabled?: boolean | null,
     tlsRootCa?: string | null,
     queryLimits?: NativeQueryLimits | null,
-  ): NativeRustDatabase;
+  ): NativeDatabase;
 }
 
 /** Package-private native contract used by retained runtime entry points. */
@@ -735,7 +673,7 @@ export class PlanAuthority {
 
 }
 
-function planDatabaseHandle(database: Database): NativeRustDatabase {
+function planDatabaseHandle(database: Database): NativeDatabase {
   const native = rustDatabaseHandle(database);
   if (native === undefined) {
     throw new TypeError(
@@ -768,11 +706,11 @@ export class Database {
     return rawNativePromise(rawNativeCall(() => this.#native.executeQuery(query, kind)));
   }
 
-  readonly #native: NativeRustDatabase;
+  readonly #native: NativeDatabase;
 
-  private constructor(native: NativeRustDatabase) {
+  private constructor(native: NativeDatabase) {
     this.#native = native;
-    registerRustDatabaseHandle(this, native);
+    registerDatabaseHandle(this, native);
   }
 
   static connect(
@@ -906,10 +844,10 @@ export class ManagedDatabaseDeletionPlan {
 
 /** @internal Wrap a generated-package-owned native database handle. */
 export function createRustDatabaseFromNative(
-  native: NativeRustDatabase,
+  native: NativeDatabase,
 ): Database {
   const Constructor = Database as unknown as new (
-    native: NativeRustDatabase,
+    native: NativeDatabase,
   ) => Database;
   return new Constructor(native);
 }
@@ -918,14 +856,14 @@ const MIGRATION_TRANSACTION_CONSTRUCTOR = Symbol("MigrationTransaction");
 
 /** Callback-scoped managers, typed queries and raw TypeQL on the engine transaction. */
 export class MigrationTransaction {
-  readonly #native: NativeRustTransactionContext;
+  readonly #native: NativeTransactionContext;
 
-  private constructor(native: NativeRustTransactionContext, token: typeof MIGRATION_TRANSACTION_CONSTRUCTOR) {
+  private constructor(native: NativeTransactionContext, token: typeof MIGRATION_TRANSACTION_CONSTRUCTOR) {
     if (token !== MIGRATION_TRANSACTION_CONSTRUCTOR) {
       throw new TypeError("MigrationTransaction values are created by migration callbacks");
     }
     this.#native = native;
-    registerRustTransactionHandle(this, native);
+    registerTransactionHandle(this, native);
   }
 
   executeQuery(query: string): Promise<RawValue> {
@@ -933,9 +871,9 @@ export class MigrationTransaction {
   }
 }
 
-function createMigrationTransaction(native: NativeRustTransactionContext): MigrationTransaction {
+function createMigrationTransaction(native: NativeTransactionContext): MigrationTransaction {
   const Constructor = MigrationTransaction as unknown as new (
-    native: NativeRustTransactionContext,
+    native: NativeTransactionContext,
     token: typeof MIGRATION_TRANSACTION_CONSTRUCTOR,
   ) => MigrationTransaction;
   return new Constructor(native, MIGRATION_TRANSACTION_CONSTRUCTOR);
@@ -944,10 +882,10 @@ function createMigrationTransaction(native: NativeRustTransactionContext): Migra
 const TRANSACTION_CONSTRUCTOR = Symbol("TransactionContext");
 
 export class TransactionContext {
-  readonly #native: NativeRustTransactionContext;
+  readonly #native: NativeTransactionContext;
 
   private constructor(
-    native: NativeRustTransactionContext,
+    native: NativeTransactionContext,
     token: typeof TRANSACTION_CONSTRUCTOR,
   ) {
     if (token !== TRANSACTION_CONSTRUCTOR) {
@@ -956,7 +894,7 @@ export class TransactionContext {
       );
     }
     this.#native = native;
-    registerRustTransactionHandle(this, native);
+    registerTransactionHandle(this, native);
   }
 
   commit(): void {
@@ -978,10 +916,10 @@ export class TransactionContext {
 }
 
 function createRustTransactionContext(
-  native: NativeRustTransactionContext,
+  native: NativeTransactionContext,
 ): TransactionContext {
   const Constructor = TransactionContext as unknown as new (
-    native: NativeRustTransactionContext,
+    native: NativeTransactionContext,
     token: typeof TRANSACTION_CONSTRUCTOR,
   ) => TransactionContext;
   return new Constructor(native, TRANSACTION_CONSTRUCTOR);

@@ -1,5 +1,5 @@
 import { RawTransaction, type RawValue } from "./raw-query.js";
-import { PlanAuthority, type NativeRustDatabase, type NativeRustTransactionContext, type Database, type TransactionContext, type MigrationTransaction } from "./index.js";
+import { PlanAuthority, type NativeDatabase, type NativeTransactionContext, type Database, type TransactionContext, type MigrationTransaction } from "./index.js";
 import { loadNative } from "./native.js";
 import type { NativePlan, NativePendingPlanAnswer, NativeProxyConnection, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
@@ -226,10 +226,10 @@ export interface NativeProjectedManagerFilter {
 /** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */
 export declare function projectedManagerNativeCall<Result>(operation: () => Result): Result;
 export interface NativeProjectionHandle {
-    connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, queryLimits?: NativeQueryLimits): NativeRustDatabase;
+    connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, queryLimits?: NativeQueryLimits): NativeDatabase;
     managerForProxy(typeKey: string, connection: NativeProxyConnection): NativeProjectedManager;
-    managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
-    managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
+    managerForDatabase(typeKey: string, database: NativeDatabase): NativeProjectedManager;
+    managerForTransaction(typeKey: string, transaction: NativeTransactionContext): NativeProjectedManager;
     matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, queryLimits?: NativeQueryLimits | null): RuntimeProjectionMatchSession;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;

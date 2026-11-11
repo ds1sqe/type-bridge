@@ -4,8 +4,8 @@ import test from "node:test";
 import {
   createRustDatabaseFromNative,
   PlanError,
-  type NativeRustDatabase,
-  type NativeRustTransactionContext,
+  type NativeDatabase,
+  type NativeTransactionContext,
   type Database,
   type TransactionContext,
 } from "../../typescript/index.js";
@@ -15,9 +15,9 @@ import {
   type RuntimeProjectionConnection,
 } from "../../typescript/runtime-projection.js";
 import {
-  isRegisteredRustConnection,
-  registerRustDatabaseHandle,
-  registerRustTransactionHandle,
+  isRegisteredConnection,
+  registerDatabaseHandle,
+  registerTransactionHandle,
   rustDatabaseHandle,
 } from "../../typescript/runtime-handles.js";
 
@@ -28,10 +28,10 @@ test("package-owned native databases are registered and retain idempotent close"
       closed = true;
     },
     isConnected: (): boolean => !closed,
-  } as NativeRustDatabase;
+  } as NativeDatabase;
   const database = createRustDatabaseFromNative(native);
 
-  assert.equal(isRegisteredRustConnection(database), true);
+  assert.equal(isRegisteredConnection(database), true);
   assert.equal(rustDatabaseHandle(database), native);
   assert.equal(database.isConnected(), true);
   database.close();
@@ -106,11 +106,11 @@ function directExecutionFixture(): {
 
 test("direct generated terminals project native diagnostics for both ownership paths", async () => {
   const database = {} as Database;
-  registerRustDatabaseHandle(database, {} as NativeRustDatabase);
+  registerDatabaseHandle(database, {} as NativeDatabase);
   const transaction = {} as TransactionContext;
-  registerRustTransactionHandle(
+  registerTransactionHandle(
     transaction,
-    {} as NativeRustTransactionContext,
+    {} as NativeTransactionContext,
   );
   const { projection, query } = directExecutionFixture();
   const root = {} as never;

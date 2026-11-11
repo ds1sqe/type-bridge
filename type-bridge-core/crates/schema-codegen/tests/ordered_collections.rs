@@ -1175,7 +1175,7 @@ const fixture = (responses, authority = null, commitFailure = null) => {
       );
   const database = recording.takeDatabase();
   const connection = Object.freeze({});
-  Handles.registerRustDatabaseHandle(connection, database);
+  Handles.registerDatabaseHandle(connection, database);
   return { recording, database, connection };
 };
 const counters = ({ recording }) => JSON.parse(recording.countersJson());
@@ -1630,7 +1630,7 @@ for (const targetKind of ["owned", "read", "write"]) {
   let connection = reading.connection;
   if (targetKind !== "owned") {
     connection = Object.freeze({});
-    Handles.registerRustTransactionHandle(connection, reading.database.transaction(targetKind));
+    Handles.registerTransactionHandle(connection, reading.database.transaction(targetKind));
   }
   const unfiltered = Local.Record.manager(connection).all();
   const compared = Local.Record.manager(connection).filter({ identifier: Local.Identifier.create("keyword") }).all();

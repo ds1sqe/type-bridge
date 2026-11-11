@@ -66,65 +66,6 @@ export type RuntimeAttributeValue = {
 } | {
     Duration: string;
 };
-export interface DynamicEntityRow {
-    iid: string | null;
-    type_name: string | null;
-    attributes: [string, RuntimeAttributeValue][];
-}
-export interface DynamicRolePlayer {
-    role_name: string;
-    player_iid: string | null;
-    player_type_name: string | null;
-    attributes: [string, unknown][];
-}
-export interface DynamicRelationRow extends DynamicEntityRow {
-    role_players: DynamicRolePlayer[];
-}
-/** Wire shape accepted by the separately retained V1 query facade. */
-export type DynamicComparisonOp = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" | "like" | "starts_with" | "ends_with";
-export type DynamicExpr = {
-    kind: "compare";
-    attr_name: string;
-    operator: DynamicComparisonOp;
-    value: AttributeValue;
-} | {
-    kind: "iid";
-    iid: string;
-} | {
-    kind: "is_null";
-    attr_name: string;
-    is_null: boolean;
-} | {
-    kind: "and";
-    exprs: DynamicExpr[];
-} | {
-    kind: "or";
-    exprs: DynamicExpr[];
-} | {
-    kind: "not";
-    expr: DynamicExpr;
-} | {
-    kind: "role_player";
-    role_name: string;
-    expr: DynamicExpr;
-};
-export type DynamicSortDir = "Asc" | "Desc";
-export type DynamicSort = {
-    kind: "attribute";
-    attr_name: string;
-    direction: DynamicSortDir;
-} | {
-    kind: "role_player_attribute";
-    role_name: string;
-    attr_name: string;
-    direction: DynamicSortDir;
-};
-export interface DynamicQuerySpec {
-    expr?: DynamicExpr[];
-    sort?: DynamicSort[];
-    limit?: number | null;
-    offset?: number | null;
-}
 export declare function string(value: string): AttributeValue;
 export declare function long(value: bigint): AttributeValue;
 export declare function longFromNumberUnsafe(value: number): AttributeValue;
@@ -135,7 +76,7 @@ export declare function datetime(value: string): AttributeValue;
 export declare function datetimetz(value: string): AttributeValue;
 export declare function decimal(value: string): AttributeValue;
 export declare function duration(value: string): AttributeValue;
-export interface NativeRustDatabase {
+export interface NativeDatabase {
     rawTransaction(kind: TransactionType): Promise<NativeRawTransaction>;
     executeQuery(query: string, kind: TransactionType): Promise<RawValue>;
     isConnected(): boolean;
@@ -154,7 +95,7 @@ export interface NativeRustDatabase {
     planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
     planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
     resetDatabase(): void;
-    transaction(transactionType?: TransactionType): NativeRustTransactionContext;
+    transaction(transactionType?: TransactionType): NativeTransactionContext;
     stagedTransaction(kind?: string, timeoutMilliseconds?: bigint, collectPhaseTimestamps?: boolean): NativeStagedTransaction;
 }
 export interface NativeManagedDatabaseDeletionPlan {
@@ -210,8 +151,8 @@ interface NativeMigrationApprovalSet {
 }
 interface NativeMigrationPlan {
     readonly executionAuthorized: boolean;
-    execute(database: NativeRustDatabase, holder: string): Promise<MigrationExecutionReport>;
-    executeControlled(database: NativeRustDatabase, holder: string, timeoutMilliseconds?: number | null, resources?: NativeMigrationExecutionResources | null, cancellation?: NativeMigrationCancellation | null): Promise<MigrationExecutionReport>;
+    execute(database: NativeDatabase, holder: string): Promise<MigrationExecutionReport>;
+    executeControlled(database: NativeDatabase, holder: string, timeoutMilliseconds?: number | null, resources?: NativeMigrationExecutionResources | null, cancellation?: NativeMigrationCancellation | null): Promise<MigrationExecutionReport>;
 }
 interface NativeMigrationCancellation {
     readonly cancelled: boolean;
@@ -230,14 +171,14 @@ interface NativeMigrationPreview {
     authorize(approvals: NativeMigrationApprovalSet): NativeMigrationPlan;
 }
 interface NativeMigrationCatalog {
-    register(stepId: string, forward: (tx: NativeRustTransactionContext) => Promise<void>, reverse?: (tx: NativeRustTransactionContext) => Promise<void>): void;
+    register(stepId: string, forward: (tx: NativeTransactionContext) => Promise<void>, reverse?: (tx: NativeTransactionContext) => Promise<void>): void;
     readonly length: number;
     fingerprintJson(): string;
     isEmpty(): boolean;
     heads(): MigrationIdentity[];
     entry(index: number): MigrationHistoryEntry | null;
-    verify(database: NativeRustDatabase): MigrationVerificationReport;
-    appliedMigrations(database: NativeRustDatabase): MigrationIdentity[];
+    verify(database: NativeDatabase): MigrationVerificationReport;
+    appliedMigrations(database: NativeDatabase): MigrationIdentity[];
     previewApply(applied: MigrationIdentity[], targets?: MigrationIdentity[] | null): NativeMigrationPreview;
     previewRollback(applied: MigrationIdentity[], removals: MigrationIdentity[]): NativeMigrationPreview;
 }
@@ -263,7 +204,7 @@ export interface MigrationBackfillObservation {
     readonly skipped: number;
     readonly transactionGroups: number;
 }
-export interface NativeRustTransactionContext {
+export interface NativeTransactionContext {
     executeQuery(query: string): Promise<RawValue>;
     commit(): void;
     rollback(): void;
@@ -279,7 +220,7 @@ export interface NativeRuntime {
     NodeMigrationExecutionResources: new (transactionGroups: number, backfillObservations: number) => NativeMigrationExecutionResources;
     openMigrationCatalog(schemaAuthority: Uint8Array, historyBundle: Uint8Array): NativeMigrationCatalog;
     ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null): void;
-    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null, queryLimits?: NativeQueryLimits | null): NativeRustDatabase;
+    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null, queryLimits?: NativeQueryLimits | null): NativeDatabase;
 }
 /** Package-private native contract used by retained runtime entry points. */
 export interface NativeModule extends NativeRuntime, NativePlanAuthorityRuntime {
@@ -440,7 +381,7 @@ export declare class ManagedDatabaseDeletionPlan {
     close(): void;
 }
 /** @internal Wrap a generated-package-owned native database handle. */
-export declare function createRustDatabaseFromNative(native: NativeRustDatabase): Database;
+export declare function createRustDatabaseFromNative(native: NativeDatabase): Database;
 /** Callback-scoped managers, typed queries and raw TypeQL on the engine transaction. */
 export declare class MigrationTransaction {
     #private;
