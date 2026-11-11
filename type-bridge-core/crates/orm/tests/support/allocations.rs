@@ -60,12 +60,23 @@ pub async fn count<F: Future>(bytes: usize, future: F) -> (F::Output, usize) {
     count_from(bytes, None, future).await
 }
 
+/// Count matching allocations, optionally only those whose backtrace names
+/// `origin`.
+///
+/// Origin filtering needs a backtrace captured inside the global allocator
+/// to unwind past the allocator shim into the caller. Linux and Windows CI
+/// do; on the macOS runner no caller frame is symbolized (the positive control
+/// counted zero in CI), which would make an origin-filtered zero vacuous.
 pub async fn count_from<F: Future>(
     bytes: usize,
     origin: Option<&'static str>,
     future: F,
 ) -> (F::Output, usize) {
     assert!(bytes > 0);
+    assert!(
+        origin.is_none() || !cfg!(target_os = "macos"),
+        "allocation origin filtering is unreliable on macOS"
+    );
     assert_eq!(TARGET.get(), 0);
     COUNT.set(0);
     ORIGIN.set(origin);
@@ -76,11 +87,13 @@ pub async fn count_from<F: Future>(
     (result, COUNT.get())
 }
 
+#[cfg(not(target_os = "macos"))]
 #[inline(never)]
 fn allocation_origin_probe(bytes: usize) -> Box<[u8]> {
     vec![0; bytes].into_boxed_slice()
 }
 
+#[cfg(not(target_os = "macos"))]
 #[tokio::test]
 async fn allocation_origin_filter_keeps_matching_allocations() {
     for (origin, expected) in [

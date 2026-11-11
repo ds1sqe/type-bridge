@@ -3011,6 +3011,9 @@ fn native_manager_future_sizes_stay_bounded() {
     }
 }
 
+// Origin-filtered allocation counting is unreliable on macOS (see
+// allocations::count_from); there a zero count would prove nothing.
+#[cfg(not(target_os = "macos"))]
 #[tokio::test]
 async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
     for target_route in [false, true] {
