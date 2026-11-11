@@ -62,7 +62,7 @@ from generated_package import (
     integer_input,
     qualifying_score,
 )
-from type_bridge_core import DynamicExpr, IidConstraint, IidPattern, Pending
+from type_bridge_core import DynamicExpr, Pending
 from type_bridge_core import Transaction as StagedTransaction
 
 from type_bridge import Iid
@@ -517,9 +517,3 @@ canonical_person_filter.delete()
 assert_type(canonical_person_filter.update(person), WriteResult[Person])
 
 assert_type(DynamicExpr.iid(Iid("0xa1")), DynamicExpr)
-assert_type(IidConstraint(Iid("0xa1")).iid, str)
-assert_type(IidPattern("$person", Iid("0xa1")).iid, str)
-iid_constraint = IidConstraint(Iid("0xa1"))
-iid_constraint.iid = Iid("0xa2")
-iid_pattern = IidPattern("$person", Iid("0xa1"))
-iid_pattern.iid = Iid("0xa2")
