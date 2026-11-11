@@ -5538,18 +5538,18 @@ def test_generated_direct_terminals_run_under_the_connection_answer_ceiling(
     assert query.execute_count_by_owned(unbounded, counter).count_value() == 2
     unbounded.close()
 
-    expired = connect(QueryExecutionResourceLimits(timeout_milliseconds=0))
-    transaction = expired.transaction("read")
-    for terminal in (
-        lambda: query.execute_count_by_owned(expired, counter),
-        lambda: query.execute_count_by_borrowed(transaction, counter),
-    ):
-        with pytest.raises(MatchRequestError) as timed_out:
-            terminal()
-        assert timed_out.value.category == "resource_limit"
-        assert timed_out.value.code == "transaction_deadline_exceeded"
-    transaction.close()
-    expired.close()
+    # A zero timeout ceiling means no deadline, not an expired one.
+    no_deadline = connect(QueryExecutionResourceLimits(timeout_milliseconds=0))
+    transaction = no_deadline.transaction("read")
+    try:
+        for terminal in (
+            lambda: query.execute_count_by_owned(no_deadline, counter),
+            lambda: query.execute_count_by_borrowed(transaction, counter),
+        ):
+            assert terminal().count_value() == 2
+    finally:
+        transaction.close()
+        no_deadline.close()
 
     # A one-item ceiling refuses exactly as a session asking for one item.
     unbounded = connect(None)
