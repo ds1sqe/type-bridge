@@ -2617,19 +2617,27 @@ impl PyProjectedManagerFilter {
 
     /// Delete all matches without running generated instance CRUD hooks.
     fn delete(&self, py: Python<'_>) -> PyResult<()> {
-        let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
-        provider_block_on(py, self.runtime.as_ref(), async {
-            let target = self.target()?;
-            let transaction = self.target.as_ref().and_then(OwnedQueryTarget::transaction);
+        let package = Arc::clone(&self.package);
+        let owned_target = self.target.clone();
+        let marker = self.successor_batch_marker.clone();
+        let filter = self.filter.clone();
+        let control = self.control();
+        let operation = async move {
+            let executor = ProjectedManagerFilterExecutor::new(&package.projection);
+            let target = owned_target
+                .as_ref()
+                .map(OwnedQueryTarget::as_target)
+                .ok_or_else(|| py_runtime_error("projected filter has no execution target"))?;
+            let transaction = owned_target
+                .as_ref()
+                .and_then(OwnedQueryTarget::transaction);
             let prior_state = match transaction {
                 Some(transaction) => Some(transaction.lifecycle_state().await),
                 None => None,
             };
-            let result = executor
-                .delete_on_target(target, &self.filter, self.control())
-                .await;
-            if let (Some(transaction), Some(marker)) = (transaction, &self.successor_batch_marker)
-                && !self.filter.matches_none()
+            let result = executor.delete_on_target(target, &filter, control).await;
+            if let (Some(transaction), Some(marker)) = (transaction, &marker)
+                && !filter.matches_none()
                 && matches!(
                     prior_state,
                     Some(TransactionContextState::Active | TransactionContextState::RolledBack)
@@ -2644,7 +2652,14 @@ impl PyProjectedManagerFilter {
                     type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
                 ))
             })
-        })
+        };
+        if self.successor_batch_marker.is_some() {
+            // Like the batch writes, keep the GIL until the marker is published so a
+            // concurrent Python commit of the borrowed transaction observes it.
+            provider_block_on_with_gil(py, self.runtime.as_ref(), move |_py| Box::pin(operation))
+        } else {
+            provider_block_on(py, self.runtime.as_ref(), operation)
+        }
     }
 
     /// Hydrate every distinct exact-model match.
