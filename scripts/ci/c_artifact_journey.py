@@ -162,6 +162,31 @@ def adapted_fixture(path: Path) -> bytes:
         if source.count(old_alias_observation) != 1:
             raise JourneyError("full consumer ordered-alias observation seam drifted")
         source = source.replace(old_alias_observation, new_alias_observation, 1)
+        # Models freezes network-link participant as an ordered role, and
+        # non-empty ordered writes are refused. Omit the participant chunk as
+        # aliases are omitted and expect no collected participants.
+        for old, new, seam in (
+            (
+                "args.role_participant_chunks = &participants_chunk;",
+                "args.role_participant_chunks = NULL;\n  (void)participants_chunk;",
+                "participant input",
+            ),
+            (
+                "CHECK(participant_count == 2u);",
+                "CHECK(participant_count == 0u);",
+                "participant collect check",
+            ),
+            (
+                """if (observation == NULL || observation->named_participant_count != 2u ||
+      observation->positional_participant_count != 2u ||""",
+                """if (observation == NULL || observation->named_participant_count != 0u ||
+      observation->positional_participant_count != 0u ||""",
+                "participant observation",
+            ),
+        ):
+            if source.count(old) != 1:
+                raise JourneyError(f"full consumer ordered-{seam} seam drifted")
+            source = source.replace(old, new, 1)
     return source.encode()
 
 
