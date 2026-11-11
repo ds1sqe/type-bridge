@@ -224,7 +224,7 @@ six CRUD ops as every other compared version: `insert_one`, `fetch_by_key`
 (one of 1,000 seeded items), `fetch_filtered` (stock of at least 900, 100
 items), `update`, `delete` and `batch_insert_1k`. The compared versions are
 the newest patch of every line from 2.0 that PyPI and npm both serve (today
-2.0.2, 2.1.0 and 2.2.6) and `head`, on one TypeDB 3.12.3 at semantic profile
+2.0.2, 2.1.0, 2.2.6 and 2.3.3) and `head`, on one TypeDB 3.12.3 at semantic profile
 `typedb-3.12.1/v1`, which all of them accept. `python -m perf.harness.versions`
 prints that list. A release is installed from
 PyPI into its own venv under the run's temp directory; `head` installs this
@@ -256,7 +256,7 @@ docker run -d --name perf-typedb --tmpfs /var/lib/typedb/data:rw \
   -p 1729:1729 -p 8000:8000 typedb/typedb:3.12.3
 (cd type-bridge-core && uvx --from maturin==1.14.1 maturin build --release \
   -o ../tmp/perf/core-wheel)
-for version in 2.0.2 2.1.0 2.2.6 head; do
+for version in 2.0.2 2.1.0 2.2.6 2.3.3 head; do
   TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password uv run python -m perf.harness.released \
     --version $version --typedb 3.12.3 --core-wheel tmp/perf/core-wheel/type_bridge_core-*.whl \
     --out tmp/perf/release-python-$version.json
