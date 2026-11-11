@@ -459,7 +459,15 @@ pub unsafe extern "C" fn type_bridge_plan_result_view(
     })
 }
 
-#[cfg(test)]
+// Model views require the native C view ABI target; elsewhere
+// type_bridge_plan_builder_new_with_layout refuses with c_plan_view_abi_unsupported.
+#[cfg(all(
+    test,
+    target_os = "linux",
+    target_arch = "x86_64",
+    target_pointer_width = "64",
+    target_endian = "little"
+))]
 mod tests {
     use super::*;
     use crate::entity_crud::tests::{COMMIT_SUCCESS, documents, fixture, person_document};

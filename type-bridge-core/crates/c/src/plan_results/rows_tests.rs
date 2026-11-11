@@ -421,8 +421,6 @@ fn model_scalar_rows_share_core_bytes_ordinals_and_owner_with_checked_getters() 
                 );
                 assert!(first_view.is_null());
                 type_bridge_rows_result_free(&mut rows);
-                // Real C/C++ reads share the view_tests loader, which is Linux x86_64 only.
-                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                 {
                     let header = generated.package.get("include/shop/models.h").unwrap();
                     let source = "#include <shop/models.h>\n#ifdef __cplusplus\nextern \"C\"\n#endif\nint inspect_view(const void *bytes, int mode) { const shop_item_plan_view_t *item = (const shop_item_plan_view_t *)bytes; (void)mode; return item->has_stock && item->stock == 2 && item->has_itemzhid && strcmp(item->itemzhid, \"I1\") == 0 ? 0 : 1; }\n";

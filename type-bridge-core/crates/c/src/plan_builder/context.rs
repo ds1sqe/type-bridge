@@ -368,6 +368,51 @@ pub unsafe extern "C" fn type_bridge_plan_builder_new_with_layout(
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+
+    #[cfg(not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_pointer_width = "64",
+        target_endian = "little"
+    )))]
+    #[test]
+    fn view_layouts_are_refused_off_the_native_view_target() {
+        let package = crate::entity_crud::tests::package("view_digest");
+        let digest = type_bridge_contract::projection::c_view::CViewLayouts::for_projection(
+            &package.state()._projection,
+        )
+        .unwrap()
+        .digest();
+        let mut builder = ptr::dangling_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: all readable inputs and writable owner slots are distinct and live.
+        unsafe {
+            assert_eq!(
+                type_bridge_plan_builder_new_with_layout(
+                    &package,
+                    ptr::null(),
+                    TypeBridgeByteView {
+                        data: digest.as_ptr(),
+                        length: 32
+                    },
+                    &mut builder,
+                    &mut diagnostics
+                ),
+                TypeBridgeStatus::Unsupported
+            );
+            assert!(builder.is_null());
+            let (_, code, _) = crate::entity_crud::tests::diagnostic(diagnostics);
+            assert_eq!(code, "c_plan_view_abi_unsupported");
+            crate::execution_diagnostic::type_bridge_execution_diagnostics_close(&mut diagnostics);
+        }
+    }
+    // The digest check runs only where the native C view ABI is supported.
+    #[cfg(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_pointer_width = "64",
+        target_endian = "little"
+    ))]
     #[test]
     fn layout_digest_mismatch_opens_nothing_and_returns_a_typed_diagnostic() {
         let package = crate::entity_crud::tests::package("view_digest");
