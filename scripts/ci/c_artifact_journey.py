@@ -172,11 +172,6 @@ def adapted_fixture(path: Path) -> bytes:
                 "participant input",
             ),
             (
-                "CHECK(participant_count == 2u);",
-                "CHECK(participant_count == 0u);",
-                "participant collect check",
-            ),
-            (
                 """if (observation == NULL || observation->named_participant_count != 2u ||
       observation->positional_participant_count != 2u ||""",
                 """if (observation == NULL || observation->named_participant_count != 0u ||
@@ -187,6 +182,28 @@ def adapted_fixture(path: Path) -> bytes:
             if source.count(old) != 1:
                 raise JourneyError(f"full consumer ordered-{seam} seam drifted")
             source = source.replace(old, new, 1)
+        # The selection shape matches links that have participants, so it
+        # finds no row once participants are omitted.
+        shape = source.find("static int check_selection_shape_result(")
+        old_rows = "  CHECK(row_count == 1u);\n"
+        if shape < 0 or source.count(old_rows, shape, source.find("\n}\n", shape)) != 1:
+            raise JourneyError("full consumer ordered-participant shape seam drifted")
+        index = source.index(old_rows, shape)
+        source = (
+            source[:index]
+            + "  CHECK(row_count == 0u);\n  return 0;\n"
+            + source[index + len(old_rows) :]
+        )
+        begin = source.find("CHECK(check_selection_shape_result(")
+        end = source.find('puts("C18 positional/named one+collect shapes', begin)
+        region = source[begin:end]
+        if begin < 0 or end < 0 or region.count("CHECK(row_count == 1u);") != 3:
+            raise JourneyError("full consumer ordered-participant shape rows seam drifted")
+        source = (
+            source[:begin]
+            + region.replace("CHECK(row_count == 1u);", "CHECK(row_count == 0u);")
+            + source[end:]
+        )
     return source.encode()
 
 
@@ -669,6 +686,10 @@ def live_journey(
                 "SMOKE_TYPEDB_PASSWORD": password,
                 "SMOKE_TYPEDB_HTTP_PORT": http_port,
                 "SMOKE_DATABASE": database,
+                # The full consumer stages writes through the proxy; the smoke
+                # server refuses unvouched writes unless told otherwise, as
+                # the C projection live harness does.
+                "SMOKE_ALLOW_STAGED_WRITES": "true",
                 "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
                 "SMOKE_PORT": str(port),
             }
