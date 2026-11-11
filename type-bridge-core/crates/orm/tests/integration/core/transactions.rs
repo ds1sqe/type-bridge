@@ -392,7 +392,12 @@ fn assert_bounded_execution_error(
 ) {
     // Deadline and cancellation refusals carry the invocation timeline as a
     // phase-decorated execution diagnostic; other limits stay match errors.
-    if let OrmError::ExecutionDiagnostic(diagnostic) = &error {
+    if let OrmError::ExecutionDiagnostic(diagnostic) = &error
+        && matches!(
+            expected_code,
+            "transaction_deadline_exceeded" | "provider_cancelled"
+        )
+    {
         use type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory;
         let category = match expected_category {
             MatchErrorCategory::Cancelled => SdkDiagnosticCategory::Cancelled,
