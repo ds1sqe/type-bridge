@@ -88,7 +88,11 @@ async fn relay(port: u16, upstream: String, arm: PathBuf) -> tokio::task::JoinHa
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "SDK deadline fixture; requires TB_DEADLINE_FIXTURE_DIR and real TypeDB"]
 async fn sdk_deadline_fixture_serves_until_stopped() {
-    let dir = PathBuf::from(std::env::var("TB_DEADLINE_FIXTURE_DIR").expect("fixture dir"));
+    // Like the sibling SDK fixtures, stay inert under a plain `--ignored` run.
+    let Ok(dir) = std::env::var("TB_DEADLINE_FIXTURE_DIR") else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
     std::fs::create_dir_all(&dir).expect("fixture directory");
     let upstream = std::env::var("TYPEDB_ADDRESS").expect("TypeDB address");
     let first: u16 = std::env::var("TB_DEADLINE_RELAY_FIRST_PORT")
