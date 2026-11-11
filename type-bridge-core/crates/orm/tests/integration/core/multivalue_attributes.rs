@@ -54,7 +54,7 @@ async fn dynamic_entity_multi_value_attributes_against_typedb() {
         ),
         (
             schema.session_length_attr.clone(),
-            AttributeValue::Duration("PT10M".into()),
+            AttributeValue::Duration("PT600S".into()),
         ),
     ];
     manager
@@ -137,15 +137,15 @@ fn multi_value_attrs(schema: &DynamicCrudSchema, name: &str) -> DynamicAttribute
         ),
         (
             schema.session_length_attr.clone(),
-            AttributeValue::Duration("PT30M".into()),
+            AttributeValue::Duration("PT1800S".into()),
         ),
         (
             schema.session_length_attr.clone(),
-            AttributeValue::Duration("PT1H".into()),
+            AttributeValue::Duration("PT3600S".into()),
         ),
         (
             schema.session_length_attr.clone(),
-            AttributeValue::Duration("PT2H".into()),
+            AttributeValue::Duration("PT7200S".into()),
         ),
     ]
 }

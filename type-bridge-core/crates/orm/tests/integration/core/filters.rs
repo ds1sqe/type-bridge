@@ -123,7 +123,7 @@ async fn dynamic_relation_filters_and_role_lookup_against_typedb() {
 
     let by_attr = relation_manager
         .get(&[Filter::eq(
-            "since",
+            &schema.since_attr,
             AttributeValue::Date("2026-05-27".into()),
         )])
         .await

@@ -356,7 +356,7 @@ pub fn all_value_attrs(name: &str, age: i64) -> DynamicAttributeMap {
         ("balance".into(), AttributeValue::Decimal("1234.56".into())),
         (
             "session_length".into(),
-            AttributeValue::Duration("PT2H30M".into()),
+            AttributeValue::Duration("PT9000S".into()),
         ),
     ]
 }

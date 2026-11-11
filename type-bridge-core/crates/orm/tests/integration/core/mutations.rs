@@ -157,7 +157,7 @@ async fn dynamic_relation_filter_then_iid_update_and_delete_against_typedb() {
 
     let selected = relation_manager
         .get(&[Filter::eq(
-            "since",
+            &schema.since_attr,
             AttributeValue::Date("2026-05-28".into()),
         )])
         .await
@@ -178,7 +178,7 @@ async fn dynamic_relation_filter_then_iid_update_and_delete_against_typedb() {
 
     let updated = relation_manager
         .get(&[Filter::eq(
-            "since",
+            &schema.since_attr,
             AttributeValue::Date("2026-06-01".into()),
         )])
         .await
@@ -191,7 +191,7 @@ async fn dynamic_relation_filter_then_iid_update_and_delete_against_typedb() {
 
     let to_delete = relation_manager
         .get(&[Filter::eq(
-            "since",
+            &schema.since_attr,
             AttributeValue::Date("2026-05-27".into()),
         )])
         .await

@@ -523,7 +523,7 @@ async fn dynamic_relation_abstract_role_resolves_concrete_players_against_typedb
         .unwrap();
     let issue_iid = issue_manager
         .insert(&vec![(
-            "key".into(),
+            schema.issue_key_attr.clone(),
             AttributeValue::String("ISSUE-1".into()),
         )])
         .await

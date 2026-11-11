@@ -66,7 +66,7 @@ async fn dynamic_entity_crud_against_typedb() {
     assert_eq!(aggregate_i64(&aggregate_rows[0], "count"), Some(3));
 
     let grouped_rows = manager
-        .group_by_aggregate(&[], &[String::from("name")], &[count_aggregate()])
+        .group_by_aggregate(&[], &[schema.name_attr.clone()], &[count_aggregate()])
         .await
         .expect("entity group_by_aggregate should work");
     assert_eq!(grouped_rows.len(), 3);

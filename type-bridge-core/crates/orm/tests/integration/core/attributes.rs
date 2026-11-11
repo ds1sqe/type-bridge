@@ -64,7 +64,7 @@ async fn dynamic_entity_all_primitive_attribute_values_against_typedb() {
     ));
     assert_eq!(
         attr_value(&rows[0], &schema.session_length_attr),
-        Some(&AttributeValue::Duration("PT2H30M".into()))
+        Some(&AttributeValue::Duration("PT9000S".into()))
     );
 
     let updated_attrs = vec![
@@ -93,7 +93,7 @@ async fn dynamic_entity_all_primitive_attribute_values_against_typedb() {
         ),
         (
             schema.session_length_attr.clone(),
-            AttributeValue::Duration("PT45M".into()),
+            AttributeValue::Duration("PT2700S".into()),
         ),
     ];
     manager
@@ -116,7 +116,7 @@ async fn dynamic_entity_all_primitive_attribute_values_against_typedb() {
     ));
     assert_eq!(
         attr_value(&updated, &schema.session_length_attr),
-        Some(&AttributeValue::Duration("PT45M".into()))
+        Some(&AttributeValue::Duration("PT2700S".into()))
     );
 
     manager

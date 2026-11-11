@@ -63,7 +63,7 @@ async fn dynamic_relation_crud_against_typedb() {
     let rows = relation_manager
         .get_with_role_filters(
             &[Filter::eq(
-                "since",
+                &schema.since_attr,
                 AttributeValue::Date("2026-05-27".into()),
             )],
             &alice_roles,
@@ -124,7 +124,7 @@ async fn dynamic_relation_crud_against_typedb() {
     assert_eq!(aggregate_i64(&aggregate_rows[0], "count"), Some(3));
 
     let grouped_rows = relation_manager
-        .group_by_aggregate(&[], &[String::from("since")], &[count_aggregate()])
+        .group_by_aggregate(&[], &[schema.since_attr.clone()], &[count_aggregate()])
         .await
         .expect("relation group_by_aggregate should work");
     assert_eq!(grouped_rows.len(), 3);
