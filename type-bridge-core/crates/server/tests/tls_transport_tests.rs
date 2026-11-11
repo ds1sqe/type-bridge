@@ -1,4 +1,4 @@
-//! Offline proof that optional rustls termination preserves V1 response bytes.
+//! Offline proof that optional rustls termination preserves response bytes.
 
 use std::sync::Arc;
 use std::time::Duration;

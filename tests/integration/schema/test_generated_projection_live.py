@@ -4614,7 +4614,7 @@ def test_generated_projection_round_trips_live_models(
 
     membership_session = blocking(generated.Membership.query(clean_db))
     membership_var = membership_session.exact(generated.Membership)
-    # Membership is intentionally keyless. The shared Query V2 contract permits
+    # Membership is intentionally keyless. The shared plan contract permits
     # singular execution but rejects bounded-many windows without a stable key.
     queried_membership = membership_session.query(membership_var).one()
     assert type(queried_membership) is generated.Membership

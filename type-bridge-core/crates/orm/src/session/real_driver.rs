@@ -658,7 +658,7 @@ impl TransactionOps for RealTransaction {
                 max_collection_members: u64::MAX,
             };
             self.inner
-                .query_v2_materialized(&typeql, limits)
+                .query_plan_materialized(&typeql, limits)
                 .await
                 .map(query_result)
                 .map_err(OrmError::from)

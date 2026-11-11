@@ -1,5 +1,5 @@
 //! Canonical staged transactions. Requests are unsigned; replies retain the
-//! existing Ed25519 signed outer envelope. No V1/V2 wire type is widened.
+//! existing Ed25519 signed outer envelope.
 
 use crate::capability::{CapabilityId, CapabilitySet};
 use crate::codec::{from_canonical_json_with_limits, to_canonical_json_with_limits};
@@ -117,7 +117,7 @@ pub enum StagedKind {
     Schema,
 }
 
-/// Aggregate staged answer and execution budgets, independent of frozen V2.
+/// Aggregate staged answer and execution budgets.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StagedLimits {

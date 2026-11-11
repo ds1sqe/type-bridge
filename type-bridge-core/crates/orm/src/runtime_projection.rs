@@ -46,7 +46,7 @@ pub struct InstalledRuntimeProjection {
 }
 
 impl InstalledRuntimeProjection {
-    /// Derive provider descriptors without registering them in the global V1 registry.
+    /// Derive provider descriptors without registering them in a shared registry.
     pub fn try_new(projection: RuntimeProjection) -> Result<Self> {
         let mut descriptors = BTreeMap::new();
         for (id, model) in projection.models() {

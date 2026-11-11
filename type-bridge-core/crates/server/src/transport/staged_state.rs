@@ -762,7 +762,7 @@ pub(super) fn staged_request_metadata(
     // Authentication and tenant policies commonly consume transport
     // credentials rather than query-AST fields. Keep them outside the canonical
     // plan envelope, but expose every valid textual HTTP header to the same
-    // interceptor context as V1 body metadata. The built-in audit interceptor
+    // interceptor context as request metadata. The built-in audit interceptor
     // records only its fixed allowlist and never serializes this map.
     let mut values = serde_json::Map::new();
     for name in headers.keys() {

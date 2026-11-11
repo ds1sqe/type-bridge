@@ -576,7 +576,7 @@ impl RuntimeAnswerLimits {
     }
 }
 
-/// V2-only runtime limits layered over the released answer-limit shape.
+/// Plan runtime limits layered over the released answer-limit shape.
 ///
 /// The wrapper keeps [`RuntimeAnswerLimits`] exhaustively constructible by
 /// released 1.5.x callers while carrying the additive document-list budget.
@@ -694,7 +694,7 @@ impl TransactionOptions {
 /// A single value bound to a `given` variable, band-agnostic and serializable.
 ///
 /// Released temporal variants retain their ISO-8601 text representation.
-/// Additive V2 variants carry exact components when text alone would erase
+/// Additive exact variants carry components when text alone would erase
 /// provider semantics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GivenValue {
@@ -714,7 +714,7 @@ pub enum GivenValue {
     Datetime(String),
     /// TypeQL `datetime-tz`, with a fixed offset.
     DatetimeTz(String),
-    /// Exact V2 TypeQL `datetime-tz`, retaining an optional authored IANA zone
+    /// Exact TypeQL `datetime-tz`, retaining an optional authored IANA zone
     /// and its already-validated effective offset.
     DatetimeTzExact {
         /// Canonical local datetime.
@@ -2696,7 +2696,7 @@ impl RuntimeTransaction {
         )
     }
 
-    /// Execute V2 TypeQL with an additive document collection-member limit.
+    /// Execute plan TypeQL with an additive document collection-member limit.
     pub fn query_plan_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
@@ -2712,9 +2712,9 @@ impl RuntimeTransaction {
         )
     }
 
-    /// Execute V2 with canonical scalar spelling and retain the answer kind.
+    /// Execute a plan with canonical scalar spelling and retain the answer kind.
     #[doc(hidden)]
-    pub async fn query_v2_materialized(
+    pub async fn query_plan_materialized(
         &mut self,
         typeql: &str,
         limits: QueryRuntimeAnswerLimits,
@@ -2895,7 +2895,7 @@ impl RuntimeTransaction {
         )
     }
 
-    /// Execute a V2 `given` query with an additive collection-member limit.
+    /// Execute a plan `given` query with an additive collection-member limit.
     pub fn query_plan_with_rows_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
@@ -3586,7 +3586,7 @@ fn exact_given_datetime_tz_b9(
         })
 }
 
-/// Parse the fixed-offset spelling used by the portable V2 contract.
+/// Parse the fixed-offset spelling used by the portable plan contract.
 ///
 /// Chrono's RFC-3339 parser deliberately accepts only four-digit years and
 /// minute-resolution offsets. TypeDB's scalar domain is wider, so parse the

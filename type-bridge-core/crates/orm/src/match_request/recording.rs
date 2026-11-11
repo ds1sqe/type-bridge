@@ -2,7 +2,7 @@
 //!
 //! This executor performs no TypeQL lowering or I/O. It accepts only an
 //! already validated request, runs schema/capability preflight before counting
-//! a provider call, answers with the V2 outcome a live executor would return
+//! a provider call, answers with the model outcome a live executor would return
 //! for its canned response, and routes that outcome through the one released
 //! result mapping every live query ends in.
 
@@ -170,7 +170,7 @@ impl RecordingMatchExecutor {
 
 /// Build the model-reduction outcome a live executor returns for `validated`.
 ///
-/// The outcome echoes the root, group, and reducer contract of the adapted V2
+/// The outcome echoes the root, group, and reducer contract of the adapted model
 /// plan, obtained through the same registry authority and adapter as live
 /// execution. A request that is not a reduction echoes its own root with no
 /// contract, which the released mapping refuses as an operation mismatch.

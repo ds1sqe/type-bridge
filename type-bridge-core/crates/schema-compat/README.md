@@ -15,7 +15,7 @@ types in the [crate API](https://docs.rs/type-bridge-schema-compat/3.0.0). Treat
 a matching shadow report only as evidence for the explicitly shared domain.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
-3.0.0, requires Rust 1.88+, and evaluates schemas against the TypeDB 3.12.1 V2
+3.0.0, requires Rust 1.88+, and evaluates schemas against the TypeDB 3.12.1
 semantic baseline. The wider runtime supports TypeDB 3.12.x–3.14.x.
 
 ## Corpus completion criterion

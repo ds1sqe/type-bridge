@@ -145,7 +145,7 @@ pub struct RuntimeServerConfig {
 /// }
 /// ```
 pub struct SecureTypeDBSection {
-    /// Released connection fields, preserved as one exact V1 projection.
+    /// Released connection fields, preserved as one exact projection.
     pub(crate) connection: TypeDBSection,
     /// Validated transport mode used by both HTTP discovery and gRPC.
     pub tls_mode: OutboundTlsMode,

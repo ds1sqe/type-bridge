@@ -288,7 +288,7 @@ type_bridge_contract::enum_spellings!(TxType, "transaction_type", folded, canoni
 /// A single value bound to a `given` variable.
 ///
 /// Released temporal variants retain their ISO-8601 text representation.
-/// Additive V2 variants carry exact components when text alone would erase
+/// Additive exact variants carry components when text alone would erase
 /// provider semantics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GivenValue {
@@ -308,7 +308,7 @@ pub enum GivenValue {
     Datetime(String),
     /// TypeQL `datetime-tz`, RFC 3339 with offset.
     DatetimeTz(String),
-    /// Exact V2 TypeQL `datetime-tz`, retaining an optional authored IANA zone
+    /// Exact TypeQL `datetime-tz`, retaining an optional authored IANA zone
     /// and the already-validated effective offset.
     DatetimeTzExact {
         /// Canonical local datetime.

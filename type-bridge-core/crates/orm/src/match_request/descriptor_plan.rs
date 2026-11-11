@@ -790,7 +790,7 @@ pub(crate) fn adapt_expression(
         MatchExpr::ScalarComparison { .. } => {
             return Err(integrity(
                 "query_adapter_function_state",
-                "schema-function predicates require native Query V2 adaptation",
+                "schema-function predicates require native plan adaptation",
             ));
         }
         MatchExpr::FieldPresence { field, present } => ModelPredicate::FieldPresence {

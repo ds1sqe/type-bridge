@@ -643,7 +643,7 @@ impl QueryExecutionResourceLimits {
         )
     }
 
-    /// Derive the exact additive V2 remote wire budget.
+    /// Derive the exact additive remote model wire budget.
     #[doc(hidden)]
     #[must_use]
     pub const fn remote(self) -> RemoteModelLimits {

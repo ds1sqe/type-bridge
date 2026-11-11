@@ -323,11 +323,11 @@ fn reduction_group_value_key(value: &AttributeValue) -> Result<String, MatchErro
     })
 }
 
-/// Convert one fully contract-validated V2 compatibility outcome back into
-/// the released result object without reconstructing omitted hidden bindings.
+/// Convert one fully contract-validated model outcome back into the released
+/// result object without reconstructing omitted hidden bindings.
 ///
-/// The minimal V2 hydration graph intentionally carries only selected output
-/// and shallow role-player closure. The V2 validator has already proven the
+/// The minimal model hydration graph intentionally carries only selected
+/// output and shallow role-player closure. The model validator has already proven the
 /// complete model projection; this function checks the released operation
 /// contract (root, window, total, cardinality, reduction echo and values) and
 /// performs the lossless released representation mapping.

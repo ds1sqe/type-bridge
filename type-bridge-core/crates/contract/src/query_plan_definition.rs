@@ -23,7 +23,8 @@ use crate::schema::{
 
 /// Exact discriminator of the additive write-plan format.
 pub const QUERY_PLAN_FORMAT: &str = "typebridge.query-plan/v3";
-/// Canonicalization version separating staged fingerprints from frozen V2.
+/// Canonicalization version separating staged fingerprints from the removed
+/// V2 format.
 pub const QUERY_PLAN_CANONICALIZATION: &str = "typebridge.query-plan-c14n/v3";
 /// Domain for diagnostic plan shapes, excluding transported caller values.
 pub const QUERY_PLAN_SHAPE_FINGERPRINT_DOMAIN: &str = "typebridge.query.plan-shape";
@@ -426,7 +427,7 @@ impl ThingDocument {
     }
 }
 
-/// Ordered staged pipeline vocabulary. Read tails retain the V2 order.
+/// Ordered staged pipeline vocabulary. Read tails keep the canonical order.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -1032,7 +1033,7 @@ impl QueryPlan {
         Self::new_with_limits(spec, schema, self.limits)
     }
 
-    /// Select an operation when lifting an invocation from V2.
+    /// Select the operation of an invocation.
     pub fn with_operation(
         &self,
         operation: Operation,

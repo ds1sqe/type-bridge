@@ -91,7 +91,7 @@ pub enum ModelComparator {
     Regex,
 }
 
-/// A released-only lexical scalar domain carried by a V2 compatibility value.
+/// A released-only lexical scalar domain carried by a model-request value.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ModelValueKind {
     /// A string above the canonical single-string byte ceiling.
@@ -129,7 +129,7 @@ enum ModelValueInner {
     },
 }
 
-/// One exact V2 compatibility scalar.
+/// One exact model-request scalar.
 ///
 /// Ordinary values retain the released [`CanonicalValue`] wire. V1-only
 /// strings and non-canonical temporal, duration, or decimal spellings use
@@ -1355,7 +1355,7 @@ impl HydrationProjection {
     }
 }
 
-/// The closed reducer vocabulary used by model-compatible V2 terminals.
+/// The closed reducer vocabulary used by model-request terminals.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelReductionKind {

@@ -440,7 +440,7 @@ class Database:
                     native_close = getattr(native_database, "close", None)
                     # Older test doubles and third-party compatibility shims
                     # may predate the explicit native-close seam. Real Rust
-                    # handles always expose it; V1 stand-ins remain safely
+                    # handles always expose it; older stand-ins remain safely
                     # releasable.
                     if callable(native_close):
                         native_close()

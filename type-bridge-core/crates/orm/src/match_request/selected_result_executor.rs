@@ -771,7 +771,7 @@ fn adapter_diagnostic(diagnostic: Diagnostic) -> OrmError {
     adapter_match_error(diagnostic).into()
 }
 
-/// Map a V1-to-V2 adapter diagnostic onto the released match error.
+/// Map a match-request adapter diagnostic onto the released match error.
 pub(crate) fn adapter_match_error(diagnostic: Diagnostic) -> MatchError {
     let category = match diagnostic.category() {
         DiagnosticCategory::InvalidContract => MatchErrorCategory::InvalidPlan,

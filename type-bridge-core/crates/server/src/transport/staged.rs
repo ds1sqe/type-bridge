@@ -496,8 +496,8 @@ async fn execute_inner(
     }
 
     // Plan policy authorizes every bound plan before any nonce or key
-    // reservation and before live-authority provider I/O, as V2's request
-    // policy runs before replay or I/O. It sees only the decoded request.
+    // reservation and before live-authority provider I/O. It sees only the
+    // decoded request.
     let plans = match staged
         .plans()
         .iter()
