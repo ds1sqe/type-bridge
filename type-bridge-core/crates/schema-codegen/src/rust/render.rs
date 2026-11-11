@@ -2880,7 +2880,7 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
             }
             let handle_namespace = format!("{model_name}Handle");
             for name in [
-                "filter",
+                "where_",
                 "models",
                 "delete",
                 "delete_returning",

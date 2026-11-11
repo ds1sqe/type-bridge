@@ -279,6 +279,7 @@ fn plan_helper_names_follow_existing_collision_refusal() {
         "format: typebridge.schema/v2\nattributes:\n  matching: { value: string }\nentities:\n  item:\n    owns: { matching: {} }\n",
         "format: typebridge.schema/v2\nattributes:\n  handle: { value: string }\nentities:\n  item:\n    owns: { handle: {} }\n",
         "format: typebridge.schema/v2\nentities:\n  item: {}\n  item-handle: {}\n",
+        "format: typebridge.schema/v2\nattributes:\n  where_: { value: string }\nentities:\n  item:\n    owns: { where_: {} }\n",
     ] {
         let projection = support::rust_projection(source, "plan-name.yaml");
         let error = RustEmitter::new()

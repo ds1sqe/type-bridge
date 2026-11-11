@@ -1622,7 +1622,7 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   `set`, `unset`, `link`, `unlink`, `delete`, `delete_returning`, and
   `__plan_roles__` with `python_emitter_name_collision`; they receive no alias.
 - Generated Rust models reserve `matching`, `matching_by`, `subtypes`,
-  `by_iid`, `insert`, `put`, `insert_many`, and `put_many`; generated plan handles reserve `filter`,
+  `by_iid`, `insert`, `put`, `insert_many`, and `put_many`; generated plan handles reserve `where_`,
   `models`, `delete`, `delete_returning`, `set`, `unset`, `link`, `unlink`,
   `clone`, and `player_reference`. Named-match builders reserve `handle`,
   and setter/role builders reserve `models`. Derived `Handle`, `Match`,
