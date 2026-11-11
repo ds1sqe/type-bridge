@@ -36,7 +36,7 @@ jobs:
   # Run tests before releasing
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -105,7 +105,7 @@ jobs:
   validate-release-identity:
     name: Validate release identity
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       cargo_candidate_artifact_digest: ${{ steps.upload-cargo-candidate.outputs.artifact-digest }}
       cargo_candidate_manifest_sha256: ${{ steps.cargo-candidate.outputs.manifest_sha256 }}
@@ -210,7 +210,7 @@ jobs:
   channel-preflight:
     name: Preflight selected release channel
     needs: [validate-release-identity, accept-python-artifacts, accept-node-package, accept-live-artifact-parity, accept-server-oci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -274,7 +274,7 @@ jobs:
       github.ref == 'refs/tags/v3.0.0' &&
       needs.channel-preflight.result == 'success'
     needs: [channel-preflight]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
@@ -312,7 +312,7 @@ jobs:
       needs.validate-release-identity.result == 'success' &&
       needs.publish-node-npm.result == 'success'
     needs: [release-tag-preflight, publish-node-npm, validate-release-identity]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       actions: read
@@ -390,7 +390,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             artifact: core-wheels-linux-x86_64
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
@@ -456,7 +456,7 @@ jobs:
   build-core-sdist:
     name: Build core sdist
     needs: validate-release-identity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -481,7 +481,7 @@ jobs:
   build-python:
     name: Build type-bridge
     needs: validate-release-identity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -552,7 +552,7 @@ jobs:
   accept-python-artifacts:
     name: Accept Python release artifacts (${{ matrix.python-version }})
     needs: [build-core-wheels, build-core-sdist, build-python]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -805,7 +805,7 @@ jobs:
       matrix:
         include:
           - target: linux-x64-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             artifact: node-native-linux-x64-gnu
             filename: type_bridge_node.linux-x64-gnu.node
           - target: linux-arm64-gnu
@@ -861,7 +861,7 @@ jobs:
   pack-node-package:
     name: Pack Node release candidate
     needs: build-node-native
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: type-bridge-core/crates/node
@@ -986,10 +986,10 @@ jobs:
       matrix:
         include:
           - target: linux-x64-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             node-version: "18"
           - target: linux-x64-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             node-version: "20"
           - target: linux-arm64-gnu
             runner: ubuntu-24.04-arm
@@ -1040,7 +1040,7 @@ jobs:
   build-staged-smoke-server:
     name: Build staged smoke server
     needs: validate-release-identity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1078,7 +1078,7 @@ jobs:
         include:
           - architecture: amd64
             platform: linux/amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - architecture: arm64
             platform: linux/arm64
             runner: ubuntu-24.04-arm
@@ -1150,7 +1150,7 @@ jobs:
   accept-server-oci:
     name: Accept server OCI (${{ matrix.platform }})
     needs: build-server-oci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     strategy:
@@ -1393,7 +1393,7 @@ jobs:
   accept-live-artifact-parity:
     name: Accept generated live artifact parity
     needs: [build-core-wheels, build-python, pack-node-package, build-staged-smoke-server]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       typedb:
         # Pin the published linux/amd64 manifest used by GitHub-hosted runners;
@@ -1661,7 +1661,7 @@ jobs:
       needs.accept-server-oci.result == 'success' &&
       needs.publish-node-npm.result == 'success'
     needs: [channel-preflight, release-tag-preflight, accept-server-oci, publish-node-npm]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       actions: read
@@ -2013,7 +2013,7 @@ jobs:
       needs.channel-preflight.result == 'success' &&
       needs.release-tag-preflight.result == 'success'
     needs: [channel-preflight, release-tag-preflight]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       actions: read
@@ -2128,7 +2128,7 @@ jobs:
       needs.build-core-sdist.result == 'success' &&
       needs.publish-server-oci.result == 'success'
     needs: [build-core-wheels, build-core-sdist, release-tag-preflight, publish-server-oci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       actions: read
@@ -2227,7 +2227,7 @@ jobs:
       needs.build-python.result == 'success' &&
       needs.publish-core-pypi.result == 'success'
     needs: [build-python, release-tag-preflight, publish-core-pypi]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       actions: read
@@ -2315,7 +2315,7 @@ jobs:
       needs.publish-python-pypi.result == 'success' &&
       needs.publish-crates.result == 'success'
     needs: [release-tag-preflight, publish-server-oci, publish-node-npm, publish-core-pypi, publish-python-pypi, publish-crates]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: write

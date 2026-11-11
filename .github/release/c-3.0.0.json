@@ -1145,7 +1145,7 @@
       "Set up Python": "success",
       "cargo test (schema-codegen acceptance)": "success"
     },
-    "Rust schema-codegen acceptance ubuntu-latest": {
+    "Rust schema-codegen acceptance ubuntu-24.04": {
       "Build schema-codegen acceptance tests": "success",
       "Checkout code": "success",
       "Fetch every locked crate": "success",
@@ -1178,7 +1178,7 @@
       "Set up Python": "success",
       "cargo test (schema-codegen rest)": "success"
     },
-    "Rust schema-codegen rest ubuntu-latest": {
+    "Rust schema-codegen rest ubuntu-24.04": {
       "Build schema-codegen rest tests": "success",
       "Checkout code": "success",
       "Fetch every locked crate": "success",
@@ -1200,7 +1200,7 @@
       "Set up Python": "success",
       "cargo test (schema-codegen rest)": "success"
     },
-    "Rust ubuntu-latest": {
+    "Rust ubuntu-24.04": {
       "Audit all maintained Rust lockfiles": "success",
       "Build C ABI shared library": "success",
       "Build Rust tests": "success",
@@ -1398,7 +1398,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "f73b14c9fab20ab19d7232248e3eca83de9226f3abd5f9e7cbf4ba03dcc102c1",
+  "ci_workflow_sha256": "ac9eddd10af10f831450c9d9b06ec3cc4e1d9c5bd2e3fe7a77d488aeb27f00b2",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-3.0.0.tar.gz",
   "format": "typebridge.c-release-policy/v1",

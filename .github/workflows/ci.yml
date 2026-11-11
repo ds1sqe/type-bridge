@@ -27,7 +27,7 @@ jobs:
   # before the account's job slots fill.
   rust-docs:
     name: Rust docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -64,7 +64,7 @@ jobs:
   # The MSRV 1.88 checks, apart from rustdoc so the two run in parallel.
   rust-msrv:
     name: Rust MSRV 1.88
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -118,7 +118,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -438,7 +438,7 @@ jobs:
   # current provider baseline.
   rust-integration:
     name: Rust integration (${{ matrix.typedb-server }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -775,7 +775,7 @@ jobs:
 
   walkthrough:
     name: Four-SDK walkthrough (TypeDB ${{ matrix.typedb }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -894,7 +894,7 @@ jobs:
   # `docker pause`s this job's own service container mid-commit.
   live-3-13-6:
     name: Staged plans live (typedb/typedb:${{ matrix.typedb }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -1170,7 +1170,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         shard: [acceptance, rest]
     steps:
       - name: Checkout code
@@ -1272,10 +1272,10 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             artifact: wheels-linux-x86_64
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             artifact: wheels-linux-aarch64
           - target: x86_64-apple-darwin
             runner: macos-latest
@@ -1376,7 +1376,7 @@ jobs:
 
   projected-live:
     name: Exact-TypeDB-3.12.3 Projected live parity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
       typedb:
@@ -1462,7 +1462,7 @@ jobs:
 
   projected-parity:
     name: Provider-free Projected value parity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1519,7 +1519,7 @@ jobs:
   # Integration tests (require TypeDB server, parallel by test category)
   test-integration:
     name: Python Integration (${{ matrix.test-group }}, ${{ matrix.typedb-server }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         # Every populated ordinary integration directory is represented here.
@@ -1703,7 +1703,7 @@ jobs:
   # before Node executes it, including the generated-package application suite.
   node-integration:
     name: Node integration (${{ matrix.typedb-server }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: type-bridge-core/crates/node
@@ -1880,7 +1880,7 @@ jobs:
   # the version SSOT in crates/core and the compatibility table.
   version-gate-cells:
     name: Version gate (${{ matrix.cell }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -1970,7 +1970,7 @@ jobs:
   # gates. The retained provider consumes the official upstream driver.
   tls-transport-matrix:
     name: TLS transport (${{ matrix.lane }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -2124,7 +2124,7 @@ jobs:
   # These are compile-only checks (no live server, no tests) plus an exact dependency proof.
   band-feature-check:
     name: Band feature check (${{ matrix.band }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -2180,7 +2180,7 @@ jobs:
   # all four emitters agree on the canonical projection.
   cross-language-parity:
     name: Generated cross-language parity inventory
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -2233,7 +2233,7 @@ jobs:
   # I/O and cannot turn uncovered or known-gap proofs into accepted support.
   sdk-queries:
     name: Shared queries conformance
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [test-integration, rust-integration, node-integration]
     steps:
       - name: Checkout code
@@ -2281,7 +2281,7 @@ jobs:
   # the checkout and rejects source leakage or handwritten root exports.
   python-generated-package-compat:
     name: Python ${{ matrix.python-version }} generated wheel compatibility
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build-wheels
     strategy:
       fail-fast: false
@@ -2354,7 +2354,7 @@ jobs:
   # Unit tests (fast, no external dependencies, parallel execution)
   test-unit:
     name: Python Unit Tests (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.12", "3.13.5", "3.14"]
@@ -2421,7 +2421,7 @@ jobs:
   # Type checking with pyright (parallel matrix for faster execution)
   typecheck:
     name: Python Type Check (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         target: [type_bridge, examples, tests]
@@ -2483,7 +2483,7 @@ jobs:
   # Code quality: linting and formatting (parallel)
   lint:
     name: Python ${{ matrix.check }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         check: [ruff-lint, ruff-format]
@@ -2535,7 +2535,7 @@ jobs:
   # the #110 single-core / thin-bindings invariant from silently regressing.
   node-check:
     name: Node binding
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: type-bridge-core/crates/node
@@ -2615,7 +2615,7 @@ jobs:
   # Rust code coverage (informational, does not block CI)
   rust-coverage:
     name: Rust Coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
       - name: Checkout code

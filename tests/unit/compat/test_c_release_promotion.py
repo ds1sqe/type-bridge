@@ -115,7 +115,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         == "success"
     )
     assert (
-        selected["ci_jobs"]["Rust schema-codegen rest ubuntu-latest"][
+        selected["ci_jobs"]["Rust schema-codegen rest ubuntu-24.04"][
             "Initialize MSVC and require clang-cl for Windows C tests"
         ]
         == "skipped"

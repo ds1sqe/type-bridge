@@ -495,7 +495,7 @@ def test_check_local_integration_and_ci_persist_the_same_exact_live_gate() -> No
     live_job = ci.split("  projected-live:", maxsplit=1)[1].split(
         "  # I6 single-band V2 legs", maxsplit=1
     )[0]
-    assert "runs-on: ubuntu-latest" in live_job
+    assert "runs-on: ubuntu-24.04" in live_job
     assert "image: typedb/typedb:3.12.3" in live_job
     assert "./scripts/check.sh projected-live" in live_job
     assert "docker logs ${{ job.services.typedb.id }}" in live_job
