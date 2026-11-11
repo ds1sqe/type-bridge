@@ -56,8 +56,6 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   writes. `migration make --data-step` consumes
   `typebridge.migration-data-step-intent/v1` YAML; each program has exactly one
   `user`, `typeql`, or `plan-file` key. Plan paths resolve beside the intent.
-- Removed legacy `CopyAttribute` reverse behavior. Canonical backfill reverse
-  removes destination values only while they still equal the source value.
 - Workspace `MigrationV2Directory` and `migration_v2_directory` accessors/builders
   become `MigrationDirectory` and `migration_directory`. History defaults to
   `migrations/`; explicit confined directories no longer need a `v2` suffix.
@@ -105,8 +103,6 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   `with_state_read_and_close_failure`, `with_partial_state_schema`,
   `with_commit_failure`, and `with_definitely_aborted_commit_failure`.
   Use canonical migration-store/provider fixtures and ORM backend mocks.
-
-
 
 - Removed the `type-bridge-migration` crate; it is not published for 3.0.
   Use canonical `schema-migration` manifests and SDK migration catalogs or
@@ -164,11 +160,10 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   is removed. Canonical backfill reverse removes only destination values equal
   to the source and preserves other pre-existing destination values.
 
-The Python native CLI bridge `type_bridge_core.run_v2_cli` is renamed to
-`type_bridge_core.run_cli`. The `type-bridge` console command is unchanged.
+- The Python native CLI bridge `type_bridge_core.run_v2_cli` is renamed to
+  `type_bridge_core.run_cli`. The `type-bridge` console command is unchanged.
 
-
-Staged answer conversion and runtime limit names are unversioned:
+- Staged answer conversion and runtime limit names are unversioned:
 
 | Removed name | Replacement |
 | --- | --- |
@@ -176,24 +171,23 @@ Staged answer conversion and runtime limit names are unversioned:
 | `from_staged_v3` | `from_staged` |
 | `QueryV2RuntimeAnswerLimits` | `QueryRuntimeAnswerLimits` |
 
-Plan authoring uses Python `PlanBuilder.where` and `PlanBuilder.let` in place of
-`where_` and `let_`. Rust typed `Bound.filter` and generated
-`<Model>Handle.filter` become `where_`; manager
-filters retain their existing meaning. TypeScript `PendingPlanAnswer` becomes
-`Pending`, and its duplicate `get()` method is removed in favor of `result()`.
-Rust `Pending.get()` retains its distinct borrowed-result behavior.
+- Plan authoring uses Python `PlanBuilder.where` and `PlanBuilder.let` in place of
+  `where_` and `let_`. Rust typed `Bound.filter` and generated
+  `<Model>Handle.filter` become `where_`; manager
+  filters retain their existing meaning. TypeScript `PendingPlanAnswer` becomes
+  `Pending`, and its duplicate `get()` method is removed in favor of `result()`.
+  Rust `Pending.get()` retains its distinct borrowed-result behavior.
 
+- Python, TypeScript and Rust query/grouped-query `aggregate(...)` terminals
+  are renamed to `reduce(...)`. Aggregate constructors and type namespaces
+  (such as `aggregate.count()`) keep their names. Generated C explicit-root
+  terminal factories `*_query_page`, `*_query_count` and `*_query_exists`
+  become `*_query_page_by`, `*_query_count_by` and `*_query_exists_by`.
+  Manager `count`/`exists` methods and C result-owner/accessor names are unchanged.
 
-Python, TypeScript and Rust query/grouped-query `aggregate(...)` terminals
-are renamed to `reduce(...)`. Aggregate constructors and type namespaces
-(such as `aggregate.count()`) keep their names. Generated C explicit-root
-terminal factories `*_query_page`, `*_query_count` and `*_query_exists`
-become `*_query_page_by`, `*_query_count_by` and `*_query_exists_by`.
-Manager `count`/`exists` methods and C result-owner/accessor names are unchanged.
-
-Role-edge predicates use `links`, matching the TypeQL pattern they lower to.
-Additional query bindings use `match` (Rust `matching`) and are not added to
-the selected output.
+- Role-edge predicates use `links`, matching the TypeQL pattern they lower to.
+  Additional query bindings use `match` (Rust `matching`) and are not added to
+  the selected output.
 
 | Removed query API | Replacement |
 | --- | --- |
@@ -204,9 +198,9 @@ the selected output.
 | C `type_bridge_query_role_connects` and generated `*_query_role_connects` | `type_bridge_query_role_links` / `*_query_role_links` |
 | C `type_bridge_query_add_hidden` and generated `*_query_add_hidden` | `type_bridge_query_match` / `*_query_match` |
 
-Typed query sorting uses `sort` in every SDK. Regenerate projections and
-update source calls and option names; ordering behavior and plan bytes are
-unchanged.
+- Typed query sorting uses `sort` in every SDK. Regenerate projections and
+  update source calls and option names; ordering behavior and plan bytes are
+  unchanged.
 
 | Removed sorting API | Replacement |
 | --- | --- |
@@ -216,12 +210,12 @@ unchanged.
 | C `type_bridge_query_selection_descriptor_v1_t.orders` / `.order_count` | `.sorts` / `.sort_count` |
 | C `type_bridge_query_terminal_descriptor_v1_t.orders` / `.order_count` | `.sorts` / `.sort_count` |
 
-The C descriptor field order, sizes and offsets are unchanged. Generated C
-sorting-array parameter names follow `sorts` / `sort_count`.
+- The C descriptor field order, sizes and offsets are unchanged. Generated C
+  sorting-array parameter names follow `sorts` / `sort_count`.
 
-Typed comparison methods use `ne`, `le`, `ge` and `like` consistently.
-Manager lookup tokens (`lte`, `gte`, `regex`, and keyword suffixes such as
-`field__gte`) remain the existing lookup protocol.
+- Typed comparison methods use `ne`, `le`, `ge` and `like` consistently.
+  Manager lookup tokens (`lte`, `gte`, `regex`, and keyword suffixes such as
+  `field__gte`) remain the existing lookup protocol.
 
 | Removed comparison API | Replacement |
 | --- | --- |
@@ -235,22 +229,22 @@ Manager lookup tokens (`lte`, `gte`, `regex`, and keyword suffixes such as
 | Generated C schema-function comparison `equal`, `not_equal`, `less_than`, `less_than_or_equal`, `greater_than`, `greater_than_or_equal` (all field/value/call variants) | `eq`, `ne`, `lt`, `le`, `gt`, `ge` in the same function names |
 | C `TYPE_BRIDGE_QUERY_COMPARE_REGEX` | `TYPE_BRIDGE_QUERY_COMPARE_LIKE` (numeric value 10 unchanged) |
 
-Active `query_remote_v2_*` / `query_remote_v3_*` diagnostics become
-`query_remote_*`; `query_v2_model_*` and `query_v2_adapter_*` become
-`query_model_*` and `query_adapter_*`. Remaining versioned query diagnostic
-codes also lose the version. The 3.0 upgrade guide lists every exact code
-replacement; typed categories, paths and details are preserved.
+- Active `query_remote_v2_*` / `query_remote_v3_*` diagnostics become
+  `query_remote_*`; `query_v2_model_*` and `query_v2_adapter_*` become
+  `query_model_*` and `query_adapter_*`. Remaining versioned query diagnostic
+  codes also lose the version. The 3.0 upgrade guide lists every exact code
+  replacement; typed categories, paths and details are preserved.
 
 - `query_remote_v3_failure_binding` → `query_remote_failure_binding`.
 - `query_remote_v3_failure_unexpected_binding` → `query_remote_failure_unexpected_binding`.
 - `query_remote_v3_failure_wire_mismatch` → `query_remote_failure_wire_mismatch`.
 
-Server interceptors use the single staged policy path. `supports_v3`,
-`InterceptorChain::ensure_v3_coverage` and `QueryPipeline::validate_v3_coverage`
-are removed; implement the policy hooks directly. Authentication, write
-authority, plan validation and outcome hooks retain their execution order.
-`QueryPipeline::v3_request_context` becomes infallible `request_context`;
-remove the former result handling at that call.
+- Server interceptors use the single staged policy path. `supports_v3`,
+  `InterceptorChain::ensure_v3_coverage` and `QueryPipeline::validate_v3_coverage`
+  are removed; implement the policy hooks directly. Authentication, write
+  authority, plan validation and outcome hooks retain their execution order.
+  `QueryPipeline::v3_request_context` becomes infallible `request_context`;
+  remove the former result handling at that call.
 
 | Removed server API | Replacement |
 | --- | --- |
@@ -281,9 +275,9 @@ remove the former result handling at that call.
 | `v3_request_context` | `request_context` |
 | `wants_v3_plan_rows` | `wants_plan_rows` |
 
-The active plan and staged-envelope contract uses one unversioned Rust API.
-Wire discriminators, capability strings, canonical bytes and `/v3/*` routes
-retain their existing versions. Update imports and calls as follows:
+- The active plan and staged-envelope contract uses one unversioned Rust API.
+  Wire discriminators, capability strings, canonical bytes and `/v3/*` routes
+  retain their existing versions. Update imports and calls as follows:
 
 | Removed API | Replacement |
 | --- | --- |
@@ -324,10 +318,10 @@ retain their existing versions. Update imports and calls as follows:
 | `query_remote_v3` | `query_remote` |
 | `validate_staged_result_refs_v3` | `validate_staged_result_refs` |
 
-Legacy caller-owned query ASTs are removed. Build queries through generated
-models and typed plan builders; raw TypeQL goes through the explicit raw
-transaction API. Rust engine callers retain `QueryCompiler::compile_typed_*`
-and `prepare_typed_*` for canonical typed operations.
+- Legacy caller-owned query ASTs are removed. Build queries through generated
+  models and typed plan builders; raw TypeQL goes through the explicit raw
+  transaction API. Rust engine callers retain `QueryCompiler::compile_typed_*`
+  and `prepare_typed_*` for canonical typed operations.
 
 | Removed API | Replacement |
 | --- | --- |
@@ -339,26 +333,25 @@ and `prepare_typed_*` for canonical typed operations.
 | Rust `_parser::parse_typeql`, `_schema::TypeSchema::from_typeql`; Python `_ArchivedTypeSchema.from_typeql` | Split-YAML schema authority and checked schema adapters |
 | Rust `AttributeValue::to_ast_value`, `Expr::to_patterns`, `Agg::to_reduce_assignment` | Pass values and expressions directly to native plan builders |
 
-The Python wrappers for the removed AST vocabulary are also removed:
-`LiteralValue`, `FunctionCallValue`, `ArithmeticValue`, `RolePlayer`, `IidConstraint`,
-`HasConstraint`, `IsaConstraint`, `EntityPattern`, `RelationPattern`, `SubTypePattern`,
-`AttributePattern`, `HasPattern`, `ValueComparisonPattern`, `NotPattern`, `OrPattern`,
-`IidPattern`, `RawPattern`, `HasStatement`, `IsaStatement`, `RelationStatement`,
-`DeleteThingStatement`, `RawStatement`, `MatchClause`, `MatchLetClause`, `LetAssignment`,
-`InsertClause`, `DeleteClause`, `UpdateClause`, `FetchAttribute`, `FetchVariable`,
-`FetchAttributeList`, `FetchFunction`, `FetchWildcard`, `FetchNestedWildcard`, `FetchClause`,
-`AggregateExpr`, `ReduceAssignment`, `ReduceClause`.
+- The Python wrappers for the removed AST vocabulary are also removed:
+  `LiteralValue`, `FunctionCallValue`, `ArithmeticValue`, `RolePlayer`, `IidConstraint`,
+  `HasConstraint`, `IsaConstraint`, `EntityPattern`, `RelationPattern`, `SubTypePattern`,
+  `AttributePattern`, `HasPattern`, `ValueComparisonPattern`, `NotPattern`, `OrPattern`,
+  `IidPattern`, `RawPattern`, `HasStatement`, `IsaStatement`, `RelationStatement`,
+  `DeleteThingStatement`, `RawStatement`, `MatchClause`, `MatchLetClause`, `LetAssignment`,
+  `InsertClause`, `DeleteClause`, `UpdateClause`, `FetchAttribute`, `FetchVariable`,
+  `FetchAttributeList`, `FetchFunction`, `FetchWildcard`, `FetchNestedWildcard`, `FetchClause`,
+  `AggregateExpr`, `ReduceAssignment`, `ReduceClause`.
 
-The old generated-query `update_with(func)` and direct-driver
-`type_bridge.session.Transaction` are gone; use manager filter `update` and
-the staged `Transaction` API. Deprecated Rust `RemoteDatabase`,
-`RemoteQueryTransport`, `RemoteConnectionOptions::{generated, new}` and
-`RemoteQueryLimits` have also been removed. Their replacements are
-`ProxyDatabase`, `ProxyExchange`, `ProxyConnectionPolicy` and
-`QueryExecutionResourceLimits`, respectively.
+- The old generated-query `update_with(func)` and direct-driver
+  `type_bridge.session.Transaction` are gone; use manager filter `update` and
+  the staged `Transaction` API. Deprecated Rust `RemoteDatabase`,
+  `RemoteQueryTransport`, `RemoteConnectionOptions::{generated, new}` and
+  `RemoteQueryLimits` have also been removed. Their replacements are
+  `ProxyDatabase`, `ProxyExchange`, `ProxyConnectionPolicy` and
+  `QueryExecutionResourceLimits`, respectively.
 
-
-The generated Python and TypeScript compatibility query aliases are removed:
+- The generated Python and TypeScript compatibility query aliases are removed:
 
 | Removed generated API | Replacement |
 | --- | --- |
@@ -368,18 +361,17 @@ The generated Python and TypeScript compatibility query aliases are removed:
 | `RemoteQuerySession` | `QuerySession` with an `ExchangeConnection` |
 | TypeScript `RemoteQueryExchange` | The exchange callback accepted by `ExchangeConnection` |
 
-Pass limits through `resources` when constructing `QuerySession`. Rename the
-legacy limit fields to the current resource names, including `deadline_ms` to
-`timeout_milliseconds` in Python and `deadlineMs` to `timeoutMilliseconds` in
-TypeScript.
-
+- Pass limits through `resources` when constructing `QuerySession`. Rename the
+  legacy limit fields to the current resource names, including `deadline_ms` to
+  `timeout_milliseconds` in Python and `deadlineMs` to `timeoutMilliseconds` in
+  TypeScript.
 
 - Remove `DriverBackend::open_schema_fenced_read_transaction` and its public
   `SchemaFencedReadTransaction` return wrapper (`new`, `into_parts`). Backend
   implementations use `open_with_options`; fenced reads retain Write mode,
   deadlines, never-commit behavior, and close on schema-export failure.
 
-The deprecated Rust aliases and implicit-profile/string helpers are removed.
+- The deprecated Rust aliases and implicit-profile/string helpers are removed.
 
 | Removed Rust API | Replacement |
 | --- | --- |
@@ -399,9 +391,8 @@ The deprecated Rust aliases and implicit-profile/string helpers are removed.
 | `attribute_definition(attribute)` | attribute_node(attribute, true) plus tql::render_schema_definition |
 | `attribute_constraint_definition(attribute)` | attribute_node(attribute, false) plus tql::render_schema_definition |
 
-
-The C CRUD policy-aware names below are consolidated; old unsuffixed calls
-add the limits argument described in the upgrade guide.
+- The C CRUD policy-aware names below are consolidated; old unsuffixed calls
+  add the limits argument described in the upgrade guide.
 
 | Removed C symbol | Replacement |
 | --- | --- |
@@ -473,7 +464,7 @@ add the limits argument described in the upgrade guide.
 - C by-IID CRUD arguments now require a validated `type_bridge_iid_t *`.
   Construct it with `type_bridge_iid_open` and release it with
   `type_bridge_iid_close`; generated manager wrappers use the same type.
-  This changes the following symbols and each corresponding `_v2` symbol:
+  This changes the following symbols (their former `_v2` forms are removed):
   - `type_bridge_database_entity_get_by_iid`
   - `type_bridge_database_entity_update`
   - `type_bridge_database_entity_delete_by_iid`
@@ -495,8 +486,8 @@ add the limits argument described in the upgrade guide.
   `type_bridge_staged_transaction_options_v1` → `type_bridge_staged_transaction_options`;
   `type_bridge_plan_options_v1` → `type_bridge_plan_options`;
   `TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_V1` → `TYPE_BRIDGE_STAGED_TRANSACTION_OPTIONS_VERSION`;
-  `TYPE_BRIDGE_PLAN_OPTIONS_V1_DEFAULT` → `TYPE_BRIDGE_PLAN_OPTIONS_DEFAULT`;
-  `TYPE_BRIDGE_PLAN_OPTIONS_V1` → `TYPE_BRIDGE_PLAN_OPTIONS_VERSION`;
+  `TYPE_BRIDGE_PLAN_OPTIONS_V1_INIT` → `TYPE_BRIDGE_PLAN_OPTIONS_VERSION_INIT`;
+  `TYPE_BRIDGE_PLAN_OPTIONS_V1` → `TYPE_BRIDGE_PLAN_OPTIONS_VERSION`.
 - C ABI 2.0 query and plan exports use unversioned names; regenerate C packages:
   `type_bridge_database_query_execute_v1` → `type_bridge_database_query_execute`;
   `type_bridge_proxy_query_execute_v1` → `type_bridge_proxy_query_execute`;
@@ -516,7 +507,7 @@ add the limits argument described in the upgrade guide.
   `type_bridge_query_terminal_open_v1` → `type_bridge_query_terminal_open`;
   `type_bridge_read_transaction_query_execute_v1` → `type_bridge_read_transaction_query_execute`;
   `type_bridge_plan_v3_canonical_bytes` → `type_bridge_plan_canonical_bytes`;
-  `type_bridge_plan_v3_decode` → `type_bridge_plan_decode`;
+  `type_bridge_plan_v3_decode` → `type_bridge_plan_decode`.
 - C ABI execution limits replace unsigned `timeout_milliseconds` with signed
   milliseconds: use a positive deadline or a nonpositive value for no deadline.
   Omitted C policies use 60 seconds instead of 30 seconds. The limits descriptor
@@ -541,9 +532,9 @@ add the limits argument described in the upgrade guide.
   `optionalInput`; `byIidInput` and staged result references require those
   nominal columns. Query and staged wire bytes remain unchanged.
 
-- Python native `DynamicExpr.iid`, `IidConstraint`, and `IidPattern`
-  constructors and IID setters require nominal `Iid` values instead of
-  strings. Their stored AST values and query lowering remain unchanged.
+- Python native `DynamicExpr.iid` requires a nominal `Iid` value instead of
+  a string. Its stored value and query lowering remain unchanged.
+  `IidConstraint` and `IidPattern` are removed with the AST wrappers.
 - Generated Python model and reference `.iid` properties return `Iid | None`.
   Reference constructors, `attach_runtime_iid`, manager `get_by_iid`, IID
   `delete` arguments, and `iid`/`iid__in` filters require `Iid` values. Construct
@@ -605,7 +596,7 @@ add the limits argument described in the upgrade guide.
 - `TypeDbMigrationProvider::new` now takes the verified migration plan's
   `schema_authorities()`. `MigrationAssertionExecutionContext::new` and
   `lower_migration_assertion` require explicit declared schema authority;
-  assertions compile through native V3 with their existing bounded evidence stream.
+  assertions compile to native plans with their existing bounded evidence stream.
 
 - Removed core `_manager::query_builder` and its compiler wrappers; use
   registry-backed `DynamicEntityManager` / `DynamicRelationManager` methods
@@ -644,12 +635,13 @@ add the limits argument described in the upgrade guide.
   `QueryOperation`, `decode_query_plan`, `decode_query_plan_with_limits`,
   `decode_query_invocation`, `QueryPlanFingerprint::compute`, the V1/V2
   format/canonicalization constants, and the V1/V2 capability-vocabulary
-  functions. Use `query_plan::v3::{QueryPlanV3, PlanSpec, Operation,
-  decode_query_plan_v3, query_plan_v3_capability_vocabulary}` and native builders.
-  The `query_remote_v2` envelope family is replaced by `query_remote_v3`.
+  functions. The native plan now owns the unversioned names: use
+  `query_plan::{QueryPlan, PlanSpec, Operation, decode_query_plan,
+  query_plan_capability_vocabulary}` and native builders.
+  The `query_remote_v2` envelope family is replaced by `query_remote`.
   `ModelQueryV2`, `ModelOutputV2`, `QueryBindingPairV2`, `QueryWindowV2`,
   `QueryRowCardinalityV2`, and `QueryPlanV2Compatibility` are removed;
-  generated model queries lower directly to native V3 plans.
+  generated model queries lower directly to native plans.
 - Removed query-crate `ValidatedQuery`, `validate_query_plan`, and
   `validate_query_local_function`, and ORM's `query_v2`, `query_v2_builder`,
   `query_v2_prepared`, `query_v2_remote` APIs and `integration_test_support`.
@@ -657,7 +649,7 @@ add the limits argument described in the upgrade guide.
   native validation replaces the separate legacy validation/execution path.
 - Removed `ProxyHttpClient::capabilities` / `exchange` and
   `ProxyHttpTransport::capabilities` / `exchange`. Use `staged_capabilities`
-  and `exchange_staged`, carrying the V3 protocol.
+  and `exchange_staged`, carrying the staged protocol.
 - Removed Python `type_bridge.query_v2` and Node `@type-bridge/node/query-v2`,
   including `QueryPlanBuilder`, `AuthoredQueryPlan`, `AuthoredQueryInvocation`,
   `PendingQueryV2Remote`, and Node `QueryV2RemoteLimits`. Use `PlanBuilder` /
@@ -675,7 +667,7 @@ add the limits argument described in the upgrade guide.
 
 - Removed `contract::query_plan_v2` symbols: `QueryBindingPairV2`, `QueryWindowV2`,
   `QueryRowCardinalityV2`, `ModelQueryV2`, `ModelOutputV2`, `QueryPlanV2Compatibility`.
-  Use native `query_plan::v3` / `query_remote_v3` plans and staged envelopes.
+  Use native `query_plan` / `query_remote` plans and staged envelopes.
 - Removed `contract::query_remote_v2` symbols: `QUERY_REMOTE_REQUEST_FORMAT_V2`,
   `QUERY_REMOTE_RESPONSE_FORMAT_V2`, `QUERY_REMOTE_FAILURE_FORMAT_V2`,
   `QUERY_REMOTE_REQUEST_CANONICALIZATION_V2`, `CAP_QUERY_PLAN_V2`,
@@ -685,7 +677,7 @@ add the limits argument described in the upgrade guide.
   `RemoteResultKindV2`, `RemoteQueryRequestV2`, `RemoteRequestFingerprintV2`,
   `RemoteQueryResponseV2`, `RemoteQueryFailureV2`, `RemoteReplyV2`,
   `decode_remote_reply_v2`, `decode_signed_remote_failure_v2`,
-  `validate_remote_outcome_v2`. Use native `query_plan::v3` / `query_remote_v3` plans
+  `validate_remote_outcome_v2`. Use native `query_plan` / `query_remote` plans
   and staged envelopes.
 - Removed `node::query_v2_builder_runtime` symbols: `NodePlanAuthorityIdentity`,
   `NodeQueryV2BindingHandle`, `NodeQueryV2InputHandle`, `NodeQueryV2OperandHandle`,
@@ -801,8 +793,8 @@ add the limits argument described in the upgrade guide.
   `plan_authority`, shared by native staged execution and the server.
 
 - Staged pre-request refusals now use `typebridge.query-remote-failure/v3`.
-  Decode them with `query_remote_v3::decode_signed_staged_failure` and
-  `StagedFailureV3`; servers encode them with
+  Decode them with `query_remote::decode_signed_staged_failure` and
+  `StagedFailure`; servers encode them with
   `remote_signing::encode_unbound_staged_failure` instead of the V2 helpers.
   The signed outer envelope and structured diagnostic fields are unchanged.
 
@@ -812,14 +804,13 @@ add the limits argument described in the upgrade guide.
 
 - Rust `QueryPlan::to_v3`, `QueryPlanV3::compatibility`, and
   `PlanSpec::compatibility` are removed. Construct native plans with
-  `QueryPlanV3::new` or `PlanBuilder`; V3 decoding refuses a `compatibility`
+  `QueryPlan::new` or `PlanBuilder`; plan decoding refuses a `compatibility`
   member, including `null`, instead of admitting lifted legacy evidence.
 
 - Python and Node `QueryV2Authority` and `QueryV2Error` are now
   `PlanAuthority` and `PlanError`. Native authority constructors are
-  `plan_authority`, `plan_authority_from_schema_authority`, and
-  `plan_query_only_authority` in Python, and `planAuthority`,
-  `planAuthorityFromSchemaAuthority`, and `planQueryOnlyAuthority` in Node.
+  `plan_authority` and `plan_authority_from_schema_authority` in Python, and
+  `planAuthority` and `planAuthorityFromSchemaAuthority` in Node.
   Generated packages must be regenerated to use the shared plan names.
   Node `QueryV2ErrorCategory`, `QueryV2ErrorDetail`, and
   `QueryV2ErrorPathSegment` become `PlanErrorCategory`, `PlanErrorDetail`,
@@ -861,10 +852,11 @@ add the limits argument described in the upgrade guide.
   attached IIDs after application-side changes.
 - Removed detached-model IID lookup from Python `update`, `update_many`,
   `delete`, `delete_many`, `delete_returning`, and `delete_many_returning`.
-  Supply models with attached canonical TypeDB IIDs (or an IID string to
+  Supply models with attached canonical TypeDB IIDs (or an `Iid` value to
   `delete`). Batch inputs are no longer silently dropped before execution.
-- Removed generated Python manager no-argument and filtered `delete()`;
-  use an authored match/delete plan staged in one transaction. Explicit IID
+- Generated Python manager `delete()` without an instance requires a filter;
+  the unfiltered no-argument form refuses. Use `filter(...).delete()` or an
+  authored match/delete plan staged in one transaction. Explicit IID
   deletion remains available.
 - Removed native Python `PyProjectedModelManager.resolve_iid`; retrieve
   models through manager reads and use their attached IIDs.
@@ -917,7 +909,6 @@ add the limits argument described in the upgrade guide.
   `[schema].source_file`. Use `[staged].schema_authority_file` generated by
   the schema tools; staged execution owns schema authority and validation.
 
-
 - Removed server `TypeDBClient::{connect,connect_secure,connect_prepared_secure,
   execute,execute_classified,database_exists,create_database,delete_database,
   reset_database,is_connected}`, `ExecuteError`, `CommitFailure`, and
@@ -927,10 +918,9 @@ add the limits argument described in the upgrade guide.
   remains the captured transport constructor; its prepared identity provides
   `connect_database` and `connect_raw_runtime`.
 
-
-- Server `V3CommitOutcome::kind()` now returns `TransactionKind` so raw
+- Server `CommitOutcome::kind()` now returns `TransactionKind` so raw
   schema commits are distinguishable from data writes; use its `Read`,
-  `Write`, and `Schema` variants instead of `StagedKindV3`.
+  `Write`, and `Schema` variants instead of `StagedKind`.
 
 - Removed the server `v2-query` feature; default builds serve the staged
   transport through `axum-transport`. Server `[v2]` becomes `[staged]`,
@@ -946,16 +936,16 @@ add the limits argument described in the upgrade guide.
   `V2PolicyRequest`, `CrudInterceptor`, `CrudInterceptorAdapter`, `CrudInfo`,
   `CrudOperation`, `interceptor::TypeKind`,
   `interceptor::crud_info::extract_crud_info`, and `RequestContext::crud_info`.
-  Use staged `on_v3_plan` / `on_v3_commit` policies.
-  `on_v2_transport` / `on_v2_response` become `on_v3_transport` /
-  `on_v3_response`; `V2PolicyOutcome` becomes `V3PolicyOutcome`.
+  Use staged `on_plan` / `on_commit` policies.
+  `on_v2_transport` / `on_v2_response` become `on_transport` /
+  `on_response`; `V2PolicyOutcome` becomes `PolicyOutcome`.
   Pipeline `v2_request_context`, `begin_v2_request`, and `finish_v2_request`
-  become their `v3_` equivalents; `validate_v2_coverage` /
-  `authorize_v2_request` are replaced by `validate_v3_coverage` /
-  `authorize_v3_plan`. `InterceptorChain::execute_request`,
+  become `request_context`, `begin_request`, and `finish_request`;
+  `validate_v2_coverage` is removed and `authorize_v2_request` is replaced by
+  `authorize_plan`. `InterceptorChain::execute_request`,
   `execute_response`, `ensure_v2_coverage`, and `execute_v2_request` are
   replaced by the staged chain hooks; `execute_v2_transport` and
-  `execute_v2_response` become their `v3_` equivalents.
+  `execute_v2_response` become `execute_transport` and `execute_response`.
 
 - Removed server `QueryExecutor`, `QueryInput`, `QueryOutput`,
   `ValidateInput`, `ValidateOutput`, `ValidationErrorDetail`,
@@ -966,20 +956,20 @@ add the limits argument described in the upgrade guide.
 - Removed `transport::http::create_router` and all V1 transport models
   (`QueryRequest`, `RawQueryRequest`, `ValidateRequest`, `QueryResponse`,
   `ResponseMetadata`, `ValidateResponse`, `HealthResponse`); use
-  `transport::v3::create_v3_router` and the staged request/reply types.
+  `transport::staged::create_router` and the staged request/reply types.
   `/health` keeps its body; removed query/schema routes return the
   `route_removed` 404 body naming `/v3/staged`.
 
 - Removed server `transport::v2`, `create_v2_router`,
   `create_router_with_v2`, `/v2/query`, `/v2/capabilities`, and the
-  `v2_smoke_server` example; use `transport::v3::create_v3_router` and
+  `v2_smoke_server` example; use `transport::staged::create_router` and
   `/v3/staged` or `/v3/capabilities`. `V2QueryState` moves to
   `transport::staged_state::StagedQueryState`. `RemoteReplayStore`,
   `InMemoryReplayStore`, and `ReplayStoreError` move from `transport::v2`
   to `transport::staged_state`.
 
 - Rust manager `insert_many`, `put_many`, `update_many` and `delete_many`
-  always execute shared V3 plans, including managers from older generated
+  always execute shared native plans, including managers from older generated
   packages and managers borrowing a write transaction. Regenerate packages
   and handle the shared batch diagnostics: `invalid_iid` becomes
   `noncanonical_iid` with a `rows[index].iid` path, and post-write generated
@@ -993,7 +983,7 @@ add the limits argument described in the upgrade guide.
   create-field and role tokens use `duplicate_field_token` and
   `duplicate_role_token` from shared projected validation instead of
   `duplicate_field_evidence` and `duplicate_role_evidence`.
-- Rust managers from older generated packages now share V3 batch preflight:
+- Rust managers from older generated packages now share native batch preflight:
   repeated Put keys fail with `duplicate_batch_key`, and repeated Update or
   Delete IIDs fail with `duplicate_batch_target` before provider I/O.
   Earlier Rust loops accepted repeated keys and targets, including repeated
@@ -1411,12 +1401,6 @@ add the limits argument described in the upgrade guide.
   C adds direct/proxy open functions taking named query-limit overrides;
   existing configuration layouts retain their meanings.
 
-- `TransactionContext::execute_plans`, `OwnedTransaction::execute_plans`,
-  and `EagerTransaction::execute_plans`
-  accept write plans in caller-owned Write and Schema transactions, sharing
-  answer budgets and rollback-only latches.
-
-
 - Python, Node, and Rust expose a nominal `Iid` value validated by the shared
   engine. Construction rejects malformed provider identifiers before I/O and
   preserves the exact accepted hexadecimal spelling. Rust entity and relation
@@ -1539,8 +1523,10 @@ add the limits argument described in the upgrade guide.
   targets. Proxy execution ceilings stay outside plan bytes and refuse an
   oversized answer without silently truncating it.
 
-- `TransactionContext::execute_plans` now accepts write plans in caller-owned
-  Write and Schema transactions. A write plan on a Read context fails with
+- `TransactionContext::execute_plans`, `OwnedTransaction::execute_plans`,
+  and `EagerTransaction::execute_plans` now accept write plans in caller-owned
+  Write and Schema transactions, sharing answer budgets and rollback-only
+  latches. A write plan on a Read context fails with
   `query_plan_read_only`; the old `borrowed_target_not_read_only` refusal is
   removed.
 - Typed Long SUM/MEAN share exact high/low partial aggregates, preventing
@@ -1576,8 +1562,6 @@ add the limits argument described in the upgrade guide.
   reach the caller's artifact ceiling. Plan requests carrying strings above
   1 MiB require `query.input.wide-strings`.
 
-
-
 - Typed-plan execution timeouts now default to 60,000 ms on direct and proxy
   connections, with no 24-hour maximum. Signed timeout inputs of zero or
   less mean no deadline; Rust uses `QueryTimeout`. Server ceilings remain
@@ -1594,7 +1578,6 @@ add the limits argument described in the upgrade guide.
   (Node: `collectPhaseTimestamps`) or a plan tracing subscriber for full
   UTC-anchored monotonic timelines, including each dispatched statement.
   Default execution retains scalar phase state without per-phase clock reads.
-
 
 - Manager writes preserve TypeQL fan-out and repeated-player behavior.
   Multiple answered roots no longer cause `provider_identity_cardinality_invalid`,
@@ -1617,8 +1600,8 @@ add the limits argument described in the upgrade guide.
   projections accept empty ordered roles and refuse populated ordered roles
   during hydration before commit.
 
-- Generated C plan getters use `<model>_plan_<field>`, borrowed result views
-  use `<model>_plan_view_t`, and nested player views use
+- Generated C borrowed result views use `<model>_plan_view_t`, and nested
+  player views use
   `<model>_plan_player_view_t`. Existing owned `<model>_t` types and hydrated
   getters retain their names. A held set is spelled `<model>_set` followed
   by the explicit `<model>_row` projection.
@@ -1680,7 +1663,6 @@ add the limits argument described in the upgrade guide.
   commit outcome across C, Rust, Python, and Node, preserving durability
   uncertainty instead of surfacing a generic panic.
 
-
 - Node generated `manager.filter(...).where(...)` retains keyword predicates.
   The 2.3.3 chain discarded them and could read extra rows. Wider lookups refuse
   the canonical path with `unsupported_manager_filter`; read their matches
@@ -1691,7 +1673,6 @@ add the limits argument described in the upgrade guide.
   extra rows. Unsupported wider lookups refuse the canonical path; use the
   keyword filter's read terminal and explicit instance operations instead.
 
-
 - The server `/health` response reports its actual crate version instead of
   the stale `1.5.11` literal.
 
@@ -1699,7 +1680,6 @@ add the limits argument described in the upgrade guide.
   original diagnostic code when surfaced to callers and pending answers.
 - Server call deadlines remain absolute while plans are staged. Preparing a
   transaction no longer refreshes its remaining execution time before commit.
-
 
 - Provider datetime ingress accepts one through nine fractional digits and
   normalizes insignificant trailing zeros without losing precision. Canonical
