@@ -1,6 +1,6 @@
 # Worked examples
 
-Follow a typed call through its V3 plan, lowered TypeQL, raw answer documents
+Follow a typed call through its plan, lowered TypeQL, raw answer documents
 and hydrated generated models in Python, TypeScript, Rust and C. The examples
 use the shop `Account`, `Item` and `OrderLine` schema, extended with abstract
 `Document` and its `Report` and `Memo` subtypes for delete returning.

@@ -1,10 +1,10 @@
 # Cargo package index
 
 TypeBridge publishes 15 first-party Rust packages as one lockstep product.
-Two source-unmodified TypeDB compatibility packages remain public under their
-fixed versions. This page is the maintained index for those 18 public Cargo
-packages; the private Python, Node, and C native-binding crates
-are deliberately not part of the crates.io surface.
+This page is the maintained index for those public Cargo packages; the private
+Python, Node, and C native-binding crates are deliberately not part of the
+crates.io surface. The TypeDB runtime consumes the official crates.io
+`typedb-driver` package directly.
 
 Most application authors need only [`type-bridge`](#primary-entry-points).
 Generated Rust bindings depend on that SDK facade and should not assemble the
@@ -25,7 +25,7 @@ generated Rust application packages
  schema | schema compatibility | TypeDB runtime
                  |
                  v
- core library | wire contract | retained TypeDB compatibility packages
+ core library | wire contract
 ```
 
 Arrows mean “uses a lower-level responsibility”, not that every package has a
@@ -54,21 +54,12 @@ bindings. They are not separate products with independent version lines.
 | [`type-bridge-query`](https://crates.io/crates/type-bridge-query/3.0.0) · [rustdoc](https://docs.rs/type-bridge-query/3.0.0) | Immutable provider-neutral query plans and validation | Generated query facades and alternate executors |
 | [`type-bridge-schema-migration`](https://crates.io/crates/type-bridge-schema-migration/3.0.0) · [rustdoc](https://docs.rs/type-bridge-schema-migration/3.0.0) | Provider-neutral schema migration manifests, profiles, and lowering | Migration planners and provider adapters |
 | [`type-bridge-schema-compat`](https://crates.io/crates/type-bridge-schema-compat/3.0.0) · [rustdoc](https://docs.rs/type-bridge-schema-compat/3.0.0) | One-way compatibility parsers into the schema fact graph | Importers for retained released schema formats |
-| [`type-bridge-schema-codegen`](https://crates.io/crates/type-bridge-schema-codegen/3.0.0) · [rustdoc](https://docs.rs/type-bridge-schema-codegen/3.0.0) | Python, TypeScript, and Rust source projection from compiled schema authority | Generators and build integrations |
+| [`type-bridge-schema-codegen`](https://crates.io/crates/type-bridge-schema-codegen/3.0.0) · [rustdoc](https://docs.rs/type-bridge-schema-codegen/3.0.0) | Python, TypeScript, Rust, and C source projection from compiled schema authority | Generators and build integrations |
 | [`type-bridge-orm-derive`](https://crates.io/crates/type-bridge-orm-derive/3.0.0) · [rustdoc](https://docs.rs/type-bridge-orm-derive/3.0.0) | Procedural derives for Rust ORM model metadata | Generated Rust model crates through re-exported derives |
 | [`type-bridge-typedb-runtime`](https://crates.io/crates/type-bridge-typedb-runtime/3.0.0) · [rustdoc](https://docs.rs/type-bridge-typedb-runtime/3.0.0) | TypeDB driver-band selection and provider execution primitives | TypeDB-backed executors and server integrations |
 | [`type-bridge-orm`](https://crates.io/crates/type-bridge-orm/3.0.0) · [rustdoc](https://docs.rs/type-bridge-orm/3.0.0) | Async model CRUD, transactions, hooks, and query execution | Generated Rust models and generated runtime integrations |
 | [`type-bridge-schema-migration-typedb`](https://crates.io/crates/type-bridge-schema-migration-typedb/3.0.0) · [rustdoc](https://docs.rs/type-bridge-schema-migration-typedb/3.0.0) | TypeDB lowering and execution adapter for provider-neutral schema migrations | TypeDB migration runners |
 | [`type-bridge-workspace`](https://crates.io/crates/type-bridge-workspace/3.0.0) · [rustdoc](https://docs.rs/type-bridge-workspace/3.0.0) | Split-YAML workspace discovery, configuration, and generated artifact paths | CLI and workspace-aware build tooling |
-
-## Retained compatibility packages
-
-These packages preserve exact, source-unmodified TypeDB components needed by
-the supported compatibility band. They keep their upstream-derived licensing
-and fixed versions; they do not follow the TypeBridge 2.2 version line.
-
-| Package | Fixed version | Purpose |
-| --- | --- | --- |
 
 ## Private native-binding crates
 
@@ -99,7 +90,5 @@ and platform requirements; the 3.0 release is in preparation.
 - Every first-party library builds independently with all features and strict
   rustdoc coverage; changing a package's publish metadata cannot remove it from
   the inventory-driven gate.
-- The two retained compatibility packages are verified as preexisting,
-  immutable inputs rather than republished as TypeBridge-authored code.
 - See the [Rust client guide](rust.md) for application usage and the
   [development internals](../development/internals.md) for release validation.

@@ -108,11 +108,10 @@ Generated entity and relation managers expose `insert`, `insertMany`, `put`,
 `putMany`, immutable replacement `update`, `delete`, `getByIid`, `filter`,
 `all`, `first`, `count`, and `exists`.
 
-Packages whose schema uses ordered collections select the successor manager and
-also expose atomic `updateMany` and `deleteMany`. Updates are readonly
+Managers also expose atomic `updateMany` and `deleteMany`. Updates are readonly
 `[iid, replacement]` tuples; deletes accept `Iid` values. Insert, put,
-and update batches return frozen values in input order, while delete returns no
-affected-row count:
+and update batches return a `BatchWriteResult` whose `items` follow input
+order, while delete returns no affected-row count:
 
 ```ts
 if (stored?.iid != null) {
@@ -128,11 +127,7 @@ if (stored?.iid != null) {
 }
 ```
 
-Legacy unordered packages retain their existing manager surface and runtime
-resource exactly; regenerate from an ordered schema to use the successor batch
-methods.
-
-The successor manager also exposes immutable, token-branded canonical filters.
+Managers also expose immutable, token-branded canonical filters.
 Chaining `filter(...).where(...)` retains IID and closed scalar keyword predicates.
 Wider keyword lookups remain available through read terminals; `.where()` refuses
 those selections with `unsupported_manager_filter`. Read their matching models
@@ -353,7 +348,7 @@ async function buy(db: Database): Promise<boolean> {
   const bought = tx.stage(purchase("O1", "I1", "A1"));
   await tx.commit();
   // `{ kind: "matched", value: 0 }`: out of stock or short of funds; nothing was written.
-  const answer = bought.get();
+  const answer = bought.result();
   return answer.kind === "matched" && answer.value === 1;
 }
 ```
@@ -476,8 +471,8 @@ structural lookalikes or values from another generated package.
 
 ## Packaging note
 
-Generated TypeScript packages require `@type-bridge/node` 2.1 or newer within
-the 2.x line. The npm package publishes native modules for Linux glibc
+Generated TypeScript packages require `@type-bridge/node` 3.0 or newer within
+the 3.x line. The npm package publishes native modules for Linux glibc
 (`x64`/`arm64`), macOS (`x64`/`arm64`), and Windows (`x64`/`arm64`); other
 targets build from source and must satisfy the repository toolchain.
 

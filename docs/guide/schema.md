@@ -20,7 +20,7 @@ type-bridge --manifest typebridge.yaml schema generate
 ```
 
 Generation captures the workspace once, renders every configured Python,
-TypeScript, and Rust target, embeds the same compiled authority in each package,
+TypeScript, Rust, and C target, embeds the same compiled authority in each package,
 and optionally writes `artifacts.schema-authority.output` when deploying a
 generic server. Ordinary generated managers and query sessions need no
 standalone authority JSON. Generation does not mutate a database. See
@@ -58,4 +58,4 @@ not an authored schema input.
   removed handwritten authoring surface.
 
 See [schema workflows](schema-workflows.md), [Split-YAML](split-yaml-v1.md),
-[migrations](migrations.md), and the [compatibility inventory](migrations.md).
+[migrations](migrations.md), and [upgrading to 3.0](upgrade-3.0.md).

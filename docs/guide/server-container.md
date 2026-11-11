@@ -81,9 +81,8 @@ docker run --rm \
 ```
 
 Paths in a mounted config resolve from the config directory. Mount TLS
-certificates, custom roots, the generated schema-authority artifact, and
-optional TypeQL schema files explicitly; they are not embedded in the generic
-image.
+certificates, custom roots, and the generated schema-authority artifact
+explicitly; they are not embedded in the generic image.
 
 ## Generate server authority
 

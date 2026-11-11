@@ -919,8 +919,8 @@ Execution and signed-reply verification charge these dimensions across the
 entire stack. Local execution uses the same semantic counters.
 
 
-Read and write provider statements are separate dimensions; the frozen V2
-three-statement limit is unchanged. Request validation checks the minimum of
+Read and write provider statements are separate dimensions; the default
+model-request statement ceiling of three is unchanged. Request validation checks the minimum of
 one statement per plan against the corresponding budget. Execution must charge
 all actual statements, including any necessary split queries, before they fire
 and refuse exceeding a budget inside the same transaction. The codec does not

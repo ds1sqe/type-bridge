@@ -158,10 +158,10 @@ schema/migration diff, regenerate, and run the target type checker.
 === "Rust"
 
     ```rust
-    let person = db.entities::<Person>().put(PersonCreate::new(
-        PersonId::new("ada".to_owned()),
-        Some(Age::new(36)),
-    )).await?;
+    let person = db.entities::<Person>().put(PersonCreate::try_new(
+        PersonId::new("ada".to_owned())?,
+        Some(Age::new(36)?),
+    )?).await?;
     ```
 
 Exact constructor order and optional fields in Rust are schema-generated; use

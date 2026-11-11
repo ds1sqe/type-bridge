@@ -1,7 +1,7 @@
 # Migrations
 
 TypeBridge migrations move a declared Split-YAML schema through an ordered,
-binding-neutral history. Generated Python, TypeScript, and Rust packages are
+binding-neutral history. Generated Python, TypeScript, Rust, and C packages are
 projections of the resulting schema; they are not migration authority.
 
 ## Configure the workspace

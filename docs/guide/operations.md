@@ -15,14 +15,10 @@ on a separate semantic implementation.
 
 ## Upgrade
 
-Read [Upgrading to 2.3](upgrade-2.3.md) before moving a 2.2 application to
-2.3. Read [Upgrading to 2.1](upgrade-v2.md) before changing an existing 2.0.x
-application. It separates the source-compatible package upgrade from later,
-explicit adoption of V2 schema and query surfaces.
-
-The [V2 deprecation inventory](migrations.md) is the exact removal
-contract. A surface absent from its scheduled-removal list is not implicitly
-scheduled for removal.
+Read [Upgrading to 3.0](upgrade-3.0.md) before moving a 2.3 application to
+3.0. Its checklist lists every 3.0 removal with its replacement. The
+historical [2.3](upgrade-2.3.md) and [2.1](upgrade-v2.md) guides cover earlier
+upgrades.
 
 ## Security boundaries
 

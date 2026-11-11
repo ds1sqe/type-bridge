@@ -93,4 +93,4 @@ migration behavior aligned.
 
 The exact retained provider window and upgrade policy are in the
 [server and driver matrix](development/typedb.md#server-and-driver-compatibility)
-and [compatibility inventory](guide/migrations.md).
+and [3.0 compatibility and removals](guide/upgrade-3.0.md).

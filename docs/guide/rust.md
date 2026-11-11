@@ -1,13 +1,13 @@
 # Rust Client
 
-TypeBridge 2.1 ships a public, generated-schema Rust application surface with
+TypeBridge 3.0 ships a public, generated-schema Rust application surface with
 the same model, CRUD, immutable-query, transaction, and one-exchange remote
 contracts as the Python and TypeScript bindings. Rust 1.88 or newer is
 required.
 
 ## Distribution
 
-Starting with 2.0.1, the Rust SDK is distributed from crates.io as a complete,
+The Rust SDK is distributed from crates.io as a complete,
 version-locked package graph. Generated application crates depend only on the
 public `type-bridge` package; they do not expose the supporting engine crates.
 
@@ -15,29 +15,10 @@ public `type-bridge` package; they do not expose the supporting engine crates.
 [dependencies]
 models = { package = "type-bridge-generated-schema", path = "generated/rust" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-type-bridge = "2"
+type-bridge = "3"
 ```
 
 Commit `Cargo.lock` after resolving the SDK and generated schema crate.
-
-### Historical 2.0.0 source dependency
-
-TypeBridge 2.0.0 was released before the complete package graph became
-publishable. Use the 40-character commit recorded in its GitHub release:
-
-```toml
-[dependencies]
-models = { package = "type-bridge-generated-schema", path = "generated/rust" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-type-bridge = { version = "=2.0.0" }
-
-[patch.crates-io]
-# Replace this value with the exact release commit. Do not use a branch.
-type-bridge = { git = "https://github.com/ds1sqe/type-bridge", rev = "<40-character-v2.0.0-commit>" }
-```
-
-The patch satisfies both the application's dependency and the generated
-crate's exact `type-bridge` requirement from one immutable source revision.
 
 ## Generate the schema crate
 
@@ -465,7 +446,7 @@ Both policies take `answer_limits(..)`, the ceiling every session of the
 connection is constrained by, and `connection_limits(..)`, the deadline for
 connecting. A session's resources are the stricter of its own and the
 ceiling, on either transport. With nothing configured, a session runs under
-its transport's defaults: the 2.2 executor defaults direct, the wire limits
+its transport's defaults: the executor defaults direct, the wire limits
 (65,536 items, 32 MiB) through a proxy.
 
 Direct manager connections also accept the full `QueryLimits` through

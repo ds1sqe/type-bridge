@@ -8,7 +8,7 @@ is the canonical authoring authority.
 
 1. Author a [Split-YAML schema set and workspace](split-yaml-v1.md).
 2. Validate it offline with `type-bridge … schema check`.
-3. [Generate](generator.md) the configured Python, TypeScript, and Rust
+3. [Generate](generator.md) the configured Python, TypeScript, Rust, and C
    projections from one snapshot.
 4. Create and review a [migration](migrations.md).
 5. Apply the migration only in an environment that permits it.
@@ -31,5 +31,5 @@ Split-YAML.
 ## API boundary projections
 
 Application-boundary DTOs should be defined by the application around generated
-models. Generated Python, TypeScript, and Rust packages retain language-specific
+models. Generated Python, TypeScript, Rust, and C packages retain language-specific
 types while sharing canonical field, role, and schema identities.

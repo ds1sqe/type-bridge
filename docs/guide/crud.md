@@ -33,9 +33,12 @@ borrowed write makes that transaction rollback-only.
 | `insert(value)` | Insert one model and attach its IID. |
 | `insert_many(values)` | Insert one homogeneous batch atomically. |
 | `put(value)` | Idempotently match/insert by the declared key; keyless models use TypeQL `put` of the given values. |
-| `put_many(values)` | Put one homogeneous batch atomically. |
+| `put_many(values)` | Put one homogeneous batch atomically; keyless rows follow [keyless put](upgrade-3.0.md#keyless-put) grouping and statement limits. |
 | `update(value)` | Update by attached canonical TypeDB IID. |
 | `delete(value_or_iid)` | Delete by attached canonical TypeDB IID or an `Iid` value. |
+| `delete_returning(value)` | Delete by attached IID and return the stored pre-delete snapshot. |
+| `delete_many(values)` | Delete a batch by attached IIDs and return the inputs. |
+| `delete_many_returning(values)` | Delete a batch and return the existing snapshots in input order. |
 | `get_by_iid(iid)` | Return one hydrated model or `None`. |
 | `filter(**lookups)` | Return a new immutable filtered manager. |
 | `where(field, comparison, value)` | Start an immutable exact field-token filter. |
@@ -67,10 +70,12 @@ updates, does not match subtype instances, and fails with
 `put_ambiguous_match` when several instances match. See
 [Keyless put](upgrade-3.0.md#keyless-put).
 
-The callback `update_with` and no-argument/filtered `delete()` conveniences
-are removed. Use an authored update/delete plan staged in one transaction
-for a database-side filtered mutation. For application-computed values,
-read the models, change them, then call `update_many` with their attached IIDs.
+The callback `update_with` is removed, and `delete()` without an instance
+requires a filtered manager: `filter(...).delete()` or `where(...).delete()`
+deletes every match without instance hooks. Use an authored update/delete plan
+staged in one transaction for other database-side mutations. For
+application-computed values, read the models, change them, then call
+`update_many` with their attached IIDs.
 
 ## Filters
 

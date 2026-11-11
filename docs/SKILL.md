@@ -19,7 +19,7 @@ generated Rust applications and the query server consume the same contracts.
 | Build a Rust application | generated schema crate + `type-bridge` | `guide/rust.md` |
 | Own a canonical schema | Split-YAML workspace and CLI | `guide/schema-workflows.md`, `guide/split-yaml-v1.md` |
 | Run remote queries | TypeBridge server | `guide/server-container.md`, `guide/typed-queries.md` |
-| Upgrade an existing app | compatibility guides | `guide/upgrade-v2.md`, `guide/migrations.md` |
+| Upgrade an existing app | compatibility guides | `guide/upgrade-3.0.md`, `guide/migrations.md` |
 
 Resolve these paths relative to this file when the repository documentation is
 available. Otherwise use <https://ds1sqe.github.io/type-bridge/>.
@@ -60,13 +60,12 @@ behavior in these ownership areas:
   migration, validation, or ORM rules independently in Python or TypeScript.
 - Use Split-YAML as the sole active desired-schema authority. Applications
   consume generated packages, immutable queries, and staged plans.
-- Treat generated Python, TypeScript, and Rust files as projections. Regenerate
+- Treat generated Python, TypeScript, Rust, and C files as projections. Regenerate
   them after schema changes; do not edit them by hand.
-- Sync or migrate the schema before inserting application data.
+- Apply the schema migration before inserting application data.
 - Use attribute instances at typed model boundaries.
 - Use JavaScript `bigint` for TypeDB integer values.
-- Resolve Rust releases starting with 2.0.1 from crates.io. Resolve historical
-  2.0.0 consumers from the exact release Git revision.
+- Resolve the Rust SDK from crates.io.
 - Preserve exact compatibility, deprecation, remote-trust, and resource-limit
   behavior from the relevant guide.
 
@@ -143,10 +142,11 @@ Use keyword arguments for generated entity and relation constructors. Change
 labels, abstractness, ownership, roles, or cardinalities in Split-YAML and
 regenerate; do not hand-edit emitted packages.
 
-Use generated model managers for ordinary CRUD, filtering, ordering, grouping,
-and transactions. Import the generated package's `QuerySession` for connected
-multi-model selection, owner-aware fields and roles, named pages, counts,
-existence checks, bounded reachability, or one-exchange remote execution.
+Use generated model managers for ordinary CRUD, single-model filters, counts,
+existence checks, and transactions. Import the generated package's
+`QuerySession` for connected multi-model selection, owner-aware fields and
+roles, ordering, named pages, aggregation, bounded reachability, or
+one-exchange remote execution.
 
 ## Choose the data operation
 
@@ -155,14 +155,15 @@ existence checks, bounded reachability, or one-exchange remote execution.
 | Create and reject duplicates | `insert()` / `insert_many()` |
 | Idempotently create by key | `put()` / `put_many()` |
 | Persist a known keyed model | `update()` / `update_many()` |
-| Read one model type | manager `get`, `filter`, `all`, `first`, `count` |
+| Read one model type | manager `get_by_iid`, `filter`, `where`, `all`, `first`, `count`, `exists` |
 | Match connected model types | immutable `QuerySession` |
 | Author native plans | `type_bridge.plan` or the Node package root |
 | Execute handcrafted TypeQL | raw query API, only when typed surfaces do not fit |
 
-Require a key for `put()` and `update()`. For relation writes, prefer hydrated
-role players carrying IIDs; otherwise provide key-complete stubs. Reject role
-players that have neither identity form.
+A keyed `put()` matches by the declared key; a keyless `put()` is TypeQL `put`
+of the given values. `update()` requires an attached IID. For relation writes,
+prefer hydrated role players carrying IIDs; otherwise provide key-complete
+stubs. Reject role players that have neither identity form.
 
 Reuse a caller-owned transaction for atomic multi-model work:
 
@@ -181,8 +182,8 @@ data loss.
 
 ## Choose the query surface
 
-- Use manager filters for a single root model, Django-style lookups,
-  aggregation, ordering, pagination, and ordinary CRUD.
+- Use manager filters for a single root model, Django-style lookups, counts,
+  existence checks, and ordinary CRUD.
 - Use the generated Python or TypeScript package's `QuerySession` for
   owner-aware, connected, multi-model matches. Create variables from one
   session and never mix handles or tokens between generated packages.
@@ -300,9 +301,8 @@ user-maintained schema input.
 ## Rust and server boundaries
 
 Use Rust 1.88 or newer. Bind the generated schema package to the database
-before using generated models. Follow `guide/rust.md` for the exact release
-revision, dependency patch, connection, transaction, CRUD, and remote-query
-forms.
+before using generated models. Follow `guide/rust.md` for the dependency,
+connection, transaction, CRUD, and remote-query forms.
 
 Classify Rust SDK failures through `Error::category()`, `code()`, `path()`,
 and `model_validation_phase()`; do not parse display messages. Preserve those
@@ -322,9 +322,9 @@ capability-advertisement trust.
 | Symptom | Check |
 | --- | --- |
 | Connect or protocol failure | TypeDB version, accepted driver band, address, credentials, TLS scheme/options |
-| Feature rejected before I/O | Feature gate; `@doc`, `@meta`, ordered ownership, and given rows can require TypeDB 3.12 |
+| Feature rejected before I/O | Feature gate and the workspace semantic profile's TypeDB patch floor |
 | Schema conflict | Existing types and migration history; do not jump to force recreation |
-| Missing type during CRUD | Ensure the schema was synchronized or migrated before data operations |
+| Missing type during CRUD | Ensure the schema migration was applied before data operations |
 | Relation player cannot be matched | Supply a hydrated IID or every key attribute |
 | Node integer rejected | Use `bigint`, not JavaScript `number` |
 | Generated model mismatch | Regenerate from the canonical schema and compare schema identity/fingerprint |
@@ -346,7 +346,7 @@ Select checks by changed surface:
 | Python facade or models | focused `uv run pytest …`, then `./scripts/check.sh python` |
 | Node facade or declarations | focused npm test/typecheck, then `./scripts/check.sh node` |
 | Rust engine or SDK | focused Cargo test, then `./scripts/check.sh rust` |
-| Schema generation | target acceptance test plus Python/TypeScript/Rust projection checks |
+| Schema generation | target acceptance test plus Python/TypeScript/Rust/C projection checks |
 | Documentation or skill | `uv run --extra docs mkdocs build --strict` and skill validation |
 | Cross-surface semantics | parity/contract tests plus `./test.sh` when live TypeDB behavior changes |
 
