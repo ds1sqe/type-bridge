@@ -279,3 +279,20 @@ fn native_profile_copies_keep_four_reversible_migrations() {
         committed
     );
 }
+
+/// Not a test: writes the format-2 administration workspace that the
+/// standalone CLI artifact smoke applies with the shipped binary alone.
+/// The historical format-1 fixture cannot execute its backfill as new work.
+#[test]
+#[ignore = "workspace writer; requires TYPE_BRIDGE_FORMAT2_ADMINISTRATION_WORKSPACE"]
+fn write_format2_administration_workspace() {
+    let destination = PathBuf::from(
+        std::env::var_os("TYPE_BRIDGE_FORMAT2_ADMINISTRATION_WORKSPACE")
+            .expect("TYPE_BRIDGE_FORMAT2_ADMINISTRATION_WORKSPACE names the output directory"),
+    );
+    assert!(
+        !destination.exists(),
+        "the format-2 workspace destination must not exist yet"
+    );
+    support::prepare_administration_native_workspace_for(&destination, "typedb-3.12.1/v1");
+}

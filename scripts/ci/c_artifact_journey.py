@@ -579,6 +579,7 @@ def live_journey(
     http_port: str,
     database: str,
     migration_database: str,
+    migration_workspace: Path,
     username: str,
     password: str,
     infra_target: Path,
@@ -670,6 +671,7 @@ def live_journey(
             migration_touched = True
             migration = cli.connected_smoke(
                 cli_archive,
+                workspace_source=migration_workspace,
                 address=address,
                 http_port=http_port,
                 database=migration_database,
@@ -1161,6 +1163,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     live.add_argument("--http-port", default="8000")
     live.add_argument("--database", required=True)
     live.add_argument("--migration-database", required=True)
+    live.add_argument("--migration-workspace", type=Path, required=True)
     live.add_argument("--username", default="admin")
     live.add_argument("--password", default="password")
     live.add_argument("--infra-target", type=Path, required=True)
@@ -1220,6 +1223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 http_port=arguments.http_port,
                 database=arguments.database,
                 migration_database=arguments.migration_database,
+                migration_workspace=arguments.migration_workspace,
                 username=arguments.username,
                 password=arguments.password,
                 infra_target=arguments.infra_target,

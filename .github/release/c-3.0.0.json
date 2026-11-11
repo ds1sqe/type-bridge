@@ -718,6 +718,7 @@
       "Download immutable C package artifacts": "success",
       "Download immutable standalone CLI artifact": "success",
       "Download provider-free clean-consumer evidence": "success",
+      "Generate the format-2 sdk administration workspace": "success",
       "Independently revalidate exact live artifact evidence": "success",
       "Install exact fixture Rust toolchain": "success",
       "Remove isolated plaintext and TLS fixture": "success",
@@ -1344,6 +1345,7 @@
       "Checkout code": "success",
       "Consume the relocated artifact without language toolchains": "success",
       "Generate reproducible Python, Node, and Rust artifacts surfaces": "success",
+      "Generate the format-2 sdk administration workspace": "success",
       "Install exact artifact Rust toolchain": "success",
       "Prune cargo target": "success",
       "Require native archive and binary inspectors": "success",
@@ -1401,7 +1403,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "59dbd5db619e35b23e92735bcada98dc9d0758e5d98a440ad106e9e0ca7297f8",
+  "ci_workflow_sha256": "6a9830b3228f641fb3133f629249c79b8fd6e1d3ab74340319ae4c6f9a34b8d5",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-3.0.0.tar.gz",
   "format": "typebridge.c-release-policy/v1",

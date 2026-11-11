@@ -2731,10 +2731,23 @@ jobs:
           docker logs ${{ job.services.typedb.id }} 2>&1 || true
           exit 1
 
+      # The committed administration history keeps its format-1 backfill, which
+      # cannot execute as new work. Regenerate the format-2 history the smoke
+      # applies; the smoke checks its pinned fingerprint.
+      - name: Generate the format-2 sdk administration workspace
+        env:
+          TYPE_BRIDGE_FORMAT2_ADMINISTRATION_WORKSPACE: ${{ runner.temp }}/sdk-administration-format2
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          write_format2_administration_workspace
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-cli --test sdk_administration_history
+
       - name: Apply, verify, roll back, and reapply exact sdk history
         run: >-
           python scripts/ci/standalone_cli_artifact.py connected-smoke
           tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          --workspace ${{ runner.temp }}/sdk-administration-format2
           --database sdk_cli_${{ github.run_id }}_${{ github.run_attempt }}
 
       - name: Upload immutable non-publishing artifact evidence
@@ -3043,6 +3056,18 @@ jobs:
           done
           exit 1
 
+      # The committed administration history keeps its format-1 backfill, which
+      # cannot execute as new work. Regenerate the format-2 history the smoke
+      # applies; the smoke checks its pinned fingerprint.
+      - name: Generate the format-2 sdk administration workspace
+        env:
+          TYPE_BRIDGE_FORMAT2_ADMINISTRATION_WORKSPACE: ${{ runner.temp }}/sdk-administration-format2
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          write_format2_administration_workspace
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-cli --test sdk_administration_history
+
       - name: Run artifact-only direct, remote, migration, and cleanup journey
         run: >-
           python scripts/ci/c_artifact_journey.py live
@@ -3051,6 +3076,7 @@ jobs:
           tmp/c-artifact-live-input/c/tb_sdk-c-7eaf02b70c697a84a6e5968fb624456f6d9afd3d175bda5517c803b89ed84bea.tar.gz
           --database c_artifact_data_${{ github.run_id }}_${{ github.run_attempt }}
           --migration-database c_artifact_migration_${{ github.run_id }}_${{ github.run_attempt }}
+          --migration-workspace ${{ runner.temp }}/sdk-administration-format2
           --infra-target ${{ runner.temp }}/typebridge-c-artifact-infra
           --tls-address localhost:1730
           --tls-http-port 8001

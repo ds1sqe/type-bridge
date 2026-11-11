@@ -30,6 +30,13 @@ NOTICE_PATH = CORE / "crates/cli/THIRD_PARTY_NOTICES.md"
 CLI_MANIFEST = CORE / "crates/cli/Cargo.toml"
 TOOLCHAIN_INVENTORY = ROOT / "scripts/ci/cargo_release_inventory.toml"
 SDK = ROOT / "tests/contracts/sdk_conformance/administration/workspace"
+# The committed workspace keeps its historical format-1 backfill, which cannot
+# execute as new work; the connected smoke applies the regenerated format-2
+# history whose fingerprint is pinned here.
+FORMAT2_HISTORY_PINS = (
+    ROOT / "tests/contracts/sdk_conformance/administration/new-authoring-format2-history.json"
+)
+CONNECTED_PROFILE = "typedb-3.12.1/v1"
 FORMAT = "typebridge.standalone-cli-artifact/v1"
 TARGET = "x86_64-unknown-linux-gnu"
 PUBLICATION_DISPOSITION = "artifact-only-unpublished-unsupported"
@@ -622,6 +629,7 @@ def smoke(archive_path: Path) -> dict[str, Any]:
 def connected_smoke(
     archive_path: Path,
     *,
+    workspace_source: Path,
     address: str,
     http_port: str,
     database: str,
@@ -641,7 +649,9 @@ def connected_smoke(
         sentinel = root / "forbidden-tool-used"
         installed.mkdir()
         write_validated_files(files, installed)
-        shutil.copytree(SDK, workspace)
+        if not workspace_source.is_dir() or workspace_source.is_symlink():
+            raise ArtifactError("connected-smoke workspace is not a directory")
+        shutil.copytree(workspace_source, workspace)
         workspace_manifest = workspace / "typebridge.yaml"
         source = workspace_manifest.read_text(encoding="utf-8")
         expected_environment = (
@@ -674,6 +684,15 @@ def connected_smoke(
             }
         )
         binary = installed / "bin/type-bridge"
+        run([str(binary), "schema", "generate"], cwd=workspace, env=environment)
+        history = json.loads(
+            (workspace / "generated/rust/typebridge/migration-history.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        pinned = json.loads(FORMAT2_HISTORY_PINS.read_text(encoding="utf-8"))[CONNECTED_PROFILE]
+        if history.get("fingerprint", {}).get("digest") != pinned:
+            raise ArtifactError("connected-smoke workspace is not the pinned format-2 history")
         apply = migration_apply_arguments()
         run([str(binary), *apply], cwd=workspace, env=environment)
         run(
@@ -717,6 +736,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     smoke_parser.add_argument("archive", type=Path)
     connected_parser = commands.add_parser("connected-smoke")
     connected_parser.add_argument("archive", type=Path)
+    connected_parser.add_argument("--workspace", type=Path, required=True)
     connected_parser.add_argument("--address", default="127.0.0.1:1729")
     connected_parser.add_argument("--http-port", default="8000")
     connected_parser.add_argument("--database", required=True)
@@ -744,6 +764,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             result = connected_smoke(
                 arguments.archive,
+                workspace_source=arguments.workspace,
                 address=arguments.address,
                 http_port=arguments.http_port,
                 database=arguments.database,

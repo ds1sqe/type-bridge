@@ -116,7 +116,11 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     # Two V1 commit probes are replaced by exact staged binary and raw gates.
     # CI also gates generated Rust, generated C, C runtime, TLS probes, and
     # the 3.13.6 lane's selectors exactly.
-    assert workflow.count(gate_call) == len(positive_tests) + 9 + len(lane_3_13_6_tests)
+    # The standalone CLI artifact and C live journey jobs each write the
+    # format-2 administration workspace their connected smoke applies.
+    format2_writer = "write_format2_administration_workspace"
+    assert workflow.count(gate_call) == len(positive_tests) + 9 + len(lane_3_13_6_tests) + 2
+    assert workflow.count(f"          {format2_writer}\n") == 2
     for selector in (
         "production_binary_serves_staged_and_removed_routes",
         "raw_answers_match_typedb_http_and_host_refusal_writes_nothing",
