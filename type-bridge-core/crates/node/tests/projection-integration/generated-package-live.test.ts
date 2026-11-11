@@ -4201,11 +4201,14 @@ def normalize(value):
     if isinstance(value, dict): return {key: normalize(item) for key, item in value.items()}
     return value
 print(json.dumps(normalize(docs)))`;
-    const result = spawnSync(resolve(ROOT, ".venv/bin/python"), ["-c", script], {
+    // The oracle needs a Python with the official TypeDB driver: the source-tree
+    // venv locally, or the interpreter CI names in TYPE_BRIDGE_RAW_ORACLE_PYTHON.
+    const python = process.env["TYPE_BRIDGE_RAW_ORACLE_PYTHON"] ?? resolve(ROOT, ".venv/bin/python");
+    const result = spawnSync(python, ["-c", script], {
       encoding: "utf8", env: { ...process.env, RAW_ADDRESS: TYPEDB_ADDRESS, RAW_USER: TYPEDB_USERNAME,
         RAW_PASSWORD: TYPEDB_PASSWORD, RAW_DATABASE: INTG_DATABASE, RAW_KIND: kind, RAW_QUERY: query },
     });
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
     return JSON.parse(result.stdout);
   };
   const integerValues = (answer: any): void => {

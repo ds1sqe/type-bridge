@@ -1837,6 +1837,10 @@ jobs:
           TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-node-queries.outputs.run_nonce }}
         run: node type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs
 
+      # The raw-pair test compares against the official Python driver.
+      - name: Install the raw-pair oracle driver
+        run: python -m pip install "typedb-driver==3.14.0"
+
       - name: Run generated projection live smoke
         env:
           USE_DOCKER: false
@@ -1849,6 +1853,7 @@ jobs:
           SDK_QUERIES_FRAGMENT_OUTPUTS: ${{ steps.prepare-node-queries.outputs.fragments }}
           SDK_QUERIES_RUN_NONCE_OUTPUT: ${{ steps.prepare-node-queries.outputs.run_nonce }}
           SDK_QUERIES_VALIDATOR_PYTHON_OUTPUT: ${{ steps.prepare-node-queries.outputs.validator_python }}
+          TYPE_BRIDGE_RAW_ORACLE_PYTHON: python
         run: |
           set -euo pipefail
           sdk_env=()

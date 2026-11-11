@@ -846,6 +846,7 @@
       "Export native artifact path": "success",
       "Install Node dependencies": "success",
       "Install Rust toolchain": "success",
+      "Install the raw-pair oracle driver": "success",
       "Prepare Node queries evidence outputs": "success",
       "Restore cargo build cache": "success",
       "Run Node integration suite": "success",
@@ -1403,7 +1404,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "6a9830b3228f641fb3133f629249c79b8fd6e1d3ab74340319ae4c6f9a34b8d5",
+  "ci_workflow_sha256": "898a2c97476cf7660ac783ef6bbefd02c1c94218482a18065cb8dcdae7b43b0f",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-3.0.0.tar.gz",
   "format": "typebridge.c-release-policy/v1",
