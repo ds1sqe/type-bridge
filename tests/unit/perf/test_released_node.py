@@ -56,21 +56,8 @@ def test_the_node_workload_runs_the_python_ops_in_order() -> None:
     assert tuple(re.findall(r'\["(\w+)"', block)) == released_node.OPS == tuple(workload.OPS)
 
 
-@pytest.mark.parametrize(
-    ("exports", "message"),
-    [
-        ({"Database": "modern"}, "constructor-selected:modern"),
-        ({"RustDatabase": "legacy"}, "constructor-selected:legacy"),
-        (
-            {"Database": "modern", "RustDatabase": "legacy"},
-            "constructor-selected:modern",
-        ),
-        ({}, "Node SDK exports no supported database constructor"),
-    ],
-)
-def test_workload_resolves_released_and_current_database_exports(
-    tmp_path: Path, exports: dict[str, str], message: str
-) -> None:
+def _run_stub(tmp_path: Path, sdk: str) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run the workload on empty models and a stub ``@type-bridge/node`` of source ``sdk``."""
     models = tmp_path / "models"
     (models / "dist").mkdir(parents=True)
     (models / "package.json").write_text('{"type":"module"}')
@@ -80,13 +67,7 @@ def test_workload_resolves_released_and_current_database_exports(
     (package / "package.json").write_text(
         json.dumps({"name": "@type-bridge/node", "main": "dist/index.cjs", "version": "3.0.0"})
     )
-    (package / "dist/index.cjs").write_text(
-        "\n".join(
-            f"exports.{name} = {{ connect() {{ throw new Error("
-            f"{json.dumps('constructor-selected:' + marker)}); }} }};"
-            for name, marker in exports.items()
-        )
-    )
+    (package / "dist/index.cjs").write_text(sdk)
     output = tmp_path / "report.json"
     result = subprocess.run(
         [
@@ -108,8 +89,93 @@ def test_workload_resolves_released_and_current_database_exports(
         check=False,
         timeout=10,
     )
+    return result, output
+
+
+@pytest.mark.parametrize(
+    ("exports", "message"),
+    [
+        ({"Database": "modern"}, "constructor-selected:modern"),
+        ({"RustDatabase": "legacy"}, "constructor-selected:legacy"),
+        (
+            {"Database": "modern", "RustDatabase": "legacy"},
+            "constructor-selected:modern",
+        ),
+        ({}, "Node SDK exports no supported database constructor"),
+    ],
+)
+def test_workload_resolves_released_and_current_database_exports(
+    tmp_path: Path, exports: dict[str, str], message: str
+) -> None:
+    result, output = _run_stub(
+        tmp_path,
+        "\n".join(
+            f"exports.{name} = {{ connect() {{ throw new Error("
+            f"{json.dumps('constructor-selected:' + marker)}); }} }};"
+            for name, marker in exports.items()
+        ),
+    )
     assert result.returncode == 1
     assert message in result.stderr
+    assert not output.exists()
+
+
+# A database that logs every call and whose delete fails, as TypeDB's does
+# while a transaction is open. The empty models make the ops fail after the
+# schema step.
+_STUB_DATABASE = """
+const log = (call) => process.stderr.write(`call:${call}\\n`);
+const db = {
+  databaseExists() { return true; },
+  deleteDatabase() { log("delete"); throw new Error("delete refused"); },
+  close() { log("close"); },
+  %s
+};
+exports.Database = { connect: () => db };
+"""
+
+
+@pytest.mark.parametrize(
+    ("schema_call", "calls", "error"),
+    [
+        (
+            "async executeQuery(query, kind) { log(`executeQuery:${kind}`); },",
+            ["executeQuery:schema", "delete", "close"],
+            "reading 'manager'",
+        ),
+        (
+            """transaction(kind) {
+              log(`transaction:${kind}`);
+              return {
+                query() { log("query"); },
+                commit() { log("commit"); },
+                close() { log("tx-close"); },
+              };
+            },""",
+            ["transaction:schema", "query", "commit", "delete", "close"],
+            "reading 'manager'",
+        ),
+        (
+            """transaction() {
+              return {
+                query() { throw new Error("schema refused"); },
+                close() { log("tx-close"); },
+              };
+            },""",
+            ["tx-close", "delete", "close"],
+            "schema refused",
+        ),
+    ],
+)
+def test_workload_defines_the_schema_per_version_and_reports_its_own_error(
+    tmp_path: Path, schema_call: str, calls: list[str], error: str
+) -> None:
+    result, output = _run_stub(tmp_path, _STUB_DATABASE % schema_call)
+
+    assert result.returncode == 1
+    assert re.findall(r"^call:(.+)$", result.stderr, re.M) == calls
+    assert "cleanup: delete refused" in result.stderr
+    assert error in result.stderr.split("error: ")[-1]
     assert not output.exists()
 
 
