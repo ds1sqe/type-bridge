@@ -328,13 +328,13 @@ def fresh_database(base: Target, label: str, seed: Iterable[str]) -> Target:
     try:
         db.create_database()
         schema = db.transaction("schema")
-        schema.execute(SCHEMA_TYPEQL)
+        schema.execute_query(SCHEMA_TYPEQL)
         schema.commit()
         queries = list(seed)
         if queries:
             write = db.transaction("write")
             for query in queries:
-                write.execute(query)
+                write.execute_query(query)
             write.commit()
     finally:
         db.close()
