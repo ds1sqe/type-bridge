@@ -4978,8 +4978,10 @@ mod tests {
     }
     #[tokio::test]
     async fn answer_timeout_refreshes_on_commit_reuse_and_debug_redacts_queries() {
+        // The first commit must finish inside the budget even on slow CI
+        // runners; the sleep then passes the original deadline.
         let limits = BoundedAnswerLimits {
-            deadline: Some(Instant::now() + Duration::from_millis(40)),
+            deadline: Some(Instant::now() + Duration::from_millis(500)),
             ..Default::default()
         };
         let (mut transaction, _) =
@@ -4989,7 +4991,7 @@ mod tests {
             .unwrap();
         assert!(!format!("{transaction:?} {answer:?}").contains("SECRET_QUERY"));
         transaction.commit().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
         transaction.stage(StagedQuery::new("reuse", false)).unwrap();
         transaction.commit().await.unwrap();
         assert_eq!(
