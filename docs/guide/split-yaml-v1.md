@@ -53,9 +53,9 @@ but these wires never parse a future key and ignore it.
 Workspace V1 additionally has the implemented `tls` and `tls-root-ca` keys.
 They extend transport policy without changing any decision above.
 
-Errata: rows 10, 14 and 15 previously described a `v2` migration directory
-suffix and an `output`-only binding body. They now state the implemented
-parser contract; the format version is unchanged.
+Errata: 3.0 drops the `v2` migration directory suffix of row 10 (see
+[Upgrading to 3.0](upgrade-3.0.md)), and rows 14 and 15 previously omitted
+the accepted `type-names` key. The format version is unchanged.
 
 ## Files and ownership
 

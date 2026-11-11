@@ -28,9 +28,8 @@ pkg-config package names together.
 - Typed execution defaults to 60,000 ms in every SDK, including C. A
   nonpositive signed timeout selects no deadline; server ceilings still apply.
   Proxy admission expiry remains a separate positive finite window.
-- The former 2.3.3 `filter(...).where(...)` predicate correction is part of
-  this 3.0 migration: chained predicates preserve the original filter. There
-  is no separate 2.3.x backport in this work.
+- Chained `filter(...).where(...)` predicates preserve the original filter.
+  2.3.x has no backport of this correction.
 
 For raw TypeQL behavior, see [the escape hatch](queries.md#raw-typeql-execution).
 The following sections give common source migrations. The complete checklist
@@ -188,9 +187,9 @@ For canonical mutations, use `filter(iid=target).delete()` or
 retain the batch input limits; reads and updates retain the 256-term Boolean
 limit and refuse larger lists before I/O.
 
-Native `DynamicExpr.iid`, `IidConstraint`, and `IidPattern` constructors and
-IID setters also require `Iid` values. The AST's stored string spelling and
-lowering remain unchanged.
+Native `DynamicExpr.iid` also requires an `Iid` value. Its stored string
+spelling and lowering remain unchanged; `IidConstraint` and `IidPattern` are
+removed with the AST wrappers.
 
 Pass `Iid("0x1234")` (imported from `type_bridge`) to query binding `iid`,
 `iid_in`, and generated model `by_iid` authoring. Plain strings are refused
@@ -263,7 +262,7 @@ but use the same result shape. Repeated references to the same player follow
 TypeQL behavior. A missing reference matches nothing: the write returns
 `count == 0` and stores nothing.
 No strict mode or additional pre-flight guard is added. The `_many` methods
-continue to return lists.
+return a `BatchWriteResult` whose `items` list every written model.
 
 For Python, change:
 
@@ -379,9 +378,9 @@ list contracts.
 
 | Removed surface | Replacement |
 | --- | --- |
-| Rust `QueryPlan`, `QueryInvocation`, `QueryOperation`, legacy decoders and fingerprints | `query_plan::v3::QueryPlanV3`, `PlanSpec`, `Operation`, `decode_query_plan_v3`, and the native plan fingerprint |
+| Rust V1/V2 `QueryPlan`, `QueryInvocation`, `QueryOperation`, legacy decoders and fingerprints | Native `query_plan::QueryPlan`, `PlanSpec`, `Operation`, `decode_query_plan`, and the native plan fingerprint |
 | Rust `ModelQueryV2`, `QueryPlanV2Compatibility`, and the V2 model wrapper types | Generated model queries lowered directly to native plans |
-| Rust `query_remote_v2` requests, responses, failures, limits and decoders | `query_remote_v3` staged requests/replies; shared limits live in `query_model_limits` |
+| Rust `query_remote_v2` requests, responses, failures, limits and decoders | `query_remote` staged requests/replies; shared limits live in `query_model_limits` |
 | `ValidatedQuery`, `validate_query_plan`, `validate_query_local_function` | Native plan construction performs validation |
 | ORM `query_v2`, `query_v2_builder`, `query_v2_prepared`, `query_v2_remote` and the old integration adapter | Native builders, `plan_explain::explain`, and staged execution |
 | `ProxyHttpClient` / `ProxyHttpTransport` `capabilities` and `exchange` | `staged_capabilities` and `exchange_staged` |
