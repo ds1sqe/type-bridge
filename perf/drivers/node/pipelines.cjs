@@ -211,7 +211,7 @@ async function commit(db, kind, plans) {
   try {
     const pending = plans.map((plan) => tx.stage(plan));
     await tx.commit();
-    return pending.map((answer) => answer.get());
+    return pending.map((answer) => answer.result());
   } finally {
     await tx[Symbol.asyncDispose]();
   }
