@@ -94,7 +94,7 @@ database = "my_database"
 username = "admin"
 password = "password"
 http_port = 8000              # default; used for connect-time version probing
-server_version = "3.12.1"     # optional; skips HTTP probing for gRPC-only TypeDB
+server_version = "3.12.3"     # optional; skips HTTP probing for gRPC-only TypeDB
 tls = true
 tls-root-ca = "certs/root.pem" # optional; omit for native trust roots
 
@@ -141,7 +141,7 @@ reopen it while serving requests. After replacing the file, reload the complete
 configuration; changing the public path field on a loaded value is rejected.
 
 Prepared query execution captures the exact schema export under a bounded
-TypeDB schema-exclusion fence. On TypeDB 3.12.1 that fence uses a `WRITE`
+TypeDB schema-exclusion fence. That fence uses a `WRITE`
 transaction even though emitted staged TypeQL is read-only, so the server
 credential needs that transaction permission and an executing request can
 delay concurrent schema work. The default absolute request deadline is 30

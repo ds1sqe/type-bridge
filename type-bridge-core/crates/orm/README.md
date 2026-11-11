@@ -22,7 +22,7 @@ execute generated projections rather than handwritten descriptors.
 | Feature | Default | Effect |
 | --- | --- | --- |
 | `typedb` | via bands | Enables the TypeDB runtime |
-| `band9` | yes | Enables TypeDB 3.12 provider support |
+| `band9` | yes | Enables TypeDB 3.12–3.14 provider support |
 | `integration-tests` | no | Exposes the repository's live parity test seam |
 
 The crate is released in lockstep with TypeBridge 3.0.0, requires Rust 1.88+,

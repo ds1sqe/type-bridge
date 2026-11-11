@@ -29,9 +29,9 @@ pub mod _parser;
 #[doc(hidden)]
 #[path = "schema.rs"]
 pub mod _schema;
-/// TypeQL Abstract Syntax Tree — patterns, statements, clauses, and values.
+/// Typed query operands, predicates, and operations.
 pub mod ast;
-/// Compiles an AST back into a TypeQL query string.
+/// Checked lowering of typed query operations into TypeQL.
 pub mod compiler;
 /// Canonical TypeDB decimal parsing and semantic comparison.
 pub mod decimal;

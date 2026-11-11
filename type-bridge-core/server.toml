@@ -8,9 +8,6 @@ database = "typedb"
 username = "admin"
 password = "password"
 
-[schema]
-source_file = ""  # optional .tql path; if empty, no schema validation
-
 [interceptors]
 enabled = ["audit-log"]
 

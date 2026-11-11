@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-cli"
-description = "TypeBridge V2 workspace command-line interface"
+description = "TypeBridge Split-YAML workspace command-line interface"
 version = "3.0.0"
 edition = "2024"
 license.workspace = true

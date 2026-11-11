@@ -1,6 +1,7 @@
 # type-bridge-core-lib
 
-Pure-Rust TypeQL AST, schema parser, query compiler, validation engine, and value coercer for **type-bridge**.
+Shared core for **type-bridge**: typed query operations, checked TypeQL
+construction, value coercion, and validation.
 
 This is a supporting engine crate. Most applications should consume generated
 models through [`type-bridge`](https://crates.io/crates/type-bridge) instead.

@@ -85,7 +85,7 @@ never enables TLS implicitly.
 
 `db.close()` synchronously marks the connection terminal and dispatches the
 upstream driver's shutdown request; once dispatched, the connection admits no
-new work. The unmodified upstream 3.12.1 driver releases its final callback
+new work. The unmodified upstream 3.14.0 driver releases its final callback
 worker when the last native driver lease drops, so a retained closed handle is
 not a synchronous worker-join boundary. Close is also not an out-of-band
 cancellation channel for the synchronous CRUD APIs. While one of those native
@@ -170,21 +170,6 @@ intended executor or pin its bytes or fingerprint out of band.
 See the [3.0 upgrade guide](https://ds1sqe.github.io/type-bridge/guide/upgrade-3.0/)
 for replacements for the removed V1/V2 entry points.
 
-## Descriptor Shape
-
-Descriptors use the canonical Rust serde shape:
-
-- Entity descriptor: `type_name`, `is_abstract`, `parent_type`, and
-  `owned_attributes`.
-- Relation descriptor: entity fields plus `roles`.
-- Owned attributes: `field_name` is the JavaScript-facing field key,
-  `attr_name` is the TypeDB attribute label, `value_type` is one TypeDB
-  primitive value type, `annotations` carries `Key`, `Unique`, or `Card`, and
-  `is_optional` mirrors the model field optionality. `is_ordered` declares
-  ordered multi-valued storage and is required even when `false`.
-- Relation roles: `role_name`, accepted `player_type_names`, and optional
-  `[min, max]` cardinality.
-
 ## BigInt Rule
 
 TypeDB `long` maps to Rust `i64`, so JavaScript `number` is not accepted by
@@ -198,10 +183,10 @@ while crossing JSON.
 
 ## Supported Runtime Operations
 
-The current facade exposes descriptor registration, value marshalling, database
-and transaction handles, entity and relation managers, insert/put/update/get,
-batch insert/put, count, aggregate, group-by aggregate, relation role-player
-filters, and IID deletes.
+The current facade exposes value marshalling, database and transaction
+handles, generated entity and relation managers (insert, put, update, delete,
+their batch forms, `getByIid`, filters, count and exists), immutable typed
+queries with `reduce` reductions, staged plans, and IID deletes.
 
 The facade does not expose a direct TypeDB driver or accept caller-provided
 TypeQL for the immutable typed path. Its native Rust compiler and validator own

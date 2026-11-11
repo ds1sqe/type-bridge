@@ -24,7 +24,7 @@ bounded answer limits for all provider reads.
 | --- | --- | --- |
 | `band9` | yes | Official TypeDB driver 3.14.0; supports TypeDB 3.12, 3.13 and 3.14 |
 
-At least one band must be enabled. The crate is released in lockstep with
+`band9` is the only band and must be enabled. The crate is released in lockstep with
 TypeBridge 3.0.0, requires Rust 1.88+, and supports TypeDB 3.12.x–3.14.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·

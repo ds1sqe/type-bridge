@@ -27,7 +27,7 @@ generic-server authority artifact.
 | Feature | Default | Effect |
 | --- | --- | --- |
 | `typedb` | yes | Enables local TypeDB connections through the shared ORM |
-| `band9` | yes | Enables TypeDB 3.12 provider support |
+| `band9` | yes | Enables TypeDB 3.12–3.14 provider support |
 | `test-harness` | no | Enables generated-package acceptance fixtures |
 
 The SDK is released in lockstep with the TypeBridge 3.0.0 crate graph, requires

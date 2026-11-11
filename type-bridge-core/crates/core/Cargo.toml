@@ -2,7 +2,7 @@
 name = "type-bridge-core-lib"
 version = "3.0.0"
 edition = "2024"
-description = "TypeQL AST, schema parser, query compiler, and validation engine for type-bridge"
+description = "Typed query operations, checked TypeQL construction, value coercion, and validation for type-bridge"
 license.workspace = true
 license-file.workspace = true
 repository.workspace = true
