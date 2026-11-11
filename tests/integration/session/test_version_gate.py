@@ -193,8 +193,10 @@ class TestVersionGatePinnedServerVersion:
         assert getattr(db, "_native_database", None) is not None
         db.close()
 
-    def test_http_probe_failure_falls_back_to_grpc(self, test_database):
-        """Without a pin, an unreachable HTTP port falls back to gRPC band negotiation."""
+    def test_http_probe_failure_without_pin_refuses(self, test_database):
+        """Without a pin, an unreachable HTTP port refuses: discovery has no gRPC fallback."""
+        from type_bridge_core import VersionError
+
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         db = Database(
@@ -202,8 +204,8 @@ class TestVersionGatePinnedServerVersion:
             database=test_database,
             http_port=1,
         )
-        db.connect()
-        assert getattr(db, "_native_database", None) is not None
+        with pytest.raises(VersionError, match="requires a reachable HTTP version endpoint"):
+            db.connect()
         db.close()
 
 
