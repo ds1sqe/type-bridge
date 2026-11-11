@@ -747,7 +747,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:f2fc8295f33f8d9f7c1a75c0b80f7c21db207a196e132b179c389f4e27a98007`
+- Closure fingerprint: `sha256:fe440ad31e36e41b38f9cb09bf151301e68922fd831dd26b6a06508cbd9ac041`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -781,9 +781,9 @@ bytes actually reproduced in this notice.
 | `bitflags` | `2.11.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
 | `block-buffer` | `0.10.4` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:d5c22aa3118d240e877ad41c5d9fa232f9c77d757d4aac0c2f943afc0a95e0ef` |
 | `bytes` | `1.11.1` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:45f522cacecb1023856e46df79ca625dfc550c94910078bd8aec6e02880b3d42` |
-| `cap-fs-ext` | `4.0.2` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
-| `cap-primitives` | `4.0.2` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
-| `cap-std` | `4.0.2` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
+| `cap-fs-ext` | `4.0.3` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
+| `cap-primitives` | `4.0.3` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
+| `cap-std` | `4.0.3` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `cfg-if` | `1.0.4` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397` |
 | `chacha20` | `0.10.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:b8c6939380a400f53e11923d50fcc4dd2fa1ba8339fd9d04cda38a0251b6c9b0` |
 | `chrono` | `0.4.45` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:7f62263ee3860c67a16082f48472ccc4446c576f7ac2daa2264d019e7ad44d68` |
@@ -926,7 +926,7 @@ bytes actually reproduced in this notice.
 | `regex-syntax` | `0.8.11` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
 | `ring` | `0.17.14` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 AND ISC` | `Apache-2.0@sha256:a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2`, `ISC@sha256:f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f` |
 | `rustc-hash` | `2.1.3` | Node | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
-| `rustix` | `1.1.4` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
+| `rustix` | `1.1.6` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `rustix-linux-procfs` | `0.1.1` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `rustls` | `0.23.46` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR MIT OR ISC` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
 | `rustls-native-certs` | `0.8.3` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR ISC OR MIT` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
