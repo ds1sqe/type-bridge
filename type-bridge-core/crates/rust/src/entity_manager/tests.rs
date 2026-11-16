@@ -1410,7 +1410,7 @@ async fn public_put_update_delete_success_lifecycles() {
         &[&[
             "isa! record",
             "let $PlanLiteralCell1 = \"0x2\"",
-            "iid($thing1) == $target_iid",
+            "$thing1 iid 0x2",
             "delete",
         ]],
     );

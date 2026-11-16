@@ -2153,7 +2153,13 @@ fetch { \"_iid\": iid($root0), \"_type\": label($PlanFetchType), \"attributes\":
             panic!("{} plans", plans.len());
         };
         let typeql = tql::render(&lower(plan.local()).unwrap().query).unwrap();
-        assert!(typeql.contains("iid($player2) == $in1"), "{typeql}");
+        for iid in iids {
+            assert!(
+                typeql.contains(&format!("$in1 == \"{iid}\"; $player2 iid {iid}")),
+                "{typeql}"
+            );
+        }
+        assert!(!typeql.contains("iid($player2)"), "{typeql}");
         plan.local().validate_single_row_put_answer(1).unwrap();
         plan.local().validate_single_row_put_answer(2).unwrap_err();
     }

@@ -1008,7 +1008,7 @@ async fn public_relation_delete_commits_one_exact_delete() {
     };
     assert!(query.contains("delete") && query.contains("isa! assignment"));
     assert!(query.contains("let $PlanLiteralCell1 = \"0x1\""));
-    assert!(query.contains("iid($thing1) == $target_iid"));
+    assert!(query.contains("$thing1 iid 0x1"));
     assert_eq!(guard.query_modes, vec!["canonical"]);
 }
 

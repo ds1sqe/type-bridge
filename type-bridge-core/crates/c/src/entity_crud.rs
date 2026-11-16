@@ -957,10 +957,12 @@ functions:
                     TypeBridgeStatus::Ok
                 );
                 assert!(diagnostics.is_null());
-                assert_eq!(
-                    *captured[index].lock().unwrap(),
-                    *fixture.state.queries.lock().unwrap()
-                );
+                let mut redacted = fixture.state.queries.lock().unwrap().clone();
+                let delete = redacted.last_mut().unwrap();
+                assert!(delete.contains("$thing1 iid 0x10;"));
+                *delete = delete.replace("$thing1 iid 0x10;", "iid($thing1) == $target_iid;");
+                assert!(!delete.contains("0x10"));
+                assert_eq!(*captured[index].lock().unwrap(), redacted);
                 assert_eq!(captured[index].lock().unwrap().len(), 4);
                 assert_eq!(
                     captured[1 - index].lock().unwrap().len(),
