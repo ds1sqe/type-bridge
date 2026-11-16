@@ -23,12 +23,12 @@ required-features = ["typedb", "axum-transport"]
 
 [features]
 default = ["band9", "axum-transport"]
-typedb = ["dep:type-bridge-typedb-runtime"]
-band9 = [
-    "typedb",
+typedb = [
+    "dep:type-bridge-typedb-runtime",
     "type-bridge-typedb-runtime/band9",
     "type-bridge-orm/band9",
 ]
+band9 = ["typedb"]
 axum-transport = [
     "dep:axum",
     "dep:axum-server",
