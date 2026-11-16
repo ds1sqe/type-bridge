@@ -46,7 +46,8 @@ pub(crate) enum ProjectionRecordingResponse {
 /// This symbol exists only in builds that explicitly enable the private
 /// `contract-test-adapter` feature.
 #[napi(js_name = "__roundTripContractFoundation")]
-pub fn round_trip_contract_foundation(input: Buffer) -> Result<Buffer> {
+pub fn round_trip_contract_foundation(env: Env, input: Unknown) -> Result<Buffer> {
+    let input = crate::plan_runtime::non_shared_buffer(&env, input)?;
     let probe: ContractFoundationProbe =
         from_canonical_json(input.as_ref()).map_err(contract_error)?;
     if !matches!(probe.long, CanonicalValue::Long(_)) {

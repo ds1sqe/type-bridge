@@ -691,7 +691,7 @@ export class InstalledRuntimeProjection {
 
   /** @internal Decode canonical attribute bytes through exact package authority. */
   decodeAttributeJson(typeKey: string, bytes: Uint8Array): string {
-    return this.#native.decodeAttributeJson(typeKey, bytes);
+    return this.#native.decodeAttributeJson(typeKey, ownedByteSnapshot(bytes, loadNative().MAX_CANONICAL_BYTES));
   }
 
   /** @internal Encode one exact generated create value to canonical bytes. */
@@ -701,7 +701,7 @@ export class InstalledRuntimeProjection {
 
   /** @internal Decode canonical bytes through this package's exact authority. */
   decodeCreateJson(typeKey: string, bytes: Uint8Array): string {
-    return this.#native.decodeCreateJson(typeKey, bytes);
+    return this.#native.decodeCreateJson(typeKey, ownedByteSnapshot(bytes, loadNative().MAX_CANONICAL_BYTES));
   }
 
   /** @internal Encode one exact generated detached reference. */
@@ -711,7 +711,7 @@ export class InstalledRuntimeProjection {
 
   /** @internal Decode one exact generated detached reference. */
   decodeReferenceJson(typeKey: string, bytes: Uint8Array): string {
-    return this.#native.decodeReferenceJson(typeKey, bytes);
+    return this.#native.decodeReferenceJson(typeKey, ownedByteSnapshot(bytes, loadNative().MAX_CANONICAL_BYTES));
   }
 
   /** @internal Encode one exact generated detached snapshot. */
@@ -721,7 +721,7 @@ export class InstalledRuntimeProjection {
 
   /** @internal Decode one exact generated detached snapshot. */
   decodeSnapshotJson(typeKey: string, bytes: Uint8Array): string {
-    return this.#native.decodeSnapshotJson(typeKey, bytes);
+    return this.#native.decodeSnapshotJson(typeKey, ownedByteSnapshot(bytes, loadNative().MAX_CANONICAL_BYTES));
   }
 
   /** @internal Return an opaque mutation fence for one decoded snapshot facade. */
@@ -736,17 +736,17 @@ export class InstalledRuntimeProjection {
 
   /** @internal Decode one exact generated struct. */
   decodeStructJson(typeKey: string, bytes: Uint8Array): string {
-    return this.#native.decodeStructJson(typeKey, bytes);
+    return this.#native.decodeStructJson(typeKey, ownedByteSnapshot(bytes, loadNative().MAX_CANONICAL_BYTES));
   }
 
   /** @internal Compose verified canonical records into one archive. */
   encodeArchive(records: readonly Uint8Array[]): Uint8Array {
-    return this.#native.encodeArchive(records);
+    return this.#native.encodeArchive(records.map(bytes => ownedByteSnapshot(bytes, loadNative().MAX_CANONICAL_BYTES)));
   }
 
   /** @internal Split and verify one canonical archive. */
   decodeArchive(bytes: Uint8Array): readonly Uint8Array[] {
-    return Object.freeze(this.#native.decodeArchive(bytes));
+    return Object.freeze(this.#native.decodeArchive(ownedByteSnapshot(bytes, loadNative().MAX_REMOTE_ENVELOPE_BYTES)));
   }
 
   /** @internal Compose records with cancellation, deadline, and resource limits. */
@@ -755,7 +755,7 @@ export class InstalledRuntimeProjection {
     options: CanonicalCodecOptions = {},
   ): Uint8Array {
     return this.#native.encodeArchiveControlled(
-      records,
+      records.map(bytes => ownedByteSnapshot(bytes, loadNative().MAX_CANONICAL_BYTES)),
       options.cancellation?.nativeHandle(),
       normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.maxInputBytes,
@@ -772,7 +772,7 @@ export class InstalledRuntimeProjection {
     options: CanonicalCodecOptions = {},
   ): readonly Uint8Array[] {
     return Object.freeze(this.#native.decodeArchiveControlled(
-      bytes,
+      ownedByteSnapshot(bytes, loadNative().MAX_REMOTE_ENVELOPE_BYTES),
       options.cancellation?.nativeHandle(),
       normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.maxInputBytes,
@@ -813,7 +813,7 @@ export class InstalledRuntimeProjection {
     return this.#native.decodeRecordJsonControlled(
       recordKind,
       typeKey,
-      bytes,
+      ownedByteSnapshot(bytes, loadNative().MAX_CANONICAL_BYTES),
       options.cancellation?.nativeHandle(),
       normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.maxInputBytes,

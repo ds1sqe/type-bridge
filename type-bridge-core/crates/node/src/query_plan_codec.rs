@@ -1,5 +1,5 @@
 //! Primitive-only bridge to the shared staged plan codec.
-use napi::bindgen_prelude::Buffer;
+use napi::bindgen_prelude::{Buffer, Env, Unknown};
 use napi_derive::napi;
 use type_bridge_contract::query_plan::decode_query_plan;
 use type_bridge_contract::schema::decode_declared_schema;
@@ -13,9 +13,12 @@ pub struct QueryPlanEncoding {
 /// Validate canonical staged bytes under a declared schema and return bytes and digest.
 #[napi(js_name = "_query_plan_round_trip")]
 pub fn _query_plan_round_trip(
-    plan_bytes: Buffer,
-    schema_bytes: Buffer,
+    env: Env,
+    plan_bytes: Unknown,
+    schema_bytes: Unknown,
 ) -> napi::Result<QueryPlanEncoding> {
+    let plan_bytes = crate::plan_runtime::non_shared_buffer(&env, plan_bytes)?;
+    let schema_bytes = crate::plan_runtime::non_shared_buffer(&env, schema_bytes)?;
     let schema = decode_declared_schema(&schema_bytes)
         .map_err(|error| crate::plan_runtime::napi_error(&error))?;
     let plan = decode_query_plan(&plan_bytes, &schema)

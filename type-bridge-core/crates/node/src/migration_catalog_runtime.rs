@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::Instrument as _;
 
-use napi::bindgen_prelude::{Buffer, Env, Error, Function, Object, Promise, Result};
+use napi::bindgen_prelude::{Env, Error, Function, Object, Promise, Result, Unknown};
 use napi_derive::napi;
 use type_bridge_schema::{ManagedDeltaContext, SafetyClass, decode_schema_authority};
 use type_bridge_schema_migration::{
@@ -520,9 +520,12 @@ pub struct NodeMigrationPreviewEntry {
 /// Open canonical generated history bytes under their generated schema authority.
 #[napi]
 pub fn open_migration_catalog(
-    schema_authority: Buffer,
-    history_bundle: Buffer,
+    env: Env,
+    schema_authority: Unknown,
+    history_bundle: Unknown,
 ) -> Result<NodeMigrationCatalog> {
+    let schema_authority = crate::plan_runtime::non_shared_buffer(&env, schema_authority)?;
+    let history_bundle = crate::plan_runtime::non_shared_buffer(&env, history_bundle)?;
     let capabilities = migration_runtime_capability_vocabulary()
         .map_err(|error| catalog_error(error.code().as_str()))?;
     let authority = decode_schema_authority(schema_authority.as_ref(), &capabilities)

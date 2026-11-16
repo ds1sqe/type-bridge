@@ -1,3 +1,4 @@
+import { ownedByteSnapshot } from "./owned-bytes.js";
 export type { TimeoutMilliseconds } from "./timeouts.js";
 import { normalizeTimeoutMilliseconds, type TimeoutMilliseconds } from "./timeouts.js";
 import { RawTransaction, rawNativeCall, rawNativePromise, type NativeRawTransaction, type RawValue } from "./raw-query.js";
@@ -591,7 +592,10 @@ export function openMigrationCatalog(
   historyBundle: Uint8Array,
 ): MigrationCatalog {
   return new MigrationCatalog(
-    loadNative().openMigrationCatalog(schemaAuthority, historyBundle),
+    loadNative().openMigrationCatalog(
+      ownedByteSnapshot(schemaAuthority, loadNative().MAX_CANONICAL_BYTES),
+      ownedByteSnapshot(historyBundle, loadNative().MAX_REMOTE_ENVELOPE_BYTES),
+    ),
   );
 }
 

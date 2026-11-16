@@ -2681,9 +2681,172 @@ impl NodeRuntimeProjection {
         record.encode().map(Buffer::from).map_err(diagnostic_error)
     }
 
-    /// Decode canonical attribute bytes through exact installed package authority.
     #[napi(js_name = "decodeAttributeJson")]
-    pub fn decode_attribute_json(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
+    pub fn decode_attribute_json_binding(
+        &self,
+        env: Env,
+        type_key: String,
+        bytes: Unknown<'_>,
+    ) -> napi::Result<String> {
+        let bytes = crate::plan_runtime::non_shared_buffer(&env, bytes)?;
+        self.decode_attribute_json_inner(type_key, bytes)
+    }
+
+    #[napi(js_name = "decodeCreateJson")]
+    pub fn decode_create_json_binding(
+        &self,
+        env: Env,
+        type_key: String,
+        bytes: Unknown<'_>,
+    ) -> napi::Result<String> {
+        let bytes = crate::plan_runtime::non_shared_buffer(&env, bytes)?;
+        self.decode_create_json_inner(type_key, bytes)
+    }
+
+    #[napi(js_name = "decodeReferenceJson")]
+    pub fn decode_reference_json_binding(
+        &self,
+        env: Env,
+        type_key: String,
+        bytes: Unknown<'_>,
+    ) -> napi::Result<String> {
+        let bytes = crate::plan_runtime::non_shared_buffer(&env, bytes)?;
+        self.decode_reference_json_inner(type_key, bytes)
+    }
+
+    #[napi(js_name = "decodeSnapshotJson")]
+    pub fn decode_snapshot_json_binding(
+        &self,
+        env: Env,
+        type_key: String,
+        bytes: Unknown<'_>,
+    ) -> napi::Result<String> {
+        let bytes = crate::plan_runtime::non_shared_buffer(&env, bytes)?;
+        self.decode_snapshot_json_inner(type_key, bytes)
+    }
+
+    #[napi(js_name = "decodeStructJson")]
+    pub fn decode_struct_json_binding(
+        &self,
+        env: Env,
+        type_key: String,
+        bytes: Unknown<'_>,
+    ) -> napi::Result<String> {
+        let bytes = crate::plan_runtime::non_shared_buffer(&env, bytes)?;
+        self.decode_struct_json_inner(type_key, bytes)
+    }
+
+    #[napi(js_name = "decodeRecordJsonControlled")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_record_json_controlled_binding(
+        &self,
+        env: Env,
+        record_kind: String,
+        type_key: String,
+        bytes: Unknown<'_>,
+        cancellation: Option<&NodeQueryCancellation>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
+        max_input_bytes: Option<u32>,
+        max_output_bytes: Option<u32>,
+        max_depth: Option<u32>,
+        max_members: Option<u32>,
+    ) -> napi::Result<String> {
+        let bytes = crate::plan_runtime::non_shared_buffer(&env, bytes)?;
+        self.decode_record_json_controlled_inner(
+            record_kind,
+            type_key,
+            bytes,
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            max_members,
+        )
+    }
+
+    #[napi(js_name = "encodeArchive")]
+    pub fn encode_archive_binding(
+        &self,
+        env: Env,
+        records: Vec<Unknown<'_>>,
+    ) -> napi::Result<Buffer> {
+        let records = records
+            .into_iter()
+            .map(|value| crate::plan_runtime::non_shared_buffer(&env, value))
+            .collect::<napi::Result<Vec<_>>>()?;
+        self.encode_archive_inner(records)
+    }
+
+    #[napi(js_name = "encodeArchiveControlled")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_archive_controlled_binding(
+        &self,
+        env: Env,
+        records: Vec<Unknown<'_>>,
+        cancellation: Option<&NodeQueryCancellation>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
+        max_input_bytes: Option<u32>,
+        max_output_bytes: Option<u32>,
+        max_depth: Option<u32>,
+        max_records: Option<u32>,
+        max_members: Option<u32>,
+    ) -> napi::Result<Buffer> {
+        let records = records
+            .into_iter()
+            .map(|value| crate::plan_runtime::non_shared_buffer(&env, value))
+            .collect::<napi::Result<Vec<_>>>()?;
+        self.encode_archive_controlled_inner(
+            records,
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            max_records,
+            max_members,
+        )
+    }
+
+    #[napi(js_name = "decodeArchive")]
+    pub fn decode_archive_binding(
+        &self,
+        env: Env,
+        bytes: Unknown<'_>,
+    ) -> napi::Result<Vec<Buffer>> {
+        let bytes = crate::plan_runtime::non_shared_buffer(&env, bytes)?;
+        self.decode_archive_inner(bytes)
+    }
+
+    #[napi(js_name = "decodeArchiveControlled")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_archive_controlled_binding(
+        &self,
+        env: Env,
+        bytes: Unknown<'_>,
+        cancellation: Option<&NodeQueryCancellation>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
+        max_input_bytes: Option<u32>,
+        max_output_bytes: Option<u32>,
+        max_depth: Option<u32>,
+        max_records: Option<u32>,
+        max_members: Option<u32>,
+    ) -> napi::Result<Vec<Buffer>> {
+        let bytes = crate::plan_runtime::non_shared_buffer(&env, bytes)?;
+        self.decode_archive_controlled_inner(
+            bytes,
+            cancellation,
+            timeout_milliseconds,
+            max_input_bytes,
+            max_output_bytes,
+            max_depth,
+            max_records,
+            max_members,
+        )
+    }
+
+    /// Decode canonical attribute bytes through exact installed package authority.
+    fn decode_attribute_json_inner(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
         let expected = type_id_from_key(&type_key)?;
         if expected.kind() != TypeKind::Attribute {
             return Err(invalid_error(
@@ -2746,8 +2909,7 @@ impl NodeRuntimeProjection {
     }
 
     /// Decode canonical create bytes through exact installed package authority.
-    #[napi(js_name = "decodeCreateJson")]
-    pub fn decode_create_json(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
+    fn decode_create_json_inner(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
         let expected = manageable_type(self.package.as_ref(), &type_key)?;
         let record = type_bridge_contract::projected_record::ProjectedRecord::decode(&bytes)
             .map_err(diagnostic_error)?;
@@ -2787,8 +2949,7 @@ impl NodeRuntimeProjection {
     }
 
     /// Decode canonical reference bytes through exact installed package authority.
-    #[napi(js_name = "decodeReferenceJson")]
-    pub fn decode_reference_json(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
+    fn decode_reference_json_inner(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
         let expected = manageable_type(self.package.as_ref(), &type_key)?;
         let record = type_bridge_contract::projected_record::ProjectedRecord::decode(&bytes)
             .map_err(diagnostic_error)?;
@@ -2830,8 +2991,7 @@ impl NodeRuntimeProjection {
     }
 
     /// Decode canonical snapshot bytes through exact installed package authority.
-    #[napi(js_name = "decodeSnapshotJson")]
-    pub fn decode_snapshot_json(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
+    fn decode_snapshot_json_inner(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
         let expected = manageable_type(self.package.as_ref(), &type_key)?;
         let record = type_bridge_contract::projected_record::ProjectedRecord::decode(&bytes)
             .map_err(diagnostic_error)?;
@@ -2907,8 +3067,7 @@ impl NodeRuntimeProjection {
     }
 
     /// Decode canonical struct bytes through exact installed package authority.
-    #[napi(js_name = "decodeStructJson")]
-    pub fn decode_struct_json(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
+    fn decode_struct_json_inner(&self, type_key: String, bytes: Buffer) -> napi::Result<String> {
         let expected = type_id_from_key(&type_key)?;
         if expected.kind() != TypeKind::Struct {
             return Err(invalid_error("requested canonical type is not a struct"));
@@ -2986,9 +3145,8 @@ impl NodeRuntimeProjection {
     }
 
     /// Decode one nominal record with cancellation, deadline, and resource limits.
-    #[napi(js_name = "decodeRecordJsonControlled")]
     #[allow(clippy::too_many_arguments)]
-    pub fn decode_record_json_controlled(
+    fn decode_record_json_controlled_inner(
         &self,
         record_kind: String,
         type_key: String,
@@ -3027,19 +3185,19 @@ impl NodeRuntimeProjection {
         control.check()?;
         let value_json = match record_kind {
             ProjectedRecordKind::Attribute => {
-                self.decode_attribute_json(type_key, Buffer::from(canonical))
+                self.decode_attribute_json_inner(type_key, Buffer::from(canonical))
             }
             ProjectedRecordKind::Create => {
-                self.decode_create_json(type_key, Buffer::from(canonical))
+                self.decode_create_json_inner(type_key, Buffer::from(canonical))
             }
             ProjectedRecordKind::Reference => {
-                self.decode_reference_json(type_key, Buffer::from(canonical))
+                self.decode_reference_json_inner(type_key, Buffer::from(canonical))
             }
             ProjectedRecordKind::Snapshot => {
-                self.decode_snapshot_json(type_key, Buffer::from(canonical))
+                self.decode_snapshot_json_inner(type_key, Buffer::from(canonical))
             }
             ProjectedRecordKind::Struct => {
-                self.decode_struct_json(type_key, Buffer::from(canonical))
+                self.decode_struct_json_inner(type_key, Buffer::from(canonical))
             }
         }?;
         if value_json.len() > control.max_output_bytes {
@@ -3052,8 +3210,7 @@ impl NodeRuntimeProjection {
     }
 
     /// Compose already canonical exact-package records into one deterministic archive.
-    #[napi(js_name = "encodeArchive")]
-    pub fn encode_archive(&self, records: Vec<Buffer>) -> napi::Result<Buffer> {
+    fn encode_archive_inner(&self, records: Vec<Buffer>) -> napi::Result<Buffer> {
         let mut verified = Vec::with_capacity(records.len());
         for bytes in records {
             let record = type_bridge_contract::projected_record::ProjectedRecord::decode(&bytes)
@@ -3069,9 +3226,8 @@ impl NodeRuntimeProjection {
     }
 
     /// Compose records with cancellation, deadline, and tighten-only limits.
-    #[napi(js_name = "encodeArchiveControlled")]
     #[allow(clippy::too_many_arguments)]
-    pub fn encode_archive_controlled(
+    fn encode_archive_controlled_inner(
         &self,
         records: Vec<Buffer>,
         cancellation: Option<&NodeQueryCancellation>,
@@ -3126,8 +3282,7 @@ impl NodeRuntimeProjection {
     }
 
     /// Decode one complete archive into canonical individual exact-package records.
-    #[napi(js_name = "decodeArchive")]
-    pub fn decode_archive(&self, bytes: Buffer) -> napi::Result<Vec<Buffer>> {
+    fn decode_archive_inner(&self, bytes: Buffer) -> napi::Result<Vec<Buffer>> {
         let archive = type_bridge_contract::projected_record::ProjectedArchive::decode(&bytes)
             .map_err(diagnostic_error)?;
         archive
@@ -3142,9 +3297,8 @@ impl NodeRuntimeProjection {
     }
 
     /// Decode an archive with cancellation, deadline, and tighten-only limits.
-    #[napi(js_name = "decodeArchiveControlled")]
     #[allow(clippy::too_many_arguments)]
-    pub fn decode_archive_controlled(
+    fn decode_archive_controlled_inner(
         &self,
         bytes: Buffer,
         cancellation: Option<&NodeQueryCancellation>,
@@ -9300,7 +9454,7 @@ entities:
             .unwrap();
         assert_eq!(controlled_tag_bytes.to_vec(), tag_bytes.to_vec());
         let controlled_tag_json = runtime
-            .decode_record_json_controlled(
+            .decode_record_json_controlled_inner(
                 "attribute".into(),
                 tag_key.clone(),
                 Buffer::from(tag_bytes.to_vec()),
@@ -9336,7 +9490,7 @@ entities:
         assert_eq!(diagnostic["code"], "projected_codec_cancelled");
         let decoded: ProjectedWire = serde_json::from_str(
             &runtime
-                .decode_attribute_json(tag_key.clone(), Buffer::from(tag_bytes.to_vec()))
+                .decode_attribute_json_inner(tag_key.clone(), Buffer::from(tag_bytes.to_vec()))
                 .unwrap(),
         )
         .unwrap();
@@ -9350,7 +9504,7 @@ entities:
         assert!(decoded.values.is_empty());
         assert!(
             runtime
-                .decode_attribute_json(
+                .decode_attribute_json_inner(
                     type_key(TypeKind::Attribute, "identifier"),
                     Buffer::from(tag_bytes.to_vec()),
                 )
@@ -9389,7 +9543,7 @@ entities:
             .encode_create_json(person_key.clone(), input)
             .unwrap();
         let decoded = runtime
-            .decode_create_json(person_key.clone(), Buffer::from(create_bytes.to_vec()))
+            .decode_create_json_inner(person_key.clone(), Buffer::from(create_bytes.to_vec()))
             .unwrap();
         let decoded: ProjectedWire = serde_json::from_str(&decoded).unwrap();
         assert_eq!(decoded.type_key, wire.type_key);
@@ -9412,7 +9566,10 @@ entities:
             .unwrap();
         let decoded: ProjectedWire = serde_json::from_str(
             &runtime
-                .decode_reference_json(person_key.clone(), Buffer::from(reference_bytes.to_vec()))
+                .decode_reference_json_inner(
+                    person_key.clone(),
+                    Buffer::from(reference_bytes.to_vec()),
+                )
                 .unwrap(),
         )
         .unwrap();
@@ -9433,7 +9590,7 @@ entities:
             .unwrap();
         let decoded: ProjectedWire = serde_json::from_str(
             &runtime
-                .decode_snapshot_json(person_key, Buffer::from(snapshot_bytes.to_vec()))
+                .decode_snapshot_json_inner(person_key, Buffer::from(snapshot_bytes.to_vec()))
                 .unwrap(),
         )
         .unwrap();
@@ -9449,9 +9606,9 @@ entities:
             snapshot_bytes.to_vec(),
         ];
         let archive = runtime
-            .encode_archive(expected_records.iter().cloned().map(Buffer::from).collect())
+            .encode_archive_inner(expected_records.iter().cloned().map(Buffer::from).collect())
             .unwrap();
-        let decoded = runtime.decode_archive(archive).unwrap();
+        let decoded = runtime.decode_archive_inner(archive).unwrap();
         assert_eq!(
             decoded
                 .iter()
@@ -9467,12 +9624,12 @@ entities:
                 .to_owned()
         };
         let records = || expected_records.iter().cloned().map(Buffer::from).collect();
-        let archive = runtime.encode_archive(records()).unwrap();
+        let archive = runtime.encode_archive_inner(records()).unwrap();
 
         let cancelled = NodeQueryCancellation::new();
         cancelled.cancel();
         let error = runtime
-            .decode_archive_controlled(
+            .decode_archive_controlled_inner(
                 Buffer::from(archive.to_vec()),
                 Some(&cancelled),
                 None,
@@ -9488,7 +9645,7 @@ entities:
 
         assert!(
             runtime
-                .decode_archive_controlled(
+                .decode_archive_controlled_inner(
                     Buffer::from(archive.to_vec()),
                     None,
                     Some(0_u64.into()),
@@ -9510,7 +9667,7 @@ entities:
         );
 
         let error = runtime
-            .decode_archive_controlled(
+            .decode_archive_controlled_inner(
                 Buffer::from(archive.to_vec()),
                 None,
                 None,
@@ -9525,19 +9682,19 @@ entities:
         assert_eq!(diagnostic_code(error), "projected_codec_input_limit");
 
         let error = runtime
-            .encode_archive_controlled(records(), None, None, None, Some(1), None, None, None)
+            .encode_archive_controlled_inner(records(), None, None, None, Some(1), None, None, None)
             .err()
             .expect("oversized output is rejected");
         assert_eq!(diagnostic_code(error), "projected_codec_output_limit");
 
         let error = runtime
-            .encode_archive_controlled(records(), None, None, None, None, None, Some(1), None)
+            .encode_archive_controlled_inner(records(), None, None, None, None, None, Some(1), None)
             .err()
             .expect("excess records are rejected");
         assert_eq!(diagnostic_code(error), "projected_codec_member_limit");
 
         let error = runtime
-            .decode_archive_controlled(
+            .decode_archive_controlled_inner(
                 Buffer::from(archive.to_vec()),
                 None,
                 None,
