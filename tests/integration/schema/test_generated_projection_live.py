@@ -3411,6 +3411,22 @@ def test_named_zone_filters_match_raw_typeql_live(
     asyncio.run(check())
 
 
+def test_reentering_transaction_preserves_pending_writes_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    person = _make_generated_person(generated_package, "context-reentry", 17)
+    with clean_db.transaction("write") as transaction:
+        generated_package.Person.manager(transaction).insert(person)
+        with pytest.raises(RuntimeError, match="already entered"):
+            transaction.__enter__()
+    assert generated_package.Person.manager(clean_db).get_by_iid(person.iid) is not None
+    with pytest.raises(ValueError, match="transaction type"):
+        clean_db.transaction("wirte")
+
+
 def test_rejected_generated_query_releases_owned_transaction_before_close_live(
     clean_db: Database,
     generated_package: ModuleType,

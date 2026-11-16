@@ -301,3 +301,32 @@ class TestGetSchema:
         schema = clean_db.get_schema()
         assert "session_test_person" in schema
         assert "SessionName" in schema
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", ["native", "driver"])
+@pytest.mark.parametrize(("username", "password"), [("alice", ""), ("", ""), ("alice", None)])
+def test_partial_credentials_never_substitute_admin_live(
+    clean_db: Database,
+    path: str,
+    username: str,
+    password: str | None,
+) -> None:
+    assert clean_db.database_exists()
+    database = Database(
+        address=clean_db.address,
+        database=clean_db.database_name,
+        http_port=clean_db.http_port,
+        username=username,
+        password=password,
+    )
+    try:
+        with pytest.raises(ValueError, match="username and password"):
+            if path == "native":
+                database.connect()
+            else:
+                _ = database.driver
+        assert getattr(database, "_native_database", None) is None
+        assert database._driver is None
+    finally:
+        database.close()
