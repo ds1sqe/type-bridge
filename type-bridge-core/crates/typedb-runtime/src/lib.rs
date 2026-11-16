@@ -545,8 +545,12 @@ impl RuntimeConnectionControl {
 /// ends without a latency window): the close never completes, the read
 /// transaction never times out, and the database stays "in use" until the
 /// server restarts. Two leaves room for both trailing messages.
-const BOUNDED_QUERY_PREFETCH_SIZE: u64 = 2;
+const BOUNDED_QUERY_PREFETCH_SIZE: u64 = 32;
 const _: () = assert!(BOUNDED_QUERY_PREFETCH_SIZE >= 2);
+
+fn bounded_query_prefetch_size(remaining_items: u64) -> u64 {
+    remaining_items.clamp(2, BOUNDED_QUERY_PREFETCH_SIZE)
+}
 
 /// Hard limits checked while polling a real driver answer stream.
 #[derive(Debug, Clone)]
@@ -2831,7 +2835,7 @@ impl RuntimeTransaction {
                                 driver_b9::QueryOptions::new()
                             } else {
                                 driver_b9::QueryOptions::new()
-                                    .prefetch_size(BOUNDED_QUERY_PREFETCH_SIZE)
+                                    .prefetch_size(bounded_query_prefetch_size(limits.max_items))
                             };
                             if let Some(statement) = statement_display {
                                 tracing::trace!(target: "type_bridge.io", statement, "type_bridge.io.provider.statement");
@@ -2966,7 +2970,7 @@ impl RuntimeTransaction {
                                 driver_b9::QueryOptions::new()
                             } else {
                                 driver_b9::QueryOptions::new()
-                                    .prefetch_size(BOUNDED_QUERY_PREFETCH_SIZE)
+                                    .prefetch_size(bounded_query_prefetch_size(limits.max_items))
                             };
                             if let Some(statement) = statement_display {
                                 tracing::trace!(target: "type_bridge.io", statement, "type_bridge.io.provider.statement");
@@ -3768,6 +3772,21 @@ mod tests {
     use std::io;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn bounded_prefetch_respects_the_item_limit_and_safe_close_floor() {
+        for (items, expected) in [
+            (0, 2),
+            (1, 2),
+            (2, 2),
+            (10, 10),
+            (32, 32),
+            (100, 32),
+            (u64::MAX, 32),
+        ] {
+            assert_eq!(bounded_query_prefetch_size(items), expected);
+        }
+    }
 
     #[test]
     fn transaction_options_forward_independent_driver_deadlines() {

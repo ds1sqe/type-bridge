@@ -167,3 +167,100 @@ async fn dispatch_observer_counts_sent_statements_and_skips_preflight_refusals()
     runtime.force_close().unwrap();
     result.unwrap();
 }
+
+/// Closing a paused bounded stream must acknowledge release before deletion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bounded_early_stop_close_releases_database_immediately() {
+    use type_bridge_typedb_runtime::{RuntimeAnswerControl, RuntimeAnswerLimits};
+    let Some((runtime, database)) = fixture().await else {
+        return;
+    };
+    let result = async {
+        let mut write = runtime.open_transaction(&database, TxType::Write).await?;
+        let seed = format!(
+            "insert {}",
+            (0..100)
+                .map(|index| format!("$m{index} isa marker;"))
+                .collect::<String>()
+        );
+        write.query(&seed).await?;
+        write.commit().await?;
+        drop(write);
+        for max_items in [1, 5, 32, 1000] {
+            let mut read = runtime.open_transaction(&database, TxType::Read).await?;
+            let mut first = |_| Ok(RuntimeAnswerControl::Stop);
+            let stats = read
+                .query_bounded(
+                    "match $m isa marker; select $m;",
+                    RuntimeAnswerLimits {
+                        max_items,
+                        max_bytes: 1024 * 1024,
+                        deadline: None,
+                        cancellation: Default::default(),
+                    },
+                    &mut first,
+                )
+                .await?;
+            assert!(stats.stopped_early);
+            tokio::time::timeout(Duration::from_secs(5), read.close())
+                .await
+                .expect("paused stream close acknowledgement")?;
+            drop(read);
+        }
+        Ok::<_, type_bridge_typedb_runtime::RuntimeError>(())
+    }
+    .await;
+    // No retry: close must release the server transaction on both supported bands.
+    let deleted =
+        tokio::time::timeout(Duration::from_secs(5), runtime.delete_database(&database)).await;
+    runtime.force_close().unwrap();
+    result.unwrap();
+    deleted
+        .expect("database released immediately after close")
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bounded_stream_delivers_one_thousand_rows() {
+    use type_bridge_typedb_runtime::{RuntimeAnswerControl, RuntimeAnswerLimits};
+    let Some((runtime, database)) = fixture().await else {
+        return;
+    };
+    let result = async {
+        let mut write = runtime.open_transaction(&database, TxType::Write).await?;
+        let seed = format!(
+            "insert {}",
+            (0..1000)
+                .map(|index| format!("$m{index} isa marker;"))
+                .collect::<String>()
+        );
+        write.query(&seed).await?;
+        write.commit().await?;
+        drop(write);
+        let mut read = runtime.open_transaction(&database, TxType::Read).await?;
+        let mut all = |_| Ok(RuntimeAnswerControl::Continue);
+        eprintln!("bounded 1000-row stream starts");
+        let started = std::time::Instant::now();
+        let stats = read
+            .query_bounded(
+                "match $m isa marker; select $m;",
+                RuntimeAnswerLimits {
+                    max_items: 1000,
+                    max_bytes: 1024 * 1024,
+                    deadline: None,
+                    cancellation: Default::default(),
+                },
+                &mut all,
+            )
+            .await?;
+        eprintln!("bounded 1000-row stream ends: {:?}", started.elapsed());
+        assert_eq!(stats.processed_items, 1000);
+        read.close().await?;
+        drop(read);
+        Ok::<_, type_bridge_typedb_runtime::RuntimeError>(())
+    }
+    .await;
+    runtime.delete_database(&database).await.unwrap();
+    runtime.force_close().unwrap();
+    result.unwrap();
+}
