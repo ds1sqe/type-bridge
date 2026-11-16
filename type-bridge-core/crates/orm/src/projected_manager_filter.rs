@@ -168,14 +168,7 @@ impl ProjectedManagerFilter {
         model: TypeId,
     ) -> Result<Self, SdkExecutionDiagnostic> {
         require_manager_model(installed, &model)?;
-        let match_mode = if installed.projection().models()[&model]
-            .declaration()
-            .is_abstract()
-        {
-            MatchMode::Subtypes
-        } else {
-            MatchMode::Exact
-        };
+        let match_mode = manager_read_mode(installed, &model, MatchMode::Exact);
         Ok(Self {
             brand: ProjectionBrand::from_installed(installed),
             measure: ProjectedManagerFilterResourceMeasure {
@@ -1102,6 +1095,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     > {
         let control = control.constrained_by(target.answer_limits());
         self.compatibility_preflight(model, &control)?;
+        let mode = manager_read_mode(self.installed, model, mode);
         let limits = target
             .manager_query_limits(control.deadline, &control.cancellation)
             .await?;
@@ -1146,6 +1140,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.compatibility_preflight(model, &control)?;
+        let mode = manager_read_mode(self.installed, model, mode);
         let limits = target
             .manager_query_limits(control.deadline, &control.cancellation)
             .await?;
@@ -1897,6 +1892,23 @@ fn lower_manager_first(error: crate::OrmError, model: &TypeId) -> SdkExecutionDi
         .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure());
     }
     lower_execution_error(error, SdkProviderOperation::Read)
+}
+
+fn manager_read_mode(
+    installed: &InstalledRuntimeProjection,
+    model: &TypeId,
+    mode: MatchMode,
+) -> MatchMode {
+    if installed
+        .projection()
+        .models()
+        .get(model)
+        .is_some_and(|model| model.declaration().is_abstract())
+    {
+        MatchMode::Subtypes
+    } else {
+        mode
+    }
 }
 
 fn require_manager_model(

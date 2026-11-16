@@ -4333,6 +4333,7 @@ async fn subtype_manager_reads_share_native_origins_and_keep_exact_and_iid_fence
                 documents(vec![]),
                 documents(vec![person_document("0x11")]),
                 documents(vec![person_document("0x10")]),
+                documents(vec![event_document("0x10")]),
             ],
             CommitBehavior::Success,
         );
@@ -4390,20 +4391,34 @@ async fn subtype_manager_reads_share_native_origins_and_keep_exact_and_iid_fence
             .unwrap_err()
             .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read);
         assert_eq!(wrong_iid.code().as_str(), "hydrated_iid_mismatch");
-        let wrong_exact = executor
+        let abstract_default = executor
             .compatibility_all_on_target(target, &root, &[], control())
+            .await
+            .unwrap();
+        assert_eq!(abstract_default.len(), 1);
+        assert_eq!(
+            abstract_default[0].type_id(),
+            &type_id(TypeKind::Entity, "person")
+        );
+        let wrong_exact = executor
+            .compatibility_all_on_target(
+                target,
+                &type_id(TypeKind::Entity, "person"),
+                &[],
+                control(),
+            )
             .await
             .unwrap_err()
             .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read);
         assert_eq!(wrong_exact.category(), SdkDiagnosticCategory::Integrity);
         let state = state.lock().unwrap();
-        assert_eq!(state.queries.len(), 6);
+        assert_eq!(state.queries.len(), 7);
         assert!(
-            state.queries[..5]
+            state.queries[..6]
                 .iter()
                 .all(|query| query.contains("isa actor") && !query.contains("isa! actor"))
         );
-        assert!(state.queries[5].contains("isa! actor"));
+        assert!(state.queries[6].contains("isa! person"));
         assert_eq!((state.commits, state.rollbacks), (0, 0));
     }
 }
