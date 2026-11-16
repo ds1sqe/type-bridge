@@ -4414,3 +4414,129 @@ async fn optional_sort_accepts_presence_filters_and_refuses_missing_roots() {
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abstract_managers_and_exact_bindings_return_concrete_subtypes() {
+    use std::sync::Arc;
+    use type_bridge_orm::match_request::{
+        MatchMode, MatchResult, RowCardinality, SessionHandle, Window,
+    };
+    use type_bridge_orm::{ProjectedManagerFilter, ProjectedManagerFilterExecutor};
+    let Some(db) = live_database("abstract_reads").await else {
+        return;
+    };
+    let typeql = PARTY_SCHEMA_TYPEQL
+        .replace("relation membership,", "relation membership @abstract,")
+        + " relation concrete-membership sub membership;";
+    db.execute_raw(&typeql, TxType::Schema).await.unwrap();
+    db.execute_raw("insert $p isa person, has identifier \"P\"; $c isa company, has identifier \"C\"; $a isa concrete-membership, links (member: $p); $b isa concrete-membership, links (member: $c);", TxType::Write).await.unwrap();
+    let yaml = PARTY_SCHEMA_YAML
+        .replace(
+            "  membership:\n    owns:",
+            "  membership:\n    abstract: true\n    owns:",
+        )
+        .replace(
+            "plays:\n",
+            "  concrete-membership:\n    sub: membership\nplays:\n",
+        );
+    let profile = if std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")
+        .unwrap()
+        .starts_with("3.12")
+    {
+        "typedb-3.12.1/v1"
+    } else {
+        "typedb-3.13.6/v1"
+    };
+    let installed = party_projection_for_profile(&yaml, profile);
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let session = SessionHandle::new(Arc::clone(&registry));
+    let manager = ProjectedManagerFilterExecutor::new(&installed);
+    for (kind, name) in [
+        (TypeKind::Entity, "party"),
+        (TypeKind::Relation, "membership"),
+    ] {
+        let model = TypeId::new(kind, name).unwrap();
+        let filter = ProjectedManagerFilter::try_new(&installed, model).unwrap();
+        let values = manager
+            .all(&db, &filter, Default::default(), Default::default())
+            .await
+            .unwrap();
+        assert_eq!(values.len(), 2);
+        assert_eq!(
+            manager
+                .count(&db, &filter, Default::default(), Default::default())
+                .await
+                .unwrap(),
+            2
+        );
+        assert!(
+            manager
+                .exists(&db, &filter, Default::default(), Default::default())
+                .await
+                .unwrap()
+        );
+        let by_iid = filter
+            .try_and_iid(
+                &installed,
+                &type_bridge_contract::id::Iid::new(values[0].iid()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            manager
+                .all(&db, &by_iid, Default::default(), Default::default())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            manager
+                .first(&db, &by_iid, Default::default(), Default::default())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let binding = session.exact(name).unwrap();
+        let query = session
+            .query(session.positional([binding.one()]).unwrap())
+            .unwrap();
+        let count = query.validate_count_by(&binding).unwrap();
+        assert_eq!(
+            count.request().plan.bindings[0].match_mode,
+            MatchMode::Subtypes
+        );
+        ProjectedManagerFilter::try_from_validated_exact_query(&installed, &count).unwrap();
+        let result = db.execute_match(&registry, &count).await.unwrap();
+        assert!(matches!(
+            result.result(),
+            MatchResult::Count { value: 2, .. }
+        ));
+        let request = query
+            .validate_fetch_rows(
+                &[],
+                Window {
+                    offset: 0,
+                    limit: 10,
+                },
+                RowCardinality::BoundedMany,
+            )
+            .unwrap();
+        let result = db.execute_match(&registry, &request).await.unwrap();
+        assert!(matches!(result.result(), MatchResult::Rows { rows } if rows.len() == 2));
+    }
+    let dynamic = type_bridge_orm::_manager::DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("party").unwrap(),
+    );
+    assert_eq!(
+        dynamic
+            .get_exact_with_query(&[], &[], None, None)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}

@@ -163,6 +163,9 @@ pub enum Failure {
 }
 impl Failure {
     /// Whether repeating the whole transaction cannot duplicate this commit.
+    ///
+    /// Safe to retry does not mean likely to succeed: a deterministic rejection
+    /// (type inference, validation, or a constraint) fails again unchanged.
     #[must_use]
     pub const fn retry_safe(&self) -> bool {
         matches!(self, Self::Rejected { .. })

@@ -130,9 +130,10 @@ So:
 ## When the commit fails
 
 A lost race is a typed conflict at commit, and nothing from the transaction
-is stored. When `retry_safe` is true, run the whole transaction again; it
-reads a fresh snapshot, so the retried checkout sees the stock the winner
-left.
+is stored. For this conflict, `retry_safe` is true: run the whole transaction
+again on a fresh snapshot, so the retried checkout sees the stock the winner
+left. Safe to retry does not mean likely to succeed: deterministic type-inference,
+validation, and constraint rejections fail again unchanged.
 
 The program's race step shows it. Eight buyers check out the last lamp at
 the same moment, each in its own transaction. Every buyer stages first, then

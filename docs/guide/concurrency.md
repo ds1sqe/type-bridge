@@ -409,8 +409,9 @@ provider `code`. Values and the conflicting winner are
 | `CommitOutcomeUnknown` | `code` such as `STC1`, `DCT5` or none; `retry_safe` false | The writes may have applied. Reconcile by the operation key before repeating them. |
 
 `failure.retry_safe` is true for every proven rejection: repeating the whole
-transaction cannot apply it twice. It does not promise that a repeat
-succeeds; only a conflict can change on a new snapshot. A rejection while a
+transaction cannot apply it twice. Safe to retry does not mean likely to
+succeed: deterministic type-inference, validation, and constraint rejections
+fail again unchanged. Conflicts can resolve on a new snapshot. A rejection while a
 plan runs, before commit (`phase` `query`, such as `CNT9` for an already
 visible key), is not one of these classes, but it carries the same
 `.failure`.

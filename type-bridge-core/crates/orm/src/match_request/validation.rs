@@ -226,12 +226,17 @@ pub fn validate_match_request(
 /// validation ran under.
 pub fn validate_match_request_with_limits(
     registry: &DescriptorRegistry,
-    request: MatchRequest,
+    mut request: MatchRequest,
     query_limits: QueryLimits,
 ) -> Result<ValidatedMatchRequest, MatchError> {
     let limits = query_limits.structural;
     validate_version_and_structure(limits, &request)?;
     let bindings = resolve_bindings(registry, &request)?;
+    for binding in &mut request.plan.bindings {
+        if bindings[&binding.id].is_abstract() {
+            binding.match_mode = MatchMode::Subtypes;
+        }
+    }
     validate_expression(registry, &request, &bindings)?;
     validate_topology(&request)?;
     let (stable_order, collection_orders) = validate_operation(registry, &request, &bindings)?;

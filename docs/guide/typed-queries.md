@@ -26,7 +26,11 @@ terminal is a coroutine on every connection, so Python code awaits it.
 TypeScript is the same: `new QuerySession(connection)` takes a `Database`,
 a transaction, or a proxy connection, and every terminal returns a `Promise`.
 
-Use `exact(Model)` for exactly one schema type and `subtypes(Model)` for a
+Abstract model managers and `exact(AbstractModel)` read all concrete descendants;
+abstract types cannot have exact instances. Concrete model managers and
+`exact(ConcreteModel)` retain exact matching.
+
+Use `exact(Model)` for exactly one concrete schema type and `subtypes(Model)` for a
 polymorphic binding. Concrete result evidence determines the generated class
 used for hydration.
 

@@ -467,6 +467,7 @@ impl ManagerPlans {
         terminal: ReadTerminal,
     ) -> Result<ManagerRead> {
         let type_id = self.type_id(name)?;
+        let exact = exact && !self.attributes(&type_id)?.is_abstract();
         let mut draft = self.authority()?.draft(self.transport);
         let root = draft.bind("root").map_err(diagnostic)?;
         let mut patterns = vec![Pattern::Read(QueryPattern::Isa {

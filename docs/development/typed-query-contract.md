@@ -45,8 +45,10 @@ behaviors reopens model or schema declaration in the base SDK.
 
 `QuerySession.var(Model)` returns one `BoundVar[Model]`. Two calls for the same
 model have the same static type and different opaque runtime identities. New
-bindings match their declared type exactly by default. Subtype-inclusive
-matching must be requested explicitly on that binding.
+bindings match concrete declared types exactly by default. Abstract declared
+types are normalized to subtype-inclusive reads, since abstract types cannot
+have exact instances. Subtype-inclusive matching on a concrete type must be
+requested explicitly on that binding.
 
 `QuerySession.query(selection, ...)` requires between 1 and 16 selections. The
 arguments declare the positional output in construction order. Selecting the

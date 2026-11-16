@@ -1039,7 +1039,9 @@ type_bridge_execution_diagnostics_close(
  * commit's. The ABI 1.6 detail set above is unchanged; these fields are read
  * only here. A diagnostic without a typed failure reports
  * TYPE_BRIDGE_FAILURE_OUTCOME_NONE with every other field zero. retry_safe is
- * one when repeating the whole transaction cannot duplicate a commit;
+ * one when repeating the whole transaction cannot duplicate a commit.
+ * Safe to retry does not mean likely to succeed: deterministic rejections
+ * (type inference, validation, constraints) fail again unchanged.
  * op_index (when has_op_index is one) names the failed staged plan in staging
  * order. code borrows the diagnostics handle and is empty when unknown.
  */

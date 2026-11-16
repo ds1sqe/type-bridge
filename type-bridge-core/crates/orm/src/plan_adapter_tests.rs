@@ -1423,3 +1423,49 @@ fn keyless_windows_use_iid_tie_breakers() {
         );
     }
 }
+
+#[test]
+fn abstract_bindings_are_validated_as_subtype_reads() {
+    use crate::match_request::SessionHandle;
+    let registry = Arc::new(DescriptorRegistry::new());
+    registry
+        .register_entity(EntityDescriptor {
+            type_name: "party".into(),
+            is_abstract: true,
+            parent_type: None,
+            owned_attributes: vec![],
+            doc: None,
+            meta: Default::default(),
+        })
+        .unwrap();
+    registry
+        .register_relation(RelationDescriptor {
+            type_name: "connection".into(),
+            is_abstract: true,
+            parent_type: None,
+            owned_attributes: vec![],
+            roles: vec![],
+            doc: None,
+            meta: Default::default(),
+        })
+        .unwrap();
+    let session = SessionHandle::new(Arc::clone(&registry));
+    for name in ["party", "connection"] {
+        let binding = session.exact(name).unwrap();
+        assert_eq!(binding.match_mode(), MatchMode::Exact);
+        let query = session
+            .query(session.positional([binding.one()]).unwrap())
+            .unwrap();
+        let request = query.validate_count_by(&binding).unwrap();
+        assert_eq!(
+            request.request().plan.bindings[0].match_mode,
+            MatchMode::Subtypes
+        );
+        let stack =
+            crate::match_request::plan_adapter::adapt_match_request(&registry, &request).unwrap();
+        let lowered = crate::query_plan_exec::lower(&stack.plans[0]).unwrap();
+        let typeql = type_bridge_core_lib::__internal::render(&lowered.query).unwrap();
+        assert!(typeql.contains(&format!("isa {name}")), "{typeql}");
+        assert!(!typeql.contains("isa!"), "{typeql}");
+    }
+}

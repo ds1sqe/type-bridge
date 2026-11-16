@@ -35,3 +35,6 @@ Python provider failures expose an immutable `error.failure` dataclass with
 exported by `type_bridge`. Existing structured-query exception ancestry stays
 unchanged. A rejection permits rerunning the entire transaction on a fresh
 snapshot; an indeterminate commit must be reconciled before retrying.
+`retry_safe` means a repeat cannot duplicate a commit. It does not promise
+success: deterministic type-inference, validation, and constraint rejections
+fail again unchanged.

@@ -5,7 +5,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Failure:
-    """A proven rejection or an indeterminate commit; values are never included."""
+    """A proven rejection or an indeterminate commit; values are never included.
+
+    ``retry_safe`` means repeating the whole transaction cannot duplicate a commit.
+    Safe to retry does not mean likely to succeed: deterministic rejections fail
+    again unchanged.
+    """
 
     phase: str
     reason: str | None

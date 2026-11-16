@@ -232,6 +232,13 @@ pub enum TypeDescriptorRef {
 }
 
 impl TypeDescriptorRef {
+    pub(crate) fn is_abstract(&self) -> bool {
+        match self {
+            Self::Entity(descriptor) => descriptor.is_abstract,
+            Self::Relation(descriptor) => descriptor.is_abstract,
+        }
+    }
+
     pub(crate) fn owned_attributes(&self) -> &[OwnedAttributeDescriptor] {
         match self {
             Self::Entity(descriptor) => &descriptor.owned_attributes,

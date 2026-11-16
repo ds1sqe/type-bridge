@@ -59,6 +59,7 @@ export interface ProviderFailure {
     readonly lock_kind: "exclusive" | "require_deleted_key" | "deleting_required_key" | "unknown" | null;
     readonly annotation: string | null;
     readonly op_index: number | null;
+    /** A repeat cannot duplicate a commit; deterministic rejections fail again unchanged. */
     readonly retry_safe: boolean;
     readonly code: string | null;
 }

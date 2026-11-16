@@ -444,6 +444,9 @@ impl Error {
     }
 
     /// Typed provider outcome carried by the canonical diagnostic source.
+    ///
+    /// `retry_safe` means a repeat cannot duplicate a commit, not that it will
+    /// succeed. Deterministic rejections fail again unchanged.
     #[must_use]
     pub fn failure(&self) -> Option<type_bridge_contract::failure::Failure> {
         let mut source = StdError::source(self);

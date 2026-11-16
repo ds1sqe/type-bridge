@@ -969,7 +969,9 @@ they are. C ABI 2.0 carries the same typed failure details. The client rebuilds 
 only when they name a complete, consistent failure in the closed vocabulary, so
 a refusal over the proxy is typed exactly as the same direct commit would be.
 `commit_outcome_unknown` remains indeterminate; a failed outcome alone never
-implies a safe retry. SDK messages stay implementation-owned static text during
+implies a safe retry. `retry_safe` means repeating the whole transaction cannot
+duplicate a commit. Safe to retry does not mean likely to succeed: deterministic
+type-inference, validation, and constraint rejections fail again unchanged. SDK messages stay implementation-owned static text during
 authoring. Authentication precedes interpretation of their bounded host-JSON
 wire projection, which does not weaken the in-memory SDK diagnostic contract.
 

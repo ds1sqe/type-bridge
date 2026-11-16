@@ -168,6 +168,14 @@ impl ProjectedManagerFilter {
         model: TypeId,
     ) -> Result<Self, SdkExecutionDiagnostic> {
         require_manager_model(installed, &model)?;
+        let match_mode = if installed.projection().models()[&model]
+            .declaration()
+            .is_abstract()
+        {
+            MatchMode::Subtypes
+        } else {
+            MatchMode::Exact
+        };
         Ok(Self {
             brand: ProjectionBrand::from_installed(installed),
             measure: ProjectedManagerFilterResourceMeasure {
@@ -178,7 +186,7 @@ impl ProjectedManagerFilter {
             model,
             predicates: Arc::from([]),
             matches_none: false,
-            match_mode: MatchMode::Exact,
+            match_mode,
         })
     }
 
@@ -555,7 +563,8 @@ impl ProjectedManagerFilter {
     }
 
     /// Reconstruct the strict manager subset from one canonically validated
-    /// exact single-model `CountBy` query.
+    /// exact single-model `CountBy` query. Abstract roots use their normalized
+    /// subtype-inclusive read scope.
     #[doc(hidden)]
     pub fn try_from_validated_exact_query(
         installed: &InstalledRuntimeProjection,
@@ -568,15 +577,15 @@ impl ProjectedManagerFilter {
         let MatchOperation::CountBy { root } = request.operation else {
             return Err(manager_query_shape_invalid());
         };
-        if root != binding.id
-            || binding.match_mode != MatchMode::Exact
-            || !request.plan.allowed_cross_joins.is_empty()
-        {
+        if root != binding.id || !request.plan.allowed_cross_joins.is_empty() {
             return Err(manager_query_shape_invalid());
         }
         let model = descriptor_type_id(&binding.descriptor, binding.thing_kind)
             .ok_or_else(manager_query_shape_invalid)?;
         let mut filter = Self::try_new(installed, model.clone())?;
+        if binding.match_mode != filter.match_mode {
+            return Err(manager_query_shape_invalid());
+        }
         if let Some(expression) = request.plan.predicate.as_ref() {
             append_validated_manager_expression(
                 installed,
