@@ -2,9 +2,7 @@
 
 use crate::plan_lowering::failure;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
-use type_bridge_contract::temporal::{
-    CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
-};
+use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDuration};
 use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
 };
@@ -54,9 +52,10 @@ pub fn plan_scalar(
         (ValueTypeTag::DateTime, PlanScalarInput::Text(value)) => value
             .parse::<CanonicalDateTime>()
             .map(CanonicalValue::DateTime),
-        (ValueTypeTag::DateTimeTz, PlanScalarInput::Text(value)) => value
-            .parse::<CanonicalDateTimeTz>()
-            .map(CanonicalValue::DateTimeTz),
+        (ValueTypeTag::DateTimeTz, PlanScalarInput::Text(value)) => {
+            type_bridge_schema::parse_provider_datetime_tz_evidence(&value)
+                .map(CanonicalValue::DateTimeTz)
+        }
         (ValueTypeTag::Decimal, PlanScalarInput::Text(value)) => {
             DecimalValue::new(value).map(CanonicalValue::Decimal)
         }
@@ -125,4 +124,26 @@ pub fn host_string_type_error() -> Diagnostic {
         "query_host_string_type",
         "host string input must be a string value",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_datetime_tz_plan_inputs_keep_the_zone_and_nanoseconds() {
+        let value = plan_scalar(
+            ValueTypeTag::DateTimeTz,
+            PlanScalarInput::Text("2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]".into()),
+        )
+        .unwrap();
+        let CanonicalValue::DateTimeTz(value) = value else {
+            panic!("datetime-tz");
+        };
+        assert_eq!(value.local().to_string(), "2024-01-01T00:00:00.123456789");
+        assert_eq!(value.effective_offset_seconds(), 32_400);
+        assert!(
+            matches!(value.zone(), type_bridge_contract::temporal::TimeZoneDesignator::Named(name) if name == "Asia/Seoul")
+        );
+    }
 }

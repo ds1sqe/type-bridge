@@ -3650,7 +3650,7 @@ entities:
             .find(|(name, _)| name == "seen-tz")
             .unwrap()
             .1,
-        AttributeValue::DateTimeTZ("2024-01-01T00:00:00.123456789[Asia/Seoul]".into(),)
+        AttributeValue::DateTimeTZ("2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]".into(),)
     );
     db.delete_database().await.unwrap();
     db.close().unwrap();

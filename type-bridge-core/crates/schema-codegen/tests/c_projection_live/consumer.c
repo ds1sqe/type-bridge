@@ -848,6 +848,7 @@ static int open_person_create(
   fixture_valzudecimal *decimal = NULL;
   fixture_valzudouble *double_value = NULL;
   fixture_valzuduration *duration = NULL;
+  const int is_temporal = strcmp(identifier_text, "temporal-fidelity") == 0;
   const int is_query_ada = strcmp(identifier_text, "query-ada") == 0;
   const int is_query_dana = strcmp(identifier_text, "query-dana") == 0;
   const int is_serialization_live = strcmp(identifier_text, "v5-live-person") == 0;
@@ -903,13 +904,13 @@ static int open_person_create(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudate_open(
             package,
-            view_of(is_serialization_live ? "2026-08-03"
+            view_of(is_temporal ? "-0001-01-01" : is_serialization_live ? "2026-08-03"
                                : (is_sdk ? date_value : "2026-08-11")),
             &date,
                                out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudatetime_open(
             package,
-            view_of(is_serialization_live
+            view_of(is_temporal ? "2024-01-01T00:00:00.123456789" : is_serialization_live
                         ? "2026-08-03T03:55:00"
                         : (is_sdk ? datetime_value
                                         : "2026-08-11T07:30:00.5")),
@@ -917,7 +918,7 @@ static int open_person_create(
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzudatetimezutzz_open(
             package,
-            view_of(is_serialization_live
+            view_of(is_temporal ? "2024-01-01T00:00:00.123456789[Asia/Seoul]" : is_serialization_live
                         ? "2026-08-03T03:55:00Z"
                         : (is_sdk ? datetime_tz_value
                                         : "2026-08-11T07:30:00Z")),
@@ -938,7 +939,7 @@ static int open_person_create(
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzuduration_open(
             package,
-            view_of(is_serialization_live ? "P6D"
+            view_of(is_temporal ? "P1M" : is_serialization_live ? "P6D"
                                : (is_sdk ? duration_value : "P1D")),
             &duration,
                                    out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -5653,6 +5654,100 @@ static int run_sdk_serialization_live_codec(
 }
 #endif
 
+static int temporal_person_fields_match(
+    const fixture_person *person,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  fixture_valzudate *date = NULL;
+  fixture_valzudatetime *datetime = NULL;
+  fixture_valzudatetimezutzz *timezone = NULL;
+  fixture_valzuduration *duration = NULL;
+  type_bridge_byte_view_t text = {NULL, 0u};
+  CHECK(fixture_person_valzudate(person, &date, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_valzudate_value(date, &text, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(same_text(text, "-0001-01-01"));
+  CHECK(fixture_person_valzudatetime(person, &datetime, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_valzudatetime_value(datetime, &text, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(same_text(text, "2024-01-01T00:00:00.123456789"));
+  CHECK(fixture_person_valzudatetimezutzz(person, &timezone, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_valzudatetimezutzz_value(timezone, &text, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(same_text(text, "2024-01-01T00:00:00.123456789[Asia/Seoul]"));
+  CHECK(fixture_person_valzuduration(person, &duration, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_valzuduration_value(duration, &text, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(same_text(text, "P1M"));
+  CHECK(fixture_valzudate_close(&date) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_valzudatetime_close(&datetime) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_valzudatetimezutzz_close(&timezone) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_valzuduration_close(&duration) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
+static int check_temporal_replacement_live(
+    const type_bridge_schema_package_t *package, type_bridge_database_t *database,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  type_bridge_status_t write_status;
+  fixture_person_insert_batch_result *fixture_person_insert_result = NULL;
+  fixture_person_update_batch_result *fixture_person_update_result = NULL;
+  fixture_person_create *input = NULL;
+  fixture_person *person = NULL;
+  type_bridge_iid_t *iid = NULL;
+  uint8_t iid_storage[256];
+  size_t iid_length = 0u;
+  fixture_person_create_args_v1_t args = {0};
+  fixture_score *score = NULL;
+  CHECK(open_person_create(package, "temporal-fidelity", 1, &input, diagnostics) == 0);
+  CHECK(TEST_SINGLE_WRITE(fixture_person, insert,
+      fixture_person_database_insert(database, input, NULL, NULL, &fixture_person_insert_result, diagnostics),
+      &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(copy_person_iid(person, iid_storage, sizeof(iid_storage), &iid_length, diagnostics) == 0);
+  CHECK(type_bridge_iid_open((type_bridge_byte_view_t){iid_storage, iid_length}, &iid) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_create_close(&input) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_database_get_by_iid(database, iid, NULL, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(temporal_person_fields_match(person, diagnostics) == 0);
+  args.struct_size = sizeof(args);
+  args.version = FIXTURE_CREATE_ARGS_VERSION;
+#define RETAIN_TEMPORAL_FIELD(member, kind) \
+  kind *member = NULL; \
+  CHECK(fixture_person_##member(person, &member, diagnostics) == TYPE_BRIDGE_STATUS_OK); \
+  args.field_##member = member
+  RETAIN_TEMPORAL_FIELD(identifier, fixture_identifier);
+  RETAIN_TEMPORAL_FIELD(valzubool, fixture_valzubool);
+  RETAIN_TEMPORAL_FIELD(valzuconstrained, fixture_valzuconstrained);
+  RETAIN_TEMPORAL_FIELD(valzudate, fixture_valzudate);
+  RETAIN_TEMPORAL_FIELD(valzudatetime, fixture_valzudatetime);
+  RETAIN_TEMPORAL_FIELD(valzudatetimezutzz, fixture_valzudatetimezutzz);
+  RETAIN_TEMPORAL_FIELD(valzudecimal, fixture_valzudecimal);
+  RETAIN_TEMPORAL_FIELD(valzudouble, fixture_valzudouble);
+  RETAIN_TEMPORAL_FIELD(valzuduration, fixture_valzuduration);
+#undef RETAIN_TEMPORAL_FIELD
+  CHECK(fixture_score_open(package, 2, &score, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  args.field_score = score;
+  CHECK(fixture_person_create_open(package, &args, &input, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(TEST_SINGLE_WRITE(fixture_person, update,
+      fixture_person_database_update(database, iid, input, NULL, NULL, &fixture_person_update_result, diagnostics),
+      &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(temporal_person_fields_match(person, diagnostics) == 0);
+  CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_create_close(&input) == TYPE_BRIDGE_STATUS_OK);
+#define RELEASE_TEMPORAL_FIELD(member, kind) CHECK(kind##_close(&member) == TYPE_BRIDGE_STATUS_OK)
+  RELEASE_TEMPORAL_FIELD(identifier, fixture_identifier);
+  RELEASE_TEMPORAL_FIELD(valzubool, fixture_valzubool);
+  RELEASE_TEMPORAL_FIELD(valzuconstrained, fixture_valzuconstrained);
+  RELEASE_TEMPORAL_FIELD(valzudate, fixture_valzudate);
+  RELEASE_TEMPORAL_FIELD(valzudatetime, fixture_valzudatetime);
+  RELEASE_TEMPORAL_FIELD(valzudatetimezutzz, fixture_valzudatetimezutzz);
+  RELEASE_TEMPORAL_FIELD(valzudecimal, fixture_valzudecimal);
+  RELEASE_TEMPORAL_FIELD(valzudouble, fixture_valzudouble);
+  RELEASE_TEMPORAL_FIELD(valzuduration, fixture_valzuduration);
+#undef RELEASE_TEMPORAL_FIELD
+  CHECK(fixture_score_close(&score) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_database_delete_by_iid(database, iid, NULL, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_iid_close(&iid) == TYPE_BRIDGE_STATUS_OK);
+  puts("P4 temporal replacement fidelity: passed");
+  return 0;
+}
+
 int main(void) {
   type_bridge_status_t write_status;
   fixture_employee_insert_batch_result *fixture_employee_insert_result = NULL;
@@ -5781,6 +5876,8 @@ int main(void) {
         diagnostics == NULL);
   return 0;
 #endif
+  CHECK(check_temporal_replacement_live(package, database, &diagnostics) == 0);
+
 
   CHECK(fixture_robotzuid_open(package, 7, &robot_id, &diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);

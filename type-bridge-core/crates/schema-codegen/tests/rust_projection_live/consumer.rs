@@ -8336,3 +8336,41 @@ fn typed_iids(iids: &[String]) -> Vec<type_bridge::Iid> {
 fn typed_update_inputs<T>(inputs: Vec<(String, T)>) -> Vec<(type_bridge::Iid, T)> {
     inputs.into_iter().map(|(iid, input)| (type_bridge::Iid::new(iid).unwrap(), input)).collect()
 }
+
+#[tokio::test]
+async fn temporal_values_survive_hydration_and_replacement_updates() {
+    let db = database().await;
+    let create = PersonCreate::try_new(
+        vec![], None, Identifier::new("temporal-fidelity").unwrap(), None,
+        Score::new(1).unwrap(), None, ValBool::new(true).unwrap(),
+        ValConstrained::new(40).unwrap(), ValDate::new(Date::try_new("-0001-01-01").unwrap()).unwrap(),
+        ValDatetime::new(DateTime::try_new("2024-01-01T00:00:00.123456789").unwrap()).unwrap(),
+        ValDatetimeTz::new(DateTimeTz::try_new("2024-01-01T00:00:00.123456789[Asia/Seoul]").unwrap()).unwrap(),
+        ValDecimal::new(Decimal::try_new("0.0000001").unwrap()).unwrap(),
+        ValDouble::new(CanonicalDouble::try_new(3.5).unwrap()).unwrap(),
+        ValDuration::new(Duration::try_new("P1M").unwrap()).unwrap(),
+    ).unwrap();
+    let inserted = one_written(db.entities::<Person>().insert(create).await.unwrap());
+    let stored = db.entities::<Person>().get_by_iid(inserted.iid()).await.unwrap().unwrap();
+    let assert_temporal = |person: &Person| {
+        assert_eq!(person.val_date().value().as_str(), "-0001-01-01");
+        assert_eq!(person.val_datetime().value().as_str(), "2024-01-01T00:00:00.123456789");
+        assert_eq!(person.val_datetime_tz().value().as_str(), "2024-01-01T00:00:00.123456789[Asia/Seoul]");
+        assert_eq!(person.val_duration().value().as_str(), "P1M");
+    };
+    assert_temporal(&stored);
+    let replacement = PersonCreate::try_new(
+        stored.aliases().to_vec(), stored.foo__bar().cloned(), stored.identifier().clone(),
+        stored.nickname().cloned(), Score::new(2).unwrap(), stored.score__gte().cloned(),
+        stored.val_bool().clone(), stored.val_constrained().clone(), stored.val_date().clone(),
+        stored.val_datetime().clone(), stored.val_datetime_tz().clone(), stored.val_decimal().clone(),
+        stored.val_double().clone(), stored.val_duration().clone(),
+    ).unwrap();
+    let updated = one_written(db.entities::<Person>().update(stored.iid(), replacement).await.unwrap());
+    assert_temporal(&updated);
+    let reread = db.entities::<Person>().get_by_iid(stored.iid()).await.unwrap().unwrap();
+    assert_temporal(&reread);
+    assert_eq!(reread.score().value(), &2);
+    db.entities::<Person>().delete(stored.iid()).await.unwrap();
+    db.close().unwrap();
+}

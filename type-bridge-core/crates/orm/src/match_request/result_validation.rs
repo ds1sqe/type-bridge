@@ -1091,7 +1091,11 @@ pub(crate) fn released_attribute_value(value: &ModelValue) -> Result<AttributeVa
             CanonicalValue::Boolean(value) => AttributeValue::Boolean(*value),
             CanonicalValue::Date(value) => AttributeValue::Date(value.to_string()),
             CanonicalValue::DateTime(value) => AttributeValue::DateTime(value.to_string()),
-            CanonicalValue::DateTimeTz(value) => AttributeValue::DateTimeTZ(value.to_string()),
+            CanonicalValue::DateTimeTz(value) => {
+                crate::runtime_projection::attribute_value_from_canonical(
+                    &CanonicalValue::DateTimeTz(value.clone()),
+                )
+            }
             CanonicalValue::Decimal(value) => AttributeValue::Decimal(value.to_string()),
             CanonicalValue::Duration(value) => AttributeValue::Duration(value.to_string()),
         }
@@ -1141,7 +1145,11 @@ pub(crate) fn canonicalize_provider_attribute_value(
             type_bridge_schema::parse_provider_datetime_tz_evidence(
                 &normalize_provider_datetime_tz(value),
             )
-            .map(|value| AttributeValue::DateTimeTZ(value.to_string()))
+            .map(|value| {
+                crate::runtime_projection::attribute_value_from_canonical(
+                    &CanonicalValue::DateTimeTz(value),
+                )
+            })
             .map_err(|_| malformed())
         }
         AttributeValue::Decimal(value) => parse_decimal(&value)
@@ -1980,7 +1988,9 @@ mod tests {
                     .unwrap();
             assert_eq!(
                 hydrated,
-                AttributeValue::DateTimeTZ("2024-01-01T00:00:00.123456789[Asia/Seoul]".into(),)
+                AttributeValue::DateTimeTZ(
+                    "2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]".into(),
+                )
             );
             assert_eq!(
                 value_order(
