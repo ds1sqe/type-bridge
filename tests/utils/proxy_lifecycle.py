@@ -20,6 +20,13 @@ PROXY_ADDRESS = os.getenv("PROXY_ADDRESS", f"http://localhost:{PROXY_PORT}")
 PROXY_DB_NAME = "type_bridge_proxy_test"
 
 
+def _compose_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    environment.setdefault("TYPEDB_USERNAME", "admin")
+    environment.setdefault("TYPEDB_PASSWORD", "password")
+    return environment
+
+
 def start_proxy_containers() -> bool:
     """Start TypeDB + proxy Docker containers for testing.
 
@@ -33,12 +40,14 @@ def start_proxy_containers() -> bool:
     project = compose_project(_REPO_ROOT)
     compose_file = str(_REPO_ROOT / "docker-compose.proxy.yml")
     compose_with_proj = [*_compose_base(), "-p", project, "-f", compose_file]
+    environment = _compose_environment()
 
     # Stop any existing containers for this project
     subprocess.run(
         [*compose_with_proj, "down"],
         cwd=str(_REPO_ROOT),
         capture_output=True,
+        env=environment,
     )
 
     # Build and start containers
@@ -47,6 +56,7 @@ def start_proxy_containers() -> bool:
         cwd=str(_REPO_ROOT),
         check=True,
         capture_output=True,
+        env=environment,
     )
 
     # Wait for the proxy to become healthy, resolving its container ID via
@@ -57,6 +67,7 @@ def start_proxy_containers() -> bool:
             [*compose_with_proj, "ps", "-q", "proxy"],
             cwd=str(_REPO_ROOT),
             capture_output=True,
+            env=environment,
             text=True,
         )
         container_id = id_result.stdout.strip()
@@ -64,6 +75,7 @@ def start_proxy_containers() -> bool:
             result = subprocess.run(
                 [CONTAINER_TOOL, "inspect", "--format={{.State.Health.Status}}", container_id],
                 capture_output=True,
+                env=environment,
                 text=True,
             )
             if result.stdout.strip() == "healthy":
@@ -85,9 +97,11 @@ def stop_proxy_containers() -> None:
     project = compose_project(_REPO_ROOT)
     compose_file = str(_REPO_ROOT / "docker-compose.proxy.yml")
     compose_with_proj = [*_compose_base(), "-p", project, "-f", compose_file]
+    environment = _compose_environment()
 
     subprocess.run(
         [*compose_with_proj, "down"],
         cwd=str(_REPO_ROOT),
         capture_output=True,
+        env=environment,
     )
