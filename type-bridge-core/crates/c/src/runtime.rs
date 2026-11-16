@@ -1127,8 +1127,8 @@ unsafe fn prepare_database_config(
     // Credential bytes are copied only after layout, limits, endpoint, and trust validation.
     // SAFETY: both inputs are copied under stable ceilings before provider dispatch.
     let username = unsafe { copied_utf8(preflight.config.username, MAX_USERNAME_BYTES, false) }?;
-    // SAFETY: an empty password remains an admitted exact copied value.
-    let password = unsafe { copied_utf8(preflight.config.password, MAX_PASSWORD_BYTES, true) }?;
+    // SAFETY: the required password is copied under its stable ceiling.
+    let password = unsafe { copied_utf8(preflight.config.password, MAX_PASSWORD_BYTES, false) }?;
     if let Some(cancellation) = cancellation {
         check_control(preflight.deadline, cancellation)?;
     }
@@ -4794,7 +4794,7 @@ entities:
         let state = Arc::new(FakeState::default());
         let mut runtime = runtime(Arc::clone(&state), Version::new(3, 12, 3));
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "config")));
-        let (address, database_name, username, _password, mut config) = database_config();
+        let (address, database_name, username, password, mut config) = database_config();
         let mut database = ptr::null_mut();
         let mut diagnostics = ptr::null_mut();
 
@@ -4918,11 +4918,38 @@ entities:
         config.address = view(&address);
         config.http_port = 8000;
         config.database = view(&database_name);
-        config.username = view(&username);
-        config.password = TypeBridgeByteView {
+        let absent = TypeBridgeByteView {
             data: ptr::null(),
             length: 0,
         };
+        for (username_view, password_view) in [
+            (absent, absent),
+            (view(&username), absent),
+            (absent, view(&password)),
+            (view(&username), view(b"")),
+            (view(b""), view(&password)),
+        ] {
+            config.username = username_view;
+            config.password = password_view;
+            assert_eq!(
+                unsafe {
+                    type_bridge_database_open_impl(
+                        runtime,
+                        package,
+                        &config,
+                        ptr::null(),
+                        &mut database,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert!(database.is_null());
+            assert_eq!(state.connects.load(Ordering::Acquire), 0);
+            unsafe { close_diagnostics(&mut diagnostics) };
+        }
+        config.username = view(&username);
+        config.password = view(&password);
         config.tls_mode = TLS_NATIVE_ROOTS;
         assert_eq!(
             unsafe {
@@ -4941,7 +4968,7 @@ entities:
         assert_eq!(copied.address, "localhost:1729");
         assert_eq!(copied.database, "sdk");
         assert_eq!(copied.username, "admin");
-        assert_eq!(copied.password, "");
+        assert_eq!(copied.password, "password");
 
         assert_eq!(
             unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },

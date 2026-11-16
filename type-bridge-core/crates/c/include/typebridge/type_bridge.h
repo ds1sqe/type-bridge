@@ -3006,8 +3006,8 @@ typedef int32_t type_bridge_projected_batch_operation_t;
  * Current direct database policy (layout version 2). All-zero embedded
  * connection and answer limits select direct defaults. Every byte view is
  * copied during the call. Explicit policies use the common policy layout;
- * reserved words must be zero. Address, database, and username are non-empty;
- * password may be empty. Address is one canonical credential-free host:port
+ * reserved words must be zero. Address, database, username, and password are
+ * non-empty; credentials are explicit. Address is one credential-free host:port
  * or [IPv6]:port endpoint; comma-delimited endpoint lists are rejected.
  * http_port is the authoritative TypeDB HTTP version-probe port. The runtime
  * verifies the server version against the package semantic profile, never a
