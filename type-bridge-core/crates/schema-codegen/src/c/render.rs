@@ -1169,10 +1169,12 @@ fn validate_generated_symbols(
         }
     }
     let mut insert = |symbol: String| {
-        if !symbols.insert(symbol) {
+        if !symbols.insert(symbol.clone()) {
             return Err(invalid(
                 "c_emitter_generated_symbol_collision",
-                "generated C API symbols collide in the global identifier namespace",
+                format!(
+                    "generated C API symbol {symbol} collides in the global identifier namespace"
+                ),
             ));
         }
         Ok(())

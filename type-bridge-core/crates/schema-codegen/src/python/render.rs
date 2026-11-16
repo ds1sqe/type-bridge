@@ -70,42 +70,7 @@ const PUBLIC_SCHEMA_NAMES: &[&str] = &[
     "open_migration_catalog",
     "schema_authority",
 ];
-const MODEL_RESERVED_NAMES: &[&str] = &[
-    "value",
-    "iid",
-    "deleted",
-    "__model_form__",
-    "__projection__",
-    "__runtime_projection__",
-    "__type_id__",
-    "_attribute_value",
-    "_iid",
-    "_values",
-    "attach_runtime_iid",
-    "initialize_runtime_attribute",
-    "initialize_runtime_reference",
-    "initialize_runtime_values",
-    "manager",
-    "query",
-    "runtime_attribute_value",
-    "runtime_values",
-    "match",
-    "subtypes",
-    "by_iid",
-    "insert",
-    "put",
-    "insert_many",
-    "put_many",
-    "Values",
-    "where",
-    "set",
-    "unset",
-    "link",
-    "unlink",
-    "delete",
-    "delete_returning",
-    "__plan_roles__",
-];
+use type_bridge_contract::projection::PYTHON_MODEL_RESERVED_NAMES as MODEL_RESERVED_NAMES;
 
 macro_rules! canonical_text {
     ($value:expr) => {{ String::from_utf8(to_canonical_json($value)?).expect("canonical JSON output is UTF-8") }};

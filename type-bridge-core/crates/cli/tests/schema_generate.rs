@@ -685,3 +685,35 @@ fn abstract_attribute_ownership_refusal_is_scoped_to_configured_codegen() {
     assert!(!run_cli(root, &["schema", "generate"]).status.success());
     assert!(!root.join("generated").exists());
 }
+
+#[test]
+fn reserved_member_names_check_and_generate_for_all_configured_targets() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("schema/model.yaml"),
+        include_str!("../../schema-codegen/tests/fixtures/reserved-member-names.yaml"),
+    )
+    .unwrap();
+    fs::write(root.join("typebridge.yaml"), "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: reserved-check\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: reservedcheck\nbindings:\n  python: {output: generated/python}\n  typescript: {output: generated/typescript}\n  rust: {output: generated/rust}\n  c: {output: generated/c}\n").unwrap();
+    assert_success(
+        &run_cli(root, &["schema", "check"]),
+        "reserved names schema check",
+    );
+    assert!(!root.join("generated").exists());
+    assert_success(
+        &run_cli(root, &["schema", "generate"]),
+        "reserved names generation",
+    );
+    assert!(root.join("generated/python/_models.py").is_file());
+    assert!(root.join("generated/typescript/src/models.ts").is_file());
+    assert!(root.join("generated/rust/src/read.rs").is_file());
+    assert!(root.join("generated/c/src/models.c").is_file());
+}
+

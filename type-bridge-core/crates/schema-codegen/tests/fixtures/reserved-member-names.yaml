@@ -1,0 +1,15 @@
+format: typebridge.schema/v2
+attributes:
+  count: {value: integer}
+  type: {value: string}
+  value: {value: string}
+  where: {value: string}
+  default: {value: string}
+  self: {value: string}
+  kind: {value: string}
+  number: {value: string}
+  ref: {value: string}
+  crate: {value: string}
+entities:
+  sample:
+    owns: [count, type, value, where, default, self, kind, number, ref, crate]

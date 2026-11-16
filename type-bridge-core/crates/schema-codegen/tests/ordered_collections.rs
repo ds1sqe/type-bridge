@@ -492,7 +492,19 @@ fn shared_package_gate_rejects_legacy_and_forged_ordered_evidence_in_all_binding
 #[test]
 #[ignore = "requires the combined Python, TypeScript, Rust, and C compiler toolchain"]
 fn ordered_generated_packages_pass_all_four_language_compilers() {
-    let (schema, authority) = resolved(ORDERED_SOURCE);
+    assert_generated_packages_compile_for_all_targets(ORDERED_SOURCE);
+}
+
+#[test]
+#[ignore = "requires the combined Python, TypeScript, Rust, and C compiler toolchain"]
+fn reserved_member_names_pass_all_four_language_compilers() {
+    assert_generated_packages_compile_for_all_targets(include_str!(
+        "fixtures/reserved-member-names.yaml"
+    ));
+}
+
+fn assert_generated_packages_compile_for_all_targets(source: &str) {
+    let (schema, authority) = resolved(source);
     let stage = Stage::new();
 
     let python = PythonEmitter::new();

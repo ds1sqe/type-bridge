@@ -4,13 +4,14 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    BindingTarget, CNamingPolicy, CodeResourceDigest, CompleteReadProjection,
-    CreateFieldProjection, CreateProjection, CreateRoleProjection, DeclarationProjection,
-    DeclaredRoleProjection, DirectSubProjection, EmissionPlan, FieldTokenProjection,
-    FunctionParameterProjection, FunctionProjection, FunctionReturnElementProjection,
-    FunctionReturnProjection, ModelProjection, PlayingProjection, ProjectedAnnotation,
-    ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef,
-    ProjectionConfig, ProjectionHandler, QueryTokenProjection, ReadFieldProjection,
+    BindingTarget, C_MODEL_MEMBER_RESERVED_NAMES, CNamingPolicy, CodeResourceDigest,
+    CompleteReadProjection, CreateFieldProjection, CreateProjection, CreateRoleProjection,
+    DeclarationProjection, DeclaredRoleProjection, DirectSubProjection, EmissionPlan,
+    FieldTokenProjection, FunctionParameterProjection, FunctionProjection,
+    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
+    PYTHON_MODEL_RESERVED_NAMES, PlayingProjection, ProjectedAnnotation, ProjectedModelForm,
+    ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig,
+    ProjectionHandler, QueryTokenProjection, RUST_MODEL_RESERVED_NAMES, ReadFieldProjection,
     ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection, RuntimeProjection,
     RustCreatePolicy, StructFieldProjection, StructProjection, TYPESCRIPT_MODEL_RESERVED_NAMES,
     TargetIdentifier,
@@ -113,7 +114,10 @@ fn c_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
     TargetIdentifier::c(bounded).map_err(no_source)
 }
 
-fn python_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+fn python_identifier(mut value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+    if !value.is_empty() && TargetIdentifier::python(&value).is_err() {
+        value.push('_');
+    }
     if matches!(value.as_str(), "iid" | "model_config" | "model_fields")
         || value.starts_with("__") && value.ends_with("__")
     {
@@ -125,7 +129,10 @@ fn python_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostic
     TargetIdentifier::python(value).map_err(no_source)
 }
 
-fn typescript_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+fn typescript_identifier(mut value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+    if !value.is_empty() && TargetIdentifier::typescript(&value).is_err() {
+        value.push('_');
+    }
     if matches!(
         value.as_str(),
         "iid"
@@ -146,7 +153,10 @@ fn typescript_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagno
     TargetIdentifier::typescript(value).map_err(no_source)
 }
 
-fn rust_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+fn rust_identifier(mut value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+    if !value.is_empty() && TargetIdentifier::rust(&value).is_err() {
+        value.push('_');
+    }
     TargetIdentifier::rust(value).map_err(no_source)
 }
 
@@ -193,6 +203,14 @@ impl<'a> ProjectionNamer<'a> {
         c_identifier(format!("{}_{}", self.c_symbol_prefix(), c_v1_escape(label)))
     }
 
+    fn c_member_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
+        let mut name = c_v1_escape(label);
+        if C_MODEL_MEMBER_RESERVED_NAMES.contains(&name.as_str()) {
+            name.push_str("zk");
+        }
+        c_identifier(format!("{}_{}", self.c_symbol_prefix(), name))
+    }
+
     fn class_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
         let value = python_class_name(label);
         if self.target == BindingTarget::Python {
@@ -219,7 +237,7 @@ impl<'a> ProjectionNamer<'a> {
         } else if self.target == BindingTarget::Rust {
             rust_identifier(rust_member_name(label))
         } else if self.target == BindingTarget::C {
-            self.c_label_identifier(label)
+            self.c_member_identifier(label)
         } else {
             Err(projection_error(
                 "unsupported_binding_projection_target",
@@ -232,11 +250,21 @@ impl<'a> ProjectionNamer<'a> {
         if self.target == BindingTarget::TypeScript {
             let mut name = typescript_member_name(label);
             if TYPESCRIPT_MODEL_RESERVED_NAMES.contains(&name.as_str()) {
-                // Camel-case projection removes underscores, so this suffix cannot
-                // collide with an otherwise valid, unchanged projected member.
                 name.push('_');
             }
-            TargetIdentifier::typescript(name).map_err(no_source)
+            typescript_identifier(name)
+        } else if self.target == BindingTarget::Python {
+            let mut name = python_member_name(label);
+            if PYTHON_MODEL_RESERVED_NAMES.contains(&name.as_str()) {
+                name.push('_');
+            }
+            python_identifier(name)
+        } else if self.target == BindingTarget::Rust {
+            let mut name = self.member_identifier(label)?.as_str().to_owned();
+            while RUST_MODEL_RESERVED_NAMES.contains(&name.as_str()) {
+                name.push('_');
+            }
+            rust_identifier(name)
         } else {
             self.member_identifier(label)
         }

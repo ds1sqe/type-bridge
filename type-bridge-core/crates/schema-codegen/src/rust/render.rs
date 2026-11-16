@@ -2879,16 +2879,10 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
                 }
             }
             let handle_namespace = format!("{model_name}Handle");
-            for name in [
-                "where_",
-                "models",
-                "delete",
-                "delete_returning",
-                "unset",
-                "set",
-                "clone",
-                "player_reference",
-            ] {
+            for name in type_bridge_contract::projection::RUST_MODEL_RESERVED_NAMES
+                .iter()
+                .copied()
+            {
                 reserve_rust_name(
                     &mut reservations,
                     &handle_namespace,

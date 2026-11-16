@@ -64,6 +64,15 @@ Rust generator integrations can pass the same mapping using
 `ProjectionConfig::typescript().with_type_name_override(type_id, name)?` before
 calling `project`. Pass canonical `TypeId` values, including their type kind.
 
+Generated member names escape target language keywords and runtime helpers
+without changing the database label. Python and TypeScript append `_`; Rust
+appends `_` until the name also avoids plan-handle helpers (`where` becomes
+`where__`). C appends `zk` after its reversible label encoding to avoid C/C++
+keywords and generated helper symbols. For example, `type` becomes `type_` in
+TypeScript and Rust, `typezk` in C, and remains `type` in Python. If escaping
+collides with another declared member, generation reports the collision; rename
+or alias that member explicitly. Ordinary member names keep their existing bytes.
+
 ## Generate
 
 ```bash

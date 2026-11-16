@@ -1613,3 +1613,73 @@ plays:
         );
     }
 }
+
+#[test]
+fn reserved_model_members_escape_only_in_the_target_that_reserves_them() {
+    let source = include_str!("../../schema-codegen/tests/fixtures/reserved-member-names.yaml");
+    let owner = TypeId::new(TypeKind::Entity, "sample").unwrap();
+    for (target, config, handler, expected) in [
+        (
+            BindingTarget::Python,
+            ProjectionConfig::python(),
+            ProjectionHandler::python_v1(),
+            [
+                "count", "type", "value_", "where_", "default", "self_", "kind", "number", "ref",
+                "crate",
+            ],
+        ),
+        (
+            BindingTarget::TypeScript,
+            ProjectionConfig::typescript(),
+            ProjectionHandler::typescript_v1(),
+            [
+                "count", "type_", "value", "where_", "default_", "self", "kind", "number_", "ref",
+                "crate",
+            ],
+        ),
+        (
+            BindingTarget::Rust,
+            ProjectionConfig::rust(),
+            ProjectionHandler::rust_v1(),
+            [
+                "count", "type_", "value", "where__", "default", "self_", "kind", "number", "ref_",
+                "crate_",
+            ],
+        ),
+        (
+            BindingTarget::C,
+            ProjectionConfig::c(CSymbolPrefix::new("reserved_test").unwrap()),
+            ProjectionHandler::c_v1(),
+            [
+                "reserved_test_count",
+                "reserved_test_typezk",
+                "reserved_test_value",
+                "reserved_test_wherezk",
+                "reserved_test_defaultzk",
+                "reserved_test_self",
+                "reserved_test_kindzk",
+                "reserved_test_number",
+                "reserved_test_refzk",
+                "reserved_test_crate",
+            ],
+        ),
+    ] {
+        let projected = projection_for(source, target, config, handler);
+        for (label, expected) in [
+            "count", "type", "value", "where", "default", "self", "kind", "number", "ref", "crate",
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            let id = OwnsFactId::new(owner.clone(), AttributeId::new(label).unwrap()).unwrap();
+            assert_eq!(
+                projected.models()[&owner].query_tokens().fields()[&id]
+                    .target_name()
+                    .as_str(),
+                expected,
+                "{} {label}",
+                target.as_str()
+            );
+        }
+    }
+}
