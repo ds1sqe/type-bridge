@@ -1402,6 +1402,25 @@ impl ManagerPlans {
             .map_err(diagnostic)
     }
 
+    pub(crate) fn delete_many_program(
+        &self,
+        name: &str,
+        iids: &[String],
+        exact: bool,
+        returning: bool,
+    ) -> Result<super::bulk_write::WriteProgram> {
+        let limit = self
+            .authority()?
+            .query_limits()
+            .structural
+            .input_rows
+            .min(super::bulk_write::INDEXED_IID_ROWS);
+        iids.chunks(limit)
+            .map(|chunk| self.delete_many(name, chunk, exact, returning))
+            .collect::<Result<Vec<_>>>()
+            .map(super::bulk_write::WriteProgram::compact)
+    }
+
     pub(crate) fn delete_many(
         &self,
         name: &str,

@@ -20,6 +20,19 @@ fn diagnostic(error: Diagnostic) -> SdkExecutionDiagnostic {
 }
 
 impl BatchPlan<'_> {
+    fn delete_chunks(&self) -> Result<Vec<GivenRowsSpec>, SdkExecutionDiagnostic> {
+        input_chunks_with_row_limit(
+            self.delete_rows()?,
+            false,
+            0,
+            self.authority
+                .query_limits()
+                .structural
+                .input_rows
+                .min(crate::plan_builders::bulk_write::INDEXED_IID_ROWS),
+        )
+    }
+
     pub(super) fn complete_write_plans(
         &self,
     ) -> std::result::Result<crate::plan_builders::bulk_write::WriteProgram, SdkExecutionDiagnostic>
@@ -365,11 +378,10 @@ impl ProjectedBatchExecutor<'_> {
         } else {
             None
         };
-        let prefix = if key_guard.is_some() && !batch.is_single_write() {
-            2
-        } else {
-            0
-        };
+        let prefix = key_guard
+            .as_ref()
+            .filter(|_| !batch.is_single_write())
+            .map_or(0, |guard| guard.entries.len());
         let postflight = key_guard.is_some() && batch.is_single_write();
         if let Some(key_guard) = &key_guard {
             if postflight {
@@ -525,11 +537,21 @@ impl ProjectedBatchExecutor<'_> {
                         _ => None,
                     };
                     if prefix > 0
-                        && coordinate("source_plan")? == 0
+                        && coordinate("source_plan")? < prefix
+                        && coordinate("source_plan")? % 2 == 0
                         && coordinate("source_column")? == 2
                     {
                         let guard = key_guard.as_ref()?;
-                        let (row, iid) = guard.rows.get(coordinate("source_row").unwrap_or(0))?;
+                        let offset = guard
+                            .entries
+                            .iter()
+                            .take(coordinate("source_plan")?)
+                            .step_by(2)
+                            .map(|entry| entry.rows().len())
+                            .sum::<usize>();
+                        let (row, iid) = guard
+                            .rows
+                            .get(offset + coordinate("source_row").unwrap_or(0))?;
                         return Some(crate::projected_crud::key_update_refused_at_row(
                             batch.model(),
                             *row,
@@ -623,7 +645,7 @@ impl ProjectedBatchExecutor<'_> {
                 })?
                 .into_vec()
         } else {
-            input_chunks(plan.delete_rows()?, false)?
+            plan.delete_chunks()?
                 .into_iter()
                 .map(|rows| plan.native_delete(rows))
                 .collect::<Result<Vec<_>, _>>()?
@@ -1099,7 +1121,8 @@ impl ProjectedBatchExecutor<'_> {
             prepared.batch().resource_measure().bytes(),
         );
         preflight.charge_preflight(plan.preflight_bytes, plan.statement_count)?;
-        let mutations = input_chunks(plan.delete_rows()?, false)?
+        let mutations = plan
+            .delete_chunks()?
             .into_iter()
             .map(|rows| plan.native_delete(rows))
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1186,6 +1209,7 @@ fn input_upper_bound(rows: &GivenRowsSpec) -> usize {
     })
 }
 
+#[cfg(test)]
 fn input_chunks(
     rows: GivenRowsSpec,
     lookup: bool,
@@ -1193,14 +1217,30 @@ fn input_chunks(
     input_chunks_reserved(rows, lookup, 0)
 }
 
+#[cfg(test)]
 fn input_chunks_reserved(
     rows: GivenRowsSpec,
     lookup: bool,
     reserved_bytes_per_row: usize,
 ) -> std::result::Result<Vec<GivenRowsSpec>, SdkExecutionDiagnostic> {
-    let GivenRowsSpec { variables, rows } = rows;
-    crate::plan_builders::input::chunks(
+    input_chunks_with_row_limit(
         rows,
+        lookup,
+        reserved_bytes_per_row,
+        type_bridge_contract::limits::MAX_INPUT_ROWS,
+    )
+}
+
+fn input_chunks_with_row_limit(
+    rows: GivenRowsSpec,
+    lookup: bool,
+    reserved_bytes_per_row: usize,
+    max_rows: usize,
+) -> Result<Vec<GivenRowsSpec>, SdkExecutionDiagnostic> {
+    let GivenRowsSpec { variables, rows } = rows;
+    crate::plan_builders::input::chunks_with_row_limit(
+        rows,
+        max_rows,
         reserved_bytes_per_row,
         |row| input_row_upper_bound(row),
         |row| {

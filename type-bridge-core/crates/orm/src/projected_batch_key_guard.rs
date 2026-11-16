@@ -51,127 +51,152 @@ pub(super) fn build(
     if checked.is_empty() {
         return Ok(None);
     }
-    let build =
-        || -> std::result::Result<Vec<StagedPlan>, type_bridge_contract::diagnostic::Diagnostic> {
-            let mut draft = authority.draft(ValueTransport::Given);
-            let ordinal = draft.bind("ordinal")?;
-            let actual = draft.bind("actual")?;
-            let matched = draft.bind("matched")?;
-            let ordinal_input = draft.input(
-                "ordinal",
-                type_bridge_contract::value::ValueTypeTag::Long,
-                false,
-            )?;
-            let iid_input = draft.input(
-                "iid",
-                type_bridge_contract::value::ValueTypeTag::String,
-                false,
-            )?;
-            let isa_iid = |binding| {
-                vec![
-                    QueryPattern::Isa {
-                        binding,
-                        type_id: model.id().clone(),
-                        include_subtypes: false,
-                    },
-                    QueryPattern::Iid {
-                        binding,
-                        iid: iid_input.clone(),
-                    },
-                ]
-            };
-            let mut matched_patterns = isa_iid(matched);
-            for (index, (field, domain)) in fields.iter().enumerate() {
-                let input = draft.input(&format!("key{index}"), *domain, false)?;
-                let value = draft.bind("key_value")?;
-                matched_patterns.extend([
-                    QueryPattern::Has {
-                        owner: matched,
-                        attribute: value,
-                        attribute_id: field.attribute().clone(),
-                    },
-                    QueryPattern::Value {
-                        comparator: ValueComparator::Equal,
-                        left: QueryOperand::Binding { binding: value },
-                        right: input,
-                    },
-                ]);
-            }
-            let input_rows = checked.iter().map(|(index, iid, keys)| {
-            let mut values = vec![Some(CanonicalValue::Long(*index as i64)), Some(CanonicalValue::String(type_bridge_contract::value::CanonicalString::new(iid.clone())?))];
-            values.extend(fields.keys().map(|field| keys.get(field).cloned()));
-            Ok(InputRow::new(values))
-        }).collect::<std::result::Result<Vec<_>, type_bridge_contract::diagnostic::Diagnostic>>()?;
-            let proof = draft.finish_rows(
-                authority,
-                vec![
-                    Stage::Match {
-                        patterns: vec![
-                            Pattern::Let {
-                                binding: ordinal,
-                                expr: Expr::Operand(ordinal_input),
-                            },
-                            QueryPattern::Try {
-                                patterns: isa_iid(actual),
-                            }
-                            .into(),
-                            QueryPattern::Try {
-                                patterns: matched_patterns,
-                            }
-                            .into(),
-                        ],
-                    },
-                    Stage::Sort {
-                        terms: vec![OrderTerm::new(ordinal, OrderDirection::Ascending)],
-                    },
-                ],
-                Operation::Rows,
-                QueryOutput::Rows {
-                    columns: vec![ordinal, actual, matched],
+    let build = |checked: &[(usize, String, BTreeMap<OwnsFactId, CanonicalValue>)],
+                 source_plan: usize|
+     -> std::result::Result<
+        Vec<StagedPlan>,
+        type_bridge_contract::diagnostic::Diagnostic,
+    > {
+        let mut draft = authority.draft(ValueTransport::Given);
+        let ordinal = draft.bind("ordinal")?;
+        let actual = draft.bind("actual")?;
+        let matched = draft.bind("matched")?;
+        let ordinal_input = draft.input(
+            "ordinal",
+            type_bridge_contract::value::ValueTypeTag::Long,
+            false,
+        )?;
+        let iid_input = draft.input(
+            "iid",
+            type_bridge_contract::value::ValueTypeTag::String,
+            false,
+        )?;
+        let isa_iid = |binding| {
+            vec![
+                QueryPattern::Isa {
+                    binding,
+                    type_id: model.id().clone(),
+                    include_subtypes: false,
                 },
-                Some(input_rows),
-            )?;
-            let proof = StagedPlan::new(
-                proof.local(),
-                proof.local().given_rows().unwrap().to_vec(),
-                authority.declared(),
-            )?;
-            let mut gate = authority.draft(ValueTransport::Given);
-            let input = gate.input(
-                "key_guard_iid",
-                type_bridge_contract::value::ValueTypeTag::String,
-                false,
-            )?;
-            let value = gate.bind("guard")?;
-            let gate = gate.finish_rows(
-                authority,
-                vec![Stage::Match {
-                    patterns: vec![Pattern::Let {
-                        binding: value,
-                        expr: Expr::Operand(input),
-                    }],
-                }],
-                Operation::Rows,
-                QueryOutput::Rows {
-                    columns: vec![value],
+                QueryPattern::Iid {
+                    binding,
+                    iid: iid_input.clone(),
                 },
-                None,
-            )?;
-            let gate = StagedPlan::new_with_result_refs(
-                gate.local(),
-                vec![InputRow::new(vec![None])],
-                vec![StagedResultRef {
-                    input: type_bridge_contract::query_plan::InputColumnId::new(0),
-                    source_plan: 0,
-                    source_column: 2,
-                    expected_types: vec![model.id().clone()],
-                }],
-                authority.declared(),
-            )?;
-            Ok(vec![proof, gate])
+            ]
         };
+        let mut matched_patterns = isa_iid(matched);
+        for (index, (field, domain)) in fields.iter().enumerate() {
+            let input = draft.input(&format!("key{index}"), *domain, false)?;
+            let value = draft.bind("key_value")?;
+            matched_patterns.extend([
+                QueryPattern::Has {
+                    owner: matched,
+                    attribute: value,
+                    attribute_id: field.attribute().clone(),
+                },
+                QueryPattern::Value {
+                    comparator: ValueComparator::Equal,
+                    left: QueryOperand::Binding { binding: value },
+                    right: input,
+                },
+            ]);
+        }
+        let input_rows = checked
+            .iter()
+            .map(|(index, iid, keys)| {
+                let mut values = vec![
+                    Some(CanonicalValue::Long(*index as i64)),
+                    Some(CanonicalValue::String(
+                        type_bridge_contract::value::CanonicalString::new(iid.clone())?,
+                    )),
+                ];
+                values.extend(fields.keys().map(|field| keys.get(field).cloned()));
+                Ok(InputRow::new(values))
+            })
+            .collect::<std::result::Result<Vec<_>, type_bridge_contract::diagnostic::Diagnostic>>(
+            )?;
+        let proof = draft.finish_rows(
+            authority,
+            vec![
+                Stage::Match {
+                    patterns: vec![
+                        Pattern::Let {
+                            binding: ordinal,
+                            expr: Expr::Operand(ordinal_input),
+                        },
+                        QueryPattern::Try {
+                            patterns: isa_iid(actual),
+                        }
+                        .into(),
+                        QueryPattern::Try {
+                            patterns: matched_patterns,
+                        }
+                        .into(),
+                    ],
+                },
+                Stage::Sort {
+                    terms: vec![OrderTerm::new(ordinal, OrderDirection::Ascending)],
+                },
+            ],
+            Operation::Rows,
+            QueryOutput::Rows {
+                columns: vec![ordinal, actual, matched],
+            },
+            Some(input_rows),
+        )?;
+        let proof = StagedPlan::new(
+            proof.local(),
+            proof.local().given_rows().unwrap().to_vec(),
+            authority.declared(),
+        )?;
+        let mut gate = authority.draft(ValueTransport::Given);
+        let input = gate.input(
+            "key_guard_iid",
+            type_bridge_contract::value::ValueTypeTag::String,
+            false,
+        )?;
+        let value = gate.bind("guard")?;
+        let gate = gate.finish_rows(
+            authority,
+            vec![Stage::Match {
+                patterns: vec![Pattern::Let {
+                    binding: value,
+                    expr: Expr::Operand(input),
+                }],
+            }],
+            Operation::Rows,
+            QueryOutput::Rows {
+                columns: vec![value],
+            },
+            None,
+        )?;
+        let gate = StagedPlan::new_with_result_refs(
+            gate.local(),
+            vec![InputRow::new(vec![None])],
+            vec![StagedResultRef {
+                input: type_bridge_contract::query_plan::InputColumnId::new(0),
+                source_plan: source_plan as u32,
+                source_column: 2,
+                expected_types: vec![model.id().clone()],
+            }],
+            authority.declared(),
+        )?;
+        Ok(vec![proof, gate])
+    };
+    let mut entries = Vec::new();
+    let limit = authority
+        .query_limits()
+        .structural
+        .input_rows
+        .min(crate::plan_builders::bulk_write::INDEXED_IID_ROWS);
+    for chunk in checked.chunks(limit) {
+        entries.extend(
+            build(chunk, entries.len())
+                .map_err(crate::execution_diagnostic::lower_remote_query_diagnostic)?,
+        );
+    }
     Ok(Some(KeyGuard {
-        entries: build().map_err(crate::execution_diagnostic::lower_remote_query_diagnostic)?,
+        entries,
         rows: checked
             .into_iter()
             .map(|(ordinal, iid, _)| (ordinal, iid))

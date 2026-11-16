@@ -63,14 +63,11 @@ impl DeleteSelection<'_> {
         exact: bool,
     ) -> Result<DeletionPlans> {
         match self {
-            Self::Iids(iids) if iids.len() <= type_bridge_contract::limits::MAX_INPUT_ROWS => plans
-                .delete_many(name, iids, exact, true)
-                .map(DeletionPlans::One),
-            Self::Iids(iids) => iids
-                .chunks(type_bridge_contract::limits::MAX_INPUT_ROWS)
-                .map(|iids| plans.delete_many(name, iids, exact, true))
-                .collect::<Result<Vec<_>>>()
-                .map(DeletionPlans::Many),
+            Self::Iids(iids) => plans
+                .delete_many_program(name, iids, exact, true)?
+                .into_static()
+                .map(DeletionPlans::from_vec)
+                .map_err(crate::plan_builders::manager::diagnostic),
             Self::Entities(items) => plans
                 .write_many(
                     name,

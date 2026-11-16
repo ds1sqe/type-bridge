@@ -28,6 +28,37 @@ pub(crate) use program::{
     forces_pieces_code,
 };
 
+/// Bound the correlated literal disjunction independently of the wire row ceiling.
+pub(crate) const INDEXED_IID_ROWS: usize = 64;
+
+fn iid_rows_limit(authority: &PlanAuthority, rows: &[WriteRow<'_>]) -> usize {
+    let ceiling = authority.query_limits().structural.input_rows;
+    if rows.len() <= INDEXED_IID_ROWS {
+        return ceiling;
+    }
+    let mut iids = std::collections::BTreeSet::new();
+    for row in rows {
+        for iid in row
+            .iid
+            .into_iter()
+            .chain(
+                row.players
+                    .iter()
+                    .filter_map(|(_, reference)| match &reference.identity {
+                        ReferenceIdentity::Iid(iid) => Some(*iid),
+                        _ => None,
+                    }),
+            )
+        {
+            iids.insert(iid.to_ascii_lowercase());
+            if iids.len() > INDEXED_IID_ROWS {
+                return ceiling.min(INDEXED_IID_ROWS);
+            }
+        }
+    }
+    ceiling
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WriteKind {
     Insert,
@@ -260,6 +291,12 @@ fn build_many_shape(
     complete: bool,
     ordinal_offset: usize,
 ) -> Result<Vec<BuiltPlan>, Diagnostic> {
+    if rows.len() > iid_rows_limit(authority, rows) {
+        return Err(invalid(
+            "query_plan_input_limit",
+            "Indexed IID inputs require bounded statement chunks",
+        ));
+    }
     if rows.is_empty() {
         return Err(invalid(
             "manager_empty_write",

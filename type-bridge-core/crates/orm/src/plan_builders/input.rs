@@ -12,12 +12,30 @@ pub(crate) fn chunks<R>(
     exact_bytes: impl Fn(&R) -> Result<usize, SdkExecutionDiagnostic>,
     same_ordinal: impl Fn(&R, &R) -> bool,
 ) -> Result<Vec<Vec<R>>, SdkExecutionDiagnostic> {
+    chunks_with_row_limit(
+        rows,
+        MAX_INPUT_ROWS,
+        reserved_bytes_per_row,
+        upper_bound,
+        exact_bytes,
+        same_ordinal,
+    )
+}
+
+pub(crate) fn chunks_with_row_limit<R>(
+    rows: Vec<R>,
+    max_rows: usize,
+    reserved_bytes_per_row: usize,
+    upper_bound: impl Fn(&R) -> usize,
+    exact_bytes: impl Fn(&R) -> Result<usize, SdkExecutionDiagnostic>,
+    same_ordinal: impl Fn(&R, &R) -> bool,
+) -> Result<Vec<Vec<R>>, SdkExecutionDiagnostic> {
     let upper = rows.iter().fold(2_usize, |total, row| {
         total
             .saturating_add(upper_bound(row))
             .saturating_add(reserved_bytes_per_row)
     });
-    if rows.len() <= MAX_INPUT_ROWS && upper <= MAX_INPUT_BYTES {
+    if rows.len() <= max_rows && upper <= MAX_INPUT_BYTES {
         return Ok(vec![rows]);
     }
     let mut units: Vec<SplitUnit> = Vec::new();
@@ -34,7 +52,7 @@ pub(crate) fn chunks<R>(
         }
     }
     let ranges =
-        split(2, &units, SplitLimits::new(MAX_INPUT_ROWS, MAX_INPUT_BYTES)).map_err(|error| {
+        split(2, &units, SplitLimits::new(max_rows, MAX_INPUT_BYTES)).map_err(|error| {
             use crate::projected_batch_executor::resource_limit;
             match error {
                 SplitRefusal::UnitTooLarge { unit }
@@ -53,7 +71,7 @@ pub(crate) fn chunks<R>(
                     "One complete input ordinal exceeds the statement ceiling",
                     "rows",
                     rows.len() as u64,
-                    MAX_INPUT_ROWS as u64,
+                    max_rows as u64,
                 ),
             }
         })?;

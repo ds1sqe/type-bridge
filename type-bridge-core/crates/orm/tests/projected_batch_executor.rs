@@ -2431,8 +2431,20 @@ async fn native_batches_split_five_thousand_rows_atomically_for_every_write_form
                         .collect(),
                 )
                 .unwrap();
+                let width = if matches!(
+                    operation,
+                    ProjectedBatchOperation::Update | ProjectedBatchOperation::Delete
+                ) {
+                    64
+                } else {
+                    4096
+                };
+                let ranges = (0..5000)
+                    .step_by(width)
+                    .map(|start| start..(start + width).min(5000))
+                    .collect::<Vec<_>>();
                 let mut responses = Vec::new();
-                for range in [0..4096, 4096..5000] {
+                for range in ranges.clone() {
                     let documents = range
                         .clone()
                         .map(|ordinal| {
@@ -2453,7 +2465,7 @@ async fn native_batches_split_five_thousand_rows_atomically_for_every_write_form
                             }
                         })
                         .collect();
-                    responses.push(if fail_last && range.start == 4096 {
+                    responses.push(if fail_last && range.end == 5000 {
                         Response::ProviderAfter(documents)
                     } else {
                         Response::Documents(documents)
@@ -2493,7 +2505,7 @@ async fn native_batches_split_five_thousand_rows_atomically_for_every_write_form
                         .iter()
                         .map(|(_, rows)| rows.rows.len())
                         .collect::<Vec<_>>(),
-                    [4096, 904]
+                    ranges.iter().map(|range| range.len()).collect::<Vec<_>>()
                 );
                 assert_eq!(
                     (state.commits, state.rollbacks),
@@ -2696,6 +2708,11 @@ async fn wide_unordered_players_use_only_forced_pieces_and_last_failure_rolls_ba
                         json!({"ordinal":0,"iid":"0x8000","_type":"membership"}),
                     ]));
                 }
+                if count > boundary {
+                    for _ in 1..(count - 1).div_ceil(64) {
+                        responses.push(Response::Documents(vec![]));
+                    }
+                }
                 responses.push(if fail_last {
                     Response::ProviderAfter(vec![document])
                 } else {
@@ -2738,7 +2755,7 @@ async fn wide_unordered_players_use_only_forced_pieces_and_last_failure_rolls_ba
                     if count <= boundary {
                         1
                     } else {
-                        2 + guard_count
+                        1 + (count - 1).div_ceil(64) + guard_count
                     }
                 );
                 assert_eq!(
@@ -2874,7 +2891,11 @@ async fn returning_batch_captures_all_chunks_before_any_deletion() {
     .unwrap();
     for fail_last in [false, true] {
         let mut responses = Vec::new();
-        for range in [0..4096, 4096..5000] {
+        let ranges = (0..5000)
+            .step_by(64)
+            .map(|start| start..(start + 64).min(5000))
+            .collect::<Vec<_>>();
+        for range in ranges.clone() {
             responses.push(Response::Documents(
                 range
                     .map(|ordinal| {
@@ -2887,7 +2908,9 @@ async fn returning_batch_captures_all_chunks_before_any_deletion() {
                     .collect(),
             ));
         }
-        responses.push(Response::Documents(vec![]));
+        for _ in 1..ranges.len() {
+            responses.push(Response::Documents(vec![]));
+        }
         responses.push(if fail_last {
             Response::ProviderAfter(vec![])
         } else {
@@ -2910,9 +2933,9 @@ async fn returning_batch_captures_all_chunks_before_any_deletion() {
             );
             let state = state.lock().unwrap();
             assert_eq!(state.opens, [TxType::Write]);
-            assert_eq!(state.calls.len(), 4);
+            assert_eq!(state.calls.len(), 2 * ranges.len());
             assert!(
-                state.calls[..2]
+                state.calls[..ranges.len()]
                     .iter()
                     .all(|(query, _)| query.contains("fetch") && !query.contains("delete"))
             );
@@ -2928,14 +2951,14 @@ async fn returning_batch_captures_all_chunks_before_any_deletion() {
             assert_eq!(thing.iid(), format!("0x{:04x}", ordinal + 1));
         }
         let state = state.lock().unwrap();
-        assert_eq!(state.calls.len(), 4);
+        assert_eq!(state.calls.len(), 2 * ranges.len());
         assert!(
-            state.calls[..2]
+            state.calls[..ranges.len()]
                 .iter()
                 .all(|(query, _)| query.contains("fetch") && !query.contains("delete"))
         );
         assert!(
-            state.calls[2..]
+            state.calls[ranges.len()..]
                 .iter()
                 .all(|(query, _)| query.contains("delete"))
         );
@@ -2945,7 +2968,11 @@ async fn returning_batch_captures_all_chunks_before_any_deletion() {
                 .iter()
                 .map(|(_, rows)| rows.rows.len())
                 .collect::<Vec<_>>(),
-            [4096, 904, 4096, 904]
+            ranges
+                .iter()
+                .chain(&ranges)
+                .map(|range| range.len())
+                .collect::<Vec<_>>()
         );
         assert_eq!((state.commits, state.rollbacks), (1, 0));
     }
@@ -3336,5 +3363,69 @@ async fn required_wide_fields_keep_a_same_plan_replacement_proof_and_roll_back_l
                 );
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn iid_batch_chunks_keep_global_order_and_rollback_the_last_chunk() {
+    let installed = installed();
+    let person = type_id(TypeKind::Entity, "person");
+    for fail_last in [false, true] {
+        let batch = ProjectedBatch::try_new(
+            &installed,
+            person.clone(),
+            ProjectedBatchOperation::Update,
+            (0..300)
+                .map(|index| ProjectedBatchRow::Update {
+                    iid: format!("0x{:x}", index + 16),
+                    replacement: person_create(&installed, &format!("key-{index}")),
+                })
+                .collect(),
+        )
+        .unwrap();
+        let mut responses = Vec::new();
+        for start in [0, 64, 128, 192, 256] {
+            responses.push(if fail_last && start == 256 {
+                Response::Error("last chunk")
+            } else {
+                Response::Documents(
+                    (start..(start + 64).min(300))
+                        .map(|index| {
+                            person_document(
+                                index,
+                                &format!("0x{:x}", index + 16),
+                                &format!("key-{index}"),
+                            )
+                        })
+                        .collect(),
+                )
+            });
+        }
+        let (database, state) = fixture(
+            responses,
+            Version::new(3, 13, 6),
+            true,
+            CommitBehavior::Success,
+        );
+        let result = ProjectedBatchExecutor::new(&installed)
+            .execute(&database, &batch, control())
+            .await;
+        if fail_last {
+            assert!(result.is_err());
+        } else {
+            let ProjectedBatchResult::Things(things) = result.unwrap() else {
+                panic!("things")
+            };
+            assert_eq!(things.input_indexes(), (0..300).collect::<Vec<_>>());
+            assert_eq!(things.items().len(), 300);
+        }
+        let state = state.lock().unwrap();
+        assert_eq!(state.opens, [TxType::Write]);
+        assert_eq!(state.calls.len(), 5);
+        assert!(state.calls.iter().all(|(_, rows)| rows.rows.len() <= 64));
+        assert_eq!(
+            (state.commits, state.rollbacks),
+            if fail_last { (0, 1) } else { (1, 0) }
+        );
     }
 }

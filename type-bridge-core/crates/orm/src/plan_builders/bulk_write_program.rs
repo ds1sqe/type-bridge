@@ -788,6 +788,22 @@ fn largest(
 ) -> Result<usize, Diagnostic> {
     let mut low = 0;
     let mut high = remaining.len();
+    if kind == WriteKind::Attach {
+        let mut iids = std::collections::BTreeSet::new();
+        for iid in remaining
+            .players
+            .iter()
+            .filter_map(|player| player.iid.as_ref())
+        {
+            iids.insert(iid.to_ascii_lowercase());
+            if iids.len() > INDEXED_IID_ROWS {
+                high = high
+                    .min(INDEXED_IID_ROWS)
+                    .min(authority.query_limits().structural.input_rows);
+                break;
+            }
+        }
+    }
     while low < high {
         let middle = low + (high - low).div_ceil(2);
         match one(
@@ -863,7 +879,7 @@ fn split_with_guards(
             Some(Ok(_)) => {
                 let mut low = 1;
                 let mut high =
-                    (rows.len() - ordinal).min(type_bridge_contract::limits::MAX_INPUT_ROWS);
+                    (rows.len() - ordinal).min(iid_rows_limit(authority, &rows[ordinal..]));
                 while low < high {
                     let middle = low + (high - low).div_ceil(2);
                     match build_many(

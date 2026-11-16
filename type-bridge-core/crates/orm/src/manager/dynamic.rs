@@ -735,8 +735,8 @@ impl<'db> DynamicEntityManager<'db> {
         if iids.is_empty() {
             return Ok(());
         }
-        let plan = plans.delete_many(&self.descriptor.type_name, iids, true, false)?;
-        return self.target.write_plan(&plan, |_| Ok(())).await;
+        let program = plans.delete_many_program(&self.descriptor.type_name, iids, true, false)?;
+        return self.target.write_plan_group(program, |_| Ok(())).await;
     }
 
     async fn write_many_by_plan(
@@ -1530,8 +1530,8 @@ impl<'db> DynamicRelationManager<'db> {
         if iids.is_empty() {
             return Ok(());
         }
-        let plan = plans.delete_many(&self.descriptor.type_name, iids, true, false)?;
-        return self.target.write_plan(&plan, |_| Ok(())).await;
+        let program = plans.delete_many_program(&self.descriptor.type_name, iids, true, false)?;
+        return self.target.write_plan_group(program, |_| Ok(())).await;
     }
 
     /// Count relations for this descriptor.
