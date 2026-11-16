@@ -1,6 +1,12 @@
 import { Iid } from "@type-bridge/node";
 import assert from "node:assert/strict";
-import { Aliases, Archive, Marker, Name, NameValue } from "./generated_blockers/dist/index.js";
+import { Aliases, Archive, Marker, Name, NameValue, TemporalStats } from "./generated_blockers/dist/index.js";
+
+const temporalStruct = TemporalStats({ occurred: "2024-01-01T00:00:00.123456789" });
+assert.throws(() => TemporalStats.decode(TemporalStats.encode(temporalStruct)), {
+  name: "RangeError",
+  message: "struct temporal-stats.occurred datetime native view loses sub-millisecond precision; struct fields do not retain canonical text",
+});
 
 const name = Name.create("marker");
 const values = { name_: name, nameValue: NameValue.create("label"), aliases: [], revision: null };

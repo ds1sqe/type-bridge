@@ -1513,6 +1513,11 @@ for (const [token, iso, canonical] of [
   const value = token.create(new Date(iso));
   assert.equal(value.canonical, canonical);
   assert.equal(value.value.toISOString(), iso);
+  const firstView = value.value;
+  assert.notEqual(firstView, value.value);
+  firstView.setUTCFullYear(2000);
+  assert.equal(value.canonical, canonical);
+  assert.equal(value.value.toISOString(), iso);
 }
 for (const [token, text, native] of [
   [ValDate, "-0001-01-01", "-000001-01-01T00:00:00.000Z"],

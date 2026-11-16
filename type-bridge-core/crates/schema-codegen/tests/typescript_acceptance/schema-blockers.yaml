@@ -1,4 +1,8 @@
 format: typebridge.schema/v2
+structs:
+  temporal-stats:
+    fields:
+      - { name: occurred, type: datetime }
 attributes:
   powertrain_ref: { value: string }
   name: { value: string }

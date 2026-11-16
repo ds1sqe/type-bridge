@@ -1681,8 +1681,11 @@ function hydrateMemberValue(value: unknown): unknown {
   return hydrateProjectedValue(parseProjectedWire(value));
 }
 
-function scalarFromWire(wire: ScalarWire, column?: number | string): unknown {
-  const context = typeof column === "number" ? `${wire.valueType} scalar column ${column}` : column ?? wire.valueType;
+function scalarFromWire(wire: ScalarWire, column?: number | string | { readonly structField: string }): unknown {
+  const context = typeof column === "number" ? `${wire.valueType} scalar column ${column}`
+    : typeof column === "object" ? `struct ${column.structField} ${wire.valueType}` : column ?? wire.valueType;
+  const advice = typeof column === "object" ? "; struct fields do not retain canonical text"
+    : "; select the attribute/model and use .canonical";
   switch (wire.valueType) {
     case "long":
       if (typeof wire.value !== "string")
@@ -1698,7 +1701,7 @@ function scalarFromWire(wire: ScalarWire, column?: number | string): unknown {
         text = text.replace(year, `${Number(year) < 0 ? "-" : "+"}${Math.abs(Number(year)).toString().padStart(6, "0")}`);
       }
       if (/\.\d{3}\d*[1-9]\d*(?:Z|[+-]\d{2}:\d{2}(?::\d{2})?)?$/.test(text)) {
-        throw new RangeError(`${context} native view loses sub-millisecond precision; select the attribute/model and use .canonical`);
+        throw new RangeError(`${context} native view loses sub-millisecond precision${advice}`);
       }
       if (wire.valueType === "date") text += "T00:00:00.000Z";
       if (wire.valueType === "datetime") text += "Z";
@@ -1711,7 +1714,7 @@ function scalarFromWire(wire: ScalarWire, column?: number | string): unknown {
       } else {
         date = new Date(text);
       }
-      if (!Number.isFinite(date.getTime())) throw new RangeError(`${context} native view exceeds Date's range; select the attribute/model and use .canonical`);
+      if (!Number.isFinite(date.getTime())) throw new RangeError(`${context} native view exceeds Date's range${advice}`);
       return date;
     }
     case "double":
@@ -4176,7 +4179,9 @@ export function defineStruct<Id extends string, Value, Input>(definition: {
               assertRecord(member, `native struct member ${field.name}`);
               return [
                 field.name,
-                scalarFromWire(member as unknown as ScalarWire),
+                scalarFromWire(member as unknown as ScalarWire, {
+                  structField: `${(JSON.parse(definition.id) as { label: string }).label}.${field.name}`,
+                }),
               ];
             }),
           ),

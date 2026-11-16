@@ -86,6 +86,7 @@ names and runtime resources; semantic schema fingerprints remain unchanged.
 | `date` | UTC-midnight `Date` in the native view; canonical years −262143 through 262142 |
 | `datetime`, `datetime-tz` | `Date` at millisecond precision in the native view; canonical text retains nanoseconds, fixed offsets, and IANA zones |
 | `duration` | Canonical string with month/day components and nanosecond precision; provider bounds are `u32` months/days and `u64` total time nanoseconds, nonnegative |
+| Temporal fields inside a struct | Native `Date` views only; struct values retain no canonical text. Decoding a nanosecond or out-of-range field raises `RangeError` for that struct field. |
 
 Staged-plan rows, fetched documents and `Pending.documents()` return every
 integer token as `bigint`, including computed integers and nested fetch fields.
@@ -106,6 +107,7 @@ change it. Reading `.value` creates a native view; a value outside `Date`'s rang
 or millisecond precision raises `RangeError` pointing to `.canonical`. The model
 still hydrates and its other fields remain accessible. A datetime-tz native
 view carries the instant; `.canonical` retains the stored offset and zone.
+For temporal attributes backed by `Date`, each `.value` read returns a fresh Date.
 
 Temporal attributes serialize to their canonical text through `toJSON()`.
 The native `.value` getter is non-enumerable, so object spread and
