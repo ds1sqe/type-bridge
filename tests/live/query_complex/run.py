@@ -54,7 +54,7 @@ def run(
     return completed.stdout
 
 
-def prepare_sdk(sdk: str, stage: Path, env: dict[str, str]) -> list[str]:
+def prepare_sdk(sdk: str, stage: Path, env: dict[str, str], source: Path = HERE) -> list[str]:
     target = Path(env["CARGO_TARGET_DIR"])
     if sdk == "python":
         config = stage / "pyrightconfig.json"
@@ -70,12 +70,12 @@ def prepare_sdk(sdk: str, stage: Path, env: dict[str, str]) -> list[str]:
             )
         )
         run(
-            [str(ROOT / ".venv/bin/pyright"), "--project", str(config), str(HERE / "python.py")],
+            [str(ROOT / ".venv/bin/pyright"), "--project", str(config), str(source / "python.py")],
             ROOT,
             env,
             stage / "python-typecheck.log",
         )
-        return [sys.executable, str(HERE / "python.py")]
+        return [sys.executable, str(source / "python.py")]
     if sdk == "node":
         generated = stage / "generated/typescript"
         packages = generated / "node_modules/@type-bridge"
@@ -84,7 +84,7 @@ def prepare_sdk(sdk: str, stage: Path, env: dict[str, str]) -> list[str]:
         (generated / "node_modules/@types").symlink_to(
             NODE / "node_modules/@types", target_is_directory=True
         )
-        shutil.copy2(HERE / "node.ts", generated / "src/program.ts")
+        shutil.copy2(source / "node.ts", generated / "src/program.ts")
         run(
             [str(NODE / "node_modules/.bin/tsc"), "-p", str(generated / "tsconfig.json")],
             ROOT,
@@ -95,9 +95,13 @@ def prepare_sdk(sdk: str, stage: Path, env: dict[str, str]) -> list[str]:
     if sdk == "rust":
         consumer = stage / "rust-consumer"
         (consumer / "src").mkdir(parents=True)
-        shutil.copy2(HERE / "rust.rs", consumer / "src/main.rs")
-        shutil.copy2(HERE / "ir.rs", consumer / "src/ir.rs")
-        shutil.copy2(HERE / "schema.yaml", consumer / "src/schema.yaml")
+        shutil.copy2(source / "rust.rs", consumer / "src/main.rs")
+        ir_manifest = ""
+        if (source / "ir.rs").exists():
+            shutil.copy2(source / "ir.rs", consumer / "src/ir.rs")
+            shutil.copy2(source / "schema.yaml", consumer / "src/schema.yaml")
+            ir_manifest = '[[bin]]\nname = "type-bridge-complex-ir"\npath = "src/ir.rs"\n'
+
         shutil.copy2(CORE / "Cargo.lock", consumer / "Cargo.lock")
         (consumer / "Cargo.toml").write_text(f'''[package]
 name = "type-bridge-complex-query"
@@ -111,10 +115,7 @@ type-bridge-schema = {{ path = "{CORE / "crates/schema"}" }}
 type-bridge-orm = {{ path = "{CORE / "crates/orm"}", features = ["typedb"] }}
 serde_json = "1"
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
-[[bin]]
-name = "type-bridge-complex-ir"
-path = "src/ir.rs"
-[patch.crates-io]
+{ir_manifest}[patch.crates-io]
 type-bridge = {{ path = "{CORE / "crates/rust"}" }}
 [workspace]
 ''')
@@ -133,6 +134,29 @@ type-bridge = {{ path = "{CORE / "crates/rust"}" }}
             stage / "rust-compile.log",
         )
         return [str(target / "debug/type-bridge-complex-query")]
+    model_object = stage / "c-models.o"
+    if not model_object.exists():
+        run(
+            [
+                env.get("CC", "cc"),
+                "-std=c17",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pedantic-errors",
+                "-I",
+                str(CORE / "crates/c/include"),
+                "-I",
+                str(stage / "generated/c/include"),
+                "-c",
+                str(stage / "generated/c/src/models.c"),
+                "-o",
+                str(model_object),
+            ],
+            ROOT,
+            env,
+            stage / "c-models-compile.log",
+        )
     executable = stage / "c-query"
     run(
         [
@@ -146,8 +170,8 @@ type-bridge = {{ path = "{CORE / "crates/rust"}" }}
             str(CORE / "crates/c/include"),
             "-I",
             str(stage / "generated/c/include"),
-            str(HERE / "c.c"),
-            str(stage / "generated/c/src/models.c"),
+            str(source / "c.c"),
+            str(model_object),
             "-L",
             str(target / "debug"),
             "-ltype_bridge_c",
@@ -390,14 +414,7 @@ environments:
                             timeout=60,
                         )
                         (stage / f"ir-{width}.json").write_text(result)
-                        ir_rows = json.loads(result)
-                        values = sorted(
-                            [
-                                row[name]["value"] if row.get(name) else None
-                                for name in ("identifier", "note", "nickname")
-                            ]
-                            for row in ir_rows
-                        )
+                        values = sorted(json.loads(result))
                         assert values == escape_expected(args.size, width), (version, width, values)
                         print(
                             f"{version} IR optional branch at {width} bindings passed", flush=True

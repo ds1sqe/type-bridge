@@ -8,10 +8,11 @@ use type_bridge_contract::migration_assertion::{
 use type_bridge_contract::query_plan::{
     Operation, Pattern, PlanSpec, QueryOperand, QueryOutput, QueryPattern, QueryPlan, Stage,
 };
+use type_bridge_contract::query_remote::{RemoteValue, StagedAnswer};
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
-use type_bridge_orm::session::staged::{PlanAnswer, TransactionOptions};
+use type_bridge_orm::session::staged::TransactionOptions;
 use type_bridge_orm::{ConnectOptions, Database};
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
 
@@ -237,10 +238,28 @@ async fn main() -> Result<()> {
     let pending = tx.stage_plan(&plan)?;
     tx.commit().await?;
     let answer = pending.get()?;
-    let PlanAnswer::Rows(rows) = answer.as_ref() else {
+    let StagedAnswer::Rows { rows } = answer.to_staged(&plan)? else {
         panic!("rows expected")
     };
-    println!("{}", serde_json::to_string(rows)?);
+    let values = rows
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|value| match value {
+                    RemoteValue::Attribute {
+                        value: CanonicalValue::String(value),
+                        ..
+                    }
+                    | RemoteValue::Value {
+                        value: CanonicalValue::String(value),
+                    } => Some(value.as_str().to_owned()),
+                    RemoteValue::Absent => None,
+                    other => panic!("unexpected fixture scalar: {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    println!("{}", serde_json::to_string(&values)?);
     db.close()?;
     Ok(())
 }
