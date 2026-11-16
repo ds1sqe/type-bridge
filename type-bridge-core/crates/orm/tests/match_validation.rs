@@ -417,9 +417,12 @@ fn role_player_or_scope_and_positive_connectivity_are_enforced() {
         window.limit = 1;
         *cardinality = RowCardinality::ExactlyOne;
     }
+    let validated = request
+        .validate(&registry)
+        .expect("abstract exact binding reads compatible concrete descendants");
     assert_eq!(
-        code(request.validate(&registry)),
-        "incompatible_role_player"
+        validated.request().plan.bindings[0].match_mode,
+        MatchMode::Subtypes
     );
 
     let partial_or = MatchExpr::Or {
