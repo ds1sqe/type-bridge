@@ -737,3 +737,70 @@ relations:
     );
     assert!(diagnostic.primary().is_some());
 }
+
+#[test]
+fn owns_constraints_must_narrow_direct_and_inherited_attribute_constraints() {
+    for (attribute, own) in [
+        (
+            "range: {min: -9223372036854775808, max: 9223372036854775807}",
+            "range: {min: 0}",
+        ),
+        ("range: {min: 0, max: 100}", "range: {min: 0, max: 100}"),
+        ("range: {min: 0, max: 100}", "range: {min: -1, max: 90}"),
+        ("values: [1, 2]", "values: [1, 2, 3]"),
+        ("values: [1, 2]", "values: [1, 2]"),
+    ] {
+        for inherited in [false, true] {
+            let child = if inherited {
+                "  local-score: {sub: score}\n"
+            } else {
+                ""
+            };
+            let label = if inherited { "local-score" } else { "score" };
+            let schema = declared(&format!(
+                "format: typebridge.schema/v2\nattributes:\n  score:\n    value: {{type: integer, {attribute}}}\n{child}entities:\n  person:\n    owns:\n      {label}: {{{own}}}\n"
+            ));
+            let error = resolve(&schema, &profile()).unwrap_err();
+            let diagnostic = error.iter().next().unwrap();
+            assert_eq!(
+                diagnostic.diagnostic().code().as_str(),
+                "owns_constraint_not_narrowing"
+            );
+            assert!(diagnostic.primary().is_some());
+            assert_eq!(diagnostic.related().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn owns_constraints_accept_strict_subsets_and_distinct_conjunctive_regexes() {
+    for (value_type, attribute, own) in [
+        (
+            "integer",
+            "range: {min: 0, max: 100}",
+            "range: {min: 1, max: 99}",
+        ),
+        ("integer", "range: {min: 0}", "range: {min: 1}"),
+        ("integer", "values: [1, 2]", "values: [1]"),
+        ("string", "regex: '^ABC$'", "regex: '.*'"),
+    ] {
+        let schema = declared(&format!(
+            "format: typebridge.schema/v2\nattributes:\n  score:\n    value: {{type: {value_type}, {attribute}}}\nentities:\n  person:\n    owns:\n      score: {{{own}}}\n"
+        ));
+        resolve(&schema, &profile()).unwrap();
+    }
+    let schema = declared(
+        "format: typebridge.schema/v2\nattributes:\n  code: {value: {type: string, regex: '^ABC$'}}\nentities:\n  person:\n    owns:\n      code: {regex: '^ABC$'}\n",
+    );
+    assert_eq!(
+        resolve(&schema, &profile())
+            .unwrap_err()
+            .iter()
+            .next()
+            .unwrap()
+            .diagnostic()
+            .code()
+            .as_str(),
+        "owns_constraint_not_narrowing"
+    );
+}

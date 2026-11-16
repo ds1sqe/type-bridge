@@ -8,11 +8,11 @@ use type_bridge_contract::fingerprint::{
 };
 use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
-    AnnotationKindId, AnnotationSubjectId, CollectionMode, DeclaredIdentityFingerprint,
-    DeclaredSchema, FunctionFact, InterfaceKind, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
-    RelatesFact, SchemaAnnotationValue, SchemaDiagnostics, SchemaFact, SchemaFactId,
-    SemanticProfile, SemanticSchemaFingerprint, SourceSpan, StructFact, StructField, SubFactId,
-    ValueFactId,
+    AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CollectionMode,
+    DeclaredIdentityFingerprint, DeclaredSchema, FunctionFact, InterfaceKind, OwnsFact, OwnsFactId,
+    PlaysFact, PlaysFactId, RelatesFact, SchemaAnnotationValue, SchemaDiagnostics, SchemaFact,
+    SchemaFactId, SemanticProfile, SemanticSchemaFingerprint, SourceSpan, StructFact, StructField,
+    SubFactId, ValueFactId,
 };
 use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 
@@ -683,6 +683,7 @@ pub fn resolve_schema_with_capabilities(
     let index = DirectIndex::build(declared)?;
     let parents = validate_parents(declared, &index)?;
     validate_inheritance_cycles(declared, &index.types, &parents)?;
+    validate_owns_value_constraints(declared, &index, &parents)?;
 
     let mut order = index.types.iter().cloned().collect::<Vec<_>>();
     order.sort_by_key(|id| (ancestor_chain(id, &parents).len(), id.clone()));
@@ -1047,6 +1048,85 @@ fn ancestor_chain(id: &TypeId, parents: &BTreeMap<TypeId, TypeId>) -> Vec<TypeId
         current = parent;
     }
     ancestors
+}
+
+// TypeDB compares each owns constraint with every inherited attribute constraint
+// of the same kind. Different regexes are conjunctive; it does not prove regex
+// containment, but rejects repeated identical constraints as redundant.
+fn validate_owns_value_constraints(
+    declared: &DeclaredSchema,
+    index: &DirectIndex,
+    parents: &BTreeMap<TypeId, TypeId>,
+) -> Result<(), SchemaDiagnostics> {
+    use std::cmp::Ordering;
+    for owns in index.owns.values().flatten() {
+        let subject = AnnotationSubjectId::Owns(owns.id().clone());
+        let local = annotations_for(index, subject.clone());
+        let attribute = TypeId::new(TypeKind::Attribute, owns.id().attribute().label().as_str())
+            .map_err(no_source)?;
+        for ancestor in
+            std::iter::once(attribute.clone()).chain(ancestor_chain(&attribute, parents))
+        {
+            let id = AttributeId::new(ancestor.label().as_str()).map_err(no_source)?;
+            let Some((_, value_id)) = index.values.get(&id) else {
+                continue;
+            };
+            let inherited_subject = AnnotationSubjectId::Value(value_id.clone());
+            for (kind, inherited) in annotations_for(index, inherited_subject.clone()) {
+                let Some(own) = local.get(&kind) else {
+                    continue;
+                };
+                let narrows = match (own, &inherited) {
+                    (SchemaAnnotationValue::Range(own), SchemaAnnotationValue::Range(parent)) => {
+                        let lower = match (own.lower(), parent.lower()) {
+                            (_, None) => true,
+                            (Some(own), Some(parent)) => matches!(
+                                own.semantic_cmp_same_domain(parent),
+                                Some(Ordering::Equal | Ordering::Greater)
+                            ),
+                            (None, Some(_)) => false,
+                        };
+                        let upper = match (own.upper(), parent.upper()) {
+                            (_, None) => true,
+                            (Some(own), Some(parent)) => matches!(
+                                own.semantic_cmp_same_domain(parent),
+                                Some(Ordering::Equal | Ordering::Less)
+                            ),
+                            (None, Some(_)) => false,
+                        };
+                        lower && upper && own != parent
+                    }
+                    (SchemaAnnotationValue::Values(own), SchemaAnnotationValue::Values(parent)) => {
+                        own.iter().len() < parent.iter().len()
+                            && own
+                                .iter()
+                                .all(|value| parent.iter().any(|candidate| candidate == value))
+                    }
+                    (SchemaAnnotationValue::Regex(own), SchemaAnnotationValue::Regex(parent)) => {
+                        own != parent
+                    }
+                    _ => continue,
+                };
+                if !narrows {
+                    return Err(collection_mode_conflict(
+                        declared,
+                        &SchemaFactId::Annotation(AnnotationFactId::new(
+                            subject.clone(),
+                            kind.clone(),
+                        )),
+                        &SchemaFactId::Annotation(AnnotationFactId::new(
+                            inherited_subject.clone(),
+                            kind,
+                        )),
+                        "owns_constraint_not_narrowing",
+                        "ownership range and values must strictly narrow the attribute constraint; an ownership regex must differ from the attribute regex",
+                        "attribute constraint is declared here",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn empty_resolved_type(id: TypeId) -> ResolvedType {

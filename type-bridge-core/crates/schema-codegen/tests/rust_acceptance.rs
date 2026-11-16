@@ -4137,7 +4137,7 @@ fn sdk_serialization_canonical_codec() {
     )
     .expect("Models schema reads");
     write_package(&emit_from_source(&source), &generated);
-    let foreign_source = source.replacen("max: 80", "max: 79", 1);
+    let foreign_source = source.replacen("max: 80", "max: 81", 1);
     assert_ne!(
         foreign_source, source,
         "foreign Serialization authority must differ"

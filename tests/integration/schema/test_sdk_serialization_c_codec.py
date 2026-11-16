@@ -186,7 +186,7 @@ def test_sdk_serialization_canonical_codec(tmp_path: Path) -> None:
     )
     foreign_schema = tmp_path / "schema-foreign.yaml"
     source = SCHEMA.read_text(encoding="utf-8")
-    foreign_source = source.replace("range: { min: 0, max: 80 }", "range: { min: 0, max: 79 }", 1)
+    foreign_source = source.replace("range: { min: 0, max: 80 }", "range: { min: 0, max: 81 }", 1)
     assert foreign_source != source
     foreign_schema.write_text(foreign_source, encoding="utf-8")
     foreign_package = generate_package(

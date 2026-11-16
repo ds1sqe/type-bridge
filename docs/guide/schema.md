@@ -59,3 +59,9 @@ not an authored schema input.
 
 See [schema workflows](schema-workflows.md), [Split-YAML](split-yaml-v1.md),
 [migrations](migrations.md), and [upgrading to 3.0](upgrade-3.0.md).
+
+Ownership `range` and `values` constraints must strictly narrow every inherited
+attribute constraint of the same kind. Keep both attribute range bounds when
+narrowing an ownership. Different regexes are combined by TypeDB; repeating the
+same regex on the ownership is redundant and fails `schema check`. Errors name
+the ownership source and the attribute constraint source before authoring.

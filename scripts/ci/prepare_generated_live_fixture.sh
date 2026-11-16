@@ -103,7 +103,7 @@ generate_workspace() {
 }
 
 sed \
-    -e 's/range: { min: 0, max: 80 }/range: { min: 0, max: 79 }/' \
+    -e 's/range: { min: 0, max: 80 }/range: { min: 0, max: 81 }/' \
     "$SDK_MODELS_DIR/schema.yaml" > "$ordered_foreign_schema"
 if cmp -s "$SDK_MODELS_DIR/schema.yaml" "$ordered_foreign_schema"; then
     echo "Generated ordered foreign schema did not alter its authority." >&2
