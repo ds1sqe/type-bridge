@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -381,3 +382,21 @@ def test_iid_literal_refuses_a_string_payload() -> None:
     item = builder.exact(Item)
     with pytest.raises(TypeError, match="IID input values require Iid"):
         builder.where(builder.field(item, ITEM_ID).eq(literal("iid", "0xAb12")))
+
+
+@pytest.mark.parametrize("text, expected", [("1E-7", "0.0000001"), ("1E+2", "100")])
+def test_decimal_plan_literals_use_bounded_native_conversion(text: str, expected: str) -> None:
+    builder = Plan.builder()
+    builder.exact(Item)
+    value = builder.let("decimal_value", Decimal(text))
+    builder.returning([value])
+    assert expected in builder.build(_authority()).canonical_bytes().decode()
+
+
+def test_huge_decimal_plan_exponents_fail_before_expansion() -> None:
+    builder = Plan.builder()
+    builder.exact(Item)
+    value = builder.let("decimal_value", Decimal("1E+1000000000"))
+    builder.returning([value])
+    with pytest.raises(PlanError):
+        builder.build(_authority())

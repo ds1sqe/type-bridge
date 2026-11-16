@@ -8084,7 +8084,10 @@ fn attribute_value_from_py(
         ValueType::DateTimeTz => exact_temporal_string(py, value, "datetime", true)
             .map(|value| AttributeValue::DateTimeTZ(canonical_python_datetime(&value, true))),
         ValueType::Decimal => {
-            exact_module_value_string(py, value, "decimal", "Decimal")?;
+            let decimal = py.import("decimal")?.getattr("Decimal")?;
+            if value.get_type().as_ptr() != decimal.as_ptr() {
+                return Err(py_type_error("attribute value requires an exact Decimal"));
+            }
             python_decimal_fixed_text(value).map(AttributeValue::Decimal)
         }
         ValueType::Duration => canonical_duration_from_py(py, value).map(AttributeValue::Duration),
@@ -8421,6 +8424,14 @@ pub(crate) fn canonical_plan_scalar_rows(
     Ok(PyList::new(py, rows)?.into_any().unbind())
 }
 
+pub(crate) fn canonical_plan_decimal(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<CanonicalValue> {
+    let hydration = ProjectedScalarHydration::capture(py)?;
+    canonical_projected_decimal(py, value, &hydration, &[]).map(CanonicalValue::Decimal)
+}
+
 pub(crate) fn canonical_plan_duration(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -8626,21 +8637,6 @@ fn python_decimal_fixed_text(value: &Bound<'_, PyAny>) -> PyResult<String> {
             .get_type()
             .call1(((sign, digits.get_slice(0, significant), exponent),))?;
     normalized.call_method1("__format__", ("f",))?.extract()
-}
-
-fn exact_module_value_string(
-    py: Python<'_>,
-    value: &Bound<'_, PyAny>,
-    module: &str,
-    class_name: &str,
-) -> PyResult<String> {
-    let class = py.import(module)?.getattr(class_name)?;
-    if value.get_type().as_ptr() != class.as_ptr() {
-        return Err(py_type_error(format!(
-            "attribute value requires an exact {class_name}"
-        )));
-    }
-    value.str()?.extract()
 }
 
 fn canonical_duration_from_py(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String> {
@@ -10075,6 +10071,10 @@ plays:
                 let value = decimal.call1((text,)).unwrap();
                 let actual = canonical_projected_decimal(py, &value, &hydration, &[]).unwrap();
                 assert_eq!(actual.as_str(), expected);
+                assert_eq!(
+                    canonical_plan_decimal(py, &value).unwrap(),
+                    CanonicalValue::Decimal(actual.clone())
+                );
                 assert_eq!(
                     canonical_struct_scalar(
                         attribute_value_from_py(py, &value, ValueType::Decimal).unwrap()

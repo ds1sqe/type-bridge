@@ -41,6 +41,11 @@ fn plan_scalar(value_type: ValueTypeTag, value: &Bound<'_, PyAny>) -> PyResult<C
         )
         .map_err(|diagnostic| value_error(&diagnostic));
     }
+    if value_type == ValueTypeTag::Decimal && !value.is_instance_of::<pyo3::types::PyString>() {
+        return crate::runtime_projection::canonical_plan_decimal(value.py(), value).map_err(
+            |_| value_error(&type_bridge_orm::plan_scalar::plan_scalar_host_type_error()),
+        );
+    }
     if value_type == ValueTypeTag::Duration && !value.is_instance_of::<pyo3::types::PyString>() {
         return crate::runtime_projection::canonical_plan_duration(value.py(), value);
     }

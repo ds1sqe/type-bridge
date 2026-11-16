@@ -185,7 +185,7 @@ def _literal_parts(
     if isinstance(value, str):
         return "string", value
     if isinstance(value, Decimal):
-        return "decimal", _host_text(value)
+        return "decimal", value
     if isinstance(value, _dt.datetime):
         return ("datetime" if value.tzinfo is None else "datetime_tz"), value.isoformat()
     if isinstance(value, _dt.date):
@@ -196,8 +196,6 @@ def _literal_parts(
 
 
 def _host_text(value: object) -> object:
-    if isinstance(value, Decimal):
-        return format(value, "f")
     if isinstance(value, _dt.date):
         return value.isoformat()
     return value
