@@ -5952,15 +5952,27 @@ fn sdk_models_generated_package_integrity() {
 
     let abstract_factory_names: BTreeSet<_> = emitted_function_names(&emitted)
         .into_iter()
-        .filter(|name| projection.models().values().any(|model| {
-            model.declaration().is_abstract() && ["exact", "subtypes"].iter().any(|mode| {
-                name.ends_with(&format!("query_role_player_{}_{}", model.target_name().as_str().trim_start_matches("fixture_"), mode))
+        .filter(|name| {
+            projection.models().values().any(|model| {
+                model.declaration().is_abstract()
+                    && ["exact", "subtypes"].iter().any(|mode| {
+                        name.ends_with(&format!(
+                            "query_role_player_{}_{}",
+                            model.target_name().as_str().trim_start_matches("fixture_"),
+                            mode
+                        ))
+                    })
             })
-        }))
+        })
         .collect();
     assert!(!abstract_factory_names.is_empty());
-    println!("abstract role-player constructor symbols added: {}", abstract_factory_names.len());
-    for name in &abstract_factory_names { println!("abstract role-player constructor: {name}"); }
+    println!(
+        "abstract role-player constructor symbols added: {}",
+        abstract_factory_names.len()
+    );
+    for name in &abstract_factory_names {
+        println!("abstract role-player constructor: {name}");
+    }
 
     let root = sdk_models_repository_root();
     let journey: Value = serde_json::from_slice(

@@ -29,7 +29,7 @@ answers, and raw TypeQL oracle. The scaling suite can import `seed_queries(size)
 and `expected_rows(size)`. Every generated SDK runs against the same seeded
 database, compares its complete selected values, and checks first/count/exists.
 The runner applies the generated migration and deletes both the exact database
-and its journal on success or failure. It never starts or reconfigures TypeDB.
+and its journal on success or failure after its fresh read probe. It never starts or reconfigures TypeDB.
 
 Install the repository Python/dev dependencies and Node development dependencies
 as described in `DEVELOPMENT.md`. Rebuild the editable Python core after Rust
@@ -69,18 +69,35 @@ The root Pyright configuration excludes `python.py` because its generated
 package exists only in a staged run. The runner checks that consumer with the
 staged package on its import path before opening a database.
 
-The generated programs also exercise 2/4/6/8/10 binding prefixes. These restrict
-identifiers to `P0002`, `P0004`, or `P0008`, reject the extra employment edge by its note,
-and compare score with project priority at ten bindings. Person `P0004` has score 40 and project priority 41: it matches the smaller joins and is excluded by that cross-field comparison. Each prefix checks
-sorted rows, offset/limit, first, root-only pagination with total, count, exists,
-and identifier-grouped counts against its raw oracle and known answer. Pages
-select only the person root; a singular non-root selection is not a valid page
-shape. Both present and missing nicknames occur in the seeded answers.
+The generated programs also exercise 2/4/6/8/10 binding prefixes. Every width
+has independent known answers, rows, first, count/exists, offset/limit, root
+pagination with total, and grouped counts. The size parameter controls the
+ordinary P-prefixed data; twelve fixed W/X-prefixed records each fail exactly
+one filter. The generator asserts that property. The live runner drops each
+filter in turn at every width where it applies and requires the raw row count
+to change: 53 independent exclusion checks, plus six baseline checks per server.
+This prevents another condition from masking a filter regression.
+
+The identifier disjunction admits P/W prefixes and rejects X. A negated
+cross-note prefix and a separate note-presence predicate have separate witnesses;
+a positive note-prefix predicate would imply presence and make that test vacuous.
+Company prefix, blocked department, office site, priority, and cross-field score
+comparison each have their own witness. The twelve-binding cross-field witness
+passes the task condition, so that condition cannot mask the comparison. P0004
+still demonstrates the smaller-join boundary; the added witness proves it at
+the widest join too. Both present and missing nicknames occur in answers.
+
+The historical original sorted statement is retained byte for byte with its
+own known answer. On size16 the current full query returns P0002/P0008, while
+the historical predicate set also admits three witnesses. The current sorted
+and fetch forms have the same predicates and must agree; the historical form
+is separate evidence and does not claim equivalent filtering or performance.
 
 There is a public surface gap: structural optional branches and arbitrary field
 list membership have no typed-query or generic-Plan builder. The typed fixture
-uses the existing OR-of-equalities form for finite membership and captures the
-`try` blocks used for optional attribute hydration. Separate raw programs use
+uses disjunction and captures the `try` blocks used for optional attribute
+hydration. Finite OR-of-equalities remains available as shown in the surface
+table; arbitrary list membership still has no typed builder. Separate raw programs use
 real optional branches and real `let ... in [...]` list iteration through each
 SDK's `execute_query`/`executeQuery` entry point. TypeDB versions that reject
 lists with `REP254` are recorded explicitly; optional-branch checks still run.
@@ -150,3 +167,9 @@ the model-group test groups selected relation roots by their abstract player.
 Rust keeps its compile-time refusal of exact abstract typed bindings. C's
 nominal role-player factories include compatible abstract ancestors in exact
 and subtype modes; generated opaque carrier structs are never manufactured.
+
+The fixture is registered as an ordinary integration test in
+`tests/integration/schema/test_query_complex_live.py`. The CI schema integration
+job runs its size16 case through all four SDKs alongside generated projection
+acceptance. See the testing guide for the pytest command. Larger size values
+remain available to the scaling plan through the standalone runner/data generator.

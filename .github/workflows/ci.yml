@@ -1586,6 +1586,20 @@ jobs:
           MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
+      - name: Set up Node for the four-SDK complex query fixture
+        if: matrix.test-group == 'schema'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Prepare the four-SDK complex query fixture
+        if: matrix.test-group == 'schema'
+        run: |
+          npm --prefix type-bridge-core/crates/node ci
+          cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
+
       - name: Install the band's Python driver
         run: uv pip install "typedb-driver==${{ matrix.python-driver }}"
 

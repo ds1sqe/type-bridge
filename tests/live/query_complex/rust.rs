@@ -71,6 +71,8 @@ async fn main() -> Result<()> {
     transaction.close()?;
     let mut s = db.query()?;
     let size: u64 = std::env::var("TYPE_BRIDGE_COMPLEX_SIZE")?.parse()?;
+    let model_count: u64 = std::env::var("TYPE_BRIDGE_COMPLEX_MODEL_COUNT")?.parse()?;
+    let party_ids: Vec<String> = std::env::var("TYPE_BRIDGE_COMPLEX_MODEL_IDS")?.split(',').map(str::to_owned).collect();
     if std::env::var("TYPE_BRIDGE_COMPLEX_WIDTH").is_err() {
         // Rust exact<Abstract> remains a compile-time refusal; families cover all reads.
         macro_rules! abstract_case {
@@ -78,30 +80,31 @@ async fn main() -> Result<()> {
                 let root = s.subtypes::<$model>()?;
                 let edge = s.exact::<$edge>()?;
                 let field = root.field($token::identifier);
-                let expected = (1..=size).map(|i| format!("{}{i:04}", $prefix)).collect::<Vec<_>>();
+                let mut expected = if $prefix == "P" { party_ids.clone() } else { (1..=model_count).map(|i| format!("{}{i:04}", $prefix)).collect::<Vec<_>>() };
+                expected.sort();
                 let q = s.query(root)?;
-                let rows = q.rows(RowsOptions::new(size + 1).sort(field.asc())).await?;
+                let rows = q.rows(RowsOptions::new(model_count + 1).sort(field.asc())).await?;
                 assert_eq!(rows.iter().map(|x| x.identifier().value()).collect::<Vec<_>>(), expected.iter().map(String::as_str).collect::<Vec<_>>());
                 assert_eq!(q.first(field.asc()).await?.unwrap().identifier().value(), &expected[0]);
                 assert_eq!(q.clone().where_all([field.eq(Identifier::new(expected[0].clone())?)])?.one().await?.identifier().value(), &expected[0]);
-                assert_eq!(q.count_by(root).await?, size);
+                assert_eq!(q.count_by(root).await?, model_count);
                 assert!(q.exists_by(root).await?);
-                let page = q.page_by(root, PageOptions::new(size + 1).sort(field.asc()).include_total(true)).await?;
-                assert_eq!(page.items().len() as u64, size); assert_eq!(page.total(), Some(size));
-                assert_eq!(q.group_by_field(field)?.reduce((aggregate::count(),)).await?.len() as u64, size);
+                let page = q.page_by(root, PageOptions::new(model_count + 1).sort(field.asc()).include_total(true)).await?;
+                assert_eq!(page.items().len() as u64, model_count); assert_eq!(page.total(), Some(model_count));
+                assert_eq!(q.group_by_field(field)?.reduce((aggregate::count(),)).await?.len() as u64, model_count);
                 let link = edge.role($edge_token::$role).links(root);
-                assert_eq!(s.query(edge)?.matching(root)?.where_all([link.clone()])?.group_by(root)?.reduce((aggregate::count(),)).await?.len() as u64, size);
-                assert_eq!(s.query(root)?.matching(edge)?.where_all([link.clone()])?.count_by(root).await?, size);
-                let nested = s.query(edge)?.matching(root)?.where_all([link.clone()])?.rows(RowsOptions::new(size + 1)).await?;
-                assert_eq!(nested.len() as u64, size);
-                for item in nested { assert!($nested_id(&item).value().starts_with($prefix)); }
-                let collections = s.query((edge, root.collect()))?.where_all([link])?.page_by(edge, PageOptions::new(size + 1).include_total(true)).await?;
-                assert_eq!(collections.total(), Some(size));
+                assert_eq!(s.query(edge)?.matching(root)?.where_all([link.clone()])?.group_by(root)?.reduce((aggregate::count(),)).await?.len() as u64, model_count);
+                assert_eq!(s.query(root)?.matching(edge)?.where_all([link.clone()])?.count_by(root).await?, model_count);
+                let nested = s.query(edge)?.matching(root)?.where_all([link.clone()])?.rows(RowsOptions::new(model_count + 1)).await?;
+                assert_eq!(nested.len() as u64, model_count);
+                for item in nested { assert!(expected.contains($nested_id(&item).value())); }
+                let collections = s.query((edge, root.collect()))?.where_all([link])?.page_by(edge, PageOptions::new(model_count + 1).include_total(true)).await?;
+                assert_eq!(collections.total(), Some(model_count));
                 let mut ids = collections.items().iter().flat_map(|(_, items)| items.iter().map(|x| x.identifier().value().to_owned())).collect::<Vec<_>>();
                 ids.sort(); assert_eq!(ids, expected);
                 let manager = db.$manager::<$model>().subtypes();
-                assert_eq!(manager.count().await?, size); assert!(manager.filter()?.exists().await?);
-                let items = manager.all().await?; assert_eq!(items.len() as u64, size);
+                assert_eq!(manager.count().await?, model_count); assert!(manager.filter()?.exists().await?);
+                let items = manager.all().await?; assert_eq!(items.len() as u64, model_count);
                 assert_eq!(manager.get_by_iid(items[0].iid()).await?.unwrap().identifier().value(), items[0].identifier().value());
             }};
         }
@@ -126,7 +129,7 @@ async fn main() -> Result<()> {
     let l = s.exact::<Located>()?;
     let z = s.exact::<CompanyOffice>()?;
     let abstract_binding = s.subtypes::<Party>()?;
-    let limit = size + 1;
+    let limit = model_count + 1;
     let width: u32 = std::env::var("TYPE_BRIDGE_COMPLEX_WIDTH")
         .unwrap_or_else(|_| "12".into())
         .parse()?;
@@ -137,20 +140,8 @@ async fn main() -> Result<()> {
         p.field(PersonType::score).ge(20_i64),
         e.field(EmploymentType::note).is_present(),
     ])?;
-    if width < 12 {
-        query = query.where_all([e
-            .field(EmploymentType::note)
-            .starts_with(Text::new("job-")?)])?;
-        query = query.where_all([p
-            .field(PersonType::identifier)
-            .eq(Identifier::new("P0002")?)
-            .or(p
-                .field(PersonType::identifier)
-                .eq(Identifier::new("P0004")?))
-            .or(p
-                .field(PersonType::identifier)
-                .eq(Identifier::new("P0008")?))])?;
-    }
+    query = query.where_all([e.field(EmploymentType::note).starts_with(Text::new("cross-")?).not()])?;
+    query = query.where_all([p.field(PersonType::identifier).starts_with(Text::new("P")?).or(p.field(PersonType::identifier).starts_with(Text::new("W")?))])?;
     if width >= 4 {
         query = query.matching(c)?.matching(m)?.where_all([
             e.role(EmploymentType::employer).links(c),
@@ -199,20 +190,8 @@ async fn main() -> Result<()> {
         p.field(PersonType::score).ge(20_i64),
         e.field(EmploymentType::note).is_present(),
     ])?;
-    if width < 12 {
-        root_query = root_query.where_all([e
-            .field(EmploymentType::note)
-            .starts_with(Text::new("job-")?)])?;
-        root_query = root_query.where_all([p
-            .field(PersonType::identifier)
-            .eq(Identifier::new("P0002")?)
-            .or(p
-                .field(PersonType::identifier)
-                .eq(Identifier::new("P0004")?))
-            .or(p
-                .field(PersonType::identifier)
-                .eq(Identifier::new("P0008")?))])?;
-    }
+    root_query = root_query.where_all([e.field(EmploymentType::note).starts_with(Text::new("cross-")?).not()])?;
+    root_query = root_query.where_all([p.field(PersonType::identifier).starts_with(Text::new("P")?).or(p.field(PersonType::identifier).starts_with(Text::new("W")?))])?;
     if width >= 4 {
         root_query = root_query.matching(c)?.matching(m)?.where_all([
             e.role(EmploymentType::employer).links(c),

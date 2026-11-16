@@ -247,3 +247,17 @@ TYPE_BRIDGE_UPDATE_PLAN_FIXTURES=1 cargo test \
 
 Run the command again without the environment variable to check the recorded
 statements. The helper writes only the fixture selected by each test.
+
+The schema integration tier runs the size-16 chain/star complex-query fixture
+through Python, Node, Rust and C, alongside generated projection acceptance:
+
+```bash
+USE_DOCKER=false TYPEDB_ADDRESS=localhost:1729 TYPEDB_HTTP_PORT=8000 \
+uv run pytest tests/integration/schema/test_query_complex_live.py -m integration -q
+```
+
+CI's Python schema integration job installs the Node consumer dependencies and
+uses the same existing TypeDB service for all four SDKs. Install the repository
+Python/dev and Node dependencies before running it locally. The standalone
+`tests/live/query_complex/run.py --size N` command retains parameterized data
+sizes for scaling measurements; see its README for multi-server invocation.

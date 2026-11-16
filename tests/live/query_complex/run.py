@@ -19,7 +19,11 @@ from fixture import (
     escape_expected,
     escape_query,
     expected_rows,
+    model_ids,
+    original_expected_rows,
     seed_queries,
+    tagged_count,
+    verify_predicate_witnesses,
     width_expected,
     width_query,
 )
@@ -208,6 +212,8 @@ def main() -> None:
     env["CARGO_TARGET_DIR"] = str(Path(env["CARGO_TARGET_DIR"]).expanduser().resolve())
     env["CARGO_BUILD_JOBS"] = "24"
     env["TYPE_BRIDGE_COMPLEX_SIZE"] = str(args.size)
+    env["TYPE_BRIDGE_COMPLEX_MODEL_IDS"] = ",".join(model_ids(args.size))
+    env["TYPE_BRIDGE_COMPLEX_MODEL_COUNT"] = str(len(model_ids(args.size)))
     env.update(TYPEDB_USERNAME="admin", TYPEDB_PASSWORD="password")
     sdks = args.sdk or ["python", "node", "rust", "c"]
     run(
@@ -298,7 +304,12 @@ environments:
                             timeout=20,
                         )
                         found = json.loads(result)
-                        assert found == expected_rows(args.size), (version, oracle, found)
+                        wanted = (
+                            original_expected_rows(args.size)
+                            if oracle == "original"
+                            else expected_rows(args.size)
+                        )
+                        assert found == wanted, (version, oracle, found, wanted)
                         oracles[oracle] = {
                             "status": "passed",
                             "seconds": time.monotonic() - started,
@@ -321,6 +332,39 @@ environments:
                         if oracle == "fetch":
                             raise
                     (stage / "oracles.json").write_text(json.dumps(oracles, indent=2))
+                predicate_stage = stage / "predicate-witnesses"
+                predicate_stage.mkdir()
+                predicate_index = 0
+
+                def predicate_oracle(text: str) -> int:
+                    nonlocal predicate_index
+                    predicate_index += 1
+                    query_file = predicate_stage / f"{predicate_index:03d}.typeql"
+                    query_file.write_text(text)
+                    answer = run(
+                        [
+                            sys.executable,
+                            str(HERE / "raw_probe.py"),
+                            "--oracle",
+                            "fetch",
+                            "--query-file",
+                            str(query_file),
+                        ],
+                        ROOT,
+                        env,
+                        query_file.with_suffix(".log"),
+                        timeout=20,
+                    )
+                    return len(json.loads(answer))
+
+                witness_evidence = verify_predicate_witnesses(args.size, predicate_oracle)
+                (stage / "predicate-witnesses.json").write_text(
+                    json.dumps(witness_evidence, indent=2)
+                )
+                print(
+                    f"{version} {len(witness_evidence)} independently excluding predicate checks passed",
+                    flush=True,
+                )
                 expected = dict(
                     rows=rows,
                     page_id=rows[1][0] if len(rows) > 1 else None,
@@ -328,8 +372,8 @@ environments:
                     first=rows[0] if rows else None,
                     count=len(rows),
                     exists=bool(rows),
-                    abstract_count=args.size,
-                    tagged_count=args.size // 2,
+                    abstract_count=len(model_ids(args.size)),
+                    tagged_count=tagged_count(args.size),
                 )
                 (stage / "raw.json").write_text(json.dumps(expected, indent=2) + "\n")
                 print(f"{version} raw oracle: {len(rows)} rows", flush=True)
@@ -372,7 +416,7 @@ environments:
                 for width in (4, 10):
                     for list_membership in (False, True):
                         kind = "list" if list_membership else "optional"
-                        text = escape_query(width, list_membership=list_membership)
+                        text = escape_query(width, list_membership=list_membership, size=args.size)
                         env["TYPE_BRIDGE_COMPLEX_RAW_QUERY"] = text
                         (stage / f"escape-{kind}-{width}.typeql").write_text(text)
                         for sdk, command in commands.items():

@@ -351,6 +351,17 @@ static void abstract_##MODEL##_##MODE(tb_complex_query_session *session, uint64_
   OK(tb_complex_query_rows(q, NULL, 0, 0, size + 1, &terminal, &diagnostics)); \
   OK(tb_complex_database_query_execute_rows(db, terminal, NULL, NULL, &rows, &diagnostics)); \
   assert(row_count(rows) == size); \
+  for (size_t row_index = 0; row_index < row_count(rows); ++row_index) { \
+    tb_complex_##EDGE *nested = NULL; \
+    tb_complex_##EDGE##_##ROLE##_player *player = NULL; \
+    tb_complex_##EDGE##_##ROLE##_player_kind_t kind; \
+    OK(tb_complex_##EDGE##_query_exact_one_at(tb_complex_##EDGE##_query_exact_one_result_slot_v1_t_rows(rows, 0), row_index, &nested, &diagnostics)); \
+    OK(tb_complex_##EDGE##_##ROLE(nested, &player, &diagnostics)); \
+    OK(tb_complex_##EDGE##_##ROLE##_player_kind(player, &kind, &diagnostics)); \
+    assert(kind != tb_complex_##EDGE##_##ROLE##_player_kind_unknown); \
+    OK(tb_complex_##EDGE##_##ROLE##_player_close(&player)); \
+    OK(tb_complex_##EDGE##_close(&nested)); \
+  } \
   OK(tb_complex_query_rows_result_close(&rows)); \
   OK(tb_complex_query_rows_terminal_close(&terminal)); \
   OK(tb_complex_query_close(&q)); \
@@ -424,7 +435,8 @@ int main(void) {
   const char *width_env = getenv("TYPE_BRIDGE_COMPLEX_WIDTH");
   unsigned width = width_env ? (unsigned)strtoul(width_env, NULL, 10) : 12u;
   uint64_t size = strtoull(getenv("TYPE_BRIDGE_COMPLEX_SIZE"), NULL, 10);
-  uint64_t limit = size + 1;
+  uint64_t model_count = strtoull(getenv("TYPE_BRIDGE_COMPLEX_MODEL_COUNT"), NULL, 10);
+  uint64_t limit = model_count + 1;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_runtime_config_v1_t runtime_config = {0};
   runtime_config.struct_size = sizeof(runtime_config);
@@ -471,7 +483,7 @@ int main(void) {
   uint64_t generic_abstract_count = abstract_subtypes_plan_count();
   tb_complex_query_session *session = NULL;
   OK(tb_complex_query_session_open(package, &session, &diagnostics));
-  if (!width_env) abstract_read_matrix(session, size);
+  if (!width_env) abstract_read_matrix(session, model_count);
   BIND(person, subtypes, p);
   BIND(company, exact, c);
   BIND(department, exact, d);
@@ -605,24 +617,18 @@ int main(void) {
     OK(tb_complex_query_predicate_close(&blocked));
     where_take(unblocked);
   }
-  if (width < 12) {
-    FILTER(employment, note, e, exact, note, view("job-"),
-           TYPE_BRIDGE_QUERY_COMPARE_STARTS_WITH);
+  {
+    tb_complex_query_predicate *bad_note = NULL, *allowed_note = NULL;
+    COMPARE(employment, note, e, exact, note, view("cross-"), TYPE_BRIDGE_QUERY_COMPARE_STARTS_WITH, bad_note);
+    OK(tb_complex_query_predicate_not(bad_note, &allowed_note, &diagnostics));
+    OK(tb_complex_query_predicate_close(&bad_note));
+    where_take(allowed_note);
     tb_complex_query_predicate *left = NULL, *right = NULL, *either_id = NULL;
-    COMPARE(person, identifier, p, subtypes, identifier, view("P0002"),
-            TYPE_BRIDGE_QUERY_COMPARE_EQUAL, left);
-    COMPARE(person, identifier, p, subtypes, identifier, view("P0008"),
-            TYPE_BRIDGE_QUERY_COMPARE_EQUAL, right);
+    COMPARE(person, identifier, p, subtypes, identifier, view("P"), TYPE_BRIDGE_QUERY_COMPARE_STARTS_WITH, left);
+    COMPARE(person, identifier, p, subtypes, identifier, view("W"), TYPE_BRIDGE_QUERY_COMPARE_STARTS_WITH, right);
     OK(tb_complex_query_predicate_or(left, right, &either_id, &diagnostics));
-    OK(tb_complex_query_predicate_close(&left));
-    OK(tb_complex_query_predicate_close(&right));
-    tb_complex_query_predicate *third = NULL, *all_ids = NULL;
-    COMPARE(person, identifier, p, subtypes, identifier, view("P0004"),
-            TYPE_BRIDGE_QUERY_COMPARE_EQUAL, third);
-    OK(tb_complex_query_predicate_or(either_id, third, &all_ids, &diagnostics));
-    OK(tb_complex_query_predicate_close(&either_id));
-    OK(tb_complex_query_predicate_close(&third));
-    where_take(all_ids);
+    OK(tb_complex_query_predicate_close(&left)); OK(tb_complex_query_predicate_close(&right));
+    where_take(either_id);
   }
   if (width >= 10) {
     tb_complex_person_score_query_field *score = NULL;

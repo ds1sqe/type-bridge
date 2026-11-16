@@ -120,19 +120,17 @@ async fn main() -> Result<()> {
     let note = fixture.field(things[1], "note", "note", false);
     let nickname = fixture.field(things[0], "nickname", "nickname", true);
     fixture.patterns.push(QueryPattern::Or {
-        branches: vec![
-            vec![equal(identifier, "P0002")],
-            vec![equal(identifier, "P0004")],
-            vec![equal(identifier, "P0008")],
-        ],
+        branches: ["P", "W"].into_iter().map(|prefix| vec![QueryPattern::Value {
+            comparator: ValueComparator::StartsWith,
+            left: QueryOperand::Binding { binding: identifier },
+            right: QueryOperand::Literal { value: CanonicalValue::String(CanonicalString::new(prefix).unwrap()) },
+        }]).collect(),
     });
-    fixture.patterns.push(QueryPattern::Value {
-        comparator: ValueComparator::Like,
+    fixture.patterns.push(QueryPattern::Not { patterns: vec![QueryPattern::Value {
+        comparator: ValueComparator::StartsWith,
         left: QueryOperand::Binding { binding: note },
-        right: QueryOperand::Literal {
-            value: CanonicalValue::String(CanonicalString::new("^job-.*$")?),
-        },
-    });
+        right: QueryOperand::Literal { value: CanonicalValue::String(CanonicalString::new("cross-")?) },
+    }] });
     for (name, tag) in [("tag_a", "a"), ("tag_z", "z")] {
         let tag_binding = fixture.field(things[0], name, "tag", false);
         fixture.patterns.push(equal(tag_binding, tag));
