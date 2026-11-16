@@ -1832,8 +1832,8 @@ export interface BoundField<Value> {
   like(value: Value): Predicate;
   isPresent(): Predicate;
   isMissing(): Predicate;
-  asc(missing?: "reject" | "first" | "last"): QueryOrder;
-  desc(missing?: "reject" | "first" | "last"): QueryOrder;
+  asc(): QueryOrder;
+  desc(): QueryOrder;
 }
 
 type AttributeDomain<Value> = Value extends { readonly value: infer Domain }
@@ -2514,12 +2514,12 @@ class BoundFieldValue<Value> implements BoundField<Value> {
     return this.#presence(false);
   }
 
-  asc(missing: "reject" | "first" | "last" = "reject"): QueryOrder {
-    return this.#order("ascending", missing);
+  asc(): QueryOrder {
+    return this.#order("ascending");
   }
 
-  desc(missing: "reject" | "first" | "last" = "reject"): QueryOrder {
-    return this.#order("descending", missing);
+  desc(): QueryOrder {
+    return this.#order("descending");
   }
 
   #compare(
@@ -2595,11 +2595,10 @@ class BoundFieldValue<Value> implements BoundField<Value> {
 
   #order(
     direction: "ascending" | "descending",
-    missing: "reject" | "first" | "last",
   ): QueryOrder {
     const own = boundFieldState(this);
     return new QueryOrderValue(
-      coreCall(() => own.handle.order(direction, missing)),
+      coreCall(() => own.handle.order(direction)),
       own.projection,
     );
   }

@@ -34,7 +34,6 @@ type NativeMatchComparison =
   | "regex";
 
 type NativeMatchDirection = "ascending" | "descending";
-type NativeMatchMissingOrder = "reject" | "first" | "last";
 type NativeMatchRowCardinality = "exactly_one" | "bounded_many";
 type NativeMatchReduction =
   | "count"
@@ -119,7 +118,7 @@ interface NativeMatchFieldHandle {
   presence(present: boolean): NativeMatchPredicateHandle;
   compareValueJson(comparison: NativeMatchComparison, valueJson: string): NativeMatchPredicateHandle;
   compareField(comparison: NativeMatchComparison, other: NativeMatchFieldHandle): NativeMatchPredicateHandle;
-  order(direction: NativeMatchDirection, missing: NativeMatchMissingOrder): NativeMatchOrderHandle;
+  order(direction: NativeMatchDirection): NativeMatchOrderHandle;
 }
 
 interface NativeMatchRoleHandle {

@@ -922,11 +922,11 @@ impl NodeMatchFieldHandle {
     }
 
     #[napi]
-    pub fn order(&self, direction: String, missing: String) -> Result<NodeMatchOrderHandle> {
+    pub fn order(&self, direction: String) -> Result<NodeMatchOrderHandle> {
         Ok(NodeMatchOrderHandle {
             inner: self.inner.order(
                 parse_enum::<SortDirection>(&direction)?,
-                parse_enum::<MissingOrder>(&missing)?,
+                MissingOrder::Reject,
             ),
         })
     }
@@ -4181,14 +4181,7 @@ plays:
                 "comparison_operator.unknown",
                 name.compare_field("equals".into(), &name).err(),
             ),
-            (
-                "sort_direction.unknown",
-                name.order("desc".into(), "reject".into()).err(),
-            ),
-            (
-                "missing_order.unknown",
-                name.order("ascending".into(), "none".into()).err(),
-            ),
+            ("sort_direction.unknown", name.order("desc".into()).err()),
             (
                 "row_cardinality.unknown",
                 query
@@ -4249,7 +4242,7 @@ plays:
         let order = person
             .field("name".into())
             .unwrap()
-            .order("ascending".into(), "reject".into())
+            .order("ascending".into())
             .unwrap();
         let request = filtered
             .inner
@@ -4345,7 +4338,7 @@ plays:
         let order = person
             .field("name".into())
             .unwrap()
-            .order("ascending".into(), "reject".into())
+            .order("ascending".into())
             .unwrap();
 
         let page_request = query

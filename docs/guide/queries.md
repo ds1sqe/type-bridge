@@ -92,8 +92,11 @@ rows = await (
 )
 ```
 
-Rows are bounded. Ordering uses generated bound fields and explicit missing-
-value policy where needed. `one`, `first`, `rows`, `page_by`, `count_by`, and
+Rows are bounded. Ordering uses generated bound fields with `asc()` or `desc()`.
+Optional order fields must be filtered to present values, for example
+`.where(person.field(Person.age).is_present())`, before sorting by that field.
+Unfiltered optional sorts are refused; null-first and null-last ordering are
+not supported. `one`, `first`, `rows`, `page_by`, `count_by`, and
 `exists_by` share the same immutable query. Each terminal is awaited, on a
 direct or a proxy connection alike (see
 [Typed queries](typed-queries.md#start-a-session)).

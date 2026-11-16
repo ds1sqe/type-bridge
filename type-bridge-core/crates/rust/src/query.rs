@@ -994,7 +994,7 @@ impl<'db, S: Schema, Target: QueryTarget> QuerySession<'db, S, Target> {
 
     fn lower_order(&self, order: &Order<S>) -> Result<OrmOrderHandle> {
         let field = self.lower_field(order.key, order.owns_id_json)?;
-        Ok(field.order(order.direction, order.missing))
+        Ok(field.order(order.direction, MissingOrder::Reject))
     }
 
     fn lower_predicate(&self, expr: &PredicateExpr) -> Result<OrmPredicateHandle> {
@@ -1996,28 +1996,24 @@ impl<S: Schema, Owner: Model<Schema = S>, V> BoundField<S, Owner, V> {
         self.field_predicate(ComparisonOp::GreaterThanOrEqual, other)
     }
 
-    /// Order ascending by this bound field; missing keys fail closed unless
-    /// an explicit missing-value policy is admitted.
+    /// Order ascending by this bound field; optional fields must be filtered to present values.
     #[must_use]
     pub fn asc(self) -> Order<S> {
         Order {
             key: self.key,
             owns_id_json: self.owns_id_json,
             direction: SortDirection::Ascending,
-            missing: MissingOrder::Reject,
             marker: PhantomData,
         }
     }
 
-    /// Order descending by this bound field; missing keys fail closed unless
-    /// an explicit missing-value policy is admitted.
+    /// Order descending by this bound field; optional fields must be filtered to present values.
     #[must_use]
     pub fn desc(self) -> Order<S> {
         Order {
             key: self.key,
             owns_id_json: self.owns_id_json,
             direction: SortDirection::Descending,
-            missing: MissingOrder::Reject,
             marker: PhantomData,
         }
     }
@@ -2029,7 +2025,6 @@ pub struct Order<S: Schema> {
     key: BindingKey,
     owns_id_json: &'static str,
     direction: SortDirection,
-    missing: MissingOrder,
     marker: PhantomData<fn() -> S>,
 }
 
@@ -2037,22 +2032,6 @@ impl<S: Schema> Copy for Order<S> {}
 impl<S: Schema> Clone for Order<S> {
     fn clone(&self) -> Self {
         *self
-    }
-}
-
-impl<S: Schema> Order<S> {
-    /// Admit missing keys and place them before all present keys.
-    #[must_use]
-    pub fn missing_first(mut self) -> Self {
-        self.missing = MissingOrder::First;
-        self
-    }
-
-    /// Admit missing keys and place them after all present keys.
-    #[must_use]
-    pub fn missing_last(mut self) -> Self {
-        self.missing = MissingOrder::Last;
-        self
     }
 }
 

@@ -82,7 +82,6 @@ const TERMINAL_REDUCE_FIELDS: u32 = 7;
 const ROWS_BOUNDED_MANY: u32 = 2;
 const REDUCER_COUNT: u32 = 1;
 const SORT_ASCENDING: u32 = 1;
-const MISSING_REJECT: u32 = 1;
 
 /// The C layout of `type_bridge_query_limit_override_v1_t`.
 #[repr(C)]
@@ -1001,7 +1000,7 @@ fn header_constants(prefix: &str) -> BTreeMap<String, u32> {
 const ENUM_CONSTANTS: &[(&str, &str, &[&str])] = &[
     ("comparison_operator", "COMPARE", &[]),
     ("sort_direction", "SORT", &[]),
-    ("missing_order", "MISSING", &[]),
+    ("missing_order", "MISSING", &["reject", "first", "last"]),
     // C has no unordered complete-rows terminal.
     ("row_cardinality", "ROWS", &["complete"]),
     ("reducer", "REDUCER", &[]),
@@ -1094,19 +1093,18 @@ fn out_of_range_enum_constants_are_refused() {
             type_bridge_query_field_open(root, &name_token, &mut out, &mut diagnostics)
         }
     );
-    let order = |direction, missing| TypeBridgeQueryOrderDescriptorV1 {
+    let order = |direction, reserved_missing| TypeBridgeQueryOrderDescriptorV1 {
         struct_size: size_of::<TypeBridgeQueryOrderDescriptorV1>() as u32,
         version: DESCRIPTOR_VERSION,
         field: name,
         expected_field: &name_token,
         direction,
-        missing,
+        reserved_missing,
         reserved0: 0,
         reserved: [0; 4],
     };
     let sort = u32::try_from(header_constants("SORT").len()).unwrap() + 1;
-    let missing = u32::try_from(header_constants("MISSING").len()).unwrap() + 1;
-    for descriptor in [order(sort, MISSING_REJECT), order(SORT_ASCENDING, missing)] {
+    for descriptor in [order(sort, 0), order(SORT_ASCENDING, 1)] {
         let mut handle = ptr::null_mut();
         let mut diagnostics = ptr::null_mut();
         // SAFETY: the descriptor and its handles are live; outputs are writable.
@@ -1116,7 +1114,10 @@ fn out_of_range_enum_constants_are_refused() {
             // SAFETY: closed exactly once.
             unsafe { type_bridge_query_order_close(&mut handle) };
         }
-        assert!(refusal(status, diagnostics).code.starts_with("c_"));
+        assert_eq!(
+            refusal(status, diagnostics).code,
+            "c_query_descriptor_layout_invalid"
+        );
     }
 
     let (status, query, _) = session.query_status(&fixture, 1);

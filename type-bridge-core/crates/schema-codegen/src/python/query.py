@@ -477,11 +477,11 @@ class BoundField(_Frozen):
     def is_missing(self) -> Predicate:
         return Predicate(self.__handle.presence(False), self.__projection)
 
-    def asc(self, *, missing: str = "reject") -> QueryOrder:
-        return QueryOrder(self.__handle.order("ascending", missing), self.__projection)
+    def asc(self) -> QueryOrder:
+        return QueryOrder(self.__handle.order("ascending"), self.__projection)
 
-    def desc(self, *, missing: str = "reject") -> QueryOrder:
-        return QueryOrder(self.__handle.order("descending", missing), self.__projection)
+    def desc(self) -> QueryOrder:
+        return QueryOrder(self.__handle.order("descending"), self.__projection)
 
     def __compare(self, operator: str, value: AttributeBase | BoundField) -> Predicate:
         if isinstance(value, BoundField):

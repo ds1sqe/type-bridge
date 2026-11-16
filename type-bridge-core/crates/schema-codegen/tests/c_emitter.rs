@@ -3318,7 +3318,7 @@ int main(void) {
       count_field, 1u, &predicate, &diagnostics);
   (void)acme_personzhrecord_countzhvalue_query_field_order(
       count_field, TYPE_BRIDGE_QUERY_SORT_ASCENDING,
-      TYPE_BRIDGE_QUERY_MISSING_LAST, &order, &diagnostics);
+      &order, &diagnostics);
   (void)acme_membership_member_query_role_from_exact(
       membership, &member_role, &diagnostics);
   {

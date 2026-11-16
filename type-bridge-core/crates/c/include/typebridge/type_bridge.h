@@ -240,10 +240,6 @@ typedef uint32_t type_bridge_query_sort_direction_t;
 #define TYPE_BRIDGE_QUERY_SORT_DESCENDING                                  \
   ((type_bridge_query_sort_direction_t)2)
 
-typedef uint32_t type_bridge_query_missing_order_t;
-#define TYPE_BRIDGE_QUERY_MISSING_REJECT ((type_bridge_query_missing_order_t)1)
-#define TYPE_BRIDGE_QUERY_MISSING_FIRST ((type_bridge_query_missing_order_t)2)
-#define TYPE_BRIDGE_QUERY_MISSING_LAST ((type_bridge_query_missing_order_t)3)
 
 typedef uint32_t type_bridge_query_selection_kind_t;
 #define TYPE_BRIDGE_QUERY_SELECTION_ONE                                    \
@@ -380,7 +376,7 @@ typedef struct type_bridge_query_order_descriptor_v1 {
   const type_bridge_query_field_t *field;
   const type_bridge_projected_token_v1_t *expected_field;
   type_bridge_query_sort_direction_t direction;
-  type_bridge_query_missing_order_t missing;
+  uint32_t reserved_missing; /* must be zero */
   uint32_t reserved0;
   uint64_t reserved[4];
 } type_bridge_query_order_descriptor_v1_t;

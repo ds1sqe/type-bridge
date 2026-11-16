@@ -2757,7 +2757,7 @@ static int run_typed_query_function_and_remote(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_identifier_query_field_order(
             identifier_field, TYPE_BRIDGE_QUERY_SORT_ASCENDING,
-            TYPE_BRIDGE_QUERY_MISSING_REJECT, &identifier_order,
+            &identifier_order,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   orders[0] = identifier_order;
   CHECK(fixture_person_query_exact_one_selection_open(
@@ -3871,7 +3871,7 @@ static int run_typed_query_function_and_remote(
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_employee_identifier_query_field_order(
               subtype_identifier, TYPE_BRIDGE_QUERY_SORT_ASCENDING,
-              TYPE_BRIDGE_QUERY_MISSING_REJECT, &subtype_order,
+              &subtype_order,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     subtype_orders[0] = subtype_order;
     CHECK(fixture_query_positional_1(
@@ -3884,7 +3884,7 @@ static int run_typed_query_function_and_remote(
                   subtype_selection),
               &subtype_shape, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_employee_identifier_query_field_from_exact(exact, &exact_identifier, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_employee_identifier_query_field_order(exact_identifier, TYPE_BRIDGE_QUERY_SORT_ASCENDING, TYPE_BRIDGE_QUERY_MISSING_REJECT, &exact_order, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_employee_identifier_query_field_order(exact_identifier, TYPE_BRIDGE_QUERY_SORT_ASCENDING, &exact_order, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     exact_orders[0] = exact_order;
     {
       size_t index;
@@ -4780,7 +4780,7 @@ static int run_typed_query_function_and_remote(
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_identifier_query_field_order(
               left_identifier_field, TYPE_BRIDGE_QUERY_SORT_ASCENDING,
-              TYPE_BRIDGE_QUERY_MISSING_REJECT, &left_identifier_order,
+              &left_identifier_order,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     left_orders[0] = left_identifier_order;
     CHECK(person_identifier_scope(package, right, &right_in, out_diagnostics) == 0);
@@ -4876,7 +4876,7 @@ static int run_typed_query_function_and_remote(
               fixture_person_query_exact_binding_ref(right), &cross_query,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_identifier_query_field_from_exact(right, &right_identifier_field, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(fixture_person_identifier_query_field_order(right_identifier_field, TYPE_BRIDGE_QUERY_SORT_ASCENDING, TYPE_BRIDGE_QUERY_MISSING_REJECT, &right_identifier_order, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_person_identifier_query_field_order(right_identifier_field, TYPE_BRIDGE_QUERY_SORT_ASCENDING, &right_identifier_order, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     cross_orders[0] = left_identifier_order;
     cross_orders[1] = right_identifier_order;
     CHECK(fixture_query_rows(cross_query, cross_orders, 2u, 0u, 4u,
@@ -5058,12 +5058,12 @@ static int run_typed_query_function_and_remote(
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_person_identifier_query_field_order(
               origin_identifier, TYPE_BRIDGE_QUERY_SORT_ASCENDING,
-              TYPE_BRIDGE_QUERY_MISSING_REJECT, &origin_order,
+              &origin_order,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     origin_orders[0] = origin_order;
     CHECK(fixture_person_identifier_query_field_order(
               participant_identifier, collection_order,
-              TYPE_BRIDGE_QUERY_MISSING_REJECT, &participant_order,
+              &participant_order,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     participant_orders[0] = participant_order;
     CHECK(fixture_person_query_exact_one_selection_open(

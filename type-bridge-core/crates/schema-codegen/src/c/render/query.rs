@@ -802,7 +802,7 @@ fn render_model_declarations(
                type_bridge_execution_diagnostics_t **out_diagnostics);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {base}_order(\n\
                const {base} *field, type_bridge_query_sort_direction_t direction,\n\
-               type_bridge_query_missing_order_t missing, {order} **out_order,\n\
+               {order} **out_order,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {base}_close({base} **field);\n",
             attribute = attribute.target_name().as_str(),
@@ -1990,13 +1990,13 @@ fn render_model_definitions(
              }}\n\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {base}_order(\n\
                const {base} *field, type_bridge_query_sort_direction_t direction,\n\
-               type_bridge_query_missing_order_t missing, {order} **out_order,\n\
+               {order} **out_order,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
                type_bridge_query_order_descriptor_v1_t descriptor = {{\n\
                  sizeof(type_bridge_query_order_descriptor_v1_t),\n\
                  TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION,\n\
                  (const type_bridge_query_field_t *)field, &{token}, direction,\n\
-                 missing, 0u, {{ 0u, 0u, 0u, 0u }}\n\
+                 0u, 0u, {{ 0u, 0u, 0u, 0u }}\n\
                }};\n\
                return type_bridge_query_order_open(\n\
                    &descriptor, (type_bridge_query_order_t **)out_order,\n\

@@ -84,8 +84,8 @@ def test_public_named_page_matches_the_rust_and_node_golden() -> None:
     person = session.exact("person")
     company = session.exact("company")
     employment = session.exact("employment")
-    person_order = person.field("name").order("ascending", "reject")
-    company_order = company.field("name").order("ascending", "reject")
+    person_order = person.field("name").order("ascending")
+    company_order = company.field("name").order("ascending")
     companies = company.collect().distinct(True).order_by(company_order)
     shape = session.named(["person", "companies"], [person.one(), companies])
     connected = (

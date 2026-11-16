@@ -980,11 +980,11 @@ impl PyMatchFieldHandle {
             .map_err(py_match_orm_error)
     }
 
-    fn order(&self, direction: &str, missing: &str) -> PyResult<PyMatchOrderHandle> {
+    fn order(&self, direction: &str) -> PyResult<PyMatchOrderHandle> {
         Ok(PyMatchOrderHandle {
             inner: self.inner.order(
                 parse_enum::<SortDirection>(direction)?,
-                parse_enum::<MissingOrder>(missing)?,
+                MissingOrder::Reject,
             ),
         })
     }

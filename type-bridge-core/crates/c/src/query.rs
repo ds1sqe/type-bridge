@@ -108,9 +108,6 @@ const PREDICATE_OR: u32 = 2;
 const PREDICATE_NOT: u32 = 3;
 const SORT_ASCENDING: u32 = 1;
 const SORT_DESCENDING: u32 = 2;
-const MISSING_REJECT: u32 = 1;
-const MISSING_FIRST: u32 = 2;
-const MISSING_LAST: u32 = 3;
 const SELECTION_ONE: u32 = 1;
 const SELECTION_COLLECT: u32 = 2;
 const SHAPE_POSITIONAL: u32 = 1;
@@ -159,7 +156,7 @@ pub struct TypeBridgeQueryOrderDescriptorV1 {
     pub field: *const TypeBridgeQueryField,
     pub expected_field: *const TypeBridgeProjectedTokenV1,
     pub direction: u32,
-    pub missing: u32,
+    pub reserved_missing: u32,
     pub reserved0: u32,
     pub reserved: [u64; 4],
 }
@@ -2892,12 +2889,9 @@ pub unsafe extern "C" fn type_bridge_query_order_open(
             SORT_DESCENDING => SortDirection::Descending,
             _ => return return_execution_error(layout_invalid(), out_diagnostics),
         };
-        let missing = match descriptor.missing {
-            MISSING_REJECT => MissingOrder::Reject,
-            MISSING_FIRST => MissingOrder::First,
-            MISSING_LAST => MissingOrder::Last,
-            _ => return return_execution_error(layout_invalid(), out_diagnostics),
-        };
+        if descriptor.reserved_missing != 0 {
+            return return_execution_error(layout_invalid(), out_diagnostics);
+        }
         // SAFETY: caller retains the active field handle and token.
         let field = unsafe { &*descriptor.field };
         // SAFETY: exact generated field token remains readable.
@@ -2908,7 +2902,7 @@ pub unsafe extern "C" fn type_bridge_query_order_open(
             AllocationSite::QueryOrderHandle,
             TypeBridgeQueryOrder {
                 state: Arc::clone(&field.state),
-                handle: field.handle.order(direction, missing),
+                handle: field.handle.order(direction, MissingOrder::Reject),
             },
             out_order,
             out_diagnostics,
@@ -10220,7 +10214,7 @@ mod tests {
             field,
             expected_field: &identifier_field,
             direction: SORT_ASCENDING,
-            missing: MISSING_REJECT,
+            reserved_missing: 0,
             reserved0: 0,
             reserved: [0; 4],
         };

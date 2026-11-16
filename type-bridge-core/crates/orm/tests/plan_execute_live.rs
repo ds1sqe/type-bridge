@@ -4332,3 +4332,85 @@ async fn keyless_relation_windows_and_pages_follow_iid_order() {
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn optional_sort_accepts_presence_filters_and_refuses_missing_roots() {
+    use std::sync::Arc;
+    use type_bridge_orm::match_request::{
+        MatchResult, MissingOrder, RowCardinality, SessionHandle, SlotValue, SortDirection, Window,
+    };
+    let Some(db) = live_database("optional_sort").await else {
+        return;
+    };
+    db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    db.execute_raw(
+        "insert $p isa person, has identifier \"A\"; $a isa membership, links (member: $p), has note \"B\"; $b isa membership, links (member: $p), has note \"A\"; $c isa membership, links (member: $p);", TxType::Write,
+    ).await.unwrap();
+    let profile = if std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")
+        .unwrap()
+        .starts_with("3.12")
+    {
+        "typedb-3.12.1/v1"
+    } else {
+        "typedb-3.13.6/v1"
+    };
+    let installed = party_projection_for_profile(PARTY_SCHEMA_YAML, profile);
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let session = SessionHandle::new(Arc::clone(&registry));
+    let relation = session.exact("membership").unwrap();
+    let note = relation.field("note").unwrap();
+    let query = session
+        .query(session.positional([relation.one()]).unwrap())
+        .unwrap();
+    let order = note.order(SortDirection::Ascending, MissingOrder::Reject);
+    let window = Window {
+        offset: 0,
+        limit: 10,
+    };
+    let unfiltered = query
+        .validate_fetch_rows(
+            std::slice::from_ref(&order),
+            window,
+            RowCardinality::BoundedMany,
+        )
+        .unwrap();
+    let error = db.execute_match(&registry, &unfiltered).await.unwrap_err();
+    assert!(
+        matches!(error, type_bridge_orm::OrmError::Match(error) if error.code().as_str() == "nullable_order_field_unsupported")
+    );
+    let filtered = query.where_predicate(note.presence(true)).unwrap();
+    let request = filtered
+        .validate_fetch_rows(&[order], window, RowCardinality::BoundedMany)
+        .unwrap();
+    let result = db.execute_match(&registry, &request).await.unwrap();
+    let MatchResult::Rows { rows } = result.result() else {
+        panic!("expected rows")
+    };
+    let ids: Vec<_> = rows
+        .iter()
+        .map(|row| match &row.slots()[0] {
+            SlotValue::One(thing) => thing.concept_id().as_str().to_owned(),
+            _ => panic!("expected singular relation"),
+        })
+        .collect();
+    let QueryResult::Documents(raw) = db
+        .execute_raw(
+            "match $r isa membership, has note $note; sort $note; fetch { \"iid\": iid($r) };",
+            TxType::Read,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("expected documents")
+    };
+    let expected: Vec<_> = raw
+        .iter()
+        .map(|row| row["iid"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids, expected);
+    assert_eq!(ids.len(), 2);
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}

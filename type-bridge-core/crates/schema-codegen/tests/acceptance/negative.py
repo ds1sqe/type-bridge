@@ -109,6 +109,7 @@ requires_mutating_manager(
 
 query_session = Person.query(Database(address="localhost:1729", database="generated-query"))
 person_var = query_session.exact(Person)
+person_var.field(Person.score).asc(missing="first")  # E: removed_missing_order:reportCallIssue
 employment_var = query_session.exact(Employment)
 exact_actor_var = query_session.exact(Actor)
 exact_robot_var = query_session.exact(Robot)

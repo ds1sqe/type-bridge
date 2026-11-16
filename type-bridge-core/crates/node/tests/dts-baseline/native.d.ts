@@ -5,7 +5,6 @@ import type { NativeProjectedFacadeProof, NativeProjectedManager, NativeProjecte
 type NativeProjectedBatchAuthority = Parameters<NonNullable<RuntimeProjectionInstall["projectedBatchMaterializer"]>>[3];
 type NativeMatchComparison = "equal" | "not_equal" | "less_than" | "less_than_or_equal" | "greater_than" | "greater_than_or_equal" | "contains" | "starts_with" | "ends_with" | "regex";
 type NativeMatchDirection = "ascending" | "descending";
-type NativeMatchMissingOrder = "reject" | "first" | "last";
 type NativeMatchRowCardinality = "exactly_one" | "bounded_many";
 type NativeMatchReduction = "count" | "sum" | "min" | "max" | "mean" | "median" | "std";
 declare const nativeMatchHandleKind: unique symbol;
@@ -59,7 +58,7 @@ interface NativeMatchFieldHandle {
     presence(present: boolean): NativeMatchPredicateHandle;
     compareValueJson(comparison: NativeMatchComparison, valueJson: string): NativeMatchPredicateHandle;
     compareField(comparison: NativeMatchComparison, other: NativeMatchFieldHandle): NativeMatchPredicateHandle;
-    order(direction: NativeMatchDirection, missing: NativeMatchMissingOrder): NativeMatchOrderHandle;
+    order(direction: NativeMatchDirection): NativeMatchOrderHandle;
 }
 interface NativeMatchRoleHandle {
     readonly [nativeMatchHandleKind]: "role";

@@ -856,9 +856,6 @@ fn rust_abi_layout() -> Vec<usize> {
         3,  // predicate not
         1,  // ascending
         2,  // descending
-        1,  // missing reject
-        2,  // missing first
-        3,  // missing last
         1,  // select one
         2,  // select collect
         1,  // positional shape
@@ -1170,7 +1167,7 @@ fn rust_abi_layout() -> Vec<usize> {
         offset_of!(TypeBridgeQueryOrderDescriptorV1, field),
         offset_of!(TypeBridgeQueryOrderDescriptorV1, expected_field),
         offset_of!(TypeBridgeQueryOrderDescriptorV1, direction),
-        offset_of!(TypeBridgeQueryOrderDescriptorV1, missing),
+        offset_of!(TypeBridgeQueryOrderDescriptorV1, reserved_missing),
         offset_of!(TypeBridgeQueryOrderDescriptorV1, reserved0),
         offset_of!(TypeBridgeQueryOrderDescriptorV1, reserved),
         size_of::<TypeBridgeQuerySelectionDescriptorV1>(),
@@ -1933,9 +1930,6 @@ int main(void) {
   PRINT_VALUE(TYPE_BRIDGE_QUERY_PREDICATE_NOT);
   PRINT_VALUE(TYPE_BRIDGE_QUERY_SORT_ASCENDING);
   PRINT_VALUE(TYPE_BRIDGE_QUERY_SORT_DESCENDING);
-  PRINT_VALUE(TYPE_BRIDGE_QUERY_MISSING_REJECT);
-  PRINT_VALUE(TYPE_BRIDGE_QUERY_MISSING_FIRST);
-  PRINT_VALUE(TYPE_BRIDGE_QUERY_MISSING_LAST);
   PRINT_VALUE(TYPE_BRIDGE_QUERY_SELECTION_ONE);
   PRINT_VALUE(TYPE_BRIDGE_QUERY_SELECTION_COLLECT);
   PRINT_VALUE(TYPE_BRIDGE_QUERY_SHAPE_POSITIONAL);
@@ -2242,7 +2236,7 @@ int main(void) {
   PRINT_VALUE(offsetof(type_bridge_query_order_descriptor_v1_t, field));
   PRINT_VALUE(offsetof(type_bridge_query_order_descriptor_v1_t, expected_field));
   PRINT_VALUE(offsetof(type_bridge_query_order_descriptor_v1_t, direction));
-  PRINT_VALUE(offsetof(type_bridge_query_order_descriptor_v1_t, missing));
+  PRINT_VALUE(offsetof(type_bridge_query_order_descriptor_v1_t, reserved_missing));
   PRINT_VALUE(offsetof(type_bridge_query_order_descriptor_v1_t, reserved0));
   PRINT_VALUE(offsetof(type_bridge_query_order_descriptor_v1_t, reserved));
   PRINT_VALUE(sizeof(type_bridge_query_selection_descriptor_v1_t));

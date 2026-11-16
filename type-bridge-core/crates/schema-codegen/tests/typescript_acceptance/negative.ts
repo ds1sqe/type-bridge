@@ -46,6 +46,8 @@ declare const maybeIdentifier: string | undefined;
 declare const database: Database;
 const querySession = new QuerySession(database);
 const personVar = querySession.var(Person);
+// @ts-expect-error missing-value ordering was removed; filter to present fields
+personVar.field(Person.identifier).asc("first");
 const eventVar = querySession.var(Event);
 const employmentVar = querySession.var(Employment);
 const exactActorVar = querySession.exact(Actor);

@@ -503,15 +503,19 @@ page slot; every non-root output is collected. Collection output in `one()` or
 
 ## Ordering and Bounds
 
-Concept identity determines equality but is not assumed sortable.
+Concept IID determines identity and provides the final stable order tie breaker.
 
 - Every incomplete `rows` result requires total stable order across the
   selected tuple.
 - Every incomplete root page requires total stable order on the root.
 - Every collection requires deterministic binding-local order.
 - The canonical validator extends public order with present, schema-declared
-  unique scalar keys on the applicable binding. Missing, nullable, non-unique,
-  or multi-valued keys fail closed.
+  unique scalar keys when available, followed by concept IID tie breakers.
+  Keyless entities and relations use IID order.
+- Public order fields must be single-valued and required, or the predicate
+  must guarantee their presence in every matching branch. Filter optional
+  fields to present values before sorting. Missing-value placement options
+  are not supported.
 - Public `rows` order may reference selected singular bindings only.
   Public `page_by` order may reference the root only.
 - Sorting through multi-valued fields or roles requires an explicit reduction

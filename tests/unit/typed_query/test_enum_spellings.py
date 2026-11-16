@@ -86,8 +86,7 @@ def _calls() -> dict[str, Callable[[], object]]:
     query = session.query(session.positional([person.one()]))
     return {
         "comparison_operator.unknown": lambda: name.compare_field("equals", name),
-        "sort_direction.unknown": lambda: name.order("desc", "reject"),
-        "missing_order.unknown": lambda: name.order("ascending", "none"),
+        "sort_direction.unknown": lambda: name.order("desc"),
         "row_cardinality.unknown": lambda: query.fetch_rows_diagnostic([], 0, 1, "many"),
         "reducer.unknown": lambda: query.reduce_by_diagnostic(person, None, ["variance"], [None]),
     }
