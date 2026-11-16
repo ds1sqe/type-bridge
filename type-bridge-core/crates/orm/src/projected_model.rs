@@ -1941,20 +1941,16 @@ fn validate_create_roles(
         }
         if token.multiplicity().collection_mode().is_unordered() {
             // Validate and charge every supplied reference before set normalization.
-            let mut unique = Vec::with_capacity(references.len());
-            for reference in references {
-                if !unique.iter().any(|previous: &ProjectedReference| {
-                    previous.type_id == reference.type_id
-                        && previous.iid == reference.iid
-                        && previous.keys.len() == reference.keys.len()
-                        && previous.keys.iter().all(|(field, value)| {
-                            reference.keys.get(field).is_some_and(|other| {
-                                canonical_scalar_equal(value.value(), other.value())
-                            })
-                        })
-                        && previous.database_origin.as_ref().map(|origin| &origin.0)
-                            == reference.database_origin.as_ref().map(|origin| &origin.0)
-                }) {
+            let mut unique: Vec<ProjectedReference> = Vec::with_capacity(references.len());
+            for (index, reference) in references.into_iter().enumerate() {
+                if let Some(slot) = unique
+                    .iter()
+                    .position(|previous| same_projected_player(installed, previous, &reference))
+                {
+                    let path = indexed_player_path(type_id, role_id, index, reference.type_id());
+                    unique[slot] =
+                        merge_projected_player(installed, &unique[slot], reference, path)?;
+                } else {
                     unique.push(reference);
                 }
             }
@@ -2385,6 +2381,75 @@ fn canonical_scalar_cmp(left: &CanonicalValue, right: &CanonicalValue) -> Orderi
 
 fn canonical_scalar_equal(left: &CanonicalValue, right: &CanonicalValue) -> bool {
     left == right || left.semantic_cmp_same_domain(right) == Some(Ordering::Equal)
+}
+
+fn same_projected_player(
+    installed: &InstalledRuntimeProjection,
+    left: &ProjectedReference,
+    right: &ProjectedReference,
+) -> bool {
+    if let (Some(left), Some(right)) = (&left.iid, &right.iid) {
+        return left == right;
+    }
+    (is_same_or_subtype(installed, &left.type_id, &right.type_id)
+        || is_same_or_subtype(installed, &right.type_id, &left.type_id))
+        && left.keys.iter().any(|(field, value)| {
+            right.keys.iter().any(|(other, candidate)| {
+                field.attribute() == other.attribute()
+                    && canonical_scalar_equal(value.value(), candidate.value())
+            })
+        })
+}
+
+fn merge_projected_player(
+    installed: &InstalledRuntimeProjection,
+    left: &ProjectedReference,
+    right: ProjectedReference,
+    path: Vec<SdkDiagnosticPathSegment>,
+) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
+    let type_id = if is_same_or_subtype(installed, &left.type_id, &right.type_id) {
+        left.type_id.clone()
+    } else if is_same_or_subtype(installed, &right.type_id, &left.type_id) {
+        right.type_id.clone()
+    } else {
+        return Err(invalid_input(
+            "role_player_not_accepted",
+            "Repeated player references require compatible types",
+            path,
+        ));
+    };
+    if let (Some(left), Some(right)) = (&left.database_origin, &right.database_origin)
+        && left.0 != right.0
+    {
+        return Err(invalid_input(
+            "reference_database_mismatch",
+            "Repeated player references belong to different databases",
+            path,
+        ));
+    }
+    let mut keys: BTreeMap<OwnsFactId, ProjectedAttributeValue> = BTreeMap::new();
+    for (field, value) in left.keys.iter().chain(&right.keys) {
+        let field =
+            OwnsFactId::new(type_id.clone(), field.attribute().clone()).expect("thing ownership");
+        if let Some(previous) = keys.get(&field) {
+            if !canonical_scalar_equal(previous.value(), value.value()) {
+                return Err(invalid_input(
+                    "duplicate_reference_key",
+                    "Repeated player references have conflicting key evidence",
+                    path,
+                ));
+            }
+        } else {
+            keys.insert(field, value.clone());
+        }
+    }
+    ProjectedReference::try_new_with_origin(
+        installed,
+        type_id,
+        left.iid.clone().or(right.iid),
+        keys.into_iter().collect(),
+        left.database_origin.clone().or(right.database_origin),
+    )
 }
 
 fn first_projected_reference_duplicate(
@@ -3003,6 +3068,77 @@ plays:
         )
         .unwrap();
         assert_eq!(create.roles()[&friend].len(), 1);
+    }
+
+    #[test]
+    fn unordered_player_identity_merges_evidence_without_losing_origin_or_keys() {
+        let installed = origin_projection();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let friendship = TypeId::new(TypeKind::Relation, "friendship").unwrap();
+        let friend = RoleId::new("friendship", "friend").unwrap();
+        let key = OwnsFactId::new(person.clone(), AttributeId::new("identifier").unwrap()).unwrap();
+        let value = |text: &str| {
+            ProjectedAttributeValue::try_new(
+                &installed,
+                TypeId::new(TypeKind::Attribute, "identifier").unwrap(),
+                CanonicalValue::String(CanonicalString::new(text).unwrap()),
+            )
+            .unwrap()
+        };
+        let reference = |iid: Option<&str>, text: &str| {
+            ProjectedReference::try_new(
+                &installed,
+                person.clone(),
+                iid.map(str::to_owned),
+                vec![(key.clone(), value(text))],
+            )
+            .unwrap()
+        };
+        let create = |references| {
+            ProjectedCreate::try_new(
+                &installed,
+                friendship.clone(),
+                vec![],
+                vec![(friend.clone(), references)],
+            )
+        };
+        let identity = DatabaseExecutionIdentity::isolated("same-player");
+        let bound = ProjectedReference::try_new_for_database(
+            &installed,
+            person.clone(),
+            Some("0x1".into()),
+            vec![(key.clone(), value("ada"))],
+            identity.clone(),
+        )
+        .unwrap();
+        let plain =
+            ProjectedReference::try_new(&installed, person.clone(), Some("0x1".into()), vec![])
+                .unwrap();
+        let normalized = create(vec![plain, bound.clone(), reference(None, "ada")]).unwrap();
+        let players = &normalized.roles()[&friend];
+        assert_eq!(players.len(), 1);
+        assert_eq!(players[0].iid(), Some("0x1"));
+        assert_eq!(players[0].keys()[&key].value(), value("ada").value());
+        assert_eq!(players[0].database_origin.as_ref().unwrap().0.0, identity);
+        assert_eq!(
+            create(vec![bound.clone(), reference(Some("0x1"), "bob")])
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "duplicate_reference_key"
+        );
+        let foreign = ProjectedReference::try_new_for_database(
+            &installed,
+            person,
+            Some("0x1".into()),
+            vec![],
+            DatabaseExecutionIdentity::isolated("foreign-player"),
+        )
+        .unwrap();
+        assert_eq!(
+            create(vec![bound, foreign]).unwrap_err().code().as_str(),
+            "reference_database_mismatch"
+        );
     }
 
     #[test]

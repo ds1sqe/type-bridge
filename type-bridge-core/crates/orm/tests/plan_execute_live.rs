@@ -3969,7 +3969,10 @@ async fn keyless_put_is_typeql_put_on_the_exact_type_live() {
         &installed,
         tagging.clone(),
         Op::Put,
-        vec![Row::Create(tagged.clone()), Row::Create(single_player)],
+        vec![
+            Row::Create(tagged.clone()),
+            Row::Create(single_player.clone()),
+        ],
     )
     .unwrap();
     let relations = iids(
@@ -3986,6 +3989,51 @@ async fn keyless_put_is_typeql_put_on_the_exact_type_live() {
         relations,
         [one.item().unwrap().iid(), one.item().unwrap().iid()]
     );
+    assert_eq!(count("match $r isa tagging; select $r;").await, 1);
+
+    // The same IID may arrive with or without key evidence; all constraints survive.
+    let QueryResult::Documents(members) = db
+        .execute_raw(
+            "match $m isa member; fetch { \"iid\": iid($m) };",
+            TxType::Read,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("member IID documents")
+    };
+    let member_iid = members[0]["iid"].as_str().unwrap();
+    let member_type = party_type(TypeKind::Entity, "member");
+    let role = RoleId::new("tagging", "tagged").unwrap();
+    let key_reference = single_player.roles()[&role][0].clone();
+    let plain = ProjectedReference::try_new(
+        &installed,
+        member_type.clone(),
+        Some(member_iid.into()),
+        vec![],
+    )
+    .unwrap();
+    let evidenced = ProjectedReference::try_new(
+        &installed,
+        member_type,
+        Some(member_iid.into()),
+        key_reference
+            .keys()
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
+    .unwrap();
+    let equivalent = ProjectedCreate::try_new(
+        &installed,
+        tagging.clone(),
+        vec![],
+        vec![(role.clone(), vec![plain, evidenced, key_reference])],
+    )
+    .unwrap();
+    assert_eq!(equivalent.roles()[&role].len(), 1);
+    let three = crud.put_relation(&db, &equivalent).await.unwrap();
+    assert_eq!(three.item().unwrap().iid(), one.item().unwrap().iid());
     assert_eq!(count("match $r isa tagging; select $r;").await, 1);
 
     // Distinct rows share one put stage: 1000 rows, one commit, the models
