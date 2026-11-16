@@ -2109,9 +2109,9 @@ impl Transaction {
                     Err(error) => {
                         if let Some(ops) = provider.as_mut() {
                             if kind != TransactionKind::Read {
-                                let _ = ops.rollback().await;
+                                let _ = bounded(&answer_limits, ops.rollback()).await;
                             }
-                            let _ = ops.close().await;
+                            let _ = bounded(&answer_limits, ops.close()).await;
                         }
                         return Err(CommitError::new(
                             error.into(),
@@ -2123,8 +2123,8 @@ impl Transaction {
             }
             if let Err((index, error)) = execution.resolve_groups(&answers) {
                 if let Some(ops) = provider.as_mut() {
-                    if kind != TransactionKind::Read { let _ = ops.rollback().await; }
-                    let _ = ops.close().await;
+                    if kind != TransactionKind::Read { let _ = bounded(&answer_limits, ops.rollback()).await; }
+                    let _ = bounded(&answer_limits, ops.close()).await;
                 }
                 return Err(CommitError::new(error.into(), Some(index), Default::default()));
             }
@@ -2133,8 +2133,8 @@ impl Transaction {
             })?;
             crate::execution_phases::record(type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit);
             if let Err(error) = super::backend::BoundedAnswerReader::new(answer_limits.clone()).check_before_read() {
-                if kind != TransactionKind::Read { let _ = provider.rollback().await; }
-                let _ = provider.close().await;
+                if kind != TransactionKind::Read { let _ = bounded(&answer_limits, provider.rollback()).await; }
+                let _ = bounded(&answer_limits, provider.close()).await;
                 return Err(CommitError::new(error.into(), None, Default::default()));
             }
             if self.options.never_commit || kind == TransactionKind::Read {
@@ -3110,6 +3110,7 @@ mod tests {
         visible_writes: usize,
         kinds: Vec<TxType>,
         fail_close: bool,
+        pending_cleanup: bool,
         given: bool,
         rows: usize,
         row_values: Option<Vec<serde_json::Value>>,
@@ -3226,14 +3227,24 @@ mod tests {
             let mut state = self.0.lock().unwrap();
             state.events.push("rollback".into());
             state.pending_writes = 0;
-            Box::pin(async { Ok(()) })
+            let pending = state.pending_cleanup;
+            Box::pin(async move {
+                if pending {
+                    std::future::pending().await
+                } else {
+                    Ok(())
+                }
+            })
         }
         fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
             let mut state = self.0.lock().unwrap();
             state.events.push("close".into());
             let fail = state.fail_close;
+            let pending = state.pending_cleanup;
             Box::pin(async move {
-                if fail {
+                if pending {
+                    std::future::pending().await
+                } else if fail {
                     Err(OrmError::QueryExecution("close failed".into()))
                 } else {
                     Ok(())
@@ -4475,6 +4486,7 @@ mod tests {
                             ..Default::default()
                         }),
                 );
+                state.lock().unwrap().pending_cleanup = true;
                 let first = tx.stage(StagedQuery::new("earlier-write", true)).unwrap();
                 let stalled: Program<()> = Box::new(move |_, _| {
                     if cancel {

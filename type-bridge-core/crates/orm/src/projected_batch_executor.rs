@@ -253,7 +253,12 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
                 // commit is attempted, its outcome is terminal and rollback is
                 // never dispatched.
                 if let Err(primary) = prepared.check_control() {
-                    let _ = transaction.rollback().await;
+                    let _ = await_controlled(
+                        transaction.rollback(),
+                        prepared.deadline(),
+                        prepared.cancellation(),
+                    )
+                    .await;
                     return Err(primary);
                 }
                 transaction
@@ -263,7 +268,12 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
                 Ok(value)
             }
             Err(primary) => {
-                let _ = transaction.rollback().await;
+                let _ = await_controlled(
+                    transaction.rollback(),
+                    prepared.deadline(),
+                    prepared.cancellation(),
+                )
+                .await;
                 match primary {
                     MappedExecutionFailure::Diagnostic(diagnostic) => Err(diagnostic),
                     MappedExecutionFailure::Panic(payload) => resume_unwind(payload),

@@ -940,6 +940,11 @@ fn lower_inner(
     let mut scope = Scope {
         plan,
         bindings,
+        visible: BTreeSet::new(),
+        input_names: inputs
+            .iter()
+            .map(|input| input.public_name().as_str().to_owned())
+            .collect(),
         inputs: std::borrow::Cow::Borrowed(inputs),
         snapshot_iids: snapshot_iids.iter(),
         rows: plan.given_rows().unwrap_or(&[]),
@@ -948,14 +953,35 @@ fn lower_inner(
     let mut snapshot = None;
     for (index, stage) in plan.pipeline().iter().enumerate() {
         match stage {
-            Stage::Match { patterns } => stages.push(tql::match_stage(scope.patterns(patterns)?)),
-            Stage::Insert { things } => stages.push(tql::insert(scope.things(things, false)?)),
+            Stage::Match { patterns } => {
+                stages.push(tql::match_stage(scope.patterns(patterns)?));
+                for pattern in patterns {
+                    match pattern {
+                        Pattern::Read(pattern) => produced_bindings(pattern, &mut scope.visible),
+                        Pattern::Let { binding, .. } => {
+                            scope.visible.insert(*binding);
+                        }
+                        Pattern::Iid { .. } => {}
+                    }
+                }
+            }
+            Stage::Insert { things } => {
+                stages.push(tql::insert(scope.things(things, false)?));
+                scope
+                    .visible
+                    .extend(things.iter().map(|thing| thing.binding));
+            }
             // A put matches before it inserts: `isa!` keeps the match to the
             // declared concrete type, so a subtype instance is never taken.
             Stage::Put {
                 things,
                 include_subtypes,
-            } => stages.push(tql::put(scope.things(things, !include_subtypes)?)),
+            } => {
+                stages.push(tql::put(scope.things(things, !include_subtypes)?));
+                scope
+                    .visible
+                    .extend(things.iter().map(|thing| thing.binding));
+            }
             Stage::Update { sets } => stages.push(tql::update(
                 sets.iter()
                     .map(|set| scope.set(set))
@@ -965,6 +991,8 @@ fn lower_inner(
             Stage::Select { bindings } => {
                 stages.push(ast(tql::select(&scope.names(bindings)?))?);
                 scope.retain_input_names(bindings)?;
+                scope.visible = bindings.iter().copied().collect();
+                scope.input_names.clear();
             }
             Stage::Require { bindings } => {
                 stages.push(ast(tql::require(&scope.names(bindings)?))?);
@@ -974,6 +1002,11 @@ fn lower_inner(
                 assignments,
                 groups,
             } => {
+                let retained = groups
+                    .iter()
+                    .copied()
+                    .chain(assignments.iter().map(|assignment| assignment.assigned()))
+                    .collect();
                 let assignments = assignments
                     .iter()
                     .map(|assignment| {
@@ -990,6 +1023,8 @@ fn lower_inner(
                     })
                     .collect::<Result<Vec<_>, Diagnostic>>()?;
                 stages.push(ast(tql::reduce_stage(assignments, &scope.names(groups)?))?);
+                scope.visible = retained;
+                scope.input_names.clear();
             }
             Stage::Sort { terms } => {
                 let fields = terms
@@ -1772,9 +1807,52 @@ pub(crate) fn string_comparison(
     }
 }
 
+fn produced_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<BindingId>) {
+    match pattern {
+        QueryPattern::Isa { binding, .. } => {
+            bindings.insert(*binding);
+        }
+        QueryPattern::Has {
+            owner, attribute, ..
+        }
+        | QueryPattern::HasType {
+            owner, attribute, ..
+        } => {
+            bindings.extend([*owner, *attribute]);
+        }
+        QueryPattern::Links {
+            relation, players, ..
+        } => {
+            bindings.insert(*relation);
+            bindings.extend(players.iter().map(|player| player.player()));
+        }
+        QueryPattern::Reachable { source, target, .. } => {
+            bindings.extend([*source, *target]);
+        }
+        QueryPattern::FunctionCall { assigned, .. } => {
+            bindings.insert(*assigned);
+        }
+        QueryPattern::Or { branches } => {
+            for branch in branches {
+                for pattern in branch {
+                    produced_bindings(pattern, bindings);
+                }
+            }
+        }
+        QueryPattern::Try { patterns } => {
+            for pattern in patterns {
+                produced_bindings(pattern, bindings);
+            }
+        }
+        QueryPattern::Iid { .. } | QueryPattern::Value { .. } | QueryPattern::Not { .. } => {}
+    }
+}
+
 struct Scope<'a> {
     plan: &'a QueryPlan,
     bindings: &'a [AssertionBinding],
+    visible: BTreeSet<BindingId>,
+    input_names: BTreeSet<String>,
     inputs: std::borrow::Cow<'a, [InputColumn]>,
     snapshot_iids: std::slice::Iter<'a, SnapshotIidInput<'a>>,
     rows: &'a [type_bridge_contract::query_plan::InputRow],
@@ -2163,20 +2241,16 @@ impl Scope<'_> {
         Ok(())
     }
 
-    /// An ownership deletion binds every value of that ownership in a
-    /// preceding optional match. Owners without a value keep their row, so
-    /// later stages and `Matched` still see them; each additional value of a
-    /// multi-valued ownership adds one row.
     fn delete(
-        &self,
+        &mut self,
         stage: usize,
         items: &[DeleteItem],
         stages: &mut Vec<tql::Stage>,
     ) -> Result<(), Diagnostic> {
-        let mut optional = Vec::new();
         let mut deletables = Vec::new();
         for (index, item) in items.iter().enumerate() {
-            deletables.push(match item {
+            let mut optional = Vec::new();
+            let deletion = match item {
                 DeleteItem::Thing { binding } => ast(tql::delete_thing(self.name(*binding)?))?,
                 DeleteItem::Links {
                     relation,
@@ -2225,12 +2299,48 @@ impl Scope<'_> {
                         "this executor cannot lower the deletion",
                     ));
                 }
-            });
+            };
+            if optional.is_empty() {
+                deletables.push(deletion);
+            } else {
+                // Collapse each cleared field before matching the next one;
+                // otherwise their old values form a Cartesian product.
+                stages.push(tql::match_stage(optional));
+                stages.push(tql::delete(vec![deletion]));
+                if self
+                    .plan
+                    .pipeline()
+                    .iter()
+                    .filter_map(|stage| match stage {
+                        Stage::Delete { items } => Some(items),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter(|item| {
+                        matches!(item, DeleteItem::Has { .. } | DeleteItem::Players { .. })
+                    })
+                    .count()
+                    > 1
+                {
+                    let names = self
+                        .visible
+                        .iter()
+                        .map(|binding| self.name(*binding))
+                        .chain(self.input_names.iter().map(|name| Ok(name.as_str())))
+                        .collect::<Result<Vec<_>, Diagnostic>>()?;
+                    stages.push(ast(tql::select(&names))?);
+                    stages.push(tql::distinct());
+                }
+            }
         }
-        if !optional.is_empty() {
-            stages.push(tql::match_stage(optional));
+        if !deletables.is_empty() {
+            stages.push(tql::delete(deletables));
         }
-        stages.push(tql::delete(deletables));
+        for item in items {
+            if let DeleteItem::Thing { binding } = item {
+                self.visible.remove(binding);
+            }
+        }
         Ok(())
     }
 }
@@ -2679,6 +2789,51 @@ mod tests {
         assert_eq!(given.rows.len(), 1);
         for value in ["private-order", "private-item", "private-buyer"] {
             assert!(!actual.contains(value));
+        }
+    }
+
+    #[test]
+    fn multiple_clears_collapse_each_field_before_the_next_match() {
+        use crate::plan_builders::{ValueTransport, authority::PlanAuthority, write};
+        let authority =
+            PlanAuthority::new(race::schema(), race::touch().managed_semantics().clone());
+        let owner = TypeId::new(TypeKind::Entity, "item").unwrap();
+        let fields = ["stock", "price"].map(|name| {
+            type_bridge_contract::schema::OwnsFactId::new(
+                owner.clone(),
+                AttributeId::new(name).unwrap(),
+            )
+            .unwrap()
+        });
+        let values = fields
+            .iter()
+            .cloned()
+            .map(|field| (field, CanonicalValue::Long(7)))
+            .collect::<Vec<_>>();
+        for transport in [ValueTransport::Literal, ValueTransport::Given] {
+            let plan = write::update(
+                &authority,
+                transport,
+                write::ThingUpdate {
+                    type_id: &owner,
+                    selection: write::UpdateSelection::Iid("0x01"),
+                    cleared_fields: &fields,
+                    fields: &values,
+                    cleared_roles: &[],
+                    players: &[],
+                    document_roles: vec![],
+                },
+            )
+            .unwrap();
+            let source = typeql(plan.local()).0;
+            assert_eq!(source.matches("distinct;").count(), 3, "{source}");
+            assert!(source.contains("distinct; match try"), "{source}");
+            if matches!(transport, ValueTransport::Given) {
+                assert!(
+                    source.contains("select $thing0, $in0, $in1; distinct;"),
+                    "{source}"
+                );
+            }
         }
     }
 

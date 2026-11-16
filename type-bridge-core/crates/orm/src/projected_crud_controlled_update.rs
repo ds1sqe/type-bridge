@@ -340,7 +340,12 @@ impl ProjectedCrudExecutor<'_> {
                         Ok(thing)
                     }
                     Err(primary) => {
-                        let _ = transaction.rollback().await;
+                        let _ = await_crud_controlled(
+                            transaction.rollback(),
+                            prepared.deadline(),
+                            prepared.cancellation(),
+                        )
+                        .await;
                         Err(primary)
                     }
                 }
@@ -773,7 +778,12 @@ impl ProjectedCrudExecutor<'_> {
                         )
                     }),
                     Err(primary) => {
-                        let _ = transaction.rollback().await;
+                        let _ = await_crud_controlled(
+                            transaction.rollback(),
+                            prepared.deadline(),
+                            prepared.cancellation(),
+                        )
+                        .await;
                         Err(primary)
                     }
                 }

@@ -5806,7 +5806,11 @@ async fn finish_owned_write<T>(
             Ok(value)
         }
         Err(primary) => {
-            let _ = transaction.rollback().await;
+            if primary.code().as_str() == "transaction_deadline_exceeded" {
+                let _ = transaction.close().await;
+            } else {
+                let _ = transaction.rollback().await;
+            }
             Err(primary)
         }
     }

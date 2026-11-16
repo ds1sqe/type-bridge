@@ -1581,6 +1581,235 @@ plays:
     tagging: [target]
 "#;
 
+async fn wide_relation_clear_case(size: usize, kept: usize) -> Option<[std::time::Duration; 2]> {
+    let Some(db) = live_database("wide_clears").await else {
+        return None;
+    };
+    db.execute_raw(
+        &PARTY_SCHEMA_TYPEQL
+            .replace("relates member @card(1..2)", "relates member @card(1..)")
+            .replace(
+                "owns note @card(0..1)",
+                "owns identifier @key, owns note @card(0..)",
+            ),
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let installed = party_projection_for_schema(
+        &PARTY_SCHEMA_YAML
+            .replace(
+                "member: { card: { min: 1, max: 2 } }",
+                "member: { card: { min: 1 } }",
+            )
+            .replace(
+                "      note: { card: { min: 0, max: 1 } }",
+                "      identifier: { key: true }\n      note: { card: { min: 0 } }",
+            ),
+    );
+    let people = (0..size)
+        .map(|i| format!("$p{i} isa person, has identifier \"p{i}\";"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let links = (0..size)
+        .map(|i| format!("member: $p{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    db.execute_raw(
+        &format!("insert {people} $r isa membership, has identifier \"wide\", links ({links});"),
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let kind = party_type(TypeKind::Relation, "membership");
+    let role = RoleId::new("membership", "member").unwrap();
+    let field = |owner: &TypeId, name: &str| {
+        OwnsFactId::new(
+            owner.clone(),
+            type_bridge_contract::id::AttributeId::new(name).unwrap(),
+        )
+        .unwrap()
+    };
+    let QueryResult::Documents(people) = db
+        .execute_raw(
+            "match $p isa person; fetch { \"iid\": iid($p) };",
+            TxType::Read,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("documents");
+    };
+    let references = people
+        .iter()
+        .map(|person| {
+            ProjectedReference::try_new(
+                &installed,
+                party_type(TypeKind::Entity, "person"),
+                Some(person["iid"].as_str().unwrap().to_owned()),
+                vec![],
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let input = |prefix: &str| {
+        let fields = vec![
+            (
+                field(&kind, "identifier"),
+                vec![party_text(&installed, "identifier", "wide")],
+            ),
+            (
+                field(&kind, "note"),
+                vec![party_text(&installed, "note", prefix)],
+            ),
+        ];
+        ProjectedCreate::try_new(
+            &installed,
+            kind.clone(),
+            fields,
+            vec![(role.clone(), references[..kept].to_vec())],
+        )
+        .unwrap()
+    };
+    let QueryResult::Documents(relations) = db
+        .execute_raw(
+            "match $r isa membership; fetch { \"iid\": iid($r) };",
+            TxType::Read,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("documents");
+    };
+    let iid = relations[0]["iid"].as_str().unwrap();
+    let mut times = Vec::new();
+    for put in [false, true] {
+        let notes = (0..size)
+            .map(|i| format!("has note \"old{i}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        db.execute_raw(
+            &format!("match $r isa membership, iid {iid}; insert $r {notes};"),
+            TxType::Write,
+        )
+        .await
+        .unwrap();
+        db.execute_raw(
+            &format!(
+                "match $r isa membership, iid {iid}; $p isa person; insert $r links (member: $p);"
+            ),
+            TxType::Write,
+        )
+        .await
+        .unwrap();
+        let replacement = input(if put { "put" } else { "new" });
+        let started = std::time::Instant::now();
+        let result = if put {
+            crud.put_relation_controlled(&db, &replacement, Default::default(), Default::default())
+                .await
+        } else {
+            crud.update_relation_controlled(
+                &db,
+                iid,
+                &replacement,
+                Default::default(),
+                Default::default(),
+            )
+            .await
+        }
+        .unwrap();
+        let elapsed = started.elapsed();
+        println!("wide clear size={size} kept={kept} put={put}: {elapsed:?}");
+        times.push(elapsed);
+        assert_eq!(result.count(), 1);
+        assert_eq!(result.item().unwrap().roles()[&role].len(), kept);
+        assert_eq!(
+            result.item().unwrap().fields()[&field(&kind, "note")].len(),
+            1
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(if kept == 1 { 1 } else { 20 }),
+            "put={put}: {elapsed:?}"
+        );
+    }
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+    Some(times.try_into().unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn projected_wide_relation_update_and_keyed_put_avoid_cartesian_clears() {
+    let _ = wide_relation_clear_case(150, 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn projected_full_reference_replacement_is_bounded() {
+    for size in [50, 150] {
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            let Some(time) = wide_relation_clear_case(size, size).await else {
+                return;
+            };
+            times.push(time);
+        }
+        let mut updates = times.iter().map(|time| time[0]).collect::<Vec<_>>();
+        let mut puts = times.iter().map(|time| time[1]).collect::<Vec<_>>();
+        updates.sort();
+        puts.sort();
+        println!(
+            "MEDIAN size={size}: update={:?} put={:?}",
+            updates[1], puts[1]
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expired_staged_write_does_not_wait_for_busy_provider_rollback() {
+    let Some(db) = live_database("deadline_cleanup").await else {
+        return;
+    };
+    db.execute_raw(
+        "define attribute tag, value string; entity thing, owns tag @card(0..);",
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let tags = (0..50)
+        .map(|i| format!("has tag \"tag{i}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    db.execute_raw(&format!("insert $x isa thing, {tags};"), TxType::Write)
+        .await
+        .unwrap();
+    let mut transaction = db.transaction(
+        TransactionOptions::default()
+            .with_timeout(type_bridge_orm::QueryTimeout::from_milliseconds(100)),
+    );
+    transaction.stage(StagedQuery::new("match $x isa thing; try { $x has tag $a; }; try { $x has tag $b; }; delete try { has $a of $x; }; try { has $b of $x; };", true)).unwrap();
+    let started = std::time::Instant::now();
+    let error = transaction.commit().await.unwrap_err();
+    assert_eq!(
+        error.diagnostic().code().as_str(),
+        "transaction_deadline_exceeded"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    let result = db
+        .execute_raw(
+            "match $x isa thing, has tag $tag; select $tag;",
+            TxType::Read,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows(&result), 50);
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
 /// Relation updates with several players stay one document set; an update
 /// with no players runs the released path, which refuses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

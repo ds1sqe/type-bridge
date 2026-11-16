@@ -440,7 +440,7 @@ impl ProjectedManagerFilterExecutor<'_> {
                         Ok(value)
                     }
                     Err(error) => {
-                        let _ = transaction.rollback().await;
+                        let _ = bounded(&limits.answer, transaction.rollback()).await;
                         Err(error)
                     }
                 }
