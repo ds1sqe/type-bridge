@@ -75,6 +75,31 @@ After upgrading the generator and compatible runtime, regenerate the complete
 package. Projection and package fingerprints are recomputed from the corrected
 names and runtime resources; semantic schema fingerprints remain unchanged.
 
+## Value ranges
+
+| Schema value | Node output and exact range |
+| --- | --- |
+| `integer` | `bigint`, −2⁶³ through 2⁶³−1; raw plan documents use `bigint` for integers outside the safe `number` range |
+| `double` | Finite binary64 `number` |
+| `decimal` | Canonical string, −9223372036854775808 through 9223372036854775807.9999999999999999999, at most 19 fractional digits |
+| `boolean`, `string` | `boolean`, Unicode `string` (default maximum 1 MiB of UTF-8) |
+| `date` | UTC-midnight `Date` in the native view; canonical years −262143 through 262142 |
+| `datetime`, `datetime-tz` | `Date` at millisecond precision in the native view; canonical text retains nanoseconds, fixed offsets, and IANA zones |
+| `duration` | Canonical string with month/day components and nanosecond precision; provider bounds are `u32` months/days and `u64` total time nanoseconds, nonnegative |
+
+Temporal constructors accept canonical strings as well as `Date` inputs.
+Temporal attributes expose read-only `.canonical`, preserving their exact text
+through `put`, `update`, and codecs. Replace an attribute with a new value to
+change it. Reading `.value` creates a native view; a value outside `Date`'s range
+or millisecond precision raises `RangeError` pointing to `.canonical`. The model
+still hydrates and its other fields remain accessible. A datetime-tz native
+view carries the instant; `.canonical` retains the stored offset and zone.
+
+Scalar-only query results carry the instant and refuse precision/range loss
+with the scalar domain and zero-based column ordinal;
+select the attribute or model to access `.canonical`. Canonical duration strings
+follow the same grammar as [Python](attributes.md#python-value-ranges).
+
 ## Identifiers
 
 Generated model and reference `.iid` properties retain an `Iid` object, or

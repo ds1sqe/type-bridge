@@ -86,6 +86,38 @@ Generated attribute classes are projection values, not declaration bases. To
 rename an attribute or change its scalar/constraint contract, edit Split-YAML,
 review a migration, and regenerate.
 
+## Python value ranges
+
+| Schema value | Python output and exact range |
+| --- | --- |
+| `integer` | `int`, −2⁶³ through 2⁶³−1 |
+| `double` | Finite binary64 `float` |
+| `decimal` | `Decimal`, −9223372036854775808 through 9223372036854775807.9999999999999999999, at most 19 fractional digits; exponent-form inputs are accepted |
+| `boolean`, `string` | `bool`, Unicode `str` (default maximum 1 MiB of UTF-8) |
+| `date` | `date`, years 1–9999 in the native view; canonical text supports years −262143 through 262142 |
+| `datetime`, `datetime-tz` | `datetime`, years 1–9999 and microsecond precision in the native view; canonical text retains nanoseconds, fixed offsets, and IANA zones |
+| `duration` | `timedelta` with no months and microsecond precision in the native view; canonical text retains months, days, and nanoseconds |
+
+Temporal attribute constructors accept native values or canonical strings.
+Every temporal wrapper exposes read-only `.canonical`. Hydration retains that
+text privately, so passing an unchanged attribute to `put` or `update` preserves
+its exact value. Assign a newly constructed attribute to change the value.
+
+A temporal value outside the native view's range still hydrates with its model.
+Accessing that attribute's `.value` raises `ValueError` pointing to `.canonical`;
+other fields remain accessible. For example, `SeenAt("2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]")`
+retains the zone and all nine fractional digits through `.canonical`.
+
+Scalar-only query results have no wrapper. Errors name the scalar domain and
+zero-based column ordinal when a value exceeds the native range or precision; select the attribute or model to access `.canonical`.
+Timezone-aware scalar results carry the resolved instant.
+
+Duration strings use canonical `P<months>M<days>DT<seconds>[.<fraction>]S`
+components with zero components omitted (`PT0S` for zero), at most nine
+fractional digits, and no redundant trailing fractional zeros. Python and Node
+accept the same canonical string grammar. Provider writes require nonnegative
+values, months and days fitting `u32`, and total time nanoseconds fitting `u64`.
+
 ## Ownership is separate
 
 An attribute declaration does not imply an owner. Add it under an entity or

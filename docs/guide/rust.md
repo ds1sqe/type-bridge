@@ -568,3 +568,20 @@ request as its own transaction. A second query returns
 `raw_transaction_already_committed`. A disabled endpoint returns `raw_disabled`.
 `RawQueryError` retains provider details and commit certainty; an uncertain
 commit has code `commit_outcome_unknown` and requires checking database state.
+
+## Value ranges
+
+| Schema value | Exact SDK representation and range |
+| --- | --- |
+| `integer` | Signed 64-bit, −2⁶³ through 2⁶³−1 |
+| `double` | Finite IEEE-754 binary64, including signed zero |
+| `decimal` | Canonical decimal, −9223372036854775808 through 9223372036854775807.9999999999999999999, at most 19 fractional digits |
+| `boolean`, `string` | Boolean and Unicode scalar text (default maximum 1 MiB of UTF-8) |
+| `date` | Gregorian components, years −262143 through 262142 |
+| `datetime` | Date/time components with nanosecond precision, no leap seconds |
+| `datetime-tz` | Local components, effective offset, and optional IANA zone; nanosecond precision |
+| `duration` | Canonical month/day/second/nanosecond components; writes require nonnegative values, `u32` months/days and `u64` total time nanoseconds |
+
+Temporal values stay canonical through hydration, codecs, and writes. Scalar
+results retain their exact components without conversion through a narrower
+native date type.
