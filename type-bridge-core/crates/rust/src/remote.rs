@@ -296,7 +296,11 @@ impl ProxyDatabase<Unbound> {
             }
             (None, ProxyRoute::Endpoint(_)) => unreachable!("the endpoint was opened above"),
         };
-        RemoteCapabilities::decode(&advertisement).map_err(remote_diagnostic)?;
+        let capabilities = RemoteCapabilities::decode(&advertisement).map_err(remote_diagnostic)?;
+        options.admission_window_milliseconds = options.admission_window_milliseconds.min(
+            std::num::NonZeroU64::new(capabilities.admission_window_milliseconds())
+                .expect("advertised admission windows are nonzero"),
+        );
         options.advertisement = Some(advertisement);
         Ok(Self {
             options: Some(options),
@@ -2622,7 +2626,7 @@ mod tests {
     #[tokio::test]
     async fn raw_pair_works_before_and_after_schema_binding_with_one_proxy_call() {
         use crate::raw::{RawQueryError, TransactionKind};
-        struct RawOnly(Arc<Mutex<Vec<Vec<u8>>>>);
+        struct RawOnly(Arc<Mutex<Vec<Vec<u8>>>>, u64);
         impl ProxyExchange for RawOnly {
             fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
                 panic!("raw fetched capabilities")
@@ -2639,6 +2643,12 @@ mod tests {
             ) -> Pin<
                 Box<dyn Future<Output = std::result::Result<Vec<u8>, RawQueryError>> + Send + 'a>,
             > {
+                let wire: serde_json::Value = serde_json::from_slice(request).unwrap();
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                assert!(wire["expires_at_unix_ms"].as_u64().unwrap() <= now + self.1);
                 self.0.lock().unwrap().push(request.to_vec());
                 Box::pin(async {
                     Ok(br#"{"answers":[{"large":9223372036854775807}],"answerType":"conceptDocuments"}"#.to_vec())
@@ -2666,21 +2676,34 @@ mod tests {
                 "raw_transaction_already_committed"
             );
         }
-        let requests = Arc::new(Mutex::new(vec![]));
-        let database = unconnected_remote(ProxyConnectionPolicy::with_exchange(RawOnly(
-            requests.clone(),
-        )));
-        check(&database).await;
-        let database = database.with_schema(package()).unwrap();
-        check(&database).await;
-        let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 4);
-        for (request, query) in requests
-            .iter()
-            .zip(["exact raw query", "exact raw write"].into_iter().cycle())
-        {
-            let request: serde_json::Value = serde_json::from_slice(request).unwrap();
-            assert_eq!(request["query"], query);
+        for caller_window in [1_000, 60_000] {
+            let requests = Arc::new(Mutex::new(vec![]));
+            let advertisement = sdk_queries_transport(0x70)
+                .0
+                .advertisement_contract
+                .with_admission_window_milliseconds(5_000)
+                .unwrap()
+                .encode()
+                .unwrap();
+            let options = ProxyConnectionPolicy::with_exchange(RawOnly(
+                requests.clone(),
+                caller_window.min(5_000),
+            ))
+            .advertisement(advertisement)
+            .admission_window_milliseconds(std::num::NonZeroU64::new(caller_window).unwrap());
+            let database = ProxyDatabase::connect(options).await.unwrap();
+            check(&database).await;
+            let database = database.with_schema(package()).unwrap();
+            check(&database).await;
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 4);
+            for (request, query) in requests
+                .iter()
+                .zip(["exact raw query", "exact raw write"].into_iter().cycle())
+            {
+                let request: serde_json::Value = serde_json::from_slice(request).unwrap();
+                assert_eq!(request["query"], query);
+            }
         }
     }
 }
