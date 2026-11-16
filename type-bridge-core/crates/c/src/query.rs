@@ -700,6 +700,21 @@ fn match_mode(value: u32) -> Option<MatchMode> {
     }
 }
 
+fn normalized_read_mode(state: &QuerySessionState, model: &TypeId, mode: MatchMode) -> MatchMode {
+    if state
+        .package
+        .installed_projection
+        .projection()
+        .models()
+        .get(model)
+        .is_some_and(|model| model.declaration().is_abstract())
+    {
+        MatchMode::Subtypes
+    } else {
+        mode
+    }
+}
+
 fn comparison(value: u32) -> Option<type_bridge_orm::ComparisonOp> {
     match value {
         COMPARE_EQUAL => Some(type_bridge_orm::ComparisonOp::Equal),
@@ -5701,6 +5716,7 @@ unsafe fn checked_row_slot(
     let Some(mode) = match_mode(expected_mode) else {
         return Err(layout_invalid());
     };
+    let mode = normalized_read_mode(&result.state, &expected, mode);
     match &result.storage {
         QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
             let row = rows(query_result_value(&result.storage).expect("query storage"))
@@ -5726,7 +5742,7 @@ unsafe fn checked_row_slot(
             if expected_result_kind != RESULT_ROWS
                 || slot_index != 0
                 || expected_kind != SELECTION_ONE
-                || mode != MatchMode::Exact
+                || mode != normalized_read_mode(&result.state, &expected, MatchMode::Exact)
                 || model != &expected
             {
                 return Err(result_mismatch());
@@ -6190,6 +6206,7 @@ pub unsafe extern "C" fn type_bridge_query_result_reduction_group_thing(
         let Some(mode) = match_mode(expected_mode) else {
             return return_execution_error(layout_invalid(), out_diagnostics);
         };
+        let mode = normalized_read_mode(&result.state, &expected, mode);
         let Some((_, binding)) = binding_group_contract(result) else {
             return return_execution_error(result_mismatch(), out_diagnostics);
         };

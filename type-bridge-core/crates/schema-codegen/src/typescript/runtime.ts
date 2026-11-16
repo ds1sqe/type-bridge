@@ -4517,7 +4517,19 @@ function hydrateOrderedProjectedWire<Complete>(
   rootProof: () => ProjectedFacadeProof,
   roleProof: (roleName: string, playerIndex: number) => ProjectedFacadeProof,
 ): Complete {
-  const hydrated = hydrateProjectedValue(wire, expectedTypeKey);
+  let concreteTypeKey = expectedTypeKey;
+  const expected = expectedTypeKey === undefined ? undefined : runtimeModels.get(expectedTypeKey);
+  if (expected !== undefined && expectedTypeKey !== undefined && wire.typeKey !== expectedTypeKey) {
+    const metadata = expected.definition.metadata;
+    assertRecord(metadata, "generated model metadata");
+    const declaration = metadata["declaration"];
+    assertRecord(declaration, "generated model declaration");
+    const actual = runtimeModels.get(wire.typeKey);
+    if (declaration["is_abstract"] === true && actual !== undefined && nominalUpcastTypeKeys(actual).has(expectedTypeKey)) {
+      concreteTypeKey = wire.typeKey;
+    }
+  }
+  const hydrated = hydrateProjectedValue(wire, concreteTypeKey);
   return retainProjectedProofs(
     wire,
     hydrated,
