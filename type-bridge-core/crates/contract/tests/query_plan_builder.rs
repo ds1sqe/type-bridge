@@ -690,10 +690,13 @@ fn builder_refuses_typedb_3_14_query_rules_on_every_profile() {
     let mut plan = PlanBuilder::new();
     let account = plan.exact(entity("account"));
     let shift = plan.field(account, attribute("shift"));
+    let other_shift = plan.field(account, attribute("shift"));
     plan.compare(
         QueryOperand::Binding { binding: shift },
         ValueComparator::Greater,
-        QueryOperand::Binding { binding: shift },
+        QueryOperand::Binding {
+            binding: other_shift,
+        },
     );
     assert_eq!(
         plan.build(&schema_with_duration(), semantics())

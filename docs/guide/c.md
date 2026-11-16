@@ -628,3 +628,14 @@ transaction open. If it has closed, further queries and commit report
 `raw_transaction_failed` with a definite abort outcome and earlier writes cannot
 commit. On TypeDB 3.12.3, 3.13.6 and 3.14.0, failed matches leave read and write
 transactions open; failed inserts and defines close their transactions.
+
+## Raw TypeQL
+
+Never compare an attribute variable with itself (for example, `$x == $x`) in
+raw TypeQL. This crashes TypeDB 3.12.3, 3.13.6 and 3.14.0, including other
+comparison operators. Generic Plan builds refuse that shape before execution;
+raw text cannot be guarded. Use two independent attribute witnesses or remove
+the redundant comparison.
+
+`type_bridge_database_execute_query` sends unchecked TypeQL to TypeDB.
+See [raw execution](queries.md#raw-typeql-execution) for transaction behavior.

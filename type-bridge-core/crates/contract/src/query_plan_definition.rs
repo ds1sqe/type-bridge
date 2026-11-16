@@ -1463,7 +1463,22 @@ fn validate_stages(
                         scalar_types.insert(*binding, domain);
                     }
                 }
-                validate_comparisons(&reads, &scalar_types, &spec.inputs, &index)?;
+                let attribute_bindings = types
+                    .iter()
+                    .filter_map(|(binding, domains)| {
+                        domains
+                            .iter()
+                            .any(|id| id.kind() == TypeKind::Attribute)
+                            .then_some(*binding)
+                    })
+                    .collect();
+                validate_comparisons(
+                    &reads,
+                    &scalar_types,
+                    &attribute_bindings,
+                    &spec.inputs,
+                    &index,
+                )?;
                 if reads.iter().any(contains_nested_iid) {
                     validate_nested_iids(
                         &reads,
@@ -2062,16 +2077,21 @@ fn validate_read_tail(
 fn validate_comparisons(
     patterns: &[QueryPattern],
     scalar_types: &BTreeMap<BindingId, ValueTypeTag>,
+    attribute_bindings: &BTreeSet<BindingId>,
     inputs: &[InputColumn],
     index: &SchemaIndex<'_>,
 ) -> Result<(), Diagnostic> {
     use crate::migration_assertion::ValueComparator;
     let mut scalar_types = scalar_types.clone();
+    let mut attribute_bindings = attribute_bindings.clone();
     let mut local_types = BTreeMap::new();
     for pattern in patterns {
         index.pattern_types(pattern, &mut local_types)?;
     }
     for (binding, types) in local_types {
+        if types.iter().any(|id| id.kind() == TypeKind::Attribute) {
+            attribute_bindings.insert(binding);
+        }
         if let Some(domain) = index.scalar_domain(&types) {
             scalar_types.insert(binding, domain);
         }
@@ -2086,6 +2106,19 @@ fn validate_comparisons(
             .is_some_and(|input| input.value_type() == ValueTypeTag::Duration),
     };
     for pattern in patterns {
+        if let QueryPattern::Value {
+            left: QueryOperand::Binding { binding: left },
+            right: QueryOperand::Binding { binding: right },
+            ..
+        } = pattern
+            && left == right
+            && attribute_bindings.contains(left)
+        {
+            return Err(invalid(
+                "query_plan_attribute_self_comparison",
+                "TypeDB 3.12-3.14 crash on an attribute variable compared with itself; compare two independent witnesses or drop the tautology",
+            ));
+        }
         if let QueryPattern::Value {
             comparator,
             left,
@@ -2151,11 +2184,17 @@ fn validate_comparisons(
             }
             QueryPattern::Or { branches } => {
                 for branch in branches {
-                    validate_comparisons(branch, &scalar_types, inputs, index)?;
+                    validate_comparisons(
+                        branch,
+                        &scalar_types,
+                        &attribute_bindings,
+                        inputs,
+                        index,
+                    )?;
                 }
             }
             QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
-                validate_comparisons(patterns, &scalar_types, inputs, index)?;
+                validate_comparisons(patterns, &scalar_types, &attribute_bindings, inputs, index)?;
             }
             _ => {}
         }

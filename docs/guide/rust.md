@@ -542,6 +542,13 @@ retain operation indexes and schema identities supplied by plan metadata.
 
 ## Raw TypeQL
 
+Never compare an attribute variable with itself (for example, `$x == $x`) in
+raw TypeQL. This crashes TypeDB 3.12.3, 3.13.6 and 3.14.0, including other
+comparison operators. Generic Plan builds refuse that shape before execution;
+raw text cannot be guarded. Use two independent attribute witnesses or remove
+the redundant comparison.
+
+
 Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
 to TypeDB as written, and TypeDB's output comes back as it
 answered, in this SDK's native data types. TypeBridge adds no

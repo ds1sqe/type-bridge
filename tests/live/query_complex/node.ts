@@ -8,6 +8,12 @@ import {
 } from "./index.js";
 
 async function main(): Promise<void> {
+  for (const comparison of ["eq", "ne", "lt", "le", "gt", "ge"] as const) {
+    const unsafe = Plan.builder(), owner = unsafe.subtypes(Party);
+    const value = unsafe.field(owner, Party.score);
+    unsafe.where(value[comparison](value)).count();
+    assert.throws(() => unsafe.build(schemaAuthority()), /query_plan_attribute_self_comparison/);
+  }
   const db = Database.connect(process.env.TYPEDB_ADDRESS!, process.env.TYPE_BRIDGE_COMPLEX_DATABASE!, {
     username: "admin", password: "password", httpPort: Number(process.env.TYPEDB_HTTP_PORT),
   });

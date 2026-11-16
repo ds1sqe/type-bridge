@@ -1623,12 +1623,20 @@ fn typedb_3_14_query_rules_are_refused_at_build_on_every_profile() {
     let range = |comparator| {
         let mut patterns = shift();
         patterns.push(
+            QueryPattern::Has {
+                owner: id(0),
+                attribute: id(2),
+                attribute_id: AttributeId::new("shift").unwrap(),
+            }
+            .into(),
+        );
+        patterns.push(
             QueryPattern::Or {
                 branches: vec![
                     vec![QueryPattern::Value {
                         comparator,
                         left: QueryOperand::Binding { binding: id(1) },
-                        right: QueryOperand::Binding { binding: id(1) },
+                        right: QueryOperand::Binding { binding: id(2) },
                     }],
                     vec![isa(0, entity("account"))],
                 ],

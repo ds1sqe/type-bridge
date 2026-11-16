@@ -397,6 +397,29 @@ static void abstract_read_matrix(tb_complex_query_session *session, uint64_t siz
 }
 
 
+static void attribute_self_comparisons_fail_before_connect(void) {
+  tb_cond_t (*comparators[])(tb_long_t, tb_long_t) = {
+      tb_long_eq, tb_long_ne, tb_long_lt, tb_long_le, tb_long_gt, tb_long_ge};
+  for (size_t i = 0; i < sizeof(comparators) / sizeof(comparators[0]); ++i) {
+    type_bridge_plan_builder_t *builder = NULL;
+    type_bridge_plan_t *plan = NULL;
+    tb_complex_party_handle_t owner;
+    OK(tb_complex_plan_open(NULL, &builder, &diagnostics));
+    OK(tb_complex_party_subtypes(builder, &owner));
+    tb_long_t value = tb_complex_party_plan_score(builder, owner);
+    OK(tb_complex_party_where(builder, owner, comparators[i](value, value)));
+    OK(type_bridge_plan_builder_count(builder));
+    assert(type_bridge_plan_builder_build(builder, package, &plan, &diagnostics) != TYPE_BRIDGE_STATUS_OK);
+    assert(plan == NULL);
+    type_bridge_execution_diagnostic_view_v1_t error;
+    OK(type_bridge_execution_diagnostics_get_v1(diagnostics, 0, &error));
+    const char *code = "query_plan_attribute_self_comparison";
+    assert(error.code.length == strlen(code) && memcmp(error.code.data, code, error.code.length) == 0);
+    OK(type_bridge_execution_diagnostics_close(&diagnostics));
+    type_bridge_plan_builder_free(&builder);
+  }
+}
+
 int main(void) {
   const char *width_env = getenv("TYPE_BRIDGE_COMPLEX_WIDTH");
   unsigned width = width_env ? (unsigned)strtoul(width_env, NULL, 10) : 12u;
@@ -409,6 +432,7 @@ int main(void) {
   runtime_config.worker_threads = 2;
   OK(type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics));
   OK(tb_complex_schema_package_open(&package, &diagnostics));
+  attribute_self_comparisons_fail_before_connect();
   incompatible_plan_inputs_fail_before_connect();
   exact_abstract_plan_is_refused_before_connect();
   type_bridge_database_config_t config = {0};

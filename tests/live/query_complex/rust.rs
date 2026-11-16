@@ -22,6 +22,17 @@ fn relay_player_identifier(item: &Relay) -> &Identifier {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    for comparator in 0..6 {
+        let mut unsafe_plan = type_bridge::plan::PlanBuilder::new();
+        let owner = unsafe_plan.subtypes::<Party>();
+        let value = unsafe_plan.field(owner, PartyType::score);
+        let condition = match comparator {
+            0 => value.eq(value), 1 => value.ne(value), 2 => value.lt(value),
+            3 => value.le(value), 4 => value.gt(value), _ => value.ge(value),
+        };
+        unsafe_plan.where_(condition).count();
+        assert_eq!(unsafe_plan.build(&SCHEMA).unwrap_err().code(), Some("query_plan_attribute_self_comparison"));
+    }
     let db = Database::connect(
         ConnectionOptions::new(
             std::env::var("TYPEDB_ADDRESS")?,

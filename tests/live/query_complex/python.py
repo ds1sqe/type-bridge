@@ -64,6 +64,17 @@ async def main() -> None:
     )
     size = int(os.environ["TYPE_BRIDGE_COMPLEX_SIZE"])
     limit = size + 1
+    for comparison in ("eq", "ne", "lt", "le", "gt", "ge"):
+        unsafe = Plan.builder()
+        owner = unsafe.subtypes(Party)
+        value = unsafe.field(owner, Party.score)
+        unsafe.where(getattr(value, comparison)(value)).count()
+        try:
+            unsafe.build(schema_authority())
+        except PlanError as error:
+            assert error.code == "query_plan_attribute_self_comparison", error
+        else:
+            raise AssertionError("attribute self-comparison reached execution")
     db.connect()
     try:
         if raw := os.environ.get("TYPE_BRIDGE_COMPLEX_RAW_QUERY"):
