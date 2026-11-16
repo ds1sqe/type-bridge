@@ -99,6 +99,7 @@ fn python_administration_control(
 /// reacquires the GIL. Python-visible drop effects stay under the owning GIL.
 /// This helper is reserved for native-only Python write adapters whose
 /// facade publication must be linearized with terminal owned commit.
+/// shortcut: provider waits retain the GIL; detach after isolating Python callbacks.
 pub(crate) fn provider_block_on_with_gil<T, F>(
     py: Python<'_>,
     runtime: &ProviderRuntimeOwner,

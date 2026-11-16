@@ -335,6 +335,12 @@ winner requires changes to the server, protocol and driver.
 
 ## Using TypeBridge transactions
 
+Generated Python manager insert, put, update and batch-write adapters currently
+retain the GIL through their provider wait and facade materialization. Other
+Python threads cannot run during that wait. Read and raw-query waits release
+the GIL.
+
+
 A TypeBridge staged transaction runs these recipes from typed plans. Staging
 sends nothing; `commit` opens one TypeDB transaction, runs every staged plan
 in order and commits. A failing plan stops the commit and nothing is stored.
