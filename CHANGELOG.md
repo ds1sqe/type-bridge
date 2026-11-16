@@ -1663,6 +1663,16 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
 - Each SDK documents its exact scalar ranges; scalar-only results refuse a
   value the native type would truncate instead of rounding it.
 
+- A player repeated in an unordered role counts once in every write and
+  cardinality check, including plain inserts. Ordered roles keep positions
+  and repetitions, and ordered-distinct roles still reject duplicates.
+
+- Over a proxy, a keyed `update_many` validates every row before writing: a
+  missing IID or a changed key refuses the whole batch with
+  `query_plan_key_update` ("IID not found or key differs") and names the row.
+  Direct batches still skip a missing IID. Keyed proxy updates run one
+  additional diagnostic read in the same transaction.
+
 ### Fixed
 
 - A proxy request that exceeds the advertised budgets, such as more staged
@@ -1771,6 +1781,34 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
 - Provider duration spellings are normalized, and Python and Node accept
   the same canonical duration strings; Python reads exact negative day-time
   durations natively.
+
+- `update` and `put` clear each multi-valued attribute and each role
+  separately instead of multiplying them in one delete. A row with 150
+  values and 150 role players updates in tens of milliseconds, where it
+  previously hit the execution deadline. Cleanup after a deadline or
+  cancellation no longer waits behind the busy query.
+
+- `update` refuses a changed `@key` value with `query_plan_key_update` and
+  writes nothing, on manager, dynamic, batch and proxy paths. It previously
+  reported success and kept the old key.
+
+- Plan `update` on a multi-valued attribute, and deleting a key or a required
+  ownership without replacing it, are refused when the plan is built.
+
+- A keyless `put` that lists the same player more than once in an unordered
+  role is idempotent.
+
+- Commit conflicts surface as `CommitConflict`, `CommitRejected` or
+  `CommitOutcomeUnknown` on manager writes and on explicit and eager
+  transaction commits in Python; a failed explicit commit is no longer
+  masked by the context exit.
+
+- IID predicates use the indexed `iid` form. `delete` and `delete_many` no
+  longer scan every instance, and large `update_many` and `delete_many`
+  batches are sent in chunks of 64 rows inside one transaction, so their
+  cost grows linearly with the batch.
+
+- Bounded queries prefetch up to 32 answer messages instead of 2.
 
 ## [2.3.3] - 2026-10-27
 
