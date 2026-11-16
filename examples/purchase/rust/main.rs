@@ -476,16 +476,20 @@ async fn main() -> Result<()> {
     {
         let env =
             |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
-        let options = ConnectionOptions::new(env("TYPEDB_ADDRESS", "localhost:1729"), database)
-            .credentials(
-                env("TYPEDB_USERNAME", "admin"),
-                env("TYPEDB_PASSWORD", "password"),
-            )
+        let mut options = ConnectionOptions::new(env("TYPEDB_ADDRESS", "localhost:1729"), database)
             .http_port(
                 env("TYPEDB_HTTP_PORT", "8000")
                     .parse()
                     .expect("TYPEDB_HTTP_PORT"),
             );
+        if std::env::var_os("TYPEDB_USERNAME").is_some()
+            || std::env::var_os("TYPEDB_PASSWORD").is_some()
+        {
+            options = options.credentials(
+                std::env::var("TYPEDB_USERNAME").unwrap_or_default(),
+                std::env::var("TYPEDB_PASSWORD").unwrap_or_default(),
+            );
+        }
         let db = Database::connect(options)
             .await?
             .with_schema(models::SCHEMA)?;

@@ -47,11 +47,12 @@ def probe_database(db: Database, name: str) -> None:
     options = create_driver_options(is_tls_enabled=tls, tls_root_ca=root_ca)
     options.request_timeout_millis = 1_000
     options.primary_failover_retries = 0
+    identity = db._resolve_connection_identity()
     with TypeDB.driver(
         address,
         Credentials(
-            db.username if db.username is not None else "admin",
-            db.password if db.password is not None else "password",
+            identity.username,
+            identity.password,
         ),
         options,
     ) as driver:
@@ -233,8 +234,8 @@ type-bridge = {{ path = "{ROOT / "type-bridge-core/crates/rust"}" }}
         db = Database(
             address=environment["TYPEDB_ADDRESS"],
             database=name,
-            username=environment.get("TYPEDB_USERNAME", "admin"),
-            password=environment.get("TYPEDB_PASSWORD", "password"),
+            username=environment.get("TYPEDB_USERNAME"),
+            password=environment.get("TYPEDB_PASSWORD"),
             http_port=int(environment["TYPEDB_HTTP_PORT"]),
         )
         created = False

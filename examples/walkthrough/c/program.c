@@ -1080,8 +1080,14 @@ int main(void) {
   config.version = TYPE_BRIDGE_DATABASE_CONFIG_VERSION;
   config.address = view(environment("TYPEDB_ADDRESS", "127.0.0.1:1729"));
   config.database = view(getenv("TYPE_BRIDGE_WALKTHROUGH_DATABASE"));
-  config.username = view(environment("TYPEDB_USERNAME", "admin"));
-  config.password = view(environment("TYPEDB_PASSWORD", "password"));
+  const char *username = getenv("TYPEDB_USERNAME");
+  const char *password = getenv("TYPEDB_PASSWORD");
+  if (username == NULL && password == NULL) {
+    username = "admin";
+    password = "password";
+  }
+  config.username = view(username == NULL ? "" : username);
+  config.password = view(password == NULL ? "" : password);
   config.http_port =
       (uint32_t)strtoul(environment("TYPEDB_HTTP_PORT", "8000"), NULL, 10);
   config.tls_mode = TYPE_BRIDGE_TLS_DISABLED;

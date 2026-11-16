@@ -107,6 +107,9 @@ changing a shared boundary.
 
 ## Test and check
 
+Live test and CI bootstrap fixtures assume the default TypeDB `admin`/`password`
+credentials for their disposable servers.
+
 Use the smallest focused check while iterating, then the scope-level check
 before handoff.
 

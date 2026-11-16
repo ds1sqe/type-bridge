@@ -398,8 +398,8 @@ def main() -> int:
         db = Database(
             address=os.environ.get("TYPEDB_ADDRESS", "localhost:1729"),
             database=database,
-            username=os.environ.get("TYPEDB_USERNAME", "admin"),
-            password=os.environ.get("TYPEDB_PASSWORD", "password"),
+            username=os.environ.get("TYPEDB_USERNAME"),
+            password=os.environ.get("TYPEDB_PASSWORD"),
             http_port=int(os.environ.get("TYPEDB_HTTP_PORT", "8000")),
         )
         db.connect()

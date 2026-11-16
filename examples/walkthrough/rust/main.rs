@@ -502,20 +502,20 @@ tx.commit().await?;"#,
 async fn main() -> Result<()> {
     let capture = Statements::default();
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(capture.clone()))?;
-    let env = |name: &str, fallback: &str| std::env::var(name).unwrap_or_else(|_| fallback.into());
-    let db = Database::connect(
-        ConnectionOptions::new(
-            std::env::var("TYPEDB_ADDRESS")?,
-            std::env::var("TYPE_BRIDGE_WALKTHROUGH_DATABASE")?,
-        )
-        .credentials(
-            env("TYPEDB_USERNAME", "admin"),
-            env("TYPEDB_PASSWORD", "password"),
-        )
-        .http_port(std::env::var("TYPEDB_HTTP_PORT")?.parse()?),
+    let mut options = ConnectionOptions::new(
+        std::env::var("TYPEDB_ADDRESS")?,
+        std::env::var("TYPE_BRIDGE_WALKTHROUGH_DATABASE")?,
     )
-    .await?
-    .with_schema(SCHEMA)?;
+    .http_port(std::env::var("TYPEDB_HTTP_PORT")?.parse()?);
+    if std::env::var_os("TYPEDB_USERNAME").is_some()
+        || std::env::var_os("TYPEDB_PASSWORD").is_some()
+    {
+        options = options.credentials(
+            std::env::var("TYPEDB_USERNAME").unwrap_or_default(),
+            std::env::var("TYPEDB_PASSWORD").unwrap_or_default(),
+        );
+    }
+    let db = Database::connect(options).await?.with_schema(SCHEMA)?;
     let result = walkthrough(&db, &capture).await;
     db.close()?;
     result

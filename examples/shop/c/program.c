@@ -736,8 +736,14 @@ int main(void) {
     config.version = TYPE_BRIDGE_DATABASE_CONFIG_VERSION;
     config.address = view(env_or("TYPEDB_ADDRESS", "localhost:1729"));
     config.database = view(database_name);
-    config.username = view(env_or("TYPEDB_USERNAME", "admin"));
-    config.password = view(env_or("TYPEDB_PASSWORD", "password"));
+    const char *username = getenv("TYPEDB_USERNAME");
+    const char *password = getenv("TYPEDB_PASSWORD");
+    if (username == NULL && password == NULL) {
+      username = "admin";
+      password = "password";
+    }
+    config.username = view(username == NULL ? "" : username);
+    config.password = view(password == NULL ? "" : password);
     config.http_port = http_port();
     config.tls_mode = TYPE_BRIDGE_TLS_DISABLED;
     source.runtime = runtime;

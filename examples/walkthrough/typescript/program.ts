@@ -120,7 +120,7 @@ const purchaseCall = `Plan.build(() => {
 
 async function main(): Promise<void> {
   const db = Database.connect(process.env.TYPEDB_ADDRESS!, process.env.TYPE_BRIDGE_WALKTHROUGH_DATABASE!, {
-    username: process.env.TYPEDB_USERNAME ?? "admin", password: process.env.TYPEDB_PASSWORD ?? "password",
+    username: process.env.TYPEDB_USERNAME ?? null, password: process.env.TYPEDB_PASSWORD ?? null,
     httpPort: Number(process.env.TYPEDB_HTTP_PORT),
   });
   try {

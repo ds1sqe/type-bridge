@@ -328,8 +328,8 @@ async function main(): Promise<void> {
   if (database) {
     const db = Database.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1729", database, {
       httpPort: Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
-      username: process.env["TYPEDB_USERNAME"] ?? "admin",
-      password: process.env["TYPEDB_PASSWORD"] ?? "password",
+      username: process.env["TYPEDB_USERNAME"] ?? null,
+      password: process.env["TYPEDB_PASSWORD"] ?? null,
     });
     try {
       results["direct"] = await program((kind) => db.stagedTransaction(kind), plans);

@@ -173,8 +173,8 @@ def main() -> None:
     db = Database(
         address=os.environ["TYPEDB_ADDRESS"],
         database=os.environ["TYPE_BRIDGE_WALKTHROUGH_DATABASE"],
-        username=os.environ.get("TYPEDB_USERNAME", "admin"),
-        password=os.environ.get("TYPEDB_PASSWORD", "password"),
+        username=os.environ.get("TYPEDB_USERNAME"),
+        password=os.environ.get("TYPEDB_PASSWORD"),
         http_port=int(os.environ["TYPEDB_HTTP_PORT"]),
     )
     try:
