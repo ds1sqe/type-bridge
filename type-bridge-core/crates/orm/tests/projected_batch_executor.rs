@@ -2145,7 +2145,7 @@ async fn first_middle_last_hydration_failures_publish_nothing_and_roll_back() {
 }
 
 #[tokio::test]
-async fn first_middle_last_inflight_cancellation_rolls_back_both_batch_kinds() {
+async fn first_middle_last_inflight_cancellation_abandons_both_batch_kinds() {
     let installed = installed();
     for kind in [BatchKind::Entity, BatchKind::Relation] {
         for interruption_position in 0..3 {
@@ -2179,7 +2179,7 @@ async fn first_middle_last_inflight_cancellation_rolls_back_both_batch_kinds() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn first_middle_last_inflight_timeout_rolls_back_both_batch_kinds() {
+async fn first_middle_last_inflight_timeout_abandons_both_batch_kinds() {
     let installed = installed();
     for kind in [BatchKind::Entity, BatchKind::Relation] {
         for interruption_position in 0..3 {

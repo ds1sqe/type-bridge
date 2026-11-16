@@ -482,6 +482,8 @@ impl ProjectedReference {
             ));
         }
 
+        let iid = iid.map(|iid| iid.to_ascii_lowercase());
+
         let reference_keys = model
             .reference_read()
             .key_fields()
@@ -1942,17 +1944,18 @@ fn validate_create_roles(
         if token.multiplicity().collection_mode().is_unordered() {
             // Validate and charge every supplied reference before set normalization.
             let mut unique: Vec<ProjectedReference> = Vec::with_capacity(references.len());
-            for (index, reference) in references.into_iter().enumerate() {
-                if let Some(slot) = unique
+            for (index, mut reference) in references.into_iter().enumerate() {
+                let mut insert_at = unique.len();
+                while let Some(slot) = unique
                     .iter()
                     .position(|previous| same_projected_player(installed, previous, &reference))
                 {
                     let path = indexed_player_path(type_id, role_id, index, reference.type_id());
-                    unique[slot] =
-                        merge_projected_player(installed, &unique[slot], reference, path)?;
-                } else {
-                    unique.push(reference);
+                    let previous = unique.remove(slot);
+                    reference = merge_projected_player(installed, &previous, reference, path)?;
+                    insert_at = insert_at.min(slot);
                 }
+                unique.insert(insert_at.min(unique.len()), reference);
             }
             references = unique;
         }
@@ -2389,7 +2392,9 @@ fn same_projected_player(
     right: &ProjectedReference,
 ) -> bool {
     if let (Some(left), Some(right)) = (&left.iid, &right.iid) {
-        return left == right;
+        if left.eq_ignore_ascii_case(right) {
+            return true;
+        }
     }
     (is_same_or_subtype(installed, &left.type_id, &right.type_id)
         || is_same_or_subtype(installed, &right.type_id, &left.type_id))
@@ -2407,6 +2412,15 @@ fn merge_projected_player(
     right: ProjectedReference,
     path: Vec<SdkDiagnosticPathSegment>,
 ) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
+    if let (Some(left), Some(right)) = (&left.iid, &right.iid)
+        && !left.eq_ignore_ascii_case(right)
+    {
+        return Err(invalid_input(
+            "reference_identity_mismatch",
+            "Equivalent player keys identify conflicting IIDs",
+            path,
+        ));
+    }
     let type_id = if is_same_or_subtype(installed, &left.type_id, &right.type_id) {
         left.type_id.clone()
     } else if is_same_or_subtype(installed, &right.type_id, &left.type_id) {
@@ -3016,6 +3030,68 @@ plays:
             .with_declared_schema_identity(declared_identity)
     }
 
+    #[test]
+    fn unordered_key_evidence_cannot_bridge_two_different_iids() {
+        let schema = ORIGIN_SCHEMA
+            .replace(
+                "attributes:\n",
+                "attributes:\n  secondary: { value: string }\n",
+            )
+            .replace(
+                "      identifier: { key: true }",
+                "      identifier: { key: true }\n      secondary: { key: true }",
+            )
+            .replace("friend: { card: 1 }", "friend: { card: { min: 0 } }");
+        let documents =
+            SchemaDocumentSet::parse([(DocumentId::new("bridge.yaml").unwrap(), schema.as_str())])
+                .unwrap();
+        let resolved = resolve(
+            &normalize_documents(&documents).unwrap(),
+            &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+        )
+        .unwrap();
+        let installed = InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Rust,
+                &ProjectionConfig::rust(),
+                &[ProjectionHandler::rust_v1()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let key = |name: &str| {
+            (
+                OwnsFactId::new(person.clone(), AttributeId::new(name).unwrap()).unwrap(),
+                ProjectedAttributeValue::try_new(
+                    &installed,
+                    TypeId::new(TypeKind::Attribute, name).unwrap(),
+                    CanonicalValue::String(CanonicalString::new(name).unwrap()),
+                )
+                .unwrap(),
+            )
+        };
+        let reference = |iid: Option<&str>, keys| {
+            ProjectedReference::try_new(&installed, person.clone(), iid.map(str::to_owned), keys)
+                .unwrap()
+        };
+        let references = vec![
+            reference(Some("0x1"), vec![key("identifier")]),
+            reference(Some("0x2"), vec![key("secondary")]),
+            reference(Some("0x1"), vec![key("identifier"), key("secondary")]),
+        ];
+        let error = ProjectedCreate::try_new(
+            &installed,
+            TypeId::new(TypeKind::Relation, "friendship").unwrap(),
+            vec![],
+            vec![(RoleId::new("friendship", "friend").unwrap(), references)],
+        )
+        .unwrap_err();
+        assert_eq!(error.code().as_str(), "reference_identity_mismatch");
+    }
+
     fn origin_complete_player(
         installed: &InstalledRuntimeProjection,
         reference: ProjectedReference,
@@ -3126,6 +3202,23 @@ plays:
                 .code()
                 .as_str(),
             "duplicate_reference_key"
+        );
+        let mixed_case = create(vec![
+            reference(Some("0xAbCd"), "same"),
+            reference(Some("0xaBcD"), "same"),
+        ])
+        .unwrap();
+        assert_eq!(mixed_case.roles()[&friend].len(), 1);
+        assert_eq!(mixed_case.roles()[&friend][0].iid(), Some("0xabcd"));
+        assert_eq!(
+            create(vec![
+                reference(Some("0x1"), "ada"),
+                reference(Some("0x2"), "ada")
+            ])
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "reference_identity_mismatch"
         );
         let foreign = ProjectedReference::try_new_for_database(
             &installed,
