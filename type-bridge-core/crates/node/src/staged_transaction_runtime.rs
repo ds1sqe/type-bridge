@@ -118,6 +118,15 @@ pub(crate) fn parse_plan_answer_json(json: &str) -> napi::Result<PlanAnswer> {
     })
 }
 
+/// Decode a retained plan answer with the raw-query path's exact number marshaller.
+#[napi(js_name = "planAnswerValue", ts_return_type = "unknown")]
+pub fn plan_answer_value(json: String) -> napi::Result<crate::raw_runtime::RawJson> {
+    // The retained answer has already passed the core's answer limits.
+    serde_json::from_str(&json)
+        .map(crate::raw_runtime::RawJson)
+        .map_err(|error| napi::Error::from_reason(error.to_string()))
+}
+
 /// One staged plan's answer, visible only after its commit succeeds.
 #[napi]
 pub struct NodePendingPlanAnswer {
@@ -470,11 +479,12 @@ mod document_answer_tests {
 
     #[test]
     fn document_answer_json_preserves_nested_values() {
-        let documents =
-            vec![serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{"name":"Ada"}})];
+        let documents = vec![
+            serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{"name":"Ada", "integer":9_007_199_254_740_995_i64}}),
+        ];
         let encoded = answer_json(&PlanAnswer::Documents(documents.clone())).unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+            plan_answer_value(encoded).unwrap().0,
             serde_json::json!({"kind":"documents", "documents":documents})
         );
     }

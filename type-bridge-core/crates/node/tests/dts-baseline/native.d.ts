@@ -266,6 +266,7 @@ export interface NativePlanBuilder {
     buildSelected(authority: NativePlanAuthority, kind: string, thing: number | null, roles: string[], required: boolean[], columns: number[], projection?: NativeProjectionHandle | null, declared?: string | null, modelBindings?: number[] | null, modelTypes?: string[] | null): NativePlan;
 }
 interface NativePlanBuilderModule {
+    planAnswerValue(json: string): unknown;
     setDebugListener(callback: ((json: string) => void) | null): void;
     NodePlanBuilder: new (queryLimits?: NativeQueryLimits) => NativePlanBuilder;
 }

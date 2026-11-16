@@ -1,3 +1,4 @@
+import { loadNative } from "./native.js";
 import type { NativeQueryLimits } from "./native.js";
 /** Shared, package-private machinery for plan facades. */
 
@@ -218,4 +219,9 @@ export async function planNativePromise<Result>(
   } catch (error) {
     throw structuredPlanError(error);
   }
+}
+
+/** Decode data answers through the same lossless integer marshaller as raw queries. */
+export function decodePlanAnswer(json: string): unknown {
+  return loadNative().planAnswerValue(json);
 }

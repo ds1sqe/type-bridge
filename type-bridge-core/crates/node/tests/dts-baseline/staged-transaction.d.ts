@@ -18,13 +18,13 @@ export type PlanAnswer = {
     readonly documents: readonly Record<string, unknown>[];
 } | {
     readonly kind: "count";
-    readonly value: number;
+    readonly value: number | bigint;
 } | {
     readonly kind: "exists";
     readonly value: boolean;
 } | {
     readonly kind: "matched";
-    readonly value: number;
+    readonly value: number | bigint;
 };
 /** One staged plan or typed query answer, visible only after commit succeeds. */
 export declare class Pending<R = PlanAnswer> {

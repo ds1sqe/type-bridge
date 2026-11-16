@@ -506,6 +506,7 @@ export interface NativePlanBuilder {
 }
 
 interface NativePlanBuilderModule {
+  planAnswerValue(json: string): unknown;
   setDebugListener(callback: ((json: string) => void) | null): void;
   NodePlanBuilder: new (queryLimits?: NativeQueryLimits) => NativePlanBuilder;
 }

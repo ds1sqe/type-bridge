@@ -77,4 +77,6 @@ export declare class PlanError extends Error {
 }
 export declare function planNativeCall<Result>(operation: () => Result): Result;
 export declare function planNativePromise<Result>(promise: Promise<Result>): Promise<Result>;
+/** Decode data answers through the same lossless integer marshaller as raw queries. */
+export declare function decodePlanAnswer(json: string): unknown;
 export {};

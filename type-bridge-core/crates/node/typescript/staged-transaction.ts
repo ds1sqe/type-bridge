@@ -5,7 +5,7 @@ import type {
 import type { NativeAuthoredPlanResult, RuntimeProjectionMatchResult } from "./runtime-projection.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
 import { decodePlan, nativePlan, type Plan, type StagedPlan } from "./plan.js";
-import { planNativeCall, planNativePromise } from "./plan-internals.js";
+import { decodePlanAnswer, planNativeCall, planNativePromise } from "./plan-internals.js";
 
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
 export type StagedTransactionKind = "read" | "write" | "schema";
@@ -21,9 +21,9 @@ export interface StagedTransactionOptions {
 export type PlanAnswer =
   | { readonly kind: "rows"; readonly rows: readonly unknown[] }
   | { readonly kind: "documents"; readonly documents: readonly Record<string, unknown>[] }
-  | { readonly kind: "count"; readonly value: number }
+  | { readonly kind: "count"; readonly value: number | bigint }
   | { readonly kind: "exists"; readonly value: boolean }
-  | { readonly kind: "matched"; readonly value: number };
+  | { readonly kind: "matched"; readonly value: number | bigint };
 
 // Plans and declared schemas are canonical contract bytes, far below this.
 const MAX_STAGED_INPUT_BYTES = 16 * 1024 * 1024;
@@ -35,7 +35,7 @@ export class Pending<R = PlanAnswer> {
   readonly #decode: (answerJson: string, projection?: NativeAuthoredPlanResult, query?: RuntimeProjectionMatchResult) => R;
 
   /** @internal */
-  constructor(native: NativePendingPlanAnswer, decode: (answerJson: string, projection?: NativeAuthoredPlanResult, query?: RuntimeProjectionMatchResult) => R = (answerJson) => JSON.parse(answerJson) as R, typedQuery = false) {
+  constructor(native: NativePendingPlanAnswer, decode: (answerJson: string, projection?: NativeAuthoredPlanResult, query?: RuntimeProjectionMatchResult) => R = (answerJson) => decodePlanAnswer(answerJson) as R, typedQuery = false) {
     this.#native = native;
     this.#decode = decode;
     this.#typedQuery = typedQuery;
@@ -63,7 +63,7 @@ export class Pending<R = PlanAnswer> {
     if (this.#typedQuery) {
       throw new TypeError("plan_result_shape: a typed query has no document plan answer");
     }
-    const answer = JSON.parse(planNativeCall(() => this.#native.getJson())) as PlanAnswer;
+    const answer = decodePlanAnswer(planNativeCall(() => this.#native.getJson())) as PlanAnswer;
     if (answer.kind !== "documents") {
       throw new TypeError("plan_result_shape: the committed answer is not documents");
     }

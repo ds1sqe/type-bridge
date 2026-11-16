@@ -4382,7 +4382,7 @@ test("debug listener delivers a manager statement after synchronous bulk hydrati
   }
 });
 
-test("generated temporal values remain exact", { timeout: 360_000 }, async () => {
+test("generated temporal values and staged integers remain exact", { timeout: 360_000 }, async () => {
   const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
   const stage = suppliedStage === undefined
     ? await mkdtemp(join(tmpdir(), "type-bridge-node-temporal-"))
@@ -4430,6 +4430,16 @@ test("generated temporal values remain exact", { timeout: 360_000 }, async () =>
     assert.deepEqual(await database.executeQuery(temporalQuery, "read"), temporalBefore);
     personManager.put(temporalReplacement);
     assert.deepEqual(await database.executeQuery(temporalQuery, "read"), temporalBefore);
+    const integerPlan = (await import(pathToFileURL(resolve(NODE_RUNTIME_PACKAGE, "dist/public.js")).href)).Plan.builder();
+    const integerPerson = integerPlan.exact(Person);
+    integerPlan.where(integerPlan.field(integerPerson, Person.identifier).eq("temporal-fidelity"));
+    integerPlan.returning([integerPlan.field(integerPerson, Person.score)]);
+    const integerTransaction = database.stagedTransaction();
+    try {
+      const answer = integerTransaction.stage(integerPlan.build(generated.schemaAuthority()));
+      await integerTransaction.commit();
+      assert.match(JSON.stringify(answer.result(), (_key, value) => typeof value === "bigint" ? value.toString() : value), /9007199254740995/);
+    } finally { integerTransaction.close(); }
     personManager.delete(fidelity.iid);
 
   } finally {

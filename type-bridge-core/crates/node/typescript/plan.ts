@@ -31,6 +31,7 @@
 import type { AttributeValue, PlanAuthority } from "./index.js";
 import { Iid } from "./index.js";
 import { loadNative } from "./native.js";
+import { decodePlanAnswer } from "./plan-internals.js";
 import type {
   NativePlan,
   NativeStagedPlan,
@@ -761,7 +762,7 @@ export function nativePlan(plan: Plan<unknown>): NativePlan {
 /** @internal Apply the typed projection chosen by a generated helper. */
 export function decodePlan<R>(plan: Plan<R>, answerJson: string, projection?: NativeAuthoredPlanResult): R {
   const decoder = decoders.get(plan);
-  return (decoder === undefined ? JSON.parse(answerJson) : decoder(answerJson, projection)) as R;
+  return (decoder === undefined ? decodePlanAnswer(answerJson) : decoder(answerJson, projection)) as R;
 }
 
 /**
@@ -1021,7 +1022,7 @@ export class PlanRecording {
     plans.set(result, built);
     const decode = (native: NativePlan, answerJson: string, projection?: NativeAuthoredPlanResult): unknown => {
       if (selection.decode !== undefined) return selection.decode(native, answerJson, projection);
-      const answer = JSON.parse(answerJson) as PlanAnswer;
+      const answer = decodePlanAnswer(answerJson) as PlanAnswer;
       if (selection.kind === "count" && answer.kind === "count") return BigInt(answer.value);
       if (selection.kind === "exists" && answer.kind === "exists") return answer.value;
       if (selection.kind === "matched" && (answer.kind === "count" || answer.kind === "matched")) return new Matched(BigInt(answer.value));

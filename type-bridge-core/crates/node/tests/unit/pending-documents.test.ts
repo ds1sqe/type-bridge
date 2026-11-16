@@ -38,3 +38,21 @@ test("documents rejects typed-query pendings with the shared plan shape diagnost
   const pending = new Pending(native, unexpected, true);
   assert.throws(() => pending.documents(), /^TypeError: plan_result_shape:/);
 });
+
+test("plan documents and rows retain unsafe integers without rounding", () => {
+  for (const kind of ["documents", "rows"] as const) {
+    const json = `{"kind":"${kind}","${kind}":[{"integer":9007199254740995,"nested":[-9007199254740995,4,1.25],"text":"9007199254740995"}]}`;
+    const native: NativePendingPlanAnswer = {
+      getJson: () => json,
+      getProjection: () => null,
+      getQueryResult: () => { throw new Error("unexpected query projection"); },
+    };
+    const pending = new Pending(native);
+    const result = pending.result();
+    assert.ok(result.kind === "rows" || result.kind === "documents");
+    const values = result.kind === "rows" ? result.rows : result.documents;
+    const expected = { integer: 9007199254740995n, nested: [-9007199254740995n, 4, 1.25], text: "9007199254740995" };
+    assert.deepEqual(values, [expected]);
+    if (kind === "documents") assert.deepEqual(pending.documents(), [expected]);
+  }
+});
