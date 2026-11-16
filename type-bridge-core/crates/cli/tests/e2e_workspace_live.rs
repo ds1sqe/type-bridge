@@ -796,7 +796,10 @@ async fn verify_never_creates_databases_live() {
             "verify round {round} must name the missing database; stderr: {stderr}"
         );
     }
-    let output = run_cli(root, &["migration", "abandon-plan", "--environment", "live"]);
+    let output = run_cli(
+        root,
+        &["migration", "abandon-plan", "--environment", "live"],
+    );
     assert_failure_contains(&output, "abandon missing database", "does not exist");
     let exists = type_bridge_orm::session::real_driver::database_exists(
         &address,
@@ -915,7 +918,7 @@ async fn upgrade_profile_moves_a_3_12_history_to_3_13_live() {
 
     // 2. Move both databases to the 3.13.6 server.
     let files = tempfile::tempdir().expect("export directory");
-    for name in [&database_name, &journal_name] {
+    for name in [&journal_name, &database_name] {
         move_database(name, &from, &to, &username, &password, files.path()).await;
     }
 
@@ -1009,7 +1012,7 @@ async fn upgrade_profile_moves_a_3_12_history_to_3_13_live() {
     );
 
     for address in [&from, &to] {
-        for name in [&database_name, &journal_name] {
+        for name in [&journal_name, &database_name] {
             let database = Database::connect_with_options(
                 address,
                 name,
@@ -1131,6 +1134,6 @@ async fn completed_legacy_history_then_evolve_live() {
         .delete_database()
         .await
         .unwrap();
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }

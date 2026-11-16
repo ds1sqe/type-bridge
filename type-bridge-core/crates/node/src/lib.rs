@@ -399,24 +399,20 @@ impl NodeDatabase {
 
     #[napi(js_name = "deleteDatabase")]
     pub fn delete_database(&self) -> Result<()> {
-        if self.managed_scope_id.is_some() {
-            return Err(Error::new(
-                Status::InvalidArg,
-                "managed database deletion requires planDatabaseDelete() and explicit plan execution",
-            ));
-        }
-        self.runtime
-            .block_on(self.db.delete_database())
-            .map_err(napi_orm_error)
+        self.delete_database_outcome().map(|_| ())
     }
 
     #[napi(js_name = "deleteDatabaseOutcome")]
     pub fn delete_database_outcome(&self) -> Result<String> {
         if self.managed_scope_id.is_some() {
-            return Err(Error::new(
-                Status::InvalidArg,
-                "managed database deletion requires planDatabaseDelete() and explicit plan execution",
-            ));
+            return self.runtime.block_on(async {
+                self.pair_administrator()?.plan_delete().await
+                    .map_err(napi_administration_error)?.execute().await
+                    .map(|outcome| match outcome {
+                        type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::AlreadyAbsent => "already_absent".to_owned(),
+                        _ => "deleted".to_owned(),
+                    }).map_err(napi_administration_error)
+            });
         }
         self.runtime
             .block_on(self.db.delete_database_outcome())
@@ -1092,7 +1088,12 @@ mod tests {
             database.inspect_database_pair().unwrap(),
             "standalone_managed"
         );
-        assert!(database.delete_database().is_err());
+        assert_eq!(database.delete_database_outcome().unwrap(), "deleted");
+        assert_eq!(
+            database.delete_database_outcome().unwrap(),
+            "already_absent"
+        );
+        assert_eq!(database.create_database_outcome().unwrap(), "created");
         let mut plan = database.plan_database_delete().unwrap();
         drop(database);
         assert_eq!(plan.execute().unwrap(), "deleted_standalone_managed");

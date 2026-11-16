@@ -124,6 +124,13 @@ commits, backfill/data evidence, and schema changes without a manifest
 checkpoint refuse abandonment; restore the original manifests and resume
 instead. Repeating a successful abandonment reports no open plan.
 
+A generated package's `delete_database()` / `deleteDatabase()` deletes the
+managed database and its verified owned journal through the same deletion plan
+as `plan_database_delete()` / `planDatabaseDelete()`. A bare connection refuses
+before deleting either member if `<database>__tb_journal` exists, and names the
+journal and the generated-package path to verify ownership. A standalone
+database with no journal retains ordinary idempotent deletion. C exposes the
+explicit pair deletion plan; execute that plan to remove the owned pair.
 
 The committed history, declared-schema fingerprint, journal head, and live
 managed schema form one state triad. Apply advances them under a lease and

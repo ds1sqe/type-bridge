@@ -564,8 +564,22 @@ class Database:
         self.delete_database_outcome()
 
     def delete_database_outcome(self) -> Literal["deleted", "already_absent"]:
-        """Delete the bound database and return a race-normalized outcome."""
-        if self._driver is not None:
+        """Delete a generated connection's owned pair, or a bare standalone database.
+
+        A bare connection refuses if a companion journal exists. Use the
+        generated package's connect() and plan_database_delete() to verify
+        journal ownership before deleting either member.
+        """
+        if self._driver is not None and getattr(self, "_native_database", None) is None:
+            from type_bridge._native import core_module
+
+            journal = core_module()._derived_journal_database_name(self.database_name)
+            if self.driver.databases.contains(journal):
+                raise ValueError(
+                    f"Refusing to delete {self.database_name} while companion journal {journal} "
+                    "exists; use generated-package connect() and plan_database_delete() "
+                    "to verify and delete the owned pair"
+                )
             if not self.driver.databases.contains(self.database_name):
                 logger.debug(f"Database does not exist, skipping delete: {self.database_name}")
                 return "already_absent"

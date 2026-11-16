@@ -180,14 +180,14 @@ async fn raw_attribute_type_undefinition_removes_its_dependencies_on_3_12_3() {
 
     let export = managed.schema_text().await.expect("export final schema");
     assert!(!export.contains("legacy-name"), "{export}");
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
 }
 
 fn derived_assertion_step(
@@ -387,14 +387,14 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
         .await
         .expect("release inspection lease");
 
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal_database
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -586,14 +586,14 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
     );
 
     store.release(&lease).await.expect("release backfill lease");
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal_database
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -648,8 +648,8 @@ async fn commented_function_body_survives_export_without_fingerprint_drift() {
         };
         // Cleanup even when assertions panic, before propagating the failure.
         let result = tokio::spawn(result).await;
-        managed.delete_database().await.unwrap();
         journal.delete_database().await.unwrap();
+        managed.delete_database().await.unwrap();
         result.unwrap();
     }
 }
@@ -716,7 +716,7 @@ async fn tuple_function_from_native_lowering_defines_returns_and_preserves_body(
         read.close().await.unwrap();
     })
     .await;
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
     result.unwrap();
 }

@@ -16,6 +16,11 @@ fn migration_state_schema(py: Python<'_>) -> PyResult<Py<PyAny>> {
         .map_err(|error| py_value_error(error.to_string()))
 }
 
+#[pyfunction]
+fn _derived_journal_database_name(database_name: &str) -> String {
+    type_bridge_schema_migration_typedb::derived_journal_database_name(database_name)
+}
+
 /// Return the canonical applied-migration entity label.
 #[pyfunction]
 fn applied_migration_entity_label() -> &'static str {
@@ -46,6 +51,11 @@ fn py_value_error(message: impl Into<String>) -> PyErr {
 /// Register migration-state schema helpers.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(migration_state_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(_derived_journal_database_name, m)?)?;
+    // PyO3 registers even underscore functions in __all__; retain this seam
+    // for the injected-driver facade without expanding the public exports.
+    m.getattr("__all__")?
+        .call_method1("remove", ("_derived_journal_database_name",))?;
     m.add_function(wrap_pyfunction!(applied_migration_entity_label, m)?)?;
     m.add_function(wrap_pyfunction!(is_migration_state_type, m)?)?;
     Ok(())

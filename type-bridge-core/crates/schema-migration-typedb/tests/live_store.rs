@@ -210,8 +210,8 @@ async fn foreign_journal_schema_rejects_without_mutating_either_database() {
     );
     assert_eq!(journal.schema_text().await.unwrap(), journal_before);
     assert_eq!(managed.schema_text().await.unwrap(), managed_before);
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -252,8 +252,8 @@ async fn different_provider_authority_rejects_before_mutating_either_database() 
     let rendered = format!("{error}\n{error:?}");
     assert!(!rendered.contains(&address));
     assert!(!rendered.contains(&alternate));
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -321,8 +321,8 @@ async fn missing_and_wrong_journal_owner_reject_unchanged_before_managed_fence()
     );
     assert_eq!(journal.schema_text().await.unwrap(), journal_schema);
     assert_eq!(managed.schema_text().await.unwrap(), managed_before);
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -404,8 +404,8 @@ async fn concurrent_bootstrap_is_singleton_and_read_only_verify_never_bootstraps
             .expect("read-only verification resumes against the owned journal")
             .is_empty()
     );
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -795,14 +795,14 @@ async fn control_schema_and_fenced_lease_round_trip_on_3_12_3() {
         .await
         .expect("release restarted store lease");
 
-    managed_database
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal_database
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed_database
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -894,8 +894,8 @@ async fn racing_lease_acquirers_serialize_on_the_control_row() {
     assert_eq!(next.fence().get(), 3);
     store.release(&next).await.unwrap();
 
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -946,8 +946,8 @@ async fn interrupted_import_keeps_owner_and_fence_when_restarted() {
             .is_empty()
     );
     store.release(&restarted).await.unwrap();
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -994,6 +994,6 @@ async fn legacy_import_refuses_a_foreign_source_without_modifying_it() {
         "migration_journal_import_pending"
     );
     old.delete_database().await.unwrap();
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }

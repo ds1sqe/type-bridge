@@ -464,15 +464,18 @@ impl<S: Schema> Database<S> {
         self.create_database().await
     }
 
-    /// Delete the one configured database and return its normalized outcome.
+    /// Delete the configured database and its owner-verified journal, if managed.
     pub async fn delete_database(&self) -> Result<DatabaseDeleteOutcome> {
         #[cfg(feature = "typedb")]
         if self.managed_scope_id.is_some() {
-            return Err(Error::Database {
-                message: "managed database deletion requires plan_database_delete() and explicit plan execution"
-                    .to_owned(),
-                source: None,
-            });
+            return self.plan_database_delete().await?.execute().await.map(
+                |outcome| match outcome {
+                    ManagedDatabaseDeleteOutcome::AlreadyAbsent => {
+                        DatabaseDeleteOutcome::AlreadyAbsent
+                    }
+                    _ => DatabaseDeleteOutcome::Deleted,
+                },
+            );
         }
         self.inner
             .delete_database_outcome()
@@ -823,7 +826,18 @@ mod tests {
             database.inspect_database_pair().await.unwrap(),
             super::ManagedDatabasePairState::StandaloneManaged
         );
-        assert!(database.delete_database().await.is_err());
+        assert_eq!(
+            database.delete_database().await.unwrap(),
+            super::DatabaseDeleteOutcome::Deleted
+        );
+        assert_eq!(
+            database.delete_database().await.unwrap(),
+            super::DatabaseDeleteOutcome::AlreadyAbsent
+        );
+        assert_eq!(
+            database.create_database().await.unwrap(),
+            super::DatabaseCreateOutcome::Created
+        );
         let plan = database.plan_database_delete().await.unwrap();
         drop(database);
         assert_eq!(

@@ -433,12 +433,12 @@ async fn runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge_and_replays_
     assert_eq!(report.applied_frontier(), &[after.id().clone()]);
 
     for database in [
-        to_managed,
         to_journal,
-        from_managed,
+        to_managed,
         from_journal,
-        replay_managed,
+        from_managed,
         replay_journal,
+        replay_managed,
     ] {
         database
             .delete_database()

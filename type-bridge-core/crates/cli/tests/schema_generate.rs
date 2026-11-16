@@ -743,7 +743,10 @@ fn invalid_schema_diagnostics_keep_code_file_line_and_reason() {
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains("model.yaml:4:"), "{error}");
         assert!(error.contains("unknown_schema_fact_reference"), "{error}");
-        assert!(error.contains("references a declaration that does not exist"), "{error}");
+        assert!(
+            error.contains("references a declaration that does not exist"),
+            "{error}"
+        );
         assert!(
             error.contains("["),
             "stable diagnostic code missing: {error}"

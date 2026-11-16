@@ -914,8 +914,19 @@ impl Database {
         Ok(())
     }
 
-    /// Delete the bound database and return a race-normalized outcome.
+    /// Delete a standalone database and return a race-normalized outcome.
+    ///
+    /// Refuse when its reserved companion exists: only the owner-verified pair
+    /// administration path may remove a managed database and its journal.
     pub async fn delete_database_outcome(&self) -> Result<DatabaseDeleteOutcome> {
+        let journal = self.derived_journal_database();
+        if journal.database_exists().await? {
+            return Err(crate::error::OrmError::QueryExecution(format!(
+                "refusing to delete {} while companion journal {} exists; use generated-package connect() and plan_database_delete() to verify and delete the owned pair",
+                self.database_name,
+                journal.database_name()
+            )));
+        }
         if !self.database_exists().await? {
             return Ok(DatabaseDeleteOutcome::AlreadyAbsent);
         }
@@ -1026,6 +1037,7 @@ mod tests {
 
     struct LifecycleBackend {
         exists: AtomicBool,
+        journal_exists: bool,
         fail_create_after_effect: bool,
         fail_delete_after_effect: bool,
     }
@@ -1043,8 +1055,13 @@ mod tests {
             true
         }
 
-        fn database_exists(&self, _database: &str) -> BoxFuture<'_, Result<bool>> {
-            Box::pin(async { Ok(self.exists.load(Ordering::SeqCst)) })
+        fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool>> {
+            let exists = if database == "bound-database" {
+                self.exists.load(Ordering::SeqCst)
+            } else {
+                database == "bound-database__tb_journal" && self.journal_exists
+            };
+            Box::pin(async move { Ok(exists) })
         }
 
         fn create_database(&self, _database: &str) -> BoxFuture<'_, Result<()>> {
@@ -1078,6 +1095,7 @@ mod tests {
         Database::with_backend(
             Box::new(LifecycleBackend {
                 exists: AtomicBool::new(exists),
+                journal_exists: false,
                 fail_create_after_effect,
                 fail_delete_after_effect,
             }),
@@ -1133,6 +1151,39 @@ mod tests {
             concurrent_delete.delete_database_outcome().await.unwrap(),
             DatabaseDeleteOutcome::Deleted
         );
+    }
+
+    #[tokio::test]
+    async fn bare_delete_refuses_a_companion_before_deleting_either_member() {
+        for exists in [true, false] {
+            let database = Database::with_backend(
+                Box::new(LifecycleBackend {
+                    exists: AtomicBool::new(exists),
+                    journal_exists: true,
+                    fail_create_after_effect: false,
+                    fail_delete_after_effect: false,
+                }),
+                "bound-database",
+            );
+            let error = database
+                .delete_database_outcome()
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("bound-database__tb_journal"));
+            assert!(
+                error.contains("generated-package connect()")
+                    && error.contains("plan_database_delete")
+            );
+            assert_eq!(database.database_exists().await.unwrap(), exists);
+            assert!(
+                database
+                    .derived_journal_database()
+                    .database_exists()
+                    .await
+                    .unwrap()
+            );
+        }
     }
 
     #[test]

@@ -550,7 +550,7 @@ class TestDriverInjection:
     def test_database_administration_outcomes_are_normalized(self):
         """Bound create/delete report exact idempotent outcomes."""
         mock_driver = MagicMock()
-        mock_driver.databases.contains.side_effect = [False, True, True, False]
+        mock_driver.databases.contains.side_effect = [False, True, False, True, False, False]
         db = Database(database="test_db", driver=mock_driver)
 
         assert db.create_database_outcome() == "created"
@@ -572,11 +572,20 @@ class TestDriverInjection:
     def test_database_delete_race_rechecks_actual_state(self):
         """A concurrent delete is normalized only after observing absence."""
         mock_driver = MagicMock()
-        mock_driver.databases.contains.side_effect = [True, False]
+        mock_driver.databases.contains.side_effect = [False, True, False]
         mock_driver.databases.get.return_value.delete.side_effect = RuntimeError("absent")
         db = Database(database="test_db", driver=mock_driver)
 
         assert db.delete_database_outcome() == "deleted"
+
+    def test_injected_driver_delete_preserves_both_members_when_journal_exists(self):
+        driver = MagicMock()
+        driver.databases.contains.return_value = True
+        database = Database(database="test_db", driver=driver)
+        with pytest.raises(ValueError, match="test_db__tb_journal.*generated-package connect"):
+            database.delete_database()
+        driver.databases.get.assert_not_called()
+        driver.databases.create.assert_not_called()
 
 
 def test_rust_context_rollback_remains_open_for_commit() -> None:

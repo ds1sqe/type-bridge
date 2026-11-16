@@ -16,6 +16,7 @@ _archived_compute_schema_diff = type_bridge_core._archived_compute_schema_diff
 _archived_generate_define_block = type_bridge_core._archived_generate_define_block
 _archived_schema_diff_is_breaking = type_bridge_core._archived_schema_diff_is_breaking
 _typeql_queries_equivalent = type_bridge_core._typeql_queries_equivalent
+_derived_journal_database_name = type_bridge_core._derived_journal_database_name
 # The plan builder's native seam; `type_bridge.plan` is its public surface.
 _PlanBuilderCore = type_bridge_core._PlanBuilderCore
 _Plan = type_bridge_core._Plan

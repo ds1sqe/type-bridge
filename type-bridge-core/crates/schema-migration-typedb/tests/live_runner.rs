@@ -362,14 +362,14 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_3() {
         "{error}"
     );
 
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -492,14 +492,14 @@ async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_
     let final_export = managed.schema_text().await.expect("final export");
     assert!(final_export.contains("entity company"), "{final_export}");
 
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -632,14 +632,14 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3() {
     let export = managed.schema_text().await.expect("post-reapply export");
     assert!(export.contains("entity company"), "{export}");
 
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -759,14 +759,14 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_3() {
     assert_eq!(recorded, second.target_state().managed_semantic_schema());
     assert_ne!(observed, recorded);
 
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
 }
 
 #[path = "../../../../tests/support/adopted_history.rs"]
@@ -889,8 +889,8 @@ async fn runner_applies_a_completed_legacy_frontier() {
         "{error}"
     );
     old.delete_database().await.unwrap();
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1306,8 +1306,8 @@ async fn atomic_data_round_trip(program_kind: u8, checkpoint_gap: bool) {
             count(managed.execute_raw(query, TxType::Read).await.unwrap()),
             1
         );
-        managed.delete_database().await.unwrap();
         journal.delete_database().await.unwrap();
+        managed.delete_database().await.unwrap();
         return;
     }
     let reverse = MigrationApplyApproval::for_rollback(&data, SafetyClass::Opaque).unwrap();
@@ -1337,8 +1337,8 @@ async fn atomic_data_round_trip(program_kind: u8, checkpoint_gap: bool) {
         count(managed.execute_raw(query, TxType::Read).await.unwrap()),
         1
     );
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1411,8 +1411,8 @@ async fn unregistered_user_step_refuses_before_any_control_write() {
         )
         .await
         .unwrap();
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1610,8 +1610,8 @@ async fn mixed_data_history_recovers_after_a_retired_rollback_prefix() {
             matches!(result, type_bridge_orm::session::backend::QueryResult::Documents(rows) if rows.len() == 1)
         );
     }
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1894,8 +1894,8 @@ async fn runner_regex_escapes_round_trip_and_accept_matching_data() {
             .unwrap(),
         MigrationDirectoryApplyOutcome::UpToDate
     ));
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2147,8 +2147,8 @@ async fn refused_plans_close_and_stuck_plans_can_be_abandoned_safely() {
             .unwrap()
             .is_clean()
     );
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2249,8 +2249,8 @@ async fn runner_tightens_maximum_and_removes_widened_interfaces() {
             .unwrap()
             .is_clean()
     );
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2336,8 +2336,8 @@ async fn runner_migrates_role_specialization_in_first_and_later_migrations() {
                 .is_clean()
         );
     }
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2441,8 +2441,8 @@ async fn runner_adds_executes_observes_and_removes_functions_with_metadata() {
             .unwrap()
             .is_clean()
     );
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2494,8 +2494,8 @@ async fn runner_applies_split_yaml_reference_fixture_as_first_migration() {
             .unwrap()
             .is_clean()
     );
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2554,8 +2554,8 @@ async fn specializing_role_requires_its_inherited_player() {
             .unwrap()
             .is_clean()
     );
-    managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
