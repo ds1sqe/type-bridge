@@ -1,3 +1,4 @@
+/// <reference types="node" preserve="true" />
 export type { TimeoutMilliseconds } from "./timeouts.js";
 import { type TimeoutMilliseconds } from "./timeouts.js";
 import { RawTransaction, type RawValue } from "./raw-query.js";

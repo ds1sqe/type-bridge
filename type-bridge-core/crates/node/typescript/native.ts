@@ -1022,11 +1022,14 @@ function platformTriple(): string | null {
   switch (process.platform) {
     case "darwin":
       return arch === "arm64" ? "darwin-arm64" : "darwin-x64";
-    case "linux":
+    case "linux": {
+      const report = process.report?.getReport() as { header?: { glibcVersionRuntime?: string } } | undefined;
+      if (typeof report?.header?.glibcVersionRuntime !== "string") return null;
       if (arch === "arm64") {
         return "linux-arm64-gnu";
       }
       return arch === "x64" ? "linux-x64-gnu" : null;
+    }
     case "win32":
       return arch === "arm64" ? "win32-arm64-msvc" : "win32-x64-msvc";
     default:
@@ -1089,6 +1092,9 @@ export function loadNative(): LoadedNativeModule {
   }
 
   const explicitPath = process.env["TYPE_BRIDGE_NODE_NATIVE_PATH"];
+  if (!explicitPath && platformTriple() === null) {
+    throw new Error(`Unsupported @type-bridge/node target: ${process.platform}/${process.arch} (Linux requires glibc; musl is not shipped). Use a supported target, or build from the TypeBridge repository and set TYPE_BRIDGE_NODE_NATIVE_PATH to that artifact.`);
+  }
   const candidates: string[] = explicitPath ? [explicitPath] : [];
   candidates.push(...nativeCandidates());
 
@@ -1106,7 +1112,7 @@ export function loadNative(): LoadedNativeModule {
   throw new Error(
     [
       "Unable to load the type-bridge native Node module.",
-      "Run `npm run build:native`, or set TYPE_BRIDGE_NODE_NATIVE_PATH to the built .node artifact.",
+      "Reinstall the package for a supported target. To use a custom runtime, build it from the TypeBridge repository and set TYPE_BRIDGE_NODE_NATIVE_PATH to the .node artifact; the npm tarball contains no Rust build sources.",
       `Tried: ${tried.join(", ")}`,
     ].join(" "),
   );

@@ -1,3 +1,4 @@
+/// <reference types="node" preserve="true" />
 export type { TimeoutMilliseconds } from "./timeouts.js";
 import { normalizeTimeoutMilliseconds, type TimeoutMilliseconds } from "./timeouts.js";
 import { RawTransaction, rawNativeCall, rawNativePromise, type RawValue } from "./raw-query.js";

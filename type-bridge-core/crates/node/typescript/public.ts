@@ -1,3 +1,4 @@
+/// <reference types="node" preserve="true" />
 /** Generated-only package root for @type-bridge/node. */
 
 export {

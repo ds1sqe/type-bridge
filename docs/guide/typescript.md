@@ -533,7 +533,10 @@ structural lookalikes or values from another generated package.
 Generated TypeScript packages require `@type-bridge/node` 3.0 or newer within
 the 3.x line. The npm package publishes native modules for Linux glibc
 (`x64`/`arm64`), macOS (`x64`/`arm64`), and Windows (`x64`/`arm64`); other
-targets build from source and must satisfy the repository toolchain.
+targets require building from a TypeBridge repository checkout with the
+repository toolchain, then setting `TYPE_BRIDGE_NODE_NATIVE_PATH` to that
+artifact. The npm tarball contains no Rust sources or native build script.
+Linux musl targets are refused explicitly; shipped Linux artifacts require glibc.
 
 Provider query and commit errors expose readonly `error.failure` data on
 `PlanError`: `phase`, `reason`, `lock_kind`, `annotation`, `op_index`,
