@@ -104,9 +104,11 @@ type_bridge_proxy_connection_t *proxy = NULL;
 type_bridge_execution_diagnostics_t *diagnostics = NULL;
 status = type_bridge_proxy_connection_open_v1(
     package, &options, NULL, &proxy, &diagnostics);
+type_bridge_execution_diagnostics_close(&diagnostics);
 /* ... */
 status = type_bridge_proxy_query_execute(
     proxy, terminal, kind, NULL, NULL, &result, &diagnostics);
+type_bridge_execution_diagnostics_close(&diagnostics);
 /* ... */
 type_bridge_proxy_connection_close(&proxy);
 ```
@@ -144,9 +146,12 @@ API, then stage the same immutable typed terminal used by execute:
 type_bridge_pending_t *pending = NULL;
 status = type_bridge_staged_query_stage(
     transaction, terminal, kind, NULL, NULL, &pending, &diagnostics);
+type_bridge_execution_diagnostics_close(&diagnostics);
 /* No I/O yet. The pending result reports IN_USE before commit. */
 status = type_bridge_staged_transaction_commit(transaction, &diagnostics);
+type_bridge_execution_diagnostics_close(&diagnostics);
 status = type_bridge_pending_query_result(pending, &result, &diagnostics);
+type_bridge_execution_diagnostics_close(&diagnostics);
 /* Use the existing query-result accessors. */
 type_bridge_query_result_close(&result);
 type_bridge_pending_free(&pending);
@@ -272,6 +277,7 @@ type_bridge_plan_builder_value_string(b, text("A1"), &row[2]);
 type_bridge_plan_builder_row(b, row, 3);
 
 status = type_bridge_plan_builder_build(b, package, &plan, &diagnostics);
+type_bridge_execution_diagnostics_close(&diagnostics);
 type_bridge_plan_builder_free(&b);
 ```
 
@@ -308,6 +314,7 @@ limits once; later staging uses that retained context.
 type_bridge_plan_builder_t *p = NULL;
 type_bridge_execution_diagnostics_t *diagnostics = NULL;
 type_bridge_status_t status = shop_plan_open(NULL, &p, &diagnostics);
+type_bridge_execution_diagnostics_close(&diagnostics);
 ```
 
 Generated initializers always check their projection brand against the captured
@@ -367,13 +374,18 @@ type_bridge_rows_plan_t plan;
 CHECK(type_bridge_plan_returning(p, columns, 2u, &plan));
 type_bridge_rows_pending_t *pending = NULL;
 CHECK(type_bridge_rows_stage(tx, plan, &pending, &diagnostics));
+type_bridge_execution_diagnostics_close(&diagnostics);
 CHECK(type_bridge_staged_transaction_commit(tx, &diagnostics));
+type_bridge_execution_diagnostics_close(&diagnostics);
 type_bridge_rows_result_t *rows = NULL;
 CHECK(type_bridge_rows_pending_result(pending, &rows, &diagnostics));
+type_bridge_execution_diagnostics_close(&diagnostics);
 const shop_item_plan_view_t *model = NULL;
 int64_t stock = 0;
 CHECK(shop_item_rows_model_at(rows, 0u, 0u, &model, &diagnostics));
+type_bridge_execution_diagnostics_close(&diagnostics);
 CHECK(type_bridge_rows_result_long(rows, 0u, 1u, &stock, &diagnostics));
+type_bridge_execution_diagnostics_close(&diagnostics);
 /* model and all its pointers borrow rows. */
 type_bridge_rows_result_free(&rows);
 type_bridge_rows_pending_free(&pending);
@@ -461,8 +473,11 @@ type_bridge_plan_answer_kind_t kind;
 uint64_t matched = 0;
 
 type_bridge_database_transaction(database, TYPE_BRIDGE_TRANSACTION_WRITE, &tx, &diagnostics);
+type_bridge_execution_diagnostics_close(&diagnostics);
 type_bridge_staged_transaction_stage(tx, plan, &pending, &diagnostics);
+type_bridge_execution_diagnostics_close(&diagnostics);
 status = type_bridge_staged_transaction_commit(tx, &diagnostics);
+type_bridge_execution_diagnostics_close(&diagnostics);
 if (status == TYPE_BRIDGE_STATUS_OK)
     type_bridge_pending_answer(pending, &kind, &matched); /* MATCHED, 1 or 0 */
 type_bridge_staged_transaction_close(&tx); /* the only release */

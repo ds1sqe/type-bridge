@@ -925,6 +925,9 @@ typedef struct type_bridge_execution_diagnostic_detail_view_v1 {
  * multiple ownership slots, pass it to a different handle family's close
  * function, or race access with close. Borrowed byte views remain valid only
  * while their originating handle remains open.
+ * Before each call, output ownership slots (including diagnostics) must be NULL
+ * or have been closed through their matching close function. Calls initialize
+ * output slots to NULL; overwriting an existing owner leaks that owner.
  */
 
 TYPE_BRIDGE_API uint32_t TYPE_BRIDGE_CALL type_bridge_c_abi_major(void);
