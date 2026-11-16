@@ -102,7 +102,7 @@ session = Person.query(db)
 person = session.exact(Person)
 employment = session.exact(Employment)
 employee = employment.role(Employment.employee).links(person)
-rows = session.query(person, employment).where(employee).rows(limit=100)
+rows = await session.query(person, employment).where(employee).rows(limit=100)
 ```
 
 Field and role tokens retain their owner and session. Query preparation lowers
