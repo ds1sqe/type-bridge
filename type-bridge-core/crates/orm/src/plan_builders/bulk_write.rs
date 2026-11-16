@@ -427,10 +427,18 @@ fn build_many_shape(
     for (position, (field, (width, domain))) in field_widths.iter().enumerate() {
         let key = shape.keys.contains(field);
         for slot in 0..*width {
+            // A guaranteed cell must remain guaranteed when a proxy plan is
+            // unbound from its given rows and rebound through result references.
+            let guaranteed = !key
+                && authority.ownership_minimum(shape.type_id, field) > 0
+                && matrices
+                    .iter()
+                    .all(|(fields, _)| fields.get(field).is_some_and(|values| slot < values.len()));
             let operand = draft.input(
                 &format!("field_{position}_{slot}"),
                 *domain,
-                kind != WriteKind::MatchPut
+                !guaranteed
+                    && kind != WriteKind::MatchPut
                     && !(key && matches!(kind, WriteKind::Put | WriteKind::PartialPut)),
             )?;
             if matches!(

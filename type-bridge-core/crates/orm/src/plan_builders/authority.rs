@@ -223,6 +223,41 @@ impl PlanAuthority {
         self.verified
     }
 
+    /// Minimum inherited ownership count needed in an allocation/clear piece.
+    pub(crate) fn ownership_minimum(
+        &self,
+        owner: &type_bridge_contract::id::TypeId,
+        field: &type_bridge_contract::schema::OwnsFactId,
+    ) -> usize {
+        use type_bridge_contract::schema::{AnnotationFactId, SchemaAnnotationValue};
+        let mut owner = Some(owner.clone());
+        let mut minimum = 0;
+        while let Some(candidate) = owner {
+            let id = type_bridge_contract::schema::OwnsFactId::new(
+                candidate.clone(),
+                field.attribute().clone(),
+            )
+            .expect("thing ownership");
+            if let Some(SchemaFact::Annotation(annotation)) =
+                self.declared
+                    .fact(&SchemaFactId::Annotation(AnnotationFactId::new(
+                        AnnotationSubjectId::Owns(id),
+                        AnnotationKindId::Card,
+                    )))
+                && let SchemaAnnotationValue::Cardinality(cardinality) = annotation.value()
+            {
+                minimum = minimum.max((*cardinality).min());
+            }
+            owner = self.declared.facts().find_map(|fact| match fact {
+                SchemaFact::Sub(sub) if sub.id().subtype() == &candidate => {
+                    Some(sub.id().supertype().clone())
+                }
+                _ => None,
+            });
+        }
+        usize::try_from(minimum).unwrap_or(usize::MAX)
+    }
+
     pub(crate) fn declared(&self) -> &DeclaredSchema {
         &self.declared
     }

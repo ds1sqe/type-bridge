@@ -909,19 +909,33 @@ fn split_with_guards(
             return one(authority, kind, shape.clone(), &row, true, output_ordinal)
                 .map(|_| unreachable!("a deletion row exceeded its canonical limits"));
         }
-        let (keys, fields) = row
+        let (keys, fields): (Vec<_>, Vec<_>) = row
             .fields
             .iter()
             .cloned()
             .partition(|(field, _)| shape.keys.contains(field));
+        // Clearing required ownerships needs a structural same-plan proof.
+        // Seed their minimum values; later pieces only add the remainder.
+        let mut seed_fields = keys;
+        let mut remaining_fields = Vec::new();
+        let mut seeded = BTreeMap::<OwnsFactId, usize>::new();
+        for (field, value) in fields {
+            let count = seeded.entry(field.clone()).or_default();
+            if *count < authority.ownership_minimum(shape.type_id, &field) {
+                seed_fields.push((field, value));
+                *count += 1;
+            } else {
+                remaining_fields.push((field, value));
+            }
+        }
         let seed = Row {
             iid: row.iid.clone(),
-            fields: keys,
+            fields: seed_fields,
             players: row.players.first().cloned().into_iter().collect(),
         };
         let mut remaining = Row {
             iid: None,
-            fields,
+            fields: remaining_fields,
             players: row.players.iter().skip(1).cloned().collect(),
         };
         // All keys and one relation player are present in the allocation piece.

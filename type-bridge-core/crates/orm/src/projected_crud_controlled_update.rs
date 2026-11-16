@@ -975,6 +975,14 @@ mod tests {
         ordered: bool,
         target: BindingTarget,
     ) -> InstalledRuntimeProjection {
+        wide_single_projection_for_target_and_minimum(ordered, target, 0)
+    }
+
+    fn wide_single_projection_for_target_and_minimum(
+        ordered: bool,
+        target: BindingTarget,
+        minimum: usize,
+    ) -> InstalledRuntimeProjection {
         let (config, handler) = match target {
             BindingTarget::Python => (ProjectionConfig::python(), ProjectionHandler::python_v2()),
             BindingTarget::TypeScript => (
@@ -985,6 +993,13 @@ mod tests {
             _ => unreachable!(),
         };
         let source = "format: typebridge.schema/v2\nattributes:\n  item-key: { value: string }\n  item-tag: { value: string }\nentities:\n  wide-item:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\nrelations:\n  wide-edge:\n    owns:\n      item-key: { key: true }\n      item-tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 0, max: 4 } }\nplays:\n  wide-item:\n    wide-edge: [member]\n  wide-edge:\n    wide-edge: [member]\n";
+        let source = source.replace(
+            "item-tag: { card: { min: 0 } }",
+            &format!(
+                "item-tag: {{ card: {{ min: {minimum} }}{} }}",
+                if minimum > 0 { ", unique: true" } else { "" }
+            ),
+        );
         let source = if ordered {
             source.replace(
                 "item-tag: { card: { min: 0 } }",
@@ -1019,6 +1034,7 @@ mod tests {
         model: TypeId,
         roots: usize,
         tags: usize,
+        required_tags: bool,
         input_indexes: std::sync::Mutex<Option<Vec<usize>>>,
         mutation_columns: std::sync::atomic::AtomicUsize,
         missing_guard_ordinal: std::sync::atomic::AtomicUsize,
@@ -1214,11 +1230,15 @@ mod tests {
                                 document[scalar.key.as_str()] = serde_json::json!(input_index);
                             }
                             for (index, role) in fetch.roles.iter().enumerate() {
-                                let player = if self_player {
+                                let mut player = if self_player {
                                     serde_json::json!({"_iid":"0x20", "_type":self.model.label().as_str(), "attributes":{"item-key":"key"}})
                                 } else {
                                     serde_json::json!({"_iid":"0x10", "_type":"wide-item", "attributes":{"item-key":"player"}})
                                 };
+                                if self.required_tags {
+                                    player["attributes"]["item-tag"] =
+                                        serde_json::json!(["player-tag"]);
+                                }
                                 if role.collect {
                                     document[format!("_role_{index}_players")] =
                                         serde_json::json!([player]);
@@ -1380,8 +1400,21 @@ mod tests {
             Default::default(),
         )
         .unwrap();
+        let required_tags = installed
+            .projection()
+            .models()
+            .get(&model)
+            .unwrap()
+            .query_tokens()
+            .fields()
+            .iter()
+            .any(|(field, token)| {
+                field.attribute().label().as_str() == "item-tag"
+                    && token.multiplicity().cardinality().min() > 0
+            });
         let transport = Arc::new(SingleProxyTransport {
             schema,
+            required_tags,
             advertisement,
             signer,
             model,
@@ -3395,4 +3428,77 @@ mod tests {
     }
     #[cfg(feature = "typedb")]
     include!("projected_crud_key_proxy_live.rs");
+    #[tokio::test]
+    async fn required_wide_updates_and_puts_keep_proof_when_proxy_rows_are_unbound() {
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            let model = TypeId::new(
+                kind,
+                if kind == TypeKind::Entity {
+                    "wide-item"
+                } else {
+                    "wide-edge"
+                },
+            )
+            .unwrap();
+            for count in [254, 300, 1000] {
+                for operation in [
+                    ProjectedBatchOperation::Put,
+                    ProjectedBatchOperation::Update,
+                ] {
+                    let installed = wide_single_projection_for_target_and_minimum(
+                        false,
+                        BindingTarget::Python,
+                        1,
+                    );
+                    let mut limits = type_bridge_contract::limits::QueryLimits::PLAN;
+                    limits.structural.selected_slots = 4;
+                    let (installed, proxy, transport) = single_proxy_fixture_with_projection(
+                        model.clone(),
+                        1,
+                        count,
+                        limits,
+                        installed,
+                    );
+                    let replacement = proxy_single_input(&installed, &model, count);
+                    let row = if operation == ProjectedBatchOperation::Update {
+                        ProjectedBatchRow::Update {
+                            iid: "0x20".into(),
+                            replacement,
+                        }
+                    } else {
+                        ProjectedBatchRow::Create(replacement)
+                    };
+                    let batch =
+                        ProjectedBatch::try_new(&installed, model.clone(), operation, vec![row])
+                            .unwrap();
+                    let result = ProjectedBatchExecutor::new(&installed)
+                        .execute_on_target_mapped(
+                            crate::QueryTarget::Proxy(&proxy),
+                            &batch,
+                            ProjectedBatchInvocationControl::capture(
+                                Default::default(),
+                                Default::default(),
+                            ),
+                            0usize,
+                            |result| {
+                                let ProjectedBatchResult::Things(things) = result else {
+                                    panic!("things")
+                                };
+                                Ok(things.items()[0]
+                                    .fields()
+                                    .values()
+                                    .map(Vec::len)
+                                    .sum::<usize>())
+                            },
+                        )
+                        .await
+                        .unwrap_or_else(|error| {
+                            panic!("{kind:?} {operation:?} {count}: {error:?}")
+                        });
+                    assert_eq!(result, count + 1);
+                    assert_eq!(transport.seen.lock().unwrap().len(), 1);
+                }
+            }
+        }
+    }
 }

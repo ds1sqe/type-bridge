@@ -3220,3 +3220,121 @@ async fn missing_wide_player_rolls_back_before_allocation() {
     assert!(!state.calls[0].0.contains("insert"));
     assert_eq!((state.commits, state.rollbacks), (0, 1));
 }
+#[tokio::test]
+async fn required_wide_fields_keep_a_same_plan_replacement_proof_and_roll_back_last_failure() {
+    let installed = installed_with_schema(
+        &SCHEMA.replace("tag: { card: { min: 0 } }", "tag: { card: { min: 1 } }"),
+        ProjectionHandler::python_v1(),
+    );
+    let person = type_id(TypeKind::Entity, "person");
+    let tag = field(&person, "tag");
+    for count in [254, 300, 1000] {
+        for operation in [
+            ProjectedBatchOperation::Put,
+            ProjectedBatchOperation::Update,
+        ] {
+            let boundary = if operation == ProjectedBatchOperation::Update {
+                253
+            } else {
+                254
+            };
+            for fail_last in [false, true] {
+                let values = (0..count)
+                    .map(|index| string_value(&installed, "tag", &format!("v-{index:04}")))
+                    .collect();
+                let create = ProjectedCreate::try_new(
+                    &installed,
+                    person.clone(),
+                    vec![
+                        (
+                            field(&person, "identifier"),
+                            vec![string_value(&installed, "identifier", "wide")],
+                        ),
+                        (tag.clone(), values),
+                    ],
+                    vec![],
+                )
+                .unwrap();
+                let row = if operation == ProjectedBatchOperation::Update {
+                    ProjectedBatchRow::Update {
+                        iid: "0x10".into(),
+                        replacement: create,
+                    }
+                } else {
+                    ProjectedBatchRow::Create(create)
+                };
+                let batch =
+                    ProjectedBatch::try_new(&installed, person.clone(), operation, vec![row])
+                        .unwrap();
+                let mut document = person_document(0, "0x10", "wide");
+                document["attributes"]["tag"] = (0..count)
+                    .map(|index| json!({"value":format!("v-{index:04}")}))
+                    .collect::<Vec<_>>()
+                    .into();
+                let mut responses = Vec::new();
+                if count > boundary {
+                    responses.push(Response::Documents(vec![
+                        json!({"ordinal":0,"iid":"0x10","_type":"person"}),
+                    ]));
+                }
+                responses.push(if fail_last {
+                    Response::ProviderAfter(vec![document])
+                } else {
+                    Response::Documents(vec![document])
+                });
+                let (database, state) = fixture(
+                    responses,
+                    Version::new(3, 13, 6),
+                    true,
+                    CommitBehavior::Success,
+                );
+                let result = ProjectedBatchExecutor::new(&installed)
+                    .execute(&database, &batch, control())
+                    .await;
+                if fail_last {
+                    assert_eq!(
+                        result.unwrap_err().code().as_str(),
+                        "provider_operation_failed"
+                    );
+                } else {
+                    let ProjectedBatchResult::Things(things) = result.unwrap_or_else(|error| {
+                        panic!("count={count} operation={operation:?}: {error:?}")
+                    }) else {
+                        panic!("write result")
+                    };
+                    assert_eq!(things.items()[0].fields()[&tag].len(), count);
+                    let actual = things.items()[0].fields()[&tag]
+                        .iter()
+                        .map(|value| value.value().clone())
+                        .collect::<std::collections::BTreeSet<_>>();
+                    let expected = (0..count)
+                        .map(|index| {
+                            CanonicalValue::String(
+                                CanonicalString::new(format!("v-{index:04}")).unwrap(),
+                            )
+                        })
+                        .collect();
+                    assert_eq!(actual, expected);
+                }
+                let state = state.lock().unwrap();
+                assert_eq!(state.opens, [TxType::Write]);
+                assert_eq!(state.calls.len(), if count <= boundary { 1 } else { 2 });
+                assert_eq!(
+                    state
+                        .calls
+                        .iter()
+                        .filter(|(query, _)| query.contains("fetch"))
+                        .count(),
+                    1
+                );
+                if count > boundary {
+                    assert!(!state.calls[0].0.contains("fetch"));
+                }
+                assert_eq!(
+                    (state.commits, state.rollbacks),
+                    if fail_last { (0, 1) } else { (1, 0) }
+                );
+            }
+        }
+    }
+}
