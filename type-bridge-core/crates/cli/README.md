@@ -49,6 +49,13 @@ and the committed head must still equal the current schema sources. The CLI
 serializes discovery, parsing, generation, and no-overwrite publication under
 one directory lock.
 
+`migration abandon-plan --environment <name>` clears an open execution plan
+only when the live schema matches the applied ledger at a completed manifest
+boundary and no unresolved commit, backfill, or data evidence remains. It
+requires `migrate: true` and an existing owned database pair, retains the
+applied ledger, and is safe to repeat. `migration verify` reports open plans;
+restoring their exact manifests and retrying is the normal recovery path.
+
 The crate has no optional features. It is released in lockstep with TypeBridge
 3.0.0 and requires Rust 1.88+. Offline schema checking, generation, migration
 authoring, and planning accept the frozen TypeDB 3.12.1 and 3.13.6

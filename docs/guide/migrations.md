@@ -90,6 +90,26 @@ managed scope can be established. A partial/foreign journal, wrong owner,
 missing manifest, checksum drift, or schema-fingerprint mismatch fails closed.
 `migration verify` is read-only and never creates a database.
 
+A refused apply or rollback closes its new plan automatically when no group
+committed and the rejection is proven. `migration verify` reports open apply
+and rollback plans, including their migration IDs. Restore those exact
+manifests and retry to resume interrupted work.
+
+For a previously stuck plan that you intend to discard, run:
+
+```bash
+type-bridge migration abandon-plan --environment development
+```
+
+This command requires `migrate: true` and the existing database pair. Under
+the migration lease it verifies that the live schema equals the applied
+ledger's last completed manifest state, then clears the open plan and its
+transient group events. The applied ledger is retained. Unresolved or unknown
+commits, backfill/data evidence, and schema changes without a manifest
+checkpoint refuse abandonment; restore the original manifests and resume
+instead. Repeating a successful abandonment reports no open plan.
+
+
 The committed history, declared-schema fingerprint, journal head, and live
 managed schema form one state triad. Apply advances them under a lease and
 execution journal so interruption can be diagnosed and retried without

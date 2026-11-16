@@ -656,6 +656,109 @@ fn event_kind(kind: GroupJournalEventKind) -> &'static str {
     }
 }
 
+// Recovery inspects persisted identities without trusting a changed manifest.
+pub(crate) fn inspect_plan_ids(
+    bytes: &[u8],
+    rollback: bool,
+    scope: &str,
+) -> Result<Vec<type_bridge_contract::migration::MigrationId>, Diagnostic> {
+    let kind = if rollback { "rollback-plan" } else { "plan" };
+    let fence = persisted_fence(bytes, kind)?;
+    let (format, actual_kind, actual_scope, ids) = if rollback {
+        let wire: RollbackPlanWire =
+            from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
+        (wire.format, wire.kind, wire.scope, wire.rollback_ids)
+    } else {
+        let wire: PlanWire = from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
+        (wire.format, wire.kind, wire.scope, wire.migration_ids)
+    };
+    ensure_header(
+        &format,
+        &actual_kind,
+        &actual_scope,
+        fence.get(),
+        kind,
+        scope,
+        fence,
+    )?;
+    ids.as_array()
+        .ok_or_else(identity_mismatch)?
+        .iter()
+        .map(inspect_migration_id)
+        .collect()
+}
+
+fn inspect_migration_id(
+    value: &Value,
+) -> Result<type_bridge_contract::migration::MigrationId, Diagnostic> {
+    let object = value.as_object().ok_or_else(identity_mismatch)?;
+    if object.len() != 2 {
+        return Err(identity_mismatch());
+    }
+    type_bridge_contract::migration::MigrationId::new(
+        object
+            .get("app_label")
+            .and_then(Value::as_str)
+            .ok_or_else(identity_mismatch)?,
+        object
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(identity_mismatch)?,
+    )
+}
+
+pub(crate) fn inspect_group_event(
+    bytes: &[u8],
+    rollback: bool,
+    scope: &str,
+) -> Result<
+    (
+        type_bridge_contract::migration::MigrationId,
+        u32,
+        GroupJournalEventKind,
+    ),
+    Diagnostic,
+> {
+    let kind = if rollback { "rollback-event" } else { "event" };
+    let fence = persisted_fence(bytes, kind)?;
+    let (format, actual_kind, actual_scope, id, ordinal, event) = if rollback {
+        let wire: RollbackEventWire =
+            from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
+        (
+            wire.format,
+            wire.kind,
+            wire.scope,
+            wire.migration_id,
+            wire.step_ordinal,
+            wire.event_kind,
+        )
+    } else {
+        let wire: EventWire = from_canonical_json_with_limits(bytes, EXECUTION_RECORD_LIMITS)?;
+        (
+            wire.format,
+            wire.kind,
+            wire.scope,
+            wire.migration_id,
+            wire.group_ordinal,
+            wire.event_kind,
+        )
+    };
+    ensure_header(
+        &format,
+        &actual_kind,
+        &actual_scope,
+        fence.get(),
+        kind,
+        scope,
+        fence,
+    )?;
+    Ok((
+        inspect_migration_id(&id)?,
+        ordinal,
+        parse_event_kind(&event)?,
+    ))
+}
+
 fn parse_event_kind(value: &str) -> Result<GroupJournalEventKind, Diagnostic> {
     match value {
         "before_commit" => Ok(GroupJournalEventKind::BeforeCommit),
@@ -711,7 +814,7 @@ fn ensure_expected_bytes(actual: &[u8], expected: &[u8]) -> Result<(), Diagnosti
 fn identity_mismatch() -> Diagnostic {
     failure(
         DiagnosticCategory::Integrity,
-        "migration_typedb_record_identity_mismatch",
+        "migration_typedb_identity_mismatch",
         "persisted migration record does not match independently verified execution evidence",
     )
 }

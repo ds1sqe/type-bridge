@@ -346,6 +346,115 @@ async fn empty_workspace_to_replayed_history_live() {
         root.join("migrations/v2/0002_nickname.tbmigration.json")
             .exists(),
     );
+    // A historical refusal may leave a plan before any group has run.
+    // Exercise inspection and recovery through the actual CLI binary.
+    {
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+        use type_bridge_schema_migration::{
+            ExecutionScope, LeaseHolderId, MigrationApplyTarget, MigrationExecutionJournal,
+            MigrationLeaseStore, MigrationSafetyPolicy, PlanRecord, SchemaLoweringBinding,
+            build_verified_migration_apply_plan,
+        };
+        use type_bridge_schema_migration_typedb::{
+            TypeDbExecutionBinding, TypeDbMigrationRunner, TypeDbMigrationStore,
+            VerifiedMigrationCatalog, derived_journal_database_name,
+            execution_capability_vocabulary,
+        };
+        let context = type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new(MANAGED_SCOPE).unwrap(),
+            type_bridge_contract::fingerprint::SemanticProfileId::new(live_profile()).unwrap(),
+            execution_capability_vocabulary().unwrap(),
+        );
+        let managed = Arc::new(
+            Database::connect_with_options(
+                &address,
+                &primary,
+                &username,
+                &password,
+                connect_options(&http_port),
+            )
+            .await
+            .unwrap(),
+        );
+        let journal = Arc::new(
+            Database::connect_with_options(
+                &address,
+                &derived_journal_database_name(&primary),
+                &username,
+                &password,
+                connect_options(&http_port),
+            )
+            .await
+            .unwrap(),
+        );
+        let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+        let genesis =
+            DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), []).unwrap();
+        let runner = TypeDbMigrationRunner::new(
+            Arc::clone(&managed),
+            Arc::clone(&journal),
+            genesis,
+            context.clone(),
+            lowering.clone(),
+            MigrationSafetyPolicy::default_policy(),
+        );
+        let graph = runner.discover(&root.join("migrations/v2")).unwrap();
+        let basis = graph
+            .manifests()
+            .filter(|(id, _)| id.name().as_str() == "0001_init")
+            .map(|(id, _)| id.clone())
+            .collect::<BTreeSet<_>>();
+        let plan = build_verified_migration_apply_plan(
+            &graph,
+            &basis,
+            &MigrationApplyTarget::DefaultHead,
+            &context,
+            &lowering,
+            &MigrationSafetyPolicy::default_policy(),
+            &[],
+        )
+        .unwrap();
+        let binding = TypeDbExecutionBinding::new(managed, journal, context.clone()).unwrap();
+        let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m)).unwrap();
+        let store = TypeDbMigrationStore::new(&binding, catalog)
+            .unwrap()
+            .bind_plan(&plan)
+            .unwrap();
+        let holder = LeaseHolderId::new("cli-stuck-plan-fixture").unwrap();
+        let lease = store
+            .acquire(&ExecutionScope::new(context.scope_id().clone()), &holder)
+            .await
+            .unwrap();
+        let record = PlanRecord::from_verified_plan(
+            &lease,
+            &plan,
+            plan.applied_migrations(),
+            plan.source_state().unwrap(),
+        )
+        .unwrap();
+        store.begin_plan(&lease, record).await.unwrap();
+        store.release(&lease).await.unwrap();
+    }
+    assert_failure_contains(
+        &run_cli(root, &["migration", "verify", "--environment", "live"]),
+        "verify stuck plan",
+        "migration_typedb_open_plan",
+    );
+    assert_success(
+        &run_cli(
+            root,
+            &["migration", "abandon-plan", "--environment", "live"],
+        ),
+        "abandon stuck plan",
+    );
+    assert_success(
+        &run_cli(
+            root,
+            &["migration", "abandon-plan", "--environment", "live"],
+        ),
+        "repeat abandonment",
+    );
     assert_success(
         &run_cli(root, &["migration", "apply", "--environment", "live"]),
         "migration apply nickname",
@@ -687,6 +796,8 @@ async fn verify_never_creates_databases_live() {
             "verify round {round} must name the missing database; stderr: {stderr}"
         );
     }
+    let output = run_cli(root, &["migration", "abandon-plan", "--environment", "live"]);
+    assert_failure_contains(&output, "abandon missing database", "does not exist");
     let exists = type_bridge_orm::session::real_driver::database_exists(
         &address,
         &missing,

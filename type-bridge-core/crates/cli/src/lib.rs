@@ -109,6 +109,12 @@ enum MigrationCommand {
         #[arg(long)]
         environment: String,
     },
+    /// Clear an open plan only at a safe, completed manifest boundary.
+    AbandonPlan {
+        /// The manifest environment whose exact database pair is targeted.
+        #[arg(long)]
+        environment: String,
+    },
     /// Preview or explicitly execute rollback of named applied migrations.
     Rollback {
         /// The manifest environment whose exact database pair is targeted.
@@ -299,6 +305,9 @@ fn run(cli: &Cli) -> Result<(), String> {
             ),
             MigrationCommand::Verify { environment } => {
                 run_connected(&workspace, environment, ConnectedAction::Verify)
+            }
+            MigrationCommand::AbandonPlan { environment } => {
+                run_connected(&workspace, environment, ConnectedAction::AbandonPlan)
             }
             MigrationCommand::Rollback {
                 environment,
@@ -1182,6 +1191,7 @@ enum ConnectedAction {
         approvals: Vec<String>,
     },
     Verify,
+    AbandonPlan,
     Rollback {
         removals: BTreeSet<type_bridge_contract::migration::MigrationId>,
         approvals: Vec<String>,
@@ -1266,6 +1276,7 @@ async fn run_connected_async(
         ConnectedAction::Apply { .. }
             | ConnectedAction::Rollback { .. }
             | ConnectedAction::UpgradeProfile { .. }
+            | ConnectedAction::AbandonPlan
     ) && !environment.migrate()
     {
         return Err(format!(
@@ -1296,6 +1307,7 @@ async fn run_connected_async(
     let ordinary_graph = match &action {
         ConnectedAction::Apply { .. }
         | ConnectedAction::Rollback { .. }
+        | ConnectedAction::AbandonPlan
         | ConnectedAction::Verify => Some(
             workspace
                 .discover_migrations_in(&migration_directory)
@@ -1311,6 +1323,7 @@ async fn run_connected_async(
         )?),
         ConnectedAction::Apply { .. }
         | ConnectedAction::Rollback { .. }
+        | ConnectedAction::AbandonPlan
         | ConnectedAction::Verify => None,
     };
     // Approval syntax, membership, safety, and digest binding are local
@@ -1330,7 +1343,9 @@ async fn run_connected_async(
                 .ok_or_else(|| "internal rollback history was not retained".to_owned())?,
             approvals,
         )?),
-        ConnectedAction::Verify | ConnectedAction::UpgradeProfile { .. } => None,
+        ConnectedAction::AbandonPlan
+        | ConnectedAction::Verify
+        | ConnectedAction::UpgradeProfile { .. } => None,
     };
 
     // Resolve and snapshot the complete transport policy before reading either
@@ -1348,6 +1363,9 @@ async fn run_connected_async(
     // guarantee a broken adoption — while its journal companion is new by
     // definition. Only migration-gated actions may bootstrap anything.
     let managed_requires_existing = match &action {
+        ConnectedAction::AbandonPlan => {
+            Some("`migration abandon-plan` requires an existing managed database")
+        }
         ConnectedAction::Verify => Some(
             "`migration verify` is read-only and never creates databases \
              — apply migrations to this environment first",
@@ -1361,6 +1379,9 @@ async fn run_connected_async(
     // The upgrade records into the ledger moved with the managed database; an
     // empty journal could never stand at the bridge parent.
     let journal_requires_existing = match &action {
+        ConnectedAction::AbandonPlan => {
+            Some("`migration abandon-plan` requires an existing journal database")
+        }
         ConnectedAction::Verify => {
             Some("`migration verify` is read-only and never creates databases")
         }
@@ -1536,6 +1557,21 @@ async fn run_connected_async(
                     outcome,
                 ) => Err(sanitize_migration_rollback_outcome(outcome)),
             }
+        }
+        ConnectedAction::AbandonPlan => {
+            let abandoned = runner
+                .abandon_plan_in(directory, &holder)
+                .await
+                .map_err(display)?;
+            println!(
+                "{}",
+                if abandoned {
+                    "abandoned the open plan; applied ledger retained"
+                } else {
+                    "no open execution plan"
+                }
+            );
+            Ok(())
         }
         ConnectedAction::Verify => {
             let report = runner
@@ -2349,6 +2385,22 @@ mod transport_option_tests {
 #[cfg(test)]
 mod rollback_cli_contract_tests {
     use super::*;
+
+    #[test]
+    fn abandon_plan_grammar_requires_an_exact_environment() {
+        assert!(Cli::try_parse_from(["type-bridge", "migration", "abandon-plan"]).is_err());
+        let cli = Cli::try_parse_from([
+            "type-bridge",
+            "migration",
+            "abandon-plan",
+            "--environment",
+            "dev",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Command::Migration {
+            command: MigrationCommand::AbandonPlan { environment }
+        } if environment == "dev"));
+    }
 
     #[test]
     fn rollback_grammar_requires_environment_and_explicit_removal() {

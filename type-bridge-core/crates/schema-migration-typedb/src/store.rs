@@ -881,6 +881,7 @@ pub struct TypeDbMigrationStore<'a> {
     journal_lease: LeasePlans,
     managed_lease: LeasePlans,
     import_binding: Option<crate::runner::LegacyBridgeBinding>,
+    fresh_plan: AtomicBool,
 }
 
 impl<'a> TypeDbMigrationStore<'a> {
@@ -910,6 +911,7 @@ impl<'a> TypeDbMigrationStore<'a> {
             journal_lease: LeasePlans::journal(context.semantic_profile())?,
             managed_lease: LeasePlans::managed(context.semantic_profile())?,
             import_binding: None,
+            fresh_plan: AtomicBool::new(false),
         })
     }
 
@@ -1447,6 +1449,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         let sequence =
             append_record(&mut transaction, lease, current, PLAN_RECORD_KIND, &payload).await?;
         transaction.commit().await.map_err(map_orm_error)?;
+        self.fresh_plan.store(true, Ordering::Release);
         Ok(JournalEntry::from_store(sequence, record))
     }
 
@@ -1742,6 +1745,207 @@ impl<'a> TypeDbMigrationStore<'a> {
         }
     }
 
+    pub(crate) async fn open_plan_diagnostic(
+        &self,
+        scope: &ExecutionScope,
+    ) -> Result<Option<Diagnostic>, Diagnostic> {
+        self.require_owned_scope(scope)?;
+        let mut transaction = open_read(&self.journal_database).await?;
+        let result = async {
+            self.require_journal_owner(&mut transaction).await?;
+            let mut plans = Vec::new();
+            for (kind, rollback) in [(PLAN_RECORD_KIND, false), (ROLLBACK_PLAN_RECORD_KIND, true)] {
+                for row in load_rows(&mut transaction, scope, Some(kind)).await? {
+                    let ids = crate::wire::inspect_plan_ids(&row.payload, rollback, scope.managed_scope_id().as_str())?;
+                    plans.push(format!("{kind}: {}", ids.iter().map(|id| format!("{}/{}", id.app_label().as_str(), id.name().as_str())).collect::<Vec<_>>().join(", ")));
+                }
+            }
+            Ok((!plans.is_empty()).then(|| failure(
+                DiagnosticCategory::Integrity,
+                "migration_typedb_open_plan",
+                "journal contains an open execution plan; restore its manifests and retry, or use migration abandon-plan",
+            ).with_detail("plans", plans.join("; "))))
+        }.await;
+        finish_read(&mut transaction, result).await
+    }
+
+    pub(crate) async fn close_refused_plan(
+        &self,
+        lease: &MigrationLease,
+        authority: &crate::observation::ManagedObservationAuthority,
+    ) -> Result<(), Diagnostic> {
+        if !self.fresh_plan.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let source = self
+            .plan
+            .and_then(|plan| plan.source_state())
+            .or_else(|| self.rollback_plan.map(|plan| plan.source_state()));
+        if let Some(source) = source {
+            self.abandon_plan(lease, source, authority, true).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn abandon_plan(
+        &self,
+        lease: &MigrationLease,
+        expected: &ManagedSchemaState,
+        authority: &crate::observation::ManagedObservationAuthority,
+        automatic: bool,
+    ) -> Result<bool, Diagnostic> {
+        self.require_owned_lease(lease)?;
+        let mut transaction = Transaction::open(
+            &self.journal_database,
+            TransactionKind::Write,
+            TransactionOptions::default(),
+        )
+        .await
+        .map_err(map_orm_error)?;
+        let current = load_active_control(&mut transaction, lease).await?;
+        let mut plans = Vec::new();
+        for (kind, rollback) in [(PLAN_RECORD_KIND, false), (ROLLBACK_PLAN_RECORD_KIND, true)] {
+            for row in load_rows(&mut transaction, lease.scope(), Some(kind)).await? {
+                crate::wire::inspect_plan_ids(
+                    &row.payload,
+                    rollback,
+                    lease.scope().managed_scope_id().as_str(),
+                )?;
+                plans.push((row, rollback));
+            }
+        }
+        let (plan, rollback) = match plans.as_slice() {
+            [] => {
+                transaction.close().await.map_err(map_orm_error)?;
+                return Ok(false);
+            }
+            [plan] => plan,
+            _ => {
+                return Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_typedb_multiple_open_plans",
+                    "scope has multiple open execution plans",
+                ));
+            }
+        };
+        let mut safe = true;
+        for kind in [BACKFILL_EVENT_RECORD_KIND, DATA_STEP_EVENT_RECORD_KIND] {
+            safe &= load_rows(&mut transaction, lease.scope(), Some(kind))
+                .await?
+                .is_empty();
+        }
+        let applied = self
+            .load_applied_rows_in_transaction(&mut transaction, lease.scope(), lease.holder())
+            .await?;
+        let retired = self
+            .load_rolled_back_in_transaction(&mut transaction, lease.scope(), lease.holder())
+            .await?;
+        let checkpoints: BTreeMap<_, _> = if *rollback {
+            retired
+                .iter()
+                .map(|entry| (entry.record().migration_id().clone(), entry.sequence()))
+                .collect()
+        } else {
+            applied
+                .iter()
+                .map(|entry| (entry.record().migration_id().clone(), entry.sequence()))
+                .collect()
+        };
+        if automatic
+            && checkpoints
+                .values()
+                .any(|sequence| *sequence > plan.sequence)
+        {
+            safe = false;
+        }
+        let mut latest = BTreeMap::new();
+        for (kind, reverse) in [
+            (EVENT_RECORD_KIND, false),
+            (ROLLBACK_EVENT_RECORD_KIND, true),
+        ] {
+            for row in load_rows(&mut transaction, lease.scope(), Some(kind)).await? {
+                let (id, ordinal, event) = crate::wire::inspect_group_event(
+                    &row.payload,
+                    reverse,
+                    lease.scope().managed_scope_id().as_str(),
+                )?;
+                safe &= reverse == *rollback && row.sequence > plan.sequence;
+                latest.insert((id, ordinal), (event, row.sequence));
+            }
+        }
+        for ((id, _), (event, sequence)) in latest {
+            safe &= match event {
+                GroupJournalEventKind::DefinitelyAborted => true,
+                GroupJournalEventKind::Committed | GroupJournalEventKind::FormalOnlyAdvanced => {
+                    !automatic
+                        && checkpoints
+                            .get(&id)
+                            .is_some_and(|checkpoint| *checkpoint > sequence)
+                }
+                GroupJournalEventKind::BeforeCommit
+                | GroupJournalEventKind::CommitOutcomeUnknown => false,
+            };
+        }
+        if !safe {
+            transaction.close().await.map_err(map_orm_error)?;
+            return if automatic {
+                Ok(false)
+            } else {
+                Err(failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_typedb_abandon_plan_unsafe",
+                    "open plan has unresolved commit, backfill, data, or uncheckpointed schema evidence; restore its manifests and resume",
+                ))
+            };
+        }
+        let export = self
+            .managed_database
+            .schema_text()
+            .await
+            .map_err(map_orm_error)?;
+        let observed = crate::observation::observe_managed_state_from_export_with_authority(
+            DocumentId::new("typebridge-abandon-plan-live.typeql")?,
+            &export,
+            self.context.available_capabilities(),
+            expected,
+            expected,
+            authority,
+        );
+        if let Err(error) = observed {
+            transaction.close().await.map_err(map_orm_error)?;
+            return if automatic { Ok(false) } else { Err(error) };
+        }
+        let expected_control = [
+            (
+                CONTROL_SCOPE,
+                lease.scope().managed_scope_id().as_str().to_owned(),
+            ),
+            (LEASE_HOLDER, lease.holder().as_str().to_owned()),
+            (LEASE_FENCE, lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD.to_owned()),
+            (NEXT_SEQUENCE, current.next_sequence.to_string()),
+        ];
+        let fields: Vec<_> = expected_control
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
+        let guard = data_plan::replace(CONTROL_ENTITY, &fields, &fields)?;
+        let answers = transaction
+            .execute_plan(&guard)
+            .await
+            .map_err(map_orm_error)?;
+        if !matches!(answers.as_slice(), [PlanAnswer::Matched(1)]) {
+            return Err(stale_fence());
+        }
+        if *rollback {
+            delete_open_rollback_plan(&mut transaction, lease.scope()).await?;
+        } else {
+            delete_open_plan(&mut transaction, lease.scope()).await?;
+        }
+        transaction.commit().await.map_err(map_orm_error)?;
+        Ok(true)
+    }
+
     /// Recover the original execution basis from journal ordering. This is only
     /// a reconstruction hint: the bound plan is subsequently checked against
     /// every byte of the persisted plan record by the coordinator.
@@ -2024,6 +2228,7 @@ impl<'a> TypeDbMigrationStore<'a> {
         )
         .await?;
         transaction.commit().await.map_err(map_orm_error)?;
+        self.fresh_plan.store(true, Ordering::Release);
         Ok(JournalEntry::from_store(sequence, record))
     }
 

@@ -583,7 +583,15 @@ impl MigrationLeaseStore for LegacyBoundStore<'_> {
     }
 
     fn release<'a>(&'a self, lease: &'a MigrationLease) -> ExecutionFuture<'a, ()> {
-        self.inner.release(lease)
+        Box::pin(async move {
+            let cleanup = self
+                .inner
+                .close_refused_plan(lease, self.observation_authority)
+                .await;
+            let release = self.inner.release(lease).await;
+            cleanup?;
+            release
+        })
     }
 }
 
@@ -1101,7 +1109,68 @@ impl TypeDbMigrationRunner {
         if let Some(diagnostic) = legacy_drift {
             report.prepend_applied_ledger_drift(diagnostic);
         }
+        if let Some(diagnostic) = store.open_plan_diagnostic(&scope).await? {
+            report.prepend_applied_ledger_drift(diagnostic);
+        }
         Ok(report)
+    }
+
+    /// Abandon an open plan only at a completed manifest boundary with no
+    /// unresolved commit, backfill, or data evidence. The applied ledger stays intact.
+    pub async fn abandon_plan_in(
+        &self,
+        directory: &MigrationDirectory,
+        holder: &LeaseHolderId,
+    ) -> Result<bool, MigrationDirectoryApplyError> {
+        self.require_supported_execution_binding()?;
+        let graph = self.discover_in(directory)?;
+        let adopted = self.verify_adopted_extension_state(directory).await?;
+        require_adoption_authority_pair(&graph, adopted.is_some())?;
+        let authority = ManagedObservationAuthority::from_adopted(adopted.as_ref());
+        let catalog =
+            VerifiedMigrationCatalog::new(graph.manifests().map(|(_, manifest)| manifest))?;
+        let import_binding = graph
+            .manifests()
+            .find(|(_, manifest)| manifest.is_legacy_bridge())
+            .map(|(_, bridge)| {
+                let adopted = adopted.as_deref().ok_or_else(|| {
+                    legacy_import_failure(
+                        "migration_legacy_adopted_genesis_missing",
+                        "legacy import requires adopted genesis authority",
+                    )
+                })?;
+                LegacyBridgeBinding::from_bridge(
+                    bridge,
+                    adopted,
+                    &self.managed_database,
+                    &self.journal_database,
+                    self.context.scope_id().as_str(),
+                )
+            })
+            .transpose()?;
+        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?
+            .with_import_binding(import_binding);
+        let scope = ExecutionScope::new(self.context.scope_id().clone());
+        // Recovery must never bootstrap or claim a previously unowned journal.
+        store.load_applied_read_only(&scope).await?;
+        let lease = store.acquire(&scope, holder).await?;
+        let result = async {
+            let basis = store
+                .load_applied(&lease)
+                .await?
+                .iter()
+                .map(|entry| entry.record().migration_id().clone())
+                .collect();
+            let expected = self.expected_applied_state(&graph, &basis)?;
+            store
+                .abandon_plan(&lease, &expected, &authority, false)
+                .await
+        }
+        .await;
+        let release = store.release(&lease).await;
+        let abandoned = result?;
+        release?;
+        Ok(abandoned)
     }
 
     /// Roll back the selected applied migrations from a canonical directory.

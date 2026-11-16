@@ -1896,3 +1896,256 @@ async fn runner_regex_escapes_round_trip_and_accept_matching_data() {
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn refused_plans_close_and_stuck_plans_can_be_abandoned_safely() {
+    use type_bridge_schema_migration::{
+        ExecutionScope, GroupEventRecord, GroupJournalEventKind, MigrationDirectory,
+        MigrationExecutionJournal, MigrationLeaseStore, PlanRecord,
+        build_verified_migration_apply_plan,
+    };
+    use type_bridge_schema_migration_typedb::{
+        TypeDbExecutionBinding, TypeDbMigrationStore, VerifiedMigrationCatalog,
+    };
+    let (managed, journal) = databases().await;
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let base = declared_facts(vec![type_fact("person")]);
+    let abstract_target = typeql_to_declared(
+        DocumentId::new("abstract.tql").unwrap(),
+        "define entity person @abstract;",
+    )
+    .unwrap();
+    let next = declared_facts(vec![type_fact("person"), type_fact("company")]);
+    let first = manifest_with_derived_assertions("0001_base", vec![], &genesis, &base, &context);
+    let refused = manifest_with_derived_assertions(
+        "0002_abstract",
+        vec![first.id().clone()],
+        &base,
+        &abstract_target,
+        &context,
+    );
+    let second = manifest_with_derived_assertions(
+        "0002_company",
+        vec![first.id().clone()],
+        &base,
+        &next,
+        &context,
+    );
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &first);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context.clone(),
+        lowering.clone(),
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-refused-plan").unwrap();
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("insert $p isa person;").await.unwrap();
+    tx.commit().await.unwrap();
+    write_manifest(directory.path(), &refused);
+    let error = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("migration_typedb_assertion_failed"),
+        "{error}"
+    );
+    let report = runner.verify(directory.path(), None).await.unwrap();
+    assert!(!format!("{:?}", report.findings()).contains("migration_typedb_open_plan"));
+    fs::remove_file(directory.path().join("0002_abstract.tbmigration.json")).unwrap();
+    write_manifest(directory.path(), &second);
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("insert $c isa company;").await.unwrap();
+    tx.commit().await.unwrap();
+    let reverse_approval =
+        MigrationApplyApproval::for_rollback(&second, SafetyClass::Destructive).unwrap();
+    let refusal = runner
+        .rollback(
+            directory.path(),
+            &BTreeSet::from([second.id().clone()]),
+            &holder,
+            &[reverse_approval],
+        )
+        .await;
+    assert!(!matches!(
+        refusal,
+        Ok(MigrationDirectoryRollbackOutcome::Executed(
+            MigrationRollbackOutcome::RolledBack { .. }
+        ))
+    ));
+    assert!(
+        !format!(
+            "{:?}",
+            runner
+                .verify(directory.path(), None)
+                .await
+                .unwrap()
+                .findings()
+        )
+        .contains("migration_typedb_open_plan")
+    );
+    let third_target = declared_facts(vec![
+        type_fact("person"),
+        type_fact("company"),
+        type_fact("other"),
+    ]);
+    let third = manifest_with_derived_assertions(
+        "0003_other",
+        vec![second.id().clone()],
+        &next,
+        &third_target,
+        &context,
+    );
+    write_manifest(directory.path(), &third);
+    // Simulate a historical refusal: persist the plan without executing any group.
+    let graph = runner.discover(directory.path()).unwrap();
+    let basis = BTreeSet::from([first.id().clone(), second.id().clone()]);
+    let plan = build_verified_migration_apply_plan(
+        &graph,
+        &basis,
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .unwrap();
+    let binding =
+        TypeDbExecutionBinding::new(Arc::clone(&managed), Arc::clone(&journal), context.clone())
+            .unwrap();
+    let catalog =
+        VerifiedMigrationCatalog::new(graph.manifests().map(|(_, manifest)| manifest)).unwrap();
+    let store = TypeDbMigrationStore::new(&binding, catalog)
+        .unwrap()
+        .bind_plan(&plan)
+        .unwrap();
+    let scope = ExecutionScope::new(context.scope_id().clone());
+    let lease = store.acquire(&scope, &holder).await.unwrap();
+    let record = PlanRecord::from_verified_plan(
+        &lease,
+        &plan,
+        plan.applied_migrations(),
+        plan.source_state().unwrap(),
+    )
+    .unwrap();
+    store.begin_plan(&lease, record).await.unwrap();
+    store.release(&lease).await.unwrap();
+    let report = runner.verify(directory.path(), None).await.unwrap();
+    assert!(format!("{:?}", report.findings()).contains("migration_typedb_open_plan"));
+    let capability = MigrationDirectory::open_ambient(directory.path()).unwrap();
+    assert!(runner.abandon_plan_in(&capability, &holder).await.unwrap());
+    assert!(!runner.abandon_plan_in(&capability, &holder).await.unwrap());
+    // Unknown commit evidence is preserved even when the live schema looks unchanged.
+    let lease = store.acquire(&scope, &holder).await.unwrap();
+    store
+        .begin_plan(
+            &lease,
+            PlanRecord::from_verified_plan(
+                &lease,
+                &plan,
+                plan.applied_migrations(),
+                plan.source_state().unwrap(),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let migration = &plan.migrations()[0];
+    let group = &migration.transaction_groups()[0];
+    store
+        .record_group_event(
+            &lease,
+            GroupEventRecord::new(
+                &lease,
+                migration,
+                group,
+                GroupJournalEventKind::BeforeCommit,
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    store
+        .record_group_event(
+            &lease,
+            GroupEventRecord::new(
+                &lease,
+                migration,
+                group,
+                GroupJournalEventKind::CommitOutcomeUnknown,
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    store.release(&lease).await.unwrap();
+    let error = runner
+        .abandon_plan_in(&capability, &holder)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("migration_typedb_abandon_plan_unsafe"),
+        "{error}"
+    );
+    // Restore exact history and let normal recovery prove source and execute once.
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}
