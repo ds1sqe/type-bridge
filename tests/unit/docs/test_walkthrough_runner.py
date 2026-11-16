@@ -56,6 +56,11 @@ class DatabaseProbe:
         self.events.append("exists")
         return False
 
+    def _current_connection_identity(self) -> Any:
+        return Database(
+            address=self.address, username=self.username, password=self.password
+        )._current_connection_identity()
+
 
 def install_driver(monkeypatch: pytest.MonkeyPatch, db: DatabaseProbe) -> None:
     @contextmanager

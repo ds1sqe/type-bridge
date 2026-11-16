@@ -47,7 +47,7 @@ def probe_database(db: Database, name: str) -> None:
     options = create_driver_options(is_tls_enabled=tls, tls_root_ca=root_ca)
     options.request_timeout_millis = 1_000
     options.primary_failover_retries = 0
-    identity = db._resolve_connection_identity()
+    identity = db._current_connection_identity()
     with TypeDB.driver(
         address,
         Credentials(
