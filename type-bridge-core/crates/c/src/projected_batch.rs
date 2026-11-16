@@ -2746,7 +2746,13 @@ plays:
                             }));
                         }
                         ProjectedBatchOperation::Update => {
-                            assert!(mutation.0.contains("delete try"));
+                            assert!(mutation.0.contains("key_guard"));
+                            if kind == TypeKind::Entity {
+                                // This model has only its immutable key: update is a guarded no-op.
+                                assert!(!mutation.0.contains("delete try"));
+                            } else {
+                                assert!(mutation.0.contains("delete try"));
+                            }
                         }
                         ProjectedBatchOperation::Delete => {
                             assert!(mutation.0.contains("delete $thing1;"));

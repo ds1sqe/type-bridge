@@ -1308,40 +1308,151 @@ mod tests {
                         .plans()
                         .iter()
                         .any(|entry| entry.plan().fetch_document_shape().is_some());
-                    let answers = request.plans().iter().map(|entry| {
-                        let plan=entry.plan();
-                        if plan.operation() == Operation::Count { return StagedAnswer::Count {value:7}; }
-                        if plan.operation() == Operation::Exists { return StagedAnswer::Exists {value:true}; }
-                        if let Some(rows) = plan.standalone_entity_rows() {
-                            use type_bridge_contract::query_remote::RemoteFieldValue;
-                            use type_bridge_contract::value::{CanonicalString, CanonicalValue};
-                            let string = |value: &str| RemoteFieldValue::Scalar { value: CanonicalValue::String(CanonicalString::new(value).unwrap()) };
-                            let documents = rows.values.iter().enumerate().map(|(index, values)| {
-                                let fields = rows.fields.iter().zip(values).map(|(field, value)| (
-                                    field.attribute().label().as_str().to_owned(), RemoteFieldValue::Scalar { value: value.clone() },
-                                )).collect();
-                                let mut document = std::collections::BTreeMap::from([
-                                    ("_iid".into(), string(&format!("0x{:x}", 32 + index))),
-                                    ("_type".into(), string(rows.fields[0].owner().label().as_str())),
-                                    ("attributes".into(), RemoteFieldValue::Document { fields }),
-                                ]);
-                                if let Some(fetch) = plan.pipeline().iter().find_map(|stage| match stage { Stage::Fetch(fetch) => Some(fetch), _ => None }) {
-                                    for scalar in &fetch.scalars {
-                                        document.insert(scalar.key.as_str().to_owned(), RemoteFieldValue::Scalar { value: CanonicalValue::Long(index as i64) });
-                                    }
+                    let answers = (|| -> std::result::Result<Vec<StagedAnswer>, Diagnostic> {
+                        let mut answers = Vec::new();
+                        for entry in request.plans() {
+                            let plan = entry.bind_results(&answers, authority.declared())?;
+                            let answer = (|| {
+                                if plan
+                                    .bindings()
+                                    .iter()
+                                    .any(|binding| binding.variable().as_str() == "actual1")
+                                    && plan
+                                        .bindings()
+                                        .iter()
+                                        .any(|binding| binding.variable().as_str() == "matched2")
+                                {
+                                    use type_bridge_contract::query_remote::RemoteValue;
+                                    return StagedAnswer::Rows {
+                                        rows: plan
+                                            .given_rows()
+                                            .unwrap()
+                                            .iter()
+                                            .map(|row| {
+                                                vec![
+                                                    RemoteValue::Value {
+                                                        value: row.values()[0].clone().unwrap(),
+                                                    },
+                                                    RemoteValue::Absent,
+                                                    RemoteValue::Absent,
+                                                ]
+                                            })
+                                            .collect(),
+                                    };
                                 }
-                                document
-                            }).collect();
-                            return StagedAnswer::Documents { documents };
+                                if plan.operation() == Operation::Count {
+                                    return StagedAnswer::Count { value: 7 };
+                                }
+                                if plan.operation() == Operation::Exists {
+                                    return StagedAnswer::Exists {
+                                        // A key-only replacement may contain no mutation stages.
+                                        value: request.plans().len() == 1,
+                                    };
+                                }
+                                if let Some(rows) = plan.standalone_entity_rows() {
+                                    use type_bridge_contract::query_remote::RemoteFieldValue;
+                                    use type_bridge_contract::value::{
+                                        CanonicalString, CanonicalValue,
+                                    };
+                                    let string = |value: &str| RemoteFieldValue::Scalar {
+                                        value: CanonicalValue::String(
+                                            CanonicalString::new(value).unwrap(),
+                                        ),
+                                    };
+                                    let documents = rows
+                                        .values
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(index, values)| {
+                                            let fields = rows
+                                                .fields
+                                                .iter()
+                                                .zip(values)
+                                                .map(|(field, value)| {
+                                                    (
+                                                        field
+                                                            .attribute()
+                                                            .label()
+                                                            .as_str()
+                                                            .to_owned(),
+                                                        RemoteFieldValue::Scalar {
+                                                            value: value.clone(),
+                                                        },
+                                                    )
+                                                })
+                                                .collect();
+                                            let mut document = std::collections::BTreeMap::from([
+                                                (
+                                                    "_iid".into(),
+                                                    string(&format!("0x{:x}", 32 + index)),
+                                                ),
+                                                (
+                                                    "_type".into(),
+                                                    string(rows.fields[0].owner().label().as_str()),
+                                                ),
+                                                (
+                                                    "attributes".into(),
+                                                    RemoteFieldValue::Document { fields },
+                                                ),
+                                            ]);
+                                            if let Some(fetch) =
+                                                plan.pipeline().iter().find_map(|stage| match stage
+                                                {
+                                                    Stage::Fetch(fetch) => Some(fetch),
+                                                    _ => None,
+                                                })
+                                            {
+                                                for scalar in &fetch.scalars {
+                                                    document.insert(
+                                                        scalar.key.as_str().to_owned(),
+                                                        RemoteFieldValue::Scalar {
+                                                            value: CanonicalValue::Long(
+                                                                index as i64,
+                                                            ),
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                            document
+                                        })
+                                        .collect();
+                                    return StagedAnswer::Documents { documents };
+                                }
+                                if plan.fetch_document_shape().is_some() {
+                                    return StagedAnswer::Documents { documents: vec![] };
+                                }
+                                let rows = if plan
+                                    .pipeline()
+                                    .iter()
+                                    .any(|stage| matches!(stage, Stage::Reduce { .. }))
+                                {
+                                    let type_bridge_contract::query_plan::QueryOutput::Rows {
+                                        columns,
+                                    } = plan.output()
+                                    else {
+                                        panic!("scalar output");
+                                    };
+                                    vec![columns.iter().map(|_| type_bridge_contract::query_remote::RemoteValue::Value {value:type_bridge_contract::value::CanonicalValue::Long(if has_fetch {0} else {7})}).collect()]
+                                } else {
+                                    vec![]
+                                };
+                                StagedAnswer::Rows { rows }
+                            })();
+                            answers.push(answer);
                         }
-                        if plan.fetch_document_shape().is_some() {return StagedAnswer::Documents {documents:vec![]};}
-                        let rows = if plan.pipeline().iter().any(|stage| matches!(stage, Stage::Reduce {..})) {
-                            let type_bridge_contract::query_plan::QueryOutput::Rows {columns} = plan.output() else {panic!("scalar output");};
-                            vec![columns.iter().map(|_| type_bridge_contract::query_remote::RemoteValue::Value {value:type_bridge_contract::value::CanonicalValue::Long(if has_fetch {0} else {7})}).collect()]
-                        } else {vec![]};
-                        StagedAnswer::Rows {rows}
-                    }).collect();
-                    (StagedOutcome::Committed, answers)
+                        Ok(answers)
+                    })();
+                    match answers {
+                        Ok(answers) => (StagedOutcome::Committed, answers),
+                        Err(diagnostic) => (
+                            StagedOutcome::Failed {
+                                diagnostic: type_bridge_orm::lower_remote_query_diagnostic(
+                                    diagnostic,
+                                ),
+                            },
+                            vec![],
+                        ),
+                    }
                 };
                 StagedReply::new(&request, outcome, answers)
                     .and_then(|reply| {
@@ -1633,11 +1744,10 @@ mod tests {
                         .items()
                         .is_empty()
                 );
-                assert!(
-                    one_exchange!(manager.update_many(typed_update_inputs(vec![("0x10".into(), $create)])))
-                        .items()
-                        .is_empty()
-                );
+                let missing = manager.update_many(typed_update_inputs(vec![("0x10".into(), $create)])).await.unwrap_err();
+                expected += 1;
+                assert_eq!(exchanges.lock().unwrap().len(), expected);
+                assert_eq!(missing.code(), Some("query_plan_key_update"));
                 one_exchange!(manager.delete(&crate::Iid::new("0x10").unwrap()));
                 one_exchange!(manager.delete_many(&typed_iids(&["0x10".into()])));
                 assert_eq!(one_exchange!(manager.delete_returning(&crate::Iid::new("0x10").unwrap())).count(), 0);
@@ -1659,7 +1769,14 @@ mod tests {
             let request =
                 StagedRequest::decode(bytes, authority.declared(), &decoder.advertisement_contract)
                     .unwrap();
-            assert_eq!(request.plans().len(), 1);
+            assert_eq!(
+                request.plans().len(),
+                match index % 20 {
+                    12 => 2,
+                    15 => 3,
+                    _ => 1,
+                }
+            );
             if index % 20 >= 18 {
                 // One plan owns the snapshot and deletion provider statements.
                 assert_eq!(request.plans()[0].plan().statement_counts(), (1, 1));

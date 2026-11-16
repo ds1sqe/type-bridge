@@ -2127,7 +2127,7 @@ mod tests {
     }
 
     #[test]
-    fn in_flight_cancellation_rolls_back_with_null_and_explicit_policies() {
+    fn in_flight_cancellation_closes_without_commit_with_null_and_explicit_policies() {
         let controlled = fixture(vec![Response::Pending], COMMIT_SUCCESS);
         let limits = default_limits();
         let mut cancellation = ptr::null_mut();
@@ -2158,7 +2158,7 @@ mod tests {
         assert!(thing.is_null());
         assert_eq!(diagnostic(diagnostics).1, "provider_cancelled");
         assert_eq!(controlled.state.query_count(), 1);
-        assert_eq!(controlled.state.rollbacks.load(Ordering::Acquire), 1);
+        assert_eq!(controlled.state.rollbacks.load(Ordering::Acquire), 0);
         assert_eq!(controlled.state.commits.load(Ordering::Acquire), 0);
         close_diagnostics(&mut diagnostics);
         // SAFETY: close consumes the cancellation owner slot.
@@ -2200,7 +2200,7 @@ mod tests {
         assert_eq!(diagnostic(diagnostics).1, "provider_cancelled");
         assert_eq!(defaulted.state.query_count(), 1);
         assert_eq!(defaulted.state.commits.load(Ordering::Acquire), 0);
-        assert_eq!(defaulted.state.rollbacks.load(Ordering::Acquire), 1);
+        assert_eq!(defaulted.state.rollbacks.load(Ordering::Acquire), 0);
         close_diagnostics(&mut diagnostics);
         // SAFETY: close consumes the cancellation owner slot.
         assert_eq!(

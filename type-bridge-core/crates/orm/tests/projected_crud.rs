@@ -905,7 +905,7 @@ async fn single_relation_writes_refuse_stale_ordered_players_and_preserve_transa
                 "{operation} borrowed={borrowed}"
             );
             let modes = match operation {
-                "put" | "controlled_put" => vec!["given"],
+                "put" | "controlled_put" | "update" | "controlled_update" => vec!["given"],
                 "delete_returning" => vec!["given", "given"],
                 _ => vec!["canonical"],
             };
@@ -954,8 +954,9 @@ async fn stale_entity_update_returns_an_empty_write_result() {
     let create = person_create(&installed);
     let (backend, state) = RecordingBackend::new(
         vec![
-            // The update plan matched no IID: no document, nothing written.
+            // The update plan matched no IID; the key diagnostic also finds nothing.
             documents(vec![]),
+            RecordingResponse::Result(QueryResult::Rows(vec![])),
         ],
         CommitBehavior::Success,
     );
@@ -971,7 +972,7 @@ async fn stale_entity_update_returns_an_empty_write_result() {
     assert!(result.item().is_none());
     let state = state.lock().unwrap();
     assert_eq!(state.opens, [TxType::Write]);
-    assert_eq!(state.queries.len(), 1);
+    assert_eq!(state.queries.len(), 2);
     assert_eq!(state.commits, 1);
     assert_eq!(state.rollbacks, 0);
     assert_eq!(state.closes, 0);
@@ -3272,8 +3273,7 @@ async fn registry_manager_single_and_bulk_commits_keep_certainty_and_redact_prov
 }
 
 #[tokio::test]
-async fn controlled_single_updates_share_the_uncontrolled_one_query_for_owned_and_borrowed_targets()
-{
+async fn controlled_single_updates_share_queries_and_diagnose_only_empty_keyed_answers() {
     use type_bridge_orm::QueryExecutionResourceLimits;
     use type_bridge_orm::session::backend::AnswerCancellation;
     let installed = installed();
@@ -3285,9 +3285,9 @@ async fn controlled_single_updates_share_the_uncontrolled_one_query_for_owned_an
             person_create(&installed)
         };
         let iid = if relation { "0x20" } else { "0x10" };
-        let mut baseline = None;
         let empty_cases: &[bool] = &[false, true];
         for &empty in empty_cases {
+            let mut baseline = None;
             for controlled in [false, true] {
                 for borrowed in [false, true] {
                     let document = if relation {
@@ -3295,14 +3295,18 @@ async fn controlled_single_updates_share_the_uncontrolled_one_query_for_owned_an
                     } else {
                         person_document(iid)
                     };
-                    let (mut backend, state) = RecordingBackend::new(
-                        vec![documents(if empty { vec![] } else { vec![document] })],
-                        CommitBehavior::Success,
-                    );
+                    let diagnostic_read = empty && !relation;
+                    let mut responses =
+                        vec![documents(if empty { vec![] } else { vec![document] })];
+                    if diagnostic_read {
+                        responses.push(RecordingResponse::Result(QueryResult::Rows(vec![])));
+                    }
+                    let (mut backend, state) =
+                        RecordingBackend::new(responses, CommitBehavior::Success);
                     backend.given_enabled = true;
                     let database = Database::with_backend(Box::new(backend), "single-update");
                     let limits = QueryExecutionResourceLimits {
-                        statements: Some(1),
+                        statements: Some(1 + u32::from(diagnostic_read)),
                         ..Default::default()
                     };
                     let cancellation = AnswerCancellation::default();
@@ -3381,7 +3385,7 @@ async fn controlled_single_updates_share_the_uncontrolled_one_query_for_owned_an
                     let state = state.lock().unwrap();
                     assert_eq!(
                         state.queries.len(),
-                        1,
+                        1 + usize::from(diagnostic_read),
                         "relation={relation} controlled={controlled} borrowed={borrowed}"
                     );
                     assert_eq!(state.commits, 1);
@@ -3610,7 +3614,7 @@ async fn controlled_single_update_preserves_captured_control_and_poison_after_di
             let state = state.lock().unwrap();
             assert_eq!(state.queries.len(), 1);
             assert_eq!(state.commits, 0);
-            assert_eq!(state.rollbacks, 1);
+            assert_eq!(state.rollbacks, usize::from(borrowed || !cancelled));
         }
     }
 }
@@ -3993,7 +3997,7 @@ async fn controlled_single_mapper_cancellation_fails_before_releasing_atomicity(
             assert_eq!(state.lock().unwrap().rollbacks, 0);
             transaction.rollback().await.unwrap();
         }
-        assert_eq!(state.lock().unwrap().rollbacks, 1);
+        assert_eq!(state.lock().unwrap().rollbacks, usize::from(borrowed));
     }
 }
 
