@@ -14,7 +14,7 @@ pub type TypeBridgeMigrationCallback = unsafe extern "C" fn(
     *mut TypeBridgeWriteTransaction,
     *mut c_void,
     *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus;
+) -> i32;
 
 #[derive(Clone, Copy, Debug)]
 struct Callback {
@@ -141,19 +141,8 @@ impl UserSteps {
                                 &mut diagnostics,
                             )
                         };
-                        let has_error = !diagnostics.is_null();
-                        let cause = if has_error {
-                            // SAFETY: the callback transfers an owned execution diagnostics handle.
-                            let diagnostics = unsafe { Box::from_raw(diagnostics) };
-                            diagnostics.callback_cause()
-                        } else {
-                            format!("callback returned {status:?}")
-                        };
-                        if status == TypeBridgeStatus::Ok && !has_error {
-                            Ok(())
-                        } else {
-                            Err(failed().with_detail("cause", cause))
-                        }
+                        // SAFETY: the callback transfers its diagnostics owner.
+                        unsafe { callback_result(status, diagnostics) }
                     })
                     .await
                     .map_err(|_| failed())?
@@ -181,4 +170,48 @@ fn failed() -> Diagnostic {
         "migration_user_step_failed",
         "C migration callback failed; its transaction will be rolled back",
     )
+}
+
+unsafe fn callback_result(
+    status: i32,
+    diagnostics: *mut TypeBridgeExecutionDiagnostics,
+) -> Result<(), Diagnostic> {
+    let has_error = !diagnostics.is_null();
+    let cause = if has_error {
+        // SAFETY: the callback transfers an owned execution diagnostics handle.
+        let diagnostics = unsafe { Box::from_raw(diagnostics) };
+        diagnostics.callback_cause()
+    } else {
+        format!("callback returned {status}")
+    };
+    if status == TypeBridgeStatus::Ok as i32 && !has_error {
+        Ok(())
+    } else {
+        Err(failed().with_detail("cause", cause))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arbitrary_callback_status_is_a_defined_migration_failure() {
+        unsafe extern "C" fn fail(
+            _: *mut TypeBridgeWriteTransaction,
+            _: *mut c_void,
+            _: *mut *mut TypeBridgeExecutionDiagnostics,
+        ) -> i32 {
+            -1
+        }
+        let callback: TypeBridgeMigrationCallback = fail;
+        let mut diagnostics = std::ptr::null_mut();
+        // SAFETY: this callback ignores both borrowed pointers and returns no owner.
+        let status =
+            unsafe { callback(std::ptr::null_mut(), std::ptr::null_mut(), &mut diagnostics) };
+        // SAFETY: diagnostics is NULL.
+        let error = unsafe { callback_result(status, diagnostics) }.unwrap_err();
+        assert_eq!(error.code().as_str(), "migration_user_step_failed");
+        assert!(format!("{error:?}").contains("callback returned -1"));
+    }
 }
