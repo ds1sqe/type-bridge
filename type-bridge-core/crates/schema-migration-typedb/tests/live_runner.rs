@@ -2557,3 +2557,68 @@ async fn specializing_role_requires_its_inherited_player() {
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_applies_strictly_narrowed_ownership_constraints() {
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let target = typeql_to_declared(DocumentId::new("narrowed-owns.tql").unwrap(),
+        "define attribute score, value integer @range(0..100); attribute choice, value integer @values(1, 2, 3); attribute code, value string @regex(\"^[A-Z]+$\"); entity person, owns score @range(10..90), owns choice @values(1, 2), owns code @regex(\"^ABC$\");").unwrap();
+    let migration =
+        manifest_with_derived_assertions("0001_narrowed", vec![], &genesis, &target, &context);
+    let (managed, journal) = databases().await;
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &migration);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let outcome = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &LeaseHolderId::new("live-narrowed-owns").unwrap(),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+        ),
+        "{outcome:?}"
+    );
+    managed
+        .execute_raw(
+            "insert $p isa person, has score 50, has choice 2, has code \"ABC\";",
+            TxType::Write,
+        )
+        .await
+        .unwrap();
+    for query in [
+        "insert $p isa person, has score 5;",
+        "insert $p isa person, has choice 3;",
+        "insert $p isa person, has code \"ABCD\";",
+    ] {
+        assert!(
+            managed.execute_raw(query, TxType::Write).await.is_err(),
+            "accepted {query}"
+        );
+    }
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
