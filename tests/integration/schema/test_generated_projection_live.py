@@ -3217,11 +3217,74 @@ def test_generated_temporal_fidelity_live(
         with pytest.raises(ValueError, match="canonical"):
             _ = attribute.value
     stored.score = generated.Score(2)
+    people.filter(val_datetime=stored.val_datetime).update(stored)
     people.update(stored)
     assert clean_db.execute_query(query) == before
     people.put(stored)
     assert clean_db.execute_query(query) == before
     assert people.get_by_iid(person.iid).score.value == 2
+
+
+@pytest.mark.parametrize("form", ["hydrated", "canonical", "native"])
+def test_temporal_wrappers_work_across_manager_terminals_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+    form: str,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    person: Any = _make_generated_person(generated, "temporal-filter", 1)
+    native_values = {
+        "val_date": (generated.ValDate, date(2024, 1, 2)),
+        "val_datetime": (generated.ValDatetime, datetime(2024, 1, 2, 3, 4, 5, 123456)),
+        "val_datetime_tz": (generated.ValDatetimeTz, datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)),
+        "val_duration": (generated.ValDuration, timedelta(seconds=123)),
+    }
+    for name, (attribute, value) in native_values.items():
+        setattr(person, name, attribute(value))
+    people.insert(person)
+    stored = people.get_by_iid(person.iid)
+    assert stored is not None
+
+    def wrapper(name: str, row: Any) -> Any:
+        attribute, value = native_values[name]
+        candidate = (
+            getattr(row, name)
+            if form == "hydrated"
+            else attribute(getattr(row, name).canonical if form == "canonical" else value)
+        )
+        raw = candidate.runtime_attribute_value()
+        assert type(raw) is (type(value) if form == "native" else str)
+        return candidate
+
+    for name, (attribute, _) in native_values.items():
+        candidate = wrapper(name, stored)
+        selected = people.filter(**{name: candidate})
+        assert [row.iid for row in selected.all()] == [person.iid]
+        assert selected.first().iid == person.iid
+        assert selected.count() == 1
+        assert selected.exists() is True
+        assert [row.iid for row in attribute.owners(clean_db, candidate, kind="entity")] == [
+            person.iid
+        ]
+        setattr(stored, name, candidate)
+    stored.score = generated.Score(2)
+    people.update(stored)
+    # Writes can hydrate an input in place; rebuild the requested form for put.
+    for name in native_values:
+        setattr(stored, name, wrapper(name, stored))
+    people.put(stored)
+    assert people.get_by_iid(person.iid).score.value == 2
+    for name in native_values:
+        assert (
+            getattr(people.get_by_iid(person.iid), name).canonical
+            == getattr(stored, name).canonical
+        )
+    delete_value = wrapper("val_datetime", people.get_by_iid(person.iid))
+    people.filter(val_datetime=delete_value).delete()
+    assert people.get_by_iid(person.iid) is None
 
 
 def test_generated_filter_reads_uncommitted_writes_live(

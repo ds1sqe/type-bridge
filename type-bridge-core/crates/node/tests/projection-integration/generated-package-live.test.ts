@@ -4443,6 +4443,42 @@ test("generated temporal values and staged integers remain exact", { timeout: 36
     } finally { integerTransaction.close(); }
     personManager.delete(fidelity.iid);
 
+    for (const form of ["hydrated", "canonical", "native"]) {
+      const ordinary = {
+        identifier: Identifier.create(`temporal-filter-${form}`), score: Score.create(1n),
+        valBool: ValBool.create(true), valConstrained: ValConstrained.create(20n),
+        valDate: ValDate.create(new Date("2024-01-02T00:00:00.000Z")),
+        valDatetime: ValDatetime.create(new Date("2024-01-02T03:04:05.123Z")),
+        valDatetimeTz: ValDatetimeTz.create(new Date("2024-01-02T03:04:05.123Z")),
+        valDecimal: ValDecimal.create("0.0000001"), valDouble: ValDouble.create(3.5),
+        valDuration: ValDuration.create("PT123S"),
+      };
+      const inserted = oneWritten(personManager.insert(Person.create(ordinary)));
+      const read = personManager.getByIid(inserted.iid);
+      for (const [name, attribute, native] of [
+        ["valDate", ValDate, new Date("2024-01-02T00:00:00.000Z")],
+        ["valDatetime", ValDatetime, new Date("2024-01-02T03:04:05.123Z")],
+        ["valDatetimeTz", ValDatetimeTz, new Date("2024-01-02T03:04:05.123Z")],
+        ["valDuration", ValDuration, "PT123S"],
+      ] as const) {
+        const candidate = form === "hydrated" ? read[name]
+          : attribute.create(form === "canonical" ? read[name].canonical : native);
+        const selected = personManager.filter({ [name]: candidate });
+        assert.equal(selected.all().length, 1);
+        assertIidsEqual(selected.first().iid, inserted.iid);
+        assert.equal(selected.count(), 1n);
+        assert.equal(selected.exists(), true);
+        ordinary[name] = candidate;
+      }
+      const replacement = Person.create({ ...ordinary, score: Score.create(2n) });
+      personManager.filter({ valDatetime: ordinary.valDatetime }).update(replacement);
+      personManager.update(inserted.iid, replacement);
+      personManager.put(replacement);
+      assert.equal(personManager.getByIid(inserted.iid).score.value, 2n);
+      personManager.filter({ valDatetime: ordinary.valDatetime }).delete();
+      assert.equal(personManager.getByIid(inserted.iid), null);
+    }
+
   } finally {
     try { database?.deleteDatabase(); } finally { database?.close(); }
     if (suppliedStage === undefined) await rm(stage, { recursive: true, force: true });

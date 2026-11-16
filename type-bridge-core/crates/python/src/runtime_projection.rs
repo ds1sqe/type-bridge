@@ -6954,13 +6954,23 @@ fn projected_filter_attribute_value(
     let expected_class = package.class(expected, ProjectedModelForm::Complete)?;
     if value.get_type().as_ptr() == expected_class.bind(py).as_ptr() {
         let scalar = value.call_method0("runtime_attribute_value")?;
-        attribute_value_from_py(py, &scalar, descriptor.value_type)
+        canonical_attribute_value_from_py(
+            py,
+            &scalar,
+            descriptor.value_type,
+            package.named_zone_marker.as_ref(),
+        )
     } else if package.identify_value(py, value).is_ok() {
         Err(py_type_error(format!(
             "generated manager filter {field_name:?} requires its exact attribute wrapper"
         )))
     } else {
-        attribute_value_from_py(py, value, descriptor.value_type)
+        canonical_attribute_value_from_py(
+            py,
+            value,
+            descriptor.value_type,
+            package.named_zone_marker.as_ref(),
+        )
     }
 }
 
