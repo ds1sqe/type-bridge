@@ -628,7 +628,7 @@
       "type_bridge_write_transaction_rollback_keep"
     ],
     "header": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-    "header_sha256": "5450968e1b080e50f25a8c64965f64cc2c619cd68e7184bcd092f47d1c3d0b5a"
+    "header_sha256": "63a1156406bbecd42c4421a97d9cf2706646772313a26febb0309858a51c660c"
   },
   "artifact_disposition": "unchanged; promotion is a separate signed record",
   "certificate_identity": "https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/v3.0.0",
