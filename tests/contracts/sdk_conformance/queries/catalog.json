@@ -40,14 +40,14 @@
       "node": {
         "algorithm": "sha256",
         "canonicalization": "typebridge.binding-projection/v1",
-        "digest": "0b5d86c30470fcbc41d8ee2517e943a87937bed990fa625342ed31403d065590",
+        "digest": "6172a7010f625f4416c4f3f7498a28059f0272d691d7291f29774f2413c8c335",
         "domain": "typebridge.binding.projection",
         "semantic_profile": "typedb-3.12.1/v1"
       },
       "python": {
         "algorithm": "sha256",
         "canonicalization": "typebridge.binding-projection/v1",
-        "digest": "5358b28bb6a427cc309dcf808960e32c2483b6dd891fae0bc9b7a555524e6f9d",
+        "digest": "86c0d24ff9b091f142e49a01be3df8b14c685b5560c87d5f4f37bce8184c69cd",
         "domain": "typebridge.binding.projection",
         "semantic_profile": "typedb-3.12.1/v1"
       },
