@@ -688,3 +688,92 @@ fn filter_expressions_keep_the_requested_comparator() {
     );
     assert!(filter_expressions(&[Filter::compare("age", "~", AttributeValue::Long(1))]).is_err());
 }
+
+#[tokio::test]
+async fn changed_keys_are_diagnosed_for_empty_single_split_and_batch_updates() {
+    use crate::session::backend::{BoxFuture, DriverBackend, TransactionOps};
+    struct Backend;
+    struct Tx;
+    impl DriverBackend for Backend {
+        fn open_transaction(
+            &self,
+            _: &str,
+            _: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>>> {
+            Box::pin(async { Ok(Box::new(Tx) as Box<dyn TransactionOps>) })
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+    impl TransactionOps for Tx {
+        fn query(&mut self, query: &str) -> BoxFuture<'_, Result<QueryResult>> {
+            let answer = if query.contains("limit 1;") {
+                QueryResult::Rows(vec![serde_json::json!({})])
+            } else if query.contains("fetch") {
+                QueryResult::Documents(vec![])
+            } else {
+                QueryResult::Rows(vec![])
+            };
+            Box::pin(async move { Ok(answer) })
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { panic!("changed key committed") })
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
+    use type_bridge_contract::schema::DocumentId;
+    use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+    let documents = SchemaDocumentSet::parse([(DocumentId::new("key-diagnostic.yaml").unwrap(), "format: typebridge.schema/v2\nattributes:\n  name: { value: string }\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      name: { key: true }\n      tag: { card: { min: 0 } }\n")]).unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = crate::InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let db = Database::with_backend(Box::new(Backend), "key-diagnostic");
+    let manager = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("person").unwrap(),
+    )
+    .literal_values();
+    for count in [1, 300] {
+        let mut attributes = vec![("name".into(), AttributeValue::String("changed".into()))];
+        attributes.extend(
+            (0..count).map(|index| ("tag".into(), AttributeValue::String(format!("tag-{index}")))),
+        );
+        let error = manager.update_exact("0x11", &attributes).await.unwrap_err();
+        assert!(
+            matches!(error, OrmError::Match(ref error) if error.code().as_str() == "query_plan_key_update"),
+            "count={count}: {error:?}"
+        );
+        let error = manager
+            .update_many_and_get_exact(&[("0x11".into(), attributes)])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, OrmError::Match(ref error) if error.code().as_str() == "query_plan_key_update"),
+            "batch count={count}: {error:?}"
+        );
+    }
+}

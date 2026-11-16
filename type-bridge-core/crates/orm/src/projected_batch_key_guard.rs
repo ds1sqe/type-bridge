@@ -19,7 +19,6 @@ pub(super) fn build(
     rows: &[(usize, &ProjectedBatchRow)],
 ) -> std::result::Result<Option<KeyGuard>, SdkExecutionDiagnostic> {
     let mut checked = Vec::new();
-    let mut fields = BTreeMap::new();
     for &(ordinal, row) in rows {
         let ProjectedBatchRow::Update { iid, replacement } = row else {
             continue;
@@ -43,11 +42,16 @@ pub(super) fn build(
         if keys.is_empty() {
             continue;
         }
-        for (field, value) in &keys {
-            fields.insert(field.clone(), value.value_type());
-        }
         checked.push((ordinal, iid.clone(), keys));
     }
+    build_checked(authority, model, checked)
+}
+
+fn build_checked(
+    authority: &PlanAuthority,
+    model: &type_bridge_contract::projection::ModelProjection,
+    checked: Vec<(usize, String, BTreeMap<OwnsFactId, CanonicalValue>)>,
+) -> std::result::Result<Option<KeyGuard>, SdkExecutionDiagnostic> {
     if checked.is_empty() {
         return Ok(None);
     }
@@ -57,6 +61,7 @@ pub(super) fn build(
         Vec<StagedPlan>,
         type_bridge_contract::diagnostic::Diagnostic,
     > {
+        let fields = &checked[0].2;
         let mut draft = authority.draft(ValueTransport::Given);
         let ordinal = draft.bind("ordinal")?;
         let actual = draft.bind("actual")?;
@@ -85,8 +90,8 @@ pub(super) fn build(
             ]
         };
         let mut matched_patterns = isa_iid(matched);
-        for (index, (field, domain)) in fields.iter().enumerate() {
-            let input = draft.input(&format!("key{index}"), *domain, false)?;
+        for (index, (field, sample)) in fields.iter().enumerate() {
+            let input = draft.input(&format!("key{index}"), sample.value_type(), false)?;
             let value = draft.bind("key_value")?;
             matched_patterns.extend([
                 QueryPattern::Has {
@@ -189,11 +194,20 @@ pub(super) fn build(
         .structural
         .input_rows
         .min(crate::plan_builders::bulk_write::INDEXED_IID_ROWS);
-    for chunk in checked.chunks(limit) {
+    let mut start = 0;
+    while start < checked.len() {
+        let mut end = start + 1;
+        while end < checked.len()
+            && end - start < limit
+            && checked[end].2.keys().eq(checked[start].2.keys())
+        {
+            end += 1;
+        }
         entries.extend(
-            build(chunk, entries.len())
+            build(&checked[start..end], entries.len())
                 .map_err(crate::execution_diagnostic::lower_remote_query_diagnostic)?,
         );
+        start = end;
     }
     Ok(Some(KeyGuard {
         entries,
@@ -202,4 +216,108 @@ pub(super) fn build(
             .map(|(ordinal, iid, _)| (ordinal, iid))
             .collect(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn composite_key_guards_allow_different_supplied_parts_in_each_row_and_chunk() {
+        use type_bridge_contract::fingerprint::SemanticProfileId;
+        use type_bridge_contract::projection::{
+            BindingTarget, ProjectionConfig, ProjectionHandler,
+        };
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+        let documents = SchemaDocumentSet::parse([(DocumentId::new("composite.yaml").unwrap(), "format: typebridge.schema/v2\nattributes:\n  first-key: { value: string }\n  second-key: { value: string }\nentities:\n  person:\n    owns:\n      first-key: { key: true }\n      second-key: { key: true }\n")]).unwrap();
+        let declared = normalize_documents(&documents).unwrap();
+        let resolved = resolve(
+            &declared,
+            &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+        )
+        .unwrap();
+        let installed = InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Python,
+                &ProjectionConfig::python(),
+                &[ProjectionHandler::python_v1()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let kind = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let authority = installed.plan_authority().unwrap();
+        let rows = (0..130)
+            .map(|index| ProjectedBatchRow::Update {
+                iid: format!("0x{:x}", index + 16),
+                replacement: crate::ProjectedCreate::try_new(
+                    &installed,
+                    kind.clone(),
+                    ["first-key", "second-key"]
+                        .into_iter()
+                        .map(|name| {
+                            (
+                                OwnsFactId::new(
+                                    kind.clone(),
+                                    type_bridge_contract::id::AttributeId::new(name).unwrap(),
+                                )
+                                .unwrap(),
+                                vec![
+                                    crate::ProjectedAttributeValue::try_new(
+                                        &installed,
+                                        TypeId::new(TypeKind::Attribute, name).unwrap(),
+                                        CanonicalValue::String(
+                                            type_bridge_contract::value::CanonicalString::new(
+                                                format!("{name}-{index}"),
+                                            )
+                                            .unwrap(),
+                                        ),
+                                    )
+                                    .unwrap(),
+                                ],
+                            )
+                        })
+                        .collect(),
+                    vec![],
+                )
+                .unwrap(),
+            })
+            .collect::<Vec<_>>();
+        let checked = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let ProjectedBatchRow::Update { iid, replacement } = row else {
+                    unreachable!()
+                };
+                let keys = replacement
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .filter(|(part, _)| (index / 65) % 2 == *part)
+                    .map(|(_, (field, values))| (field.clone(), values[0].value().clone()))
+                    .collect();
+                (index, iid.clone(), keys)
+            })
+            .collect();
+        let guard = build_checked(
+            &authority,
+            installed.projection().models().get(&kind).unwrap(),
+            checked,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(guard.entries.len(), 8);
+        for proof in guard.entries.iter().step_by(2) {
+            assert_eq!(proof.plan().inputs().len(), 3);
+            assert!(
+                proof
+                    .rows()
+                    .iter()
+                    .all(|row| row.values().iter().all(Option::is_some))
+            );
+        }
+    }
 }

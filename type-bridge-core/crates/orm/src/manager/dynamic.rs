@@ -709,24 +709,30 @@ impl<'db> DynamicEntityManager<'db> {
             .map(|(iid, attributes)| (Some(iid.as_str()), attributes, &[][..]))
             .collect::<Vec<_>>();
         let plan = plans.write_many(&self.descriptor.type_name, WriteKind::Update, &inputs)?;
+        let checks = plans.update_key_checks(&self.descriptor.type_name, items)?;
         return self
             .target
-            .write_plan_group(plan, |answer| {
-                group_write_documents(answer, items.len(), &self.descriptor.type_name)?
-                    .iter()
-                    .zip(items)
-                    .map(|(documents, (iid, _))| {
-                        let [document] = documents.as_slice() else {
-                            return Err(snapshot_error(&self.descriptor.type_name));
-                        };
-                        let row = hydrate_dynamic_entity(&self.descriptor, document)?;
-                        if row.iid.as_deref() != Some(iid) {
-                            return Err(snapshot_error(&self.descriptor.type_name));
-                        }
-                        Ok(row)
-                    })
-                    .collect()
-            })
+            .write_plan_group_mapped_checked(
+                plan,
+                checks,
+                |_, answer| Ok(answer),
+                |answer| {
+                    group_write_documents(answer, items.len(), &self.descriptor.type_name)?
+                        .iter()
+                        .zip(items)
+                        .map(|(documents, (iid, _))| {
+                            let [document] = documents.as_slice() else {
+                                return Err(snapshot_error(&self.descriptor.type_name));
+                            };
+                            let row = hydrate_dynamic_entity(&self.descriptor, document)?;
+                            if row.iid.as_deref() != Some(iid) {
+                                return Err(snapshot_error(&self.descriptor.type_name));
+                            }
+                            Ok(row)
+                        })
+                        .collect()
+                },
+            )
             .await;
     }
 
@@ -807,6 +813,14 @@ impl<'db> DynamicEntityManager<'db> {
         let plans = &self.plans;
         let program =
             plans.single_write_program(&self.descriptor.type_name, kind, iid, attributes, &[])?;
+        let checks = if matches!(kind, WriteKind::Update | WriteKind::PartialUpdate) {
+            plans.update_key_checks(
+                &self.descriptor.type_name,
+                &[(iid.unwrap_or_default().to_owned(), attributes.clone())],
+            )?
+        } else {
+            Vec::new()
+        };
         let hydrate = |plan: &BuiltPlan, answer| {
             let written = hydrate_write_rows(
                 plans,
@@ -828,6 +842,12 @@ impl<'db> DynamicEntityManager<'db> {
             }
             Ok(written)
         };
+        let program = match program {
+            ManagerWrite::One(plan) if !checks.is_empty() => ManagerWrite::Pieces(
+                crate::plan_builders::bulk_write::WriteProgram::compact(vec![plan]),
+            ),
+            program => program,
+        };
         match program {
             ManagerWrite::One(plan) => {
                 self.target
@@ -836,8 +856,9 @@ impl<'db> DynamicEntityManager<'db> {
             }
             ManagerWrite::Pieces(program) => {
                 self.target
-                    .write_plan_group_mapped(
+                    .write_plan_group_mapped_checked(
                         program,
+                        checks,
                         |plan, answer| hydrate(plan, answer).map(WriteResult::into_items),
                         |groups| {
                             materialize(WriteResult::new(groups.into_iter().flatten().collect()))
@@ -1214,29 +1235,39 @@ impl<'db> DynamicRelationManager<'db> {
             .map(|(iid, attributes, players)| (Some(iid.as_str()), attributes, players.as_slice()))
             .collect::<Vec<_>>();
         let plan = plans.write_many(&self.descriptor.type_name, WriteKind::Update, &inputs)?;
+        let key_items = items
+            .iter()
+            .map(|(iid, attributes, _)| (iid.clone(), attributes.clone()))
+            .collect::<Vec<_>>();
+        let checks = plans.update_key_checks(&self.descriptor.type_name, &key_items)?;
         return self
             .target
-            .write_plan_group(plan, |answer| {
-                group_write_documents(answer, items.len(), &self.descriptor.type_name)?
-                    .iter()
-                    .zip(items)
-                    .map(|(documents, (iid, _, players))| {
-                        let rows =
-                            coalesce_dynamic_relation_by_iid(&self.descriptor, documents, iid)?;
-                        let [row] = rows.as_slice() else {
-                            return Err(snapshot_error(&self.descriptor.type_name));
-                        };
-                        validate_written_players(
-                            &plans.registry,
-                            true,
-                            &self.descriptor.type_name,
-                            row,
-                            players,
-                        )?;
-                        Ok(row.clone())
-                    })
-                    .collect()
-            })
+            .write_plan_group_mapped_checked(
+                plan,
+                checks,
+                |_, answer| Ok(answer),
+                |answer| {
+                    group_write_documents(answer, items.len(), &self.descriptor.type_name)?
+                        .iter()
+                        .zip(items)
+                        .map(|(documents, (iid, _, players))| {
+                            let rows =
+                                coalesce_dynamic_relation_by_iid(&self.descriptor, documents, iid)?;
+                            let [row] = rows.as_slice() else {
+                                return Err(snapshot_error(&self.descriptor.type_name));
+                            };
+                            validate_written_players(
+                                &plans.registry,
+                                true,
+                                &self.descriptor.type_name,
+                                row,
+                                players,
+                            )?;
+                            Ok(row.clone())
+                        })
+                        .collect()
+                },
+            )
             .await;
     }
 
@@ -1748,6 +1779,14 @@ impl<'db> DynamicRelationManager<'db> {
             attributes,
             role_players,
         )?;
+        let checks = if matches!(kind, WriteKind::Update | WriteKind::PartialUpdate) {
+            plans.update_key_checks(
+                &self.descriptor.type_name,
+                &[(iid.unwrap_or_default().to_owned(), attributes.clone())],
+            )?
+        } else {
+            Vec::new()
+        };
         let hydrate = |plan: &BuiltPlan, answer| {
             let written = hydrate_write_rows(
                 plans,
@@ -1769,6 +1808,12 @@ impl<'db> DynamicRelationManager<'db> {
             }
             Ok(written)
         };
+        let program = match program {
+            ManagerWrite::One(plan) if !checks.is_empty() => ManagerWrite::Pieces(
+                crate::plan_builders::bulk_write::WriteProgram::compact(vec![plan]),
+            ),
+            program => program,
+        };
         match program {
             ManagerWrite::One(plan) => {
                 self.target
@@ -1777,8 +1822,9 @@ impl<'db> DynamicRelationManager<'db> {
             }
             ManagerWrite::Pieces(program) => {
                 self.target
-                    .write_plan_group_mapped(
+                    .write_plan_group_mapped_checked(
                         program,
+                        checks,
                         |plan, answer| hydrate(plan, answer).map(WriteResult::into_items),
                         |groups| {
                             materialize(WriteResult::new(groups.into_iter().flatten().collect()))
@@ -2128,11 +2174,23 @@ impl DynamicExecutionTarget<'_> {
 
     async fn write_plan_group_mapped<T, U>(
         &self,
+        program: crate::plan_builders::bulk_write::WriteProgram,
+        map_step: impl FnMut(&BuiltPlan, PlanAnswer) -> Result<U>,
+        map: impl FnOnce(Vec<U>) -> Result<T>,
+    ) -> Result<T> {
+        self.write_plan_group_mapped_checked(program, Vec::new(), map_step, map)
+            .await
+    }
+
+    async fn write_plan_group_mapped_checked<T, U>(
+        &self,
         mut program: crate::plan_builders::bulk_write::WriteProgram,
+        checks: Vec<(usize, BuiltPlan)>,
         mut map_step: impl FnMut(&BuiltPlan, PlanAnswer) -> Result<U>,
         map: impl FnOnce(Vec<U>) -> Result<T>,
     ) -> Result<T> {
-        if let crate::plan_builders::bulk_write::WriteProgram::Compact(plans) = &program
+        if checks.is_empty()
+            && let crate::plan_builders::bulk_write::WriteProgram::Compact(plans) = &program
             && let [plan] = plans.as_slice()
         {
             return self
@@ -2144,7 +2202,7 @@ impl DynamicExecutionTarget<'_> {
         program = program
             .prepare_static()
             .map_err(crate::plan_builders::manager::diagnostic)?;
-        let statement_count = program.statement_count();
+        let statement_count = program.statement_count().saturating_add(checks.len());
         let (tx, owned) = match self {
             Self::Database(db) => (db.transaction_context(TxType::Write).await?, true),
             Self::Transaction(tx) => (tx.clone(), false),
@@ -2168,6 +2226,7 @@ impl DynamicExecutionTarget<'_> {
             }
             let mut remaining = policy;
             let mut answers = Vec::with_capacity(statement_count);
+            let mut completed = std::collections::BTreeSet::new();
             while let Some(step) = program
                 .next()
                 .map_err(crate::plan_builders::manager::diagnostic)?
@@ -2230,6 +2289,14 @@ impl DynamicExecutionTarget<'_> {
                         .accept_candidates(&step, &answer)
                         .map_err(crate::plan_builders::manager::diagnostic)?;
                 } else if step.complete {
+                    if let PlanAnswer::Documents(documents) = &answer {
+                        completed.extend(documents.iter().map(|document| {
+                            document
+                                .get("ordinal")
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0) as usize
+                        }));
+                    }
                     answers.push(map_step(plan, answer)?);
                 } else if !records_answers {
                     let iid = step
@@ -2241,6 +2308,50 @@ impl DynamicExecutionTarget<'_> {
                 }
                 remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
                 remaining.items = remaining.items.saturating_sub(stats.processed_items);
+            }
+            // Equality guards can omit an existing IID. Diagnose only missing
+            // answers, under the same lease and before materialization/commit.
+            for (ordinal, plan) in &checks {
+                if completed.contains(ordinal) {
+                    continue;
+                }
+                lease.check_plan_provider(plan.local())?;
+                let query = if given {
+                    crate::query_plan_exec::staged_query(plan.local(), true)
+                } else {
+                    crate::query_plan_exec::staged_literal_query(plan.local())
+                }
+                .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+                let bytes = (query.typeql.len() as u64).saturating_add(
+                    query
+                        .rows
+                        .as_ref()
+                        .map(crate::projected_batch_executor::given_rows_bytes)
+                        .transpose()
+                        .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?
+                        .unwrap_or(0),
+                );
+                if bytes > remaining.bytes {
+                    return Err(crate::plan_builders::manager::invalid(
+                        "projected_batch_transport_byte_limit",
+                        "Manager key diagnostic exceeds the captured byte ceiling",
+                    ));
+                }
+                remaining.bytes -= bytes;
+                let limits =
+                    crate::query_plan_exec::plan_answer_limits(remaining, &cancellation, deadline)?;
+                let (answer, stats) = lease
+                    .dispatch_plan_counted(query, limits, Some(plan.local()))
+                    .await?;
+                let answer = TransactionContext::resolve_plan(plan.local(), answer)?;
+                remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
+                remaining.items = remaining.items.saturating_sub(stats.processed_items);
+                if matches!(answer, PlanAnswer::Exists(true)) {
+                    return Err(crate::plan_builders::manager::invalid(
+                        "query_plan_key_update",
+                        "Key ownerships cannot be updated",
+                    ));
+                }
             }
             let value = map(answers)?;
             deadline

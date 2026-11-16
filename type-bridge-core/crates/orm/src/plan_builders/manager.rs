@@ -819,6 +819,42 @@ impl ManagerPlans {
         }
     }
 
+    pub(crate) fn update_key_checks(
+        &self,
+        name: &str,
+        items: &[(String, DynamicAttributeMap)],
+    ) -> Result<Vec<(usize, BuiltPlan)>> {
+        let type_id = self.type_id(name)?;
+        let descriptors = self.attributes(&type_id)?;
+        let mut checks = Vec::new();
+        for (ordinal, (iid, attributes)) in items.iter().enumerate() {
+            let keys = self
+                .fields(&type_id, attributes)?
+                .into_iter()
+                .filter(|(field, _)| {
+                    descriptors.owned_attributes().iter().any(|descriptor| {
+                        descriptor.is_key()
+                            && descriptor.attr_name == field.attribute().label().as_str()
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !keys.is_empty() {
+                checks.push((
+                    ordinal,
+                    super::write::mismatched_keys(
+                        self.authority()?,
+                        self.transport,
+                        &type_id,
+                        super::write::UpdateSelection::Iid(iid),
+                        &keys,
+                    )
+                    .map_err(diagnostic)?,
+                ));
+            }
+        }
+        Ok(checks)
+    }
+
     pub(crate) fn single_write_program(
         &self,
         name: &str,
@@ -1526,11 +1562,7 @@ impl ManagerPlans {
                         })
                         .collect();
                 }
-                let mut fields = self.fields(&type_id, attributes)?;
-                if kind == super::bulk_write::WriteKind::Update {
-                    fields.retain(|(field, _)| !keys.contains(field));
-                }
-                Ok(fields)
+                self.fields(&type_id, attributes)
             })
             .collect::<Result<Vec<_>>>()?;
         let supplied_keys = fields
