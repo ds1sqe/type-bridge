@@ -2002,12 +2002,26 @@ fn unique_authority_temporary_name(name: &str, attempt: u64) -> String {
 fn resolve_credential(
     reference: &type_bridge_workspace::SecretReference,
 ) -> Result<String, String> {
-    std::env::var(reference.environment_variable()).map_err(|_| {
+    resolve_credential_with(reference, |name| std::env::var(name).ok())
+}
+
+fn resolve_credential_with(
+    reference: &type_bridge_workspace::SecretReference,
+    read: impl FnOnce(&str) -> Option<String>,
+) -> Result<String, String> {
+    let value = read(reference.environment_variable()).ok_or_else(|| {
         format!(
             "credential environment variable {:?} is not set",
             reference.environment_variable()
         )
-    })
+    })?;
+    if value.is_empty() {
+        return Err(format!(
+            "credential environment variable {:?} is empty",
+            reference.environment_variable()
+        ));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -2015,6 +2029,18 @@ mod credential_error_redaction_tests {
     use super::*;
     use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
     use type_bridge_typedb_runtime::RuntimeError;
+
+    #[test]
+    fn environment_credentials_refuse_missing_and_empty_values() {
+        let reference =
+            type_bridge_workspace::SecretReference::environment("TEST_CREDENTIAL").unwrap();
+        assert!(resolve_credential_with(&reference, |_| None).is_err());
+        assert!(resolve_credential_with(&reference, |_| Some(String::new())).is_err());
+        assert_eq!(
+            resolve_credential_with(&reference, |_| Some("secret".into())).unwrap(),
+            "secret"
+        );
+    }
 
     const PROVIDER_TEXT: &str =
         "TB_ADDRESS_SECRET TB_USERNAME_SECRET TB_PASSWORD_SECRET TB_PROVIDER_SECRET";
