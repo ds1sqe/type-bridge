@@ -184,6 +184,8 @@ Send JSON with `query`, `kind` (`read`, `write`, or `schema`), a unique
 16–128 character ASCII alphanumeric/hyphen/underscore `nonce`, and finite
 `expires_at_unix_ms`. The default host admission window is 60 seconds;
 embedded hosts configure it with `StagedQueryState::with_admission_window`.
+Raw requests accept the same 60-second positive clock-skew allowance as staged
+requests. Clients cap their delivery window at the advertised server window.
 Authentication uses the same transport headers and host policy chain as
 staged requests. Nonces share the executor's atomic replay store.
 

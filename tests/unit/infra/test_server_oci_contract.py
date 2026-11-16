@@ -99,6 +99,8 @@ def test_server_image_build_and_runtime_are_immutable_and_least_privilege() -> N
         "COPY crates/node/THIRD_PARTY_NOTICES.md /usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md"
         in source
     )
+    permissions = source.split("RUN chmod 0555", 1)[1].split("USER 10001", 1)[0]
+    assert "/usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md" in permissions
     assert "HEALTHCHECK" not in source
     assert "server.toml /app/server.toml" not in source
     assert "apt-get" not in source

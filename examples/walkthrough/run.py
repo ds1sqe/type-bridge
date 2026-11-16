@@ -11,7 +11,11 @@ import time
 import uuid
 from pathlib import Path
 
+from typedb.driver import TransactionOptions, TransactionType
+
 from type_bridge import Database
+from type_bridge.session import _resolve_transport_options
+from type_bridge.typedb_driver import Credentials, TypeDB, create_driver_options
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -38,12 +42,33 @@ def stage_workspace(workspace: Path) -> None:
     )
 
 
-def cleanup_database(
-    db: Database, name: str, failed_child: subprocess.CalledProcessError | None
-) -> None:
+def probe_database(db: Database, name: str) -> None:
+    address, tls, root_ca = _resolve_transport_options(db.address, db.tls, db.tls_root_ca)
+    options = create_driver_options(is_tls_enabled=tls, tls_root_ca=root_ca)
+    options.request_timeout_millis = 1_000
+    options.primary_failover_retries = 0
+    with TypeDB.driver(
+        address,
+        Credentials(
+            db.username if db.username is not None else "admin",
+            db.password if db.password is not None else "password",
+        ),
+        options,
+    ) as driver:
+        with driver.transaction(
+            name,
+            TransactionType.READ,
+            TransactionOptions(
+                transaction_timeout_millis=1_000, schema_lock_acquire_timeout_millis=1_000
+            ),
+        ):
+            pass
+
+
+def cleanup_database(db: Database, name: str, failed_child: BaseException | None) -> None:
     if failed_child is not None:
         print(
-            f"Walkthrough child failed: {failed_child}; database: {name}",
+            f"Walkthrough child failed: {type(failed_child).__name__}: {failed_child}; database: {name}",
             file=sys.stderr,
             flush=True,
         )
@@ -51,8 +76,7 @@ def cleanup_database(
             time.sleep(1)
             try:
                 # A crashed child may leave server transactions closing asynchronously.
-                with db.raw_transaction("read", commit_on_exit=False):
-                    pass
+                probe_database(db, name)
             except Exception as error:
                 if attempt == 2:
                     raise RuntimeError(
@@ -226,7 +250,7 @@ type-bridge = {{ path = "{ROOT / "type-bridge-core/crates/rust"}" }}
             transcript = output / f"{sdk}.jsonl"
             run(command, env=environment, output=transcript)
             transcripts.append(transcript)
-        except subprocess.CalledProcessError as error:
+        except BaseException as error:
             failed_child = error
             raise
         finally:

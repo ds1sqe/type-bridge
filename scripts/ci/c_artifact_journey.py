@@ -939,7 +939,7 @@ def validate_report(
     if report["format"] != FORMAT or report["platform"] != packages.TARGET:
         raise JourneyError("clean-consumer report identity drifted")
     if report["publication-disposition"] != DISPOSITION:
-        raise JourneyError("clean-consumer report widened publication authority")
+        raise JourneyError(f"clean-consumer publication disposition must be {DISPOSITION}")
     expected = {
         "cli": (cli.validate(cli_archive)["artifact-id"], cli.sha256(cli_archive.read_bytes())),
         "runtime": (

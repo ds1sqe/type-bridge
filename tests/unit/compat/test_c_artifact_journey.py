@@ -274,7 +274,7 @@ def test_live_report_rejects_tampered_or_incomplete_evidence(
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("publication-disposition", "supported", "publication authority"),
+        ("publication-disposition", "supported", "publication disposition"),
         ("platform", "aarch64-unknown-linux-gnu", "identity drifted"),
     ],
 )

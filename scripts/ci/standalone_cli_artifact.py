@@ -450,7 +450,7 @@ def validate(archive_path: Path) -> dict[str, Any]:
     if manifest["target"] != TARGET or manifest["filename"] != archive_path.name:
         raise ArtifactError("artifact target or filename drifted")
     if manifest["publication-disposition"] != PUBLICATION_DISPOSITION:
-        raise ArtifactError("artifact publication disposition widened")
+        raise ArtifactError(f"artifact publication disposition must be {PUBLICATION_DISPOSITION}")
     if manifest["semantic-profiles"] != SEMANTIC_PROFILES or manifest["abi"] != "not-applicable":
         raise ArtifactError("artifact semantic profile or ABI classification drifted")
     commit = manifest["source-commit"]

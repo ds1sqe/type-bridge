@@ -75,7 +75,8 @@ COPY LICENSE /usr/share/licenses/type-bridge/LICENSE
 COPY crates/node/THIRD_PARTY_NOTICES.md /usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md
 RUN chmod 0555 /usr/local/bin/type-bridge-server \
     && chmod 0444 /etc/ssl/certs/ca-certificates.crt \
-      /etc/type-bridge/server.toml /usr/share/licenses/type-bridge/LICENSE
+      /etc/type-bridge/server.toml /usr/share/licenses/type-bridge/LICENSE \
+      /usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md
 
 USER 10001:10001
 WORKDIR /

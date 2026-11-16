@@ -89,7 +89,7 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     _require(isinstance(gate, dict) and gate.get("issue") == 189, "#189 gate is missing")
     _require(gate.get("state") == "closed", "#189 state drifted")
     for field in ("landing_authorized", "publication_authorized", "public_support_authorized"):
-        _require(gate.get(field) is True, f"{field} must remain true")
+        _require(gate.get(field) is True, f"closed #189 gate requires {field}=true")
 
     abi = contract.get("abi")
     _require(

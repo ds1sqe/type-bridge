@@ -611,7 +611,7 @@ def validate_runtime(archive: Path) -> dict[str, Any]:
     if manifest.get("sha256") != sha256(files[PurePosixPath(f"lib/{RUNTIME_LIBRARY}")]):
         raise ArtifactError("runtime library digest drifted")
     if manifest.get("publication-disposition") != PUBLICATION_DISPOSITION:
-        raise ArtifactError("runtime publication disposition widened")
+        raise ArtifactError(f"runtime publication disposition must be {PUBLICATION_DISPOSITION}")
     return manifest
 
 
@@ -651,7 +651,7 @@ def validate_generated(archive: Path) -> dict[str, Any]:
     if "type-bridge-abi >= 2.0.0" not in pc:
         raise ArtifactError("generated pkg-config runtime ABI fence drifted")
     if manifest.get("publication-disposition") != PUBLICATION_DISPOSITION:
-        raise ArtifactError("generated publication disposition widened")
+        raise ArtifactError(f"generated publication disposition must be {PUBLICATION_DISPOSITION}")
     return manifest
 
 

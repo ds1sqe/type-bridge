@@ -25,7 +25,9 @@ It writes one JSON-line transcript per SDK under the printed output directory.
 Use `--output path` to choose a new directory, or `--sdk python` (and the other
 SDK names) for a focused run. Each SDK gets a fresh database, which cleanup
 normally deletes by its exact name. After a failed child, the runner prints the
-database name and failure, then tries three delayed fresh read transactions.
+database name and failure, then tries three delayed fresh read transactions. Each probe uses a fresh
+driver with a 1-second request timeout, no failover retries, and a 1-second
+transaction lifetime.
 It deletes only after a read opens and closes successfully, allowing the server
 to release the child's transactions first. If every probe fails, the runner
 leaves the named database and exits nonzero; clean it up after the server has
