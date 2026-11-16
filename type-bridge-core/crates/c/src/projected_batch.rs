@@ -1926,6 +1926,7 @@ plays:
     enum CommitBehavior {
         Success,
         Failure,
+        Conflict,
     }
 
     enum Response {
@@ -2028,6 +2029,11 @@ plays:
             Box::pin(async move {
                 match commit {
                     CommitBehavior::Success => Ok(()),
+                    CommitBehavior::Conflict => Err(ClassifiedCommitError::Driver {
+                        certainty: CommitFailureCertainty::DefinitelyAborted,
+                        message: "[STC2] TypeDB commit rejected: exclusive lock conflict"
+                            .to_owned(),
+                    }),
                     CommitBehavior::Failure => Err(ClassifiedCommitError::Driver {
                         certainty: CommitFailureCertainty::DefinitelyAborted,
                         message: "provider-secret-commit".to_owned(),
@@ -4016,5 +4022,72 @@ plays:
                 .count(),
             15
         );
+    }
+    #[test]
+    fn provider_commit_conflict_reaches_the_c_sdk_failure_accessor() {
+        let package = make_package("batchcommitconflict");
+        let token = model_token(&package, type_id(TypeKind::Entity));
+        let creates = [
+            create(&package, TypeKind::Entity, "alpha", "0x10"),
+            create(&package, TypeKind::Entity, "beta", "0x10"),
+        ];
+        let mut batch = build_batch(
+            &package,
+            &token,
+            TypeKind::Entity,
+            ProjectedBatchOperation::Delete,
+            &creates,
+        );
+        let (database, state) = make_database(
+            &package,
+            responses(TypeKind::Entity, ProjectedBatchOperation::Delete),
+            CommitBehavior::Conflict,
+            None,
+        );
+        let mut result = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: all handles are live and the disjoint output slots are writable.
+        assert_eq!(
+            unsafe {
+                type_bridge_database_projected_batch_execute_v1_impl(
+                    &*database,
+                    batch,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ExecutionFailed
+        );
+        assert!(result.is_null());
+        let mut failure = std::mem::MaybeUninit::<crate::TypeBridgeExecutionFailureV1>::uninit();
+        // SAFETY: the diagnostic is live and the view output is writable.
+        assert_eq!(
+            unsafe {
+                crate::execution_diagnostic::type_bridge_execution_diagnostics_failure_get_v1(
+                    diagnostics,
+                    0,
+                    failure.as_mut_ptr(),
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        // SAFETY: successful accessor initialized the view, which borrows the live diagnostic.
+        let failure = unsafe { failure.assume_init() };
+        assert_eq!(
+            (
+                failure.outcome,
+                failure.phase,
+                failure.reason,
+                failure.lock_kind,
+                failure.retry_safe
+            ),
+            (1, 2, 1, 1, 1)
+        );
+        close_diagnostics(&mut diagnostics);
+        close_batch(&mut batch);
+        let state = state.lock().unwrap();
+        assert_eq!((state.commits, state.rollbacks), (1, 0));
     }
 }

@@ -431,6 +431,7 @@ enum Response {
 enum CommitBehavior {
     Success,
     Failure,
+    Conflict,
 }
 
 struct Backend {
@@ -558,6 +559,10 @@ impl TransactionOps for RecordingTransaction {
         Box::pin(async move {
             match behavior {
                 CommitBehavior::Success => Ok(()),
+                CommitBehavior::Conflict => Err(ClassifiedCommitError::Driver {
+                    certainty: CommitFailureCertainty::DefinitelyAborted,
+                    message: "[STC2] TypeDB commit rejected: exclusive lock conflict".to_owned(),
+                }),
                 CommitBehavior::Failure => Err(ClassifiedCommitError::Driver {
                     certainty: CommitFailureCertainty::DefinitelyAborted,
                     message: "redacted".to_owned(),
@@ -2623,4 +2628,35 @@ async fn invalid_filter_updates_never_invoke_hooks_or_provider() {
     assert_eq!(hook.after.load(Ordering::SeqCst), 0);
     assert!(state.lock().unwrap().opens.is_empty());
     assert!(state.lock().unwrap().calls.is_empty());
+}
+
+#[cfg(feature = "typedb")]
+#[tokio::test]
+async fn provider_commit_conflict_reaches_the_rust_sdk_failure_accessor() {
+    use type_bridge_contract::failure::{Failure, LockKind, Phase, Reason};
+    let (database, state) = fixture(
+        responses(Kind::Entity, Operation::Insert),
+        CommitBehavior::Conflict,
+    );
+    let error = database
+        .entities::<Person>()
+        .insert_many(vec![PersonCreate::named("person")])
+        .await
+        .unwrap_err();
+    assert_eq!(error.category(), ErrorCategory::Transaction);
+    assert_eq!(
+        error.failure(),
+        Some(Failure::Rejected {
+            phase: Phase::Commit,
+            reason: Reason::Conflict {
+                lock: LockKind::Exclusive
+            },
+            op_index: None
+        })
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(
+        (state.commits, state.rollbacks, state.legacy_commits),
+        (1, 0, 0)
+    );
 }

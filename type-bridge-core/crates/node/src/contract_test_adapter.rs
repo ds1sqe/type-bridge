@@ -72,6 +72,8 @@ pub(crate) struct ProjectionRecordingState {
     pub(crate) closes: usize,
     #[serde(skip)]
     commit_failure: Option<CommitFailureCertainty>,
+    #[serde(skip)]
+    commit_conflict: bool,
 }
 
 #[cfg(test)]
@@ -199,10 +201,10 @@ impl TransactionOps for ProjectionRecordingTransaction {
     }
 
     fn commit(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
-        Box::pin(async {
-            Err(OrmError::QueryExecution(
-                "contract recording adapter used the lossy commit path".to_owned(),
-            ))
+        Box::pin(async move {
+            self.commit_classified()
+                .await
+                .map_err(ClassifiedCommitError::into_orm_error)
         })
     }
 
@@ -212,15 +214,20 @@ impl TransactionOps for ProjectionRecordingTransaction {
         let failure = {
             let mut state = self.state.lock().expect("recording state poisoned");
             state.commits += 1;
-            state.commit_failure
+            (state.commit_failure, state.commit_conflict)
         };
         Box::pin(async move {
             match failure {
-                Some(certainty) => Err(ClassifiedCommitError::Driver {
+                (Some(certainty), conflict) => Err(ClassifiedCommitError::Driver {
                     certainty,
-                    message: "contract recording commit failed".to_owned(),
+                    message: if conflict {
+                        "[STC2] TypeDB commit rejected: exclusive lock conflict"
+                    } else {
+                        "contract recording commit failed"
+                    }
+                    .to_owned(),
                 }),
-                None => Ok(()),
+                (None, _) => Ok(()),
             }
         })
     }
@@ -264,9 +271,12 @@ impl ProjectionRecordingFixture {
             .map_err(|error| {
                 Error::new(Status::InvalidArg, format!("invalid responses: {error}"))
             })?;
+        let commit_conflict = commit_failure.as_deref() == Some("conflict");
         let commit_failure = match commit_failure.as_deref() {
             None => None,
-            Some("definitely_aborted") => Some(CommitFailureCertainty::DefinitelyAborted),
+            Some("conflict" | "definitely_aborted") => {
+                Some(CommitFailureCertainty::DefinitelyAborted)
+            }
             Some("unknown") => Some(CommitFailureCertainty::Unknown),
             Some(_) => {
                 return Err(Error::new(
@@ -277,6 +287,7 @@ impl ProjectionRecordingFixture {
         };
         let state = Arc::new(Mutex::new(ProjectionRecordingState {
             commit_failure,
+            commit_conflict,
             ..ProjectionRecordingState::default()
         }));
         let backend = ProjectionRecordingBackend {

@@ -125,3 +125,21 @@ test("native context closes after rollback", () => {
   assert.equal(counters.commits, 0);
   assert.equal(counters.closes, 1);
 });
+
+
+test("provider commit conflict retains typed data through the native Node transaction", () => {
+  const native = loadNative();
+  const fixture = new native.__ProjectionRecordingFixture("[]", native.__newProjectionRecordingAuthority(), "conflict");
+  const transaction = fixture.takeDatabase().transaction("write");
+  assert.throws(() => transaction.commit(), (error) => {
+    const diagnostic = JSON.parse(error.message);
+    assert.equal(diagnostic.failure.phase, "commit");
+    assert.equal(diagnostic.failure.reason, "conflict");
+    assert.equal(diagnostic.failure.lock_kind, "exclusive");
+    assert.equal(diagnostic.failure.retry_safe, true);
+    return true;
+  });
+  const counters = JSON.parse(fixture.countersJson());
+  assert.equal(counters.commits, 1);
+  assert.equal(counters.rollbacks, 0);
+});
