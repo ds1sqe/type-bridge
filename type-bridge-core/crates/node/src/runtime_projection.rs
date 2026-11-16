@@ -9957,12 +9957,19 @@ plays:
             values: BTreeMap::new(),
         })
         .unwrap();
+        let events = (1..=3)
+            .map(|index| {
+                let mut event = event.clone();
+                event["iid"] = Value::String(format!("0xe{index}"));
+                event
+            })
+            .collect();
         let container = serde_json::to_string(&ProjectedWire {
             type_key: canonical_type_key(&container_id).unwrap(),
             form: WireForm::Complete,
             iid: None,
             value: None,
-            values: BTreeMap::from([("item".into(), Value::Array(vec![event; 3]))]),
+            values: BTreeMap::from([("item".into(), Value::Array(events))]),
         })
         .unwrap();
         let manager = manager_without_execution_target(&runtime, container_id);

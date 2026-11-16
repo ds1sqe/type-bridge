@@ -15046,10 +15046,12 @@ def public_state(value):
                                 })
                             })
                             .collect();
-                        let (database, state) = BatchRecordingBackend::fixture(
-                            vec![BatchResponse::Documents(documents)],
-                            fail_commit,
-                        );
+                        let mut responses = vec![BatchResponse::Documents(documents)];
+                        if count == 0 {
+                            responses.push(BatchResponse::Documents(vec![]));
+                        }
+                        let (database, state) =
+                            BatchRecordingBackend::fixture(responses, fail_commit);
                         let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
                         let transaction = borrowed.then(|| {
                             runtime
@@ -15117,7 +15119,7 @@ def public_state(value):
                         }
                         {
                             let state = state.lock().unwrap();
-                            assert_eq!(state.calls.len(), 1);
+                            assert_eq!(state.calls.len(), 1 + usize::from(count == 0));
                             assert_eq!(state.commits, usize::from(!borrowed));
                             assert_eq!(state.legacy_commits, 0);
                         }
@@ -15260,10 +15262,14 @@ def public_state(value):
                                 }
                             })
                             .collect();
-                                let (database, state) = BatchRecordingBackend::fixture(
-                                    vec![BatchResponse::Documents(documents)],
-                                    false,
-                                );
+                                let diagnostic_read =
+                                    count == 0 && operation == ProjectedBatchOperation::Update;
+                                let mut responses = vec![BatchResponse::Documents(documents)];
+                                if diagnostic_read {
+                                    responses.push(BatchResponse::Documents(vec![]));
+                                }
+                                let (database, state) =
+                                    BatchRecordingBackend::fixture(responses, false);
                                 let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
                                 let transaction = borrowed.then(|| {
                                     runtime
@@ -15414,7 +15420,7 @@ def public_state(value):
                                     runtime.block_on(transaction.commit_sdk()).unwrap();
                                 }
                                 let state = state.lock().unwrap();
-                                assert_eq!(state.calls.len(), 1);
+                                assert_eq!(state.calls.len(), 1 + usize::from(diagnostic_read));
                                 assert_eq!(state.commits, 1);
                                 assert_eq!(state.legacy_commits, 0);
                                 assert_eq!(state.rollbacks, 0);
@@ -18526,9 +18532,18 @@ class CyclicFinalizer:
             );
 
             let container_id = id(TypeKind::Relation, "container");
-            let event = construct(&id(TypeKind::Relation, "event"), Vec::new());
-            event.call_method1("attach_runtime_iid", ("0xe1",)).unwrap();
-            let events = PyTuple::new(py, vec![event; 3]).unwrap().into_any();
+            let events = PyTuple::new(
+                py,
+                (1u8..=3).map(|index| {
+                    let event = construct(&id(TypeKind::Relation, "event"), Vec::new());
+                    event
+                        .call_method1("attach_runtime_iid", (format!("0xe{index}"),))
+                        .unwrap();
+                    event
+                }),
+            )
+            .unwrap()
+            .into_any();
             let container = construct(&container_id, vec![("item", events)]);
             assert_eq!(
                 py_lowering_refusal(py, manager(container_id).insert(py, container).unwrap_err()),
