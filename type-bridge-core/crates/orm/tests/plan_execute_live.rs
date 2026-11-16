@@ -4122,3 +4122,68 @@ entities:
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sparse_partial_put_preserves_required_fields_and_later_failure_is_atomic() {
+    use std::sync::Arc;
+    use type_bridge_orm::_manager::DynamicEntityManager;
+    use type_bridge_orm::AttributeValue;
+    let Some(db) = live_database("sparse_required_put").await else {
+        return;
+    };
+    db.execute_raw("define attribute name, value string; attribute age, value integer; attribute department, value string; entity person, owns name @key, owns age @card(1), owns department @card(0..1);", TxType::Schema).await.unwrap();
+    let installed = party_projection_for_schema(
+        r#"format: typebridge.schema/v2
+attributes:
+  name: { value: string }
+  age: { value: integer }
+  department: { value: string }
+entities:
+  person:
+    owns:
+      name: { key: true }
+      age: { card: 1 }
+      department: { card: { min: 0, max: 1 } }
+"#,
+    );
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let manager = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("person").unwrap(),
+    );
+    db.execute_raw("insert $a isa person, has name \"Alice\", has age 30; $b isa person, has name \"Bob\", has age 40;", TxType::Write).await.unwrap();
+    let rows = |age, second: &str| {
+        vec![
+            vec![
+                ("name".into(), AttributeValue::String("Alice".into())),
+                ("age".into(), AttributeValue::Long(age)),
+            ],
+            vec![
+                ("name".into(), AttributeValue::String(second.into())),
+                ("department".into(), AttributeValue::String("kept".into())),
+            ],
+        ]
+    };
+    let first = manager.put_many(&rows(31, "Bob")).await.unwrap();
+    assert_eq!(first.len(), 2);
+    assert!(manager.put_many(&rows(32, "Carol")).await.is_err());
+    let QueryResult::Documents(stored) = db.execute_raw("match $p isa person, has name $name, has age $age; fetch { \"name\": $name, \"age\": $age };", TxType::Read).await.unwrap() else { panic!("stored scalar documents") };
+    let mut values = stored
+        .into_iter()
+        .map(|value| {
+            let name = value["name"].get("value").unwrap_or(&value["name"]);
+            let age = value["age"].get("value").unwrap_or(&value["age"]);
+            (
+                name.as_str().unwrap().to_owned(),
+                age.as_i64()
+                    .or_else(|| age.as_str().and_then(|value| value.parse().ok()))
+                    .unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    values.sort();
+    assert_eq!(values, [("Alice".into(), 31), ("Bob".into(), 40)]);
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}

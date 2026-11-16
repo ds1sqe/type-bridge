@@ -53,6 +53,33 @@ pub(super) fn shape(row: &KeylessRow<'_>) -> Shape {
     }
 }
 
+/// Keep partial-write groups consecutive while reusing the keyless-put shape keys.
+pub(crate) fn consecutive_field_shapes(rows: &[KeylessRow<'_>]) -> Vec<std::ops::Range<usize>> {
+    let fields = rows
+        .iter()
+        .map(|row| {
+            let mut fields = shape(row)
+                .fields
+                .into_iter()
+                .map(|(field, _)| field)
+                .collect::<Vec<_>>();
+            fields.sort();
+            fields.dedup();
+            fields
+        })
+        .collect::<Vec<_>>();
+    let mut start = 0;
+    fields
+        .chunk_by(|left, right| left == right)
+        .map(|group| {
+            let end = start + group.len();
+            let range = start..end;
+            start = end;
+            range
+        })
+        .collect()
+}
+
 fn key_route(reference: &Reference<'_>) -> Option<KeyRoute> {
     match &reference.identity {
         ReferenceIdentity::Iid(_) => None,

@@ -30,6 +30,7 @@ use super::{BuiltPlan, ValueTransport};
 
 #[path = "put_placement.rs"]
 mod placement;
+pub(crate) use placement::consecutive_field_shapes;
 
 /// Build one keyless put answering the matched or inserted thing's
 /// document. Batch rows pass their `ordinal`, answered as a document scalar.

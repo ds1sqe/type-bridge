@@ -210,6 +210,56 @@ pub(crate) fn build_many(
     complete: bool,
     ordinal_offset: usize,
 ) -> Result<Vec<BuiltPlan>, Diagnostic> {
+    match build_many_shape(
+        authority,
+        kind,
+        shape.clone(),
+        rows,
+        complete,
+        ordinal_offset,
+    ) {
+        Err(error)
+            if matches!(kind, WriteKind::PartialPut | WriteKind::PartialUpdate)
+                && error.code().as_str() == "query_plan_required_field_delete" =>
+        {
+            let keyless = rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| super::put::KeylessRow {
+                    ordinal: ordinal_offset + index,
+                    fields: row.fields,
+                    players: row.players,
+                })
+                .collect::<Vec<_>>();
+            let groups = super::put::consecutive_field_shapes(&keyless);
+            if groups.len() <= 1 {
+                return Err(error);
+            }
+            let mut plans = Vec::new();
+            for group in groups {
+                plans.extend(build_many_shape(
+                    authority,
+                    kind,
+                    shape.clone(),
+                    &rows[group.clone()],
+                    complete,
+                    ordinal_offset + group.start,
+                )?);
+            }
+            Ok(plans)
+        }
+        result => result,
+    }
+}
+
+fn build_many_shape(
+    authority: &PlanAuthority,
+    kind: WriteKind,
+    shape: WriteShape<'_>,
+    rows: &[WriteRow<'_>],
+    complete: bool,
+    ordinal_offset: usize,
+) -> Result<Vec<BuiltPlan>, Diagnostic> {
     if rows.is_empty() {
         return Err(invalid(
             "manager_empty_write",
@@ -456,6 +506,16 @@ pub(crate) fn build_many(
             );
         }
         for (field, input) in &conditional_deleted {
+            if matrices
+                .iter()
+                .all(|(fields, _)| fields.get(field).is_some_and(|values| !values.is_empty()))
+            {
+                deleted_fields.push(DeleteItem::Has {
+                    owner: root,
+                    field: field.clone(),
+                });
+                continue;
+            }
             for (route_index, route) in identity_routes.iter().enumerate() {
                 let owner = draft.bind("field_owner")?;
                 let mut alias = vec![
@@ -510,6 +570,13 @@ pub(crate) fn build_many(
     }
     if kind == WriteKind::PartialPut {
         for (field, input) in conditional_deleted {
+            if matrices
+                .iter()
+                .all(|(fields, _)| fields.get(&field).is_some_and(|values| !values.is_empty()))
+            {
+                deleted_fields.push(DeleteItem::Has { owner: root, field });
+                continue;
+            }
             let owner = draft.bind("field_owner")?;
             let mut alias = vec![
                 QueryPattern::Isa {

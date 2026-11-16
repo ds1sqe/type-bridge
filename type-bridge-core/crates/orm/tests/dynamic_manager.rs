@@ -1682,3 +1682,88 @@ async fn native_borrowed_reads_reuse_canonical_context_without_lifecycle_changes
         }
     }
 }
+
+fn sparse_partial_put_items() -> Vec<DynamicAttributeMap> {
+    vec![
+        person_attrs(),
+        vec![("name".into(), AttributeValue::String("Bob".into()))],
+        vec![
+            ("name".into(), AttributeValue::String("Carol".into())),
+            ("age".into(), AttributeValue::Long(25)),
+        ],
+    ]
+}
+
+fn sparse_partial_put_answer(ordinal: usize) -> RecordingResponse {
+    RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({
+        "root0":{"kind":"thing","iid":format!("0x{:x}", 17 + ordinal),"type_id":{"kind":"entity","label":"person"}},
+        "ordinal1":{"kind":"value","value":type_bridge_contract::value::CanonicalValue::Long(ordinal as i64)}
+    })]))
+}
+
+#[tokio::test]
+async fn sparse_partial_put_groups_preserve_order_and_rollback_later_failure() {
+    for fail_second in [false, true] {
+        let (backend, state) = RecordingBackend::new(vec![
+            sparse_partial_put_answer(0),
+            if fail_second {
+                RecordingResponse::Error("later sparse group")
+            } else {
+                sparse_partial_put_answer(1)
+            },
+            sparse_partial_put_answer(2),
+        ]);
+        let db = Database::with_backend(Box::new(backend), "sparse");
+        let result = native_people(&db)
+            .put_many(&sparse_partial_put_items())
+            .await;
+        let state = state.lock().unwrap();
+        assert_eq!(state.opens, [TxType::Write]);
+        assert_eq!(state.queries.len(), if fail_second { 2 } else { 3 });
+        assert_eq!(state.query_modes, vec!["canonical"; state.queries.len()]);
+        assert_eq!(
+            (state.commits, state.rollbacks),
+            if fail_second { (0, 1) } else { (1, 0) }
+        );
+        if fail_second {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap(), ["0x11", "0x12", "0x13"]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn sparse_partial_put_groups_share_statement_and_item_budgets() {
+    for statement_limit in [true, false] {
+        let (backend, state) =
+            RecordingBackend::new((0..3).map(sparse_partial_put_answer).collect());
+        let limits = if statement_limit {
+            QueryExecutionResourceLimits {
+                statements: Some(2),
+                ..Default::default()
+            }
+        } else {
+            QueryExecutionResourceLimits {
+                items: 2,
+                ..Default::default()
+            }
+        };
+        let db = Database::with_backend_answer_limits(Box::new(backend), "sparse", limits);
+        let error = native_people(&db)
+            .put_many(&sparse_partial_put_items())
+            .await
+            .unwrap_err();
+        let expected = if statement_limit {
+            "projected_batch_statement_limit"
+        } else {
+            "processed_item_limit"
+        };
+        assert!(format!("{error:?}").contains(expected), "{error:?}");
+        let state = state.lock().unwrap();
+        assert_eq!((state.commits, state.rollbacks), (0, 1));
+        if statement_limit {
+            assert!(state.queries.is_empty());
+        }
+    }
+}
