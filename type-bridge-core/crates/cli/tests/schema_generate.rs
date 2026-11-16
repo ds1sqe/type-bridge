@@ -717,3 +717,42 @@ fn reserved_member_names_check_and_generate_for_all_configured_targets() {
     assert!(root.join("generated/c/src/models.c").is_file());
 }
 
+#[test]
+fn invalid_schema_diagnostics_keep_code_file_line_and_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("schema/model.yaml"),
+        "format: typebridge.schema/v2\nentities:\n  person:\n    owns: [missing-score]\n",
+    )
+    .unwrap();
+    fs::write(root.join("typebridge.yaml"), "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: diagnostics-check\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: diagnosticscheck\n").unwrap();
+    for args in [
+        vec!["schema", "check"],
+        vec!["schema", "generate"],
+        vec!["migration", "make", "--name", "initial"],
+    ] {
+        let output = run_cli(root, &args);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("model.yaml:4:"), "{error}");
+        assert!(error.contains("unknown_schema_fact_reference"), "{error}");
+        assert!(error.contains("references a declaration that does not exist"), "{error}");
+        assert!(
+            error.contains("["),
+            "stable diagnostic code missing: {error}"
+        );
+        assert!(
+            !error.contains("workspace schema source or semantics are invalid"),
+            "{error}"
+        );
+    }
+    assert!(!root.join("generated").exists());
+    assert!(!root.join("migrations").exists());
+}

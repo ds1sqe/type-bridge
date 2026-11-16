@@ -535,7 +535,7 @@ fn load_workspace(manifest: &PathBuf) -> Result<TypeBridgeWorkspace, String> {
     let extensions = NoExtensions;
     let services = TypeBridgeWorkspaceServices::new(&source, &secrets, &extensions, &available);
     // Services borrow locally, so the workspace is constructed in this scope.
-    TypeBridgeWorkspace::from_located_config(located, &services).map_err(display)
+    TypeBridgeWorkspace::from_located_config(located, &services).map_err(display_workspace)
 }
 
 fn display_schema_diagnostics(
@@ -545,7 +545,7 @@ fn display_schema_diagnostics(
         .iter()
         .map(|entry| {
             let message = entry.diagnostic().to_string();
-            match entry.primary() {
+            let mut rendered = match entry.primary() {
                 Some(span) => format!(
                     "{}:{}:{}: {message}",
                     span.document().as_str(),
@@ -553,7 +553,18 @@ fn display_schema_diagnostics(
                     span.column()
                 ),
                 None => message,
+            };
+            for related in entry.related() {
+                let span = related.span();
+                rendered.push_str(&format!(
+                    "\n  {}:{}:{}: {}",
+                    span.document().as_str(),
+                    span.line(),
+                    span.column(),
+                    related.message()
+                ));
             }
+            rendered
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -569,6 +580,9 @@ fn display(error: impl std::fmt::Display) -> String {
 /// carry the command that resolves them as a `hint` detail, which the plain
 /// `Display` projection omits.
 fn display_workspace(error: TypeBridgeWorkspaceError) -> String {
+    if let TypeBridgeWorkspaceError::Schema(diagnostics) = error {
+        return display_schema_diagnostics(diagnostics);
+    }
     match error.contract() {
         Some(diagnostic) => with_hint(error.to_string(), diagnostic),
         None => error.to_string(),
