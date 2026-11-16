@@ -107,7 +107,9 @@ def manager_stage(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return workspace / "generated"
 
 
-@pytest.mark.parametrize("mode", ["raw-transaction", "manager-transaction", "manager-owned"])
+@pytest.mark.parametrize(
+    "mode", ["raw-transaction", "manager-transaction", "manager-explicit", "manager-owned"]
+)
 def test_ordinary_commit_conflicts_keep_the_commit_exception(
     base: Target, manager_stage: Path, mode: str
 ) -> None:

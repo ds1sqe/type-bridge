@@ -886,8 +886,9 @@ class TransactionContext:
     def commit(self) -> None:
         """Commit the active transaction."""
         if self._native_tx is not None:
-            self._native_tx.commit()
+            # Native commit consumes the context even when the provider rejects it.
             self._native_finalized = True
+            self._native_tx.commit()
             return
         self.transaction.commit()
 

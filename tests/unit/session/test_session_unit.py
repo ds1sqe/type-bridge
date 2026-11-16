@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from type_bridge._native import database_from_core
+from type_bridge.failure import CommitConflict, CommitOutcomeUnknown, CommitRejected
 from type_bridge.session import (
     Connection,
     Database,
@@ -554,6 +555,32 @@ def test_rust_context_rollback_remains_open_for_commit() -> None:
     native.rollback.assert_called_once()
     native.commit.assert_called_once()
     assert not context.transaction.is_open
+
+
+@pytest.mark.parametrize("error_type", [CommitConflict, CommitRejected, CommitOutcomeUnknown])
+@pytest.mark.parametrize("caught_inside", [False, True])
+def test_explicit_commit_failure_survives_context_exit(
+    error_type: type[RuntimeError],
+    caught_inside: bool,
+) -> None:
+    context = TransactionContext(Database(), TransactionType.WRITE)
+    native = MagicMock()
+    context._native_tx = native
+    failure = error_type("commit failed")
+    native.commit.side_effect = failure
+    native.rollback.side_effect = RuntimeError("transaction already consumed")
+    with pytest.raises(error_type) as raised:
+        context.commit()
+    assert raised.value is failure
+    context.__exit__(
+        None if caught_inside else error_type,
+        None if caught_inside else failure,
+        None if caught_inside else failure.__traceback__,
+    )
+    native.commit.assert_called_once()
+    native.rollback.assert_not_called()
+    native.close.assert_called_once()
+    assert context._native_tx is None
 
 
 def test_raw_query_surface_has_only_the_explicit_pair() -> None:

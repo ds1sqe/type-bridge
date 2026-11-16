@@ -455,6 +455,8 @@ def _ordinary_racer(
                     item.stock = generated.Stock(index + 10)
                     manager.update(item)
                     barrier.wait(BARRIER_SECONDS)
+                    if mode == "manager-explicit":
+                        tx.commit()
         return Outcome("committed", matched=(1,))
     except Exception as error:  # noqa: BLE001 - inspect the SDK's actual exception class
         return classify(error)
@@ -472,7 +474,12 @@ def _racer(
 ) -> None:
     outcome = Outcome("error", detail="racer did not finish")
     try:
-        if scenario in ("raw-transaction", "manager-transaction", "manager-owned"):
+        if scenario in (
+            "raw-transaction",
+            "manager-transaction",
+            "manager-explicit",
+            "manager-owned",
+        ):
             outcome = _ordinary_racer(target, scenario, index, barrier, manager_stage)
             return
         db = connect(target)
