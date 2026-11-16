@@ -3177,6 +3177,53 @@ def test_sdk_serialization_live(
     person_manager.delete(person)
 
 
+def test_generated_temporal_fidelity_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    person: Any = _make_generated_person(generated, "temporal-fidelity", 1)
+    person.val_date = generated.ValDate("-0001-01-01")
+    person.val_datetime = generated.ValDatetime("2024-01-01T00:00:00.123456789")
+    person.val_datetime_tz = generated.ValDatetimeTz(
+        "2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]"
+    )
+    person.val_duration = generated.ValDuration("P1M")
+    person.val_decimal = generated.ValDecimal(Decimal("3.5"))
+    people.insert(person)
+    assert person.iid is not None
+    query = (
+        'match $p isa person, has identifier "temporal-fidelity", '
+        "has val_datetime $d, has val_datetime_tz $z, has val_date $day, "
+        'has val_duration $duration; fetch {"d": $d, "z": $z, "day": $day, "duration": $duration};'
+    )
+    before = clean_db.execute_query(query)
+    stored = people.get_by_iid(person.iid)
+    assert stored is not None
+    assert stored.val_datetime.canonical == person.val_datetime.canonical
+    assert stored.val_datetime_tz.canonical == person.val_datetime_tz.canonical
+    assert stored.val_date.canonical == "-0001-01-01"
+    assert stored.val_duration.canonical == "P1M"
+    assert stored.val_decimal.value == Decimal("3.5")
+    for attribute in (
+        stored.val_datetime,
+        stored.val_datetime_tz,
+        stored.val_date,
+        stored.val_duration,
+    ):
+        with pytest.raises(ValueError, match="canonical"):
+            _ = attribute.value
+    stored.score = generated.Score(2)
+    people.update(stored)
+    assert clean_db.execute_query(query) == before
+    people.put(stored)
+    assert clean_db.execute_query(query) == before
+    assert people.get_by_iid(person.iid).score.value == 2
+
+
 def test_generated_filter_reads_uncommitted_writes_live(
     clean_db: Database,
     generated_package: ModuleType,

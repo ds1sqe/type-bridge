@@ -745,21 +745,35 @@ fn render_attribute_constructor(
         .declaration()
         .value_type()
         .ok_or_else(|| facet_error("attribute projection has no scalar value type"))?;
+    let temporal = matches!(
+        value_type,
+        ValueTypeTag::Date
+            | ValueTypeTag::DateTime
+            | ValueTypeTag::DateTimeTz
+            | ValueTypeTag::Duration
+    );
+    let scalar = scalar_type(value_type);
+    let input = if temporal {
+        format!("{scalar} | str")
+    } else {
+        scalar.to_owned()
+    };
     if stub {
-        let scalar = scalar_type(value_type);
         let _ = writeln!(
             output,
             "    @property\n    def value(self) -> {scalar}: ..."
         );
+        if temporal {
+            output.push_str("    @property\n    def canonical(self) -> str: ...\n");
+        }
         let _ = writeln!(
             output,
-            "    def __init__(self, value: {scalar}) -> None: ..."
+            "    def __init__(self, value: {input}) -> None: ..."
         );
     } else {
-        let scalar = scalar_type(value_type);
         let _ = writeln!(
             output,
-            "    def __init__(self, value: {scalar}) -> None:\n        _initialize_attribute(self, value, \"{}\")",
+            "    def __init__(self, value: {input}) -> None:\n        _initialize_attribute(self, value, \"{}\")",
             scalar_tag(value_type)
         );
     }

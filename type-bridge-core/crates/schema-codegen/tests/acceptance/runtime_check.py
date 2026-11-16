@@ -2089,3 +2089,30 @@ assert _built.writes()
 assert json.loads(_built.canonical_bytes())["bindings"][0]["variable"] == "person"
 
 _emit_sdk_models_package_proof_fragment()
+
+# Temporal wrappers retain canonical text independently of the native view.
+for attribute_class, text in (
+    (ValDate, "-0001-01-01"),
+    (ValDatetime, "2024-01-01T00:00:00.123456789"),
+    (ValDatetimeTz, "2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]"),
+    (ValDuration, "P1M"),
+    (ValDuration, "PT0.000000001S"),
+):
+    attribute = attribute_class(text)
+    assert attribute.canonical == text
+    try:
+        attribute.value
+    except ValueError as error:
+        assert "canonical" in str(error)
+    else:
+        raise AssertionError("unrepresentable temporal native view must be explicit")
+    decoded = attribute_class.decode_attribute(attribute.encode_attribute())
+    assert decoded.canonical == text
+precision_person = make_person(
+    "temporal-precision",
+    val_datetime=ValDatetime("2024-01-01T00:00:00.123456789"),
+    val_datetime_tz=ValDatetimeTz("2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]"),
+)
+precision_decoded = Person.decode_create(precision_person.encode_create())
+assert precision_decoded.val_datetime.canonical == precision_person.val_datetime.canonical
+assert precision_decoded.val_datetime_tz.canonical == precision_person.val_datetime_tz.canonical

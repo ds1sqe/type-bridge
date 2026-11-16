@@ -36,7 +36,9 @@ use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration, CanonicalTime,
     MAX_TIME_ZONE_NAME_BYTES, TimeZoneDesignator,
 };
-use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue};
+use type_bridge_contract::value::{
+    CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
+};
 use type_bridge_orm::_attribute::ValueType;
 use type_bridge_orm::_descriptor::{OwnedAttributeDescriptor, RoleDescriptor, TypeDescriptor};
 #[cfg(test)]
@@ -1438,9 +1440,12 @@ impl AuthoredPlanProjection {
                 let values = proof
                     .columns()
                     .iter()
-                    .map(|binding| match proof.cell(index, *binding) {
+                    .enumerate()
+                    .map(|(column, binding)| match proof.cell(index, *binding) {
                         Some(type_bridge_orm::match_request::PlanFetchCell::Scalar(value)) => {
-                            hydration.projected_to_py(py, value, None, &pool)
+                            hydration
+                                .projected_to_py(py, value, None, &pool)
+                                .map_err(|error| scalar_native_error(py, value, column, error))
                         }
                         Some(type_bridge_orm::match_request::PlanFetchCell::Model {
                             row,
@@ -1793,6 +1798,76 @@ impl PyRuntimeProjection {
             .map_err(py_sdk_diagnostic)
     }
 
+    /// Convert stored temporal text only when the caller requests the native view.
+    fn attribute_native_value(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        value: Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let id = self.package.model_id_for_class(py, &model)?;
+        let domain = self
+            .package
+            .projection
+            .projection()
+            .models()
+            .get(&id)
+            .and_then(|model| model.declaration().value_type())
+            .ok_or_else(|| py_type_error("native attribute view requires an attribute class"))?;
+        if !is_temporal_domain(ValueType::from(domain)) || !value.is_exact_instance_of::<PyString>()
+        {
+            return Ok(value.unbind());
+        }
+        let canonical = parse_temporal_text(ValueType::from(domain), value.extract::<String>()?)?;
+        let native = if let CanonicalValue::DateTimeTz(_) = &canonical {
+            datetime_tz_to_py(
+                py,
+                &canonical_temporal_text(&canonical).unwrap(),
+                self.package.named_zone_marker.as_ref(),
+            )
+        } else {
+            let hydration = ProjectedScalarHydration::capture(py)?;
+            let pool = BatchHydrationPool::try_new(&[]).map_err(py_sdk_diagnostic)?;
+            hydration.projected_to_py(py, &canonical, None, &pool)
+        };
+        native.map_err(|error| {
+            if error.is_instance_of::<pyo3::exceptions::PyValueError>(py) {
+                py_value_error(format!("{}: {error}", id.label().as_str()))
+            } else {
+                error
+            }
+        })
+    }
+
+    /// Exact temporal text retained by a generated attribute wrapper.
+    fn attribute_canonical_text(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        value: Bound<'_, PyAny>,
+    ) -> PyResult<Option<String>> {
+        let id = self.package.model_id_for_class(py, &model)?;
+        let domain = self
+            .package
+            .projection
+            .projection()
+            .models()
+            .get(&id)
+            .and_then(|model| model.declaration().value_type())
+            .ok_or_else(|| py_type_error("canonical attribute view requires an attribute class"))?;
+        if !is_temporal_domain(ValueType::from(domain)) {
+            return Ok(None);
+        }
+        let value = canonical_attribute_value_from_py(
+            py,
+            &value,
+            ValueType::from(domain),
+            self.package.named_zone_marker.as_ref(),
+        )?;
+        let canonical = canonical_struct_scalar(value)?;
+        Ok(canonical_temporal_text(&canonical))
+    }
+
     /// Validate one exact generated owned-field value through the Rust projection contract.
     fn validate_field_value(
         &self,
@@ -1926,7 +2001,7 @@ impl PyRuntimeProjection {
                 "canonical attribute has the wrong exact generated type",
             ));
         }
-        let scalar = attribute_value_to_py(
+        let scalar = attribute_storage_to_py(
             py,
             &value.to_attribute_value(),
             self.package.named_zone_marker.as_ref(),
@@ -3914,16 +3989,9 @@ fn add_projected_attribute_pool_objects<'a>(
     total: &mut usize,
     values: impl Iterator<Item = &'a ProjectedAttributeValue>,
 ) -> Result<(), SdkExecutionDiagnostic> {
-    for value in values {
-        let named_zone = matches!(
-            value.value(),
-            CanonicalValue::DateTimeTz(value)
-                if matches!(value.zone(), TimeZoneDesignator::Named(_))
-        );
-        *total = total
-            .checked_add(1 + usize::from(named_zone))
-            .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
-    }
+    *total = total
+        .checked_add(values.count())
+        .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
     Ok(())
 }
 
@@ -5281,6 +5349,11 @@ impl ProjectedScalarHydration {
 
     fn date_from_canonical(&self, py: Python<'_>, value: CanonicalDate) -> PyResult<Py<PyAny>> {
         let (year, month, day) = value.components();
+        if !(1..=9999).contains(&year) {
+            return Err(py_value_error(
+                "date native view is outside Python's year range; select the attribute/model and use .canonical",
+            ));
+        }
         let year = fallible_python_i64(py, i64::from(year))?;
         let month = fallible_python_i64(py, i64::from(month))?;
         let day = fallible_python_i64(py, i64::from(day))?;
@@ -5301,9 +5374,9 @@ impl ProjectedScalarHydration {
     ) -> PyResult<Py<PyAny>> {
         let (year, month, day) = value.date().components();
         let (hour, minute, second, nanosecond) = value.time().components();
-        if nanosecond % 1_000 != 0 {
+        if !(1..=9999).contains(&year) || nanosecond % 1_000 != 0 {
             return Err(py_value_error(
-                "datetime hydration requires microsecond precision",
+                "datetime native view requires years 1..9999 and microsecond precision; select the attribute/model and use .canonical",
             ));
         }
         let year = fallible_python_i64(py, i64::from(year))?;
@@ -5359,9 +5432,9 @@ impl ProjectedScalarHydration {
         value: CanonicalDuration,
     ) -> PyResult<Py<PyAny>> {
         let (negative, months, days, seconds, nanosecond) = value.components();
-        if negative || months != 0 || nanosecond % 1_000 != 0 {
+        if negative || months != 0 || nanosecond % 1_000 != 0 || days > 999_999_999 || seconds / 86_400 > 999_999_999 - days {
             return Err(py_value_error(
-                "duration hydration requires a nonnegative day-time value at microsecond precision",
+                "duration native view requires a nonnegative day-time value at microsecond precision; select the attribute/model and use .canonical",
             ));
         }
         let days = i64::try_from(days)
@@ -5384,12 +5457,12 @@ impl ProjectedScalarHydration {
             self.timedelta_from_components(py, 0, i64::from(value.effective_offset_seconds()), 0)?;
         let offset = offset.into_bound(py);
         let timezone = match value.zone() {
-            TimeZoneDesignator::Named(zone) => named_zone
-                .ok_or_else(|| {
-                    py_runtime_error("named-zone hydration requires installed successor slots")
-                })?
+            TimeZoneDesignator::Named(zone) if named_zone.is_some() => named_zone
+                .expect("guarded named-zone slots")
                 .allocate(py, offset.clone(), zone, pool)?,
-            TimeZoneDesignator::Utc | TimeZoneDesignator::OffsetSeconds(_) => {
+            TimeZoneDesignator::Named(_)
+            | TimeZoneDesignator::Utc
+            | TimeZoneDesignator::OffsetSeconds(_) => {
                 let timezone = self.timezone_type.bind(py).call1((offset,))?;
                 if !timezone.get_type().is(self.timezone_type.bind(py)) {
                     return Err(py_runtime_error(
@@ -7843,7 +7916,7 @@ fn hydrate_attribute(
         .map_err(py_sdk_diagnostic)?;
     }
     let class = package.class(id, ProjectedModelForm::Complete)?;
-    let scalar = attribute_value_to_py(py, value, package.named_zone_marker.as_ref())?;
+    let scalar = attribute_storage_to_py(py, value, package.named_zone_marker.as_ref())?;
     class.bind(py).call1((scalar,)).map(Bound::unbind)
 }
 
@@ -7870,12 +7943,16 @@ fn hydrate_projected_attribute_callback_free(
         .scalar_hydration
         .as_ref()
         .ok_or_else(|| py_runtime_error("successor scalar hydration plan was not installed"))?;
-    let scalar = scalar_hydration.projected_to_py(
-        py,
-        value.value(),
-        package.named_zone_slots.as_ref(),
-        pool,
-    )?;
+    let scalar = if let Some(text) = canonical_temporal_text(value.value()) {
+        fallible_python_string(py, &text)?
+    } else {
+        scalar_hydration.projected_to_py(
+            py,
+            value.value(),
+            package.named_zone_slots.as_ref(),
+            pool,
+        )?
+    };
     let values = fallible_python_dict(py)?;
     let iid = py.None();
     package
@@ -8019,6 +8096,9 @@ fn canonical_projected_value_from_py_at(
     operation_path: &[SdkDiagnosticPathSegment],
 ) -> PyResult<CanonicalValue> {
     let wrong = || py_sdk_diagnostic(wrong_scalar_diagnostic(operation_path));
+    if is_temporal_domain(value_type) && value.is_exact_instance_of::<PyString>() {
+        return parse_temporal_text(value_type, value.extract()?).map_err(|_| wrong());
+    }
     match value_type {
         ValueType::String => {
             let text = value.cast_exact::<PyString>().map_err(|_| wrong())?;
@@ -8291,6 +8371,22 @@ fn canonical_projected_decimal(
     DecimalValue::new(text).map_err(|_| wrong())
 }
 
+fn scalar_native_error(
+    py: Python<'_>,
+    value: &CanonicalValue,
+    column: usize,
+    error: PyErr,
+) -> PyErr {
+    if error.is_instance_of::<pyo3::exceptions::PyValueError>(py) {
+        py_value_error(format!(
+            "{} scalar column {column}: {error}",
+            value.value_type().as_str()
+        ))
+    } else {
+        error
+    }
+}
+
 pub(crate) fn canonical_plan_scalar_rows(
     py: Python<'_>,
     rows: &[Vec<CanonicalValue>],
@@ -8302,7 +8398,12 @@ pub(crate) fn canonical_plan_scalar_rows(
         .map(|row| {
             let values = row
                 .iter()
-                .map(|value| hydration.projected_to_py(py, value, None, &pool))
+                .enumerate()
+                .map(|(column, value)| {
+                    hydration
+                        .projected_to_py(py, value, None, &pool)
+                        .map_err(|error| scalar_native_error(py, value, column, error))
+                })
                 .collect::<PyResult<Vec<_>>>()?;
             Ok(PyTuple::new(py, values)?.into_any().unbind())
         })
@@ -8370,6 +8471,19 @@ fn canonical_attribute_value_from_py_at(
             .map_err(|_| py_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
         retained.push_str(value);
         return Ok(AttributeValue::String(retained));
+    }
+    if is_temporal_domain(value_type) && value.is_exact_instance_of::<PyString>() {
+        let text = value.extract::<String>()?;
+        let canonical = parse_temporal_text(value_type, text)?;
+        return Ok(match canonical {
+            CanonicalValue::Date(value) => AttributeValue::Date(value.to_string()),
+            CanonicalValue::DateTime(value) => AttributeValue::DateTime(value.to_string()),
+            CanonicalValue::DateTimeTz(ref value) => AttributeValue::DateTimeTZ(
+                canonical_temporal_text(&CanonicalValue::DateTimeTz(value.clone())).unwrap(),
+            ),
+            CanonicalValue::Duration(value) => AttributeValue::Duration(value.to_string()),
+            _ => unreachable!("temporal input has a temporal canonical value"),
+        });
     }
     let value = match value_type {
         ValueType::DateTimeTz if named_zone_marker.is_some() => {
@@ -8469,6 +8583,7 @@ fn canonical_python_datetime(value: &str, timezone_required: bool) -> String {
     }
 }
 
+
 fn exact_module_value_string(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -8538,6 +8653,69 @@ fn ensure_attribute_type(value: &AttributeValue, expected: ValueType) -> PyResul
     }
 }
 
+fn is_temporal_domain(value_type: ValueType) -> bool {
+    matches!(
+        value_type,
+        ValueType::Date | ValueType::DateTime | ValueType::DateTimeTz | ValueType::Duration
+    )
+}
+
+fn parse_temporal_text(value_type: ValueType, text: String) -> PyResult<CanonicalValue> {
+    if value_type == ValueType::DateTimeTz {
+        return type_bridge_schema::parse_provider_datetime_tz_evidence(&text)
+            .map(CanonicalValue::DateTimeTz)
+            .map_err(py_diagnostic);
+    }
+    let domain = match value_type {
+        ValueType::Date => ValueTypeTag::Date,
+        ValueType::DateTime => ValueTypeTag::DateTime,
+        ValueType::Duration => ValueTypeTag::Duration,
+        _ => return Err(py_type_error("expected a temporal attribute domain")),
+    };
+    type_bridge_orm::plan_scalar::plan_scalar(
+        domain,
+        type_bridge_orm::plan_scalar::PlanScalarInput::Text(text),
+    )
+    .map_err(py_diagnostic)
+}
+
+fn canonical_temporal_text(value: &CanonicalValue) -> Option<String> {
+    Some(match value {
+        CanonicalValue::Date(value) => value.to_string(),
+        CanonicalValue::DateTime(value) => value.to_string(),
+        CanonicalValue::DateTimeTz(value) => match value.zone() {
+            TimeZoneDesignator::Named(name) => {
+                let seconds = value.effective_offset_seconds();
+                let zone = if seconds == 0 {
+                    TimeZoneDesignator::Utc
+                } else {
+                    TimeZoneDesignator::OffsetSeconds(seconds)
+                };
+                let fixed =
+                    CanonicalDateTimeTz::new_fixed(value.local(), zone).expect("validated offset");
+                format!("{fixed}[{name}]")
+            }
+            _ => value.to_string(),
+        },
+        CanonicalValue::Duration(value) => value.to_string(),
+        _ => return None,
+    })
+}
+
+fn attribute_storage_to_py(
+    py: Python<'_>,
+    value: &AttributeValue,
+    named_zone_marker: Option<&Py<PyType>>,
+) -> PyResult<Py<PyAny>> {
+    match value {
+        AttributeValue::Date(text)
+        | AttributeValue::DateTime(text)
+        | AttributeValue::DateTimeTZ(text)
+        | AttributeValue::Duration(text) => fallible_python_string(py, text),
+        _ => attribute_value_to_py(py, value, named_zone_marker),
+    }
+}
+
 fn attribute_value_to_py(
     py: Python<'_>,
     value: &AttributeValue,
@@ -8561,11 +8739,8 @@ fn attribute_value_to_py(
             .getattr("date")?
             .call_method1("fromisoformat", (value,))
             .map(Bound::unbind),
-        AttributeValue::DateTime(value) => py
-            .import("datetime")?
-            .getattr("datetime")?
-            .call_method1("fromisoformat", (value,))
-            .map(Bound::unbind),
+        AttributeValue::DateTime(value) => ProjectedScalarHydration::capture(py)?
+            .datetime_from_canonical(py, value.parse().map_err(py_diagnostic)?),
         AttributeValue::DateTimeTZ(value) if named_zone_marker.is_some() => {
             datetime_tz_to_py(py, value, named_zone_marker)
         }
@@ -8644,6 +8819,12 @@ fn datetime_tz_to_py(
 ) -> PyResult<Py<PyAny>> {
     let canonical =
         type_bridge_schema::parse_provider_datetime_tz_evidence(value).map_err(py_diagnostic)?;
+    let (year, _, _) = canonical.local().date().components();
+    if !(1..=9999).contains(&year) || canonical.local().time().components().3 % 1000 != 0 {
+        return Err(py_value_error(
+            "datetime-tz native view requires years 1..9999 and microsecond precision; select the attribute/model and use .canonical",
+        ));
+    }
     let TimeZoneDesignator::Named(zone) = canonical.zone() else {
         return py
             .import("datetime")?
@@ -8671,7 +8852,7 @@ fn datetime_tz_to_py(
 fn duration_to_py(py: Python<'_>, value: &str) -> PyResult<Py<PyAny>> {
     let (days, seconds, micros) = parse_python_day_time_duration(value).ok_or_else(|| {
         py_value_error(
-            "duration hydration requires a nonnegative day-time value at microsecond precision",
+            "duration native view requires a day-time value within timedelta range at microsecond precision; select the attribute/model and use .canonical",
         )
     })?;
     py.import("datetime")?
@@ -9855,6 +10036,137 @@ plays:
             let actual = attribute_value_from_py(py, &value, ValueType::Duration).unwrap();
             assert_eq!(actual, AttributeValue::Duration("PT3S".into()));
             canonical_struct_scalar(actual).unwrap();
+        });
+    }
+
+
+    #[test]
+    fn scalar_only_temporal_precision_errors_name_domain_and_column() {
+        Python::initialize();
+        Python::attach(|py| {
+            let value = CanonicalValue::DateTime("2024-01-01T00:00:00.123456789".parse().unwrap());
+            let error = canonical_plan_scalar_rows(py, &[vec![CanonicalValue::Long(1), value]])
+                .unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("datetime scalar column 1"), "{message}");
+            assert!(message.contains(".canonical"), "{message}");
+        });
+    }
+
+
+    #[test]
+    fn named_timezone_wrapper_storage_uses_one_pool_object_and_a_lazy_native_view() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (_, package) = install_ordered_schema(
+                py,
+                r#"format: typebridge.schema/v2
+attributes:
+  observed: { value: datetime-tz }
+entities:
+  event:
+    owns:
+      observed:
+        card: { min: 0, max: 2 }
+        ordered: true
+"#,
+            );
+            let id = TypeId::new(TypeKind::Attribute, "observed").unwrap();
+            let event = TypeId::new(TypeKind::Entity, "event").unwrap();
+            let canonical = parse_temporal_text(
+                ValueType::DateTimeTz,
+                "2024-01-01T00:00:00.123456+09:00[Asia/Seoul]".into(),
+            )
+            .unwrap();
+            let value =
+                ProjectedAttributeValue::try_new(&package.projection, id.clone(), canonical)
+                    .unwrap();
+            let TypeDescriptor::Entity(descriptor) = package.projection.descriptor(&event).unwrap()
+            else {
+                panic!("entity");
+            };
+            let pool = BatchHydrationPool::try_new(&[]).unwrap();
+            pool.reserve_exact(1).unwrap();
+            let wrapper = hydrate_projected_attribute_callback_free(
+                py,
+                &package,
+                &descriptor.owned_attributes[0],
+                &value,
+                &pool,
+            )
+            .unwrap();
+            pool.verify_fully_consumed().unwrap();
+            let storage = wrapper
+                .bind(py)
+                .call_method0("runtime_attribute_value")
+                .unwrap();
+            let class = package
+                .class(&id, ProjectedModelForm::Complete)
+                .unwrap()
+                .clone_ref(py);
+            let runtime = PyRuntimeProjection { package };
+            assert_eq!(
+                runtime
+                    .attribute_canonical_text(py, class.clone_ref(py), storage.clone())
+                    .unwrap()
+                    .unwrap(),
+                "2024-01-01T00:00:00.123456+09:00[Asia/Seoul]"
+            );
+            let native = runtime.attribute_native_value(py, class, storage).unwrap();
+            assert_eq!(
+                native
+                    .bind(py)
+                    .call_method0("isoformat")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "2024-01-01T00:00:00.123456+09:00"
+            );
+        });
+    }
+
+    #[test]
+    fn temporal_attribute_storage_preserves_values_outside_native_domain() {
+        Python::initialize();
+        Python::attach(|py| {
+            let hydration = ProjectedScalarHydration::capture(py).unwrap();
+            let pool = BatchHydrationPool::try_new(&[]).unwrap();
+            for (domain, value) in [
+                (ValueType::Date, AttributeValue::Date("-0001-01-01".into())),
+                (
+                    ValueType::DateTime,
+                    AttributeValue::DateTime("2024-01-01T00:00:00.123456789".into()),
+                ),
+                (
+                    ValueType::DateTimeTz,
+                    AttributeValue::DateTimeTZ(
+                        "2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]".into(),
+                    ),
+                ),
+                (ValueType::Duration, AttributeValue::Duration("P1M".into())),
+                (
+                    ValueType::Duration,
+                    AttributeValue::Duration("PT0.000000001S".into()),
+                ),
+            ] {
+                let storage = attribute_storage_to_py(py, &value, None).unwrap();
+                let restored = canonical_projected_value_from_py_at(
+                    py,
+                    storage.bind(py),
+                    domain,
+                    &hydration,
+                    None,
+                    None,
+                    &[],
+                )
+                .unwrap();
+                let canonical = canonical_struct_scalar(value).unwrap();
+                assert_eq!(restored, canonical);
+                let error = hydration
+                    .projected_to_py(py, &canonical, None, &pool)
+                    .unwrap_err();
+                assert!(error.to_string().contains(".canonical"), "{error}");
+            }
         });
     }
 
@@ -17222,7 +17534,7 @@ entities:
                 [&named_zone, &fixed_zone].into_iter(),
             )
             .unwrap();
-            assert_eq!(named_zone_count, 3);
+            assert_eq!(named_zone_count, 2);
 
             let original = batch_person(
                 py,

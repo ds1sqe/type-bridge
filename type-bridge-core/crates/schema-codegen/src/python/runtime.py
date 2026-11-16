@@ -655,7 +655,21 @@ class AttributeBase(ModelBase):
 
     @property
     def value(self) -> object:
-        return self._attribute_value
+        if (
+            type(self._attribute_value) is not str
+            or _mapping(self.__projection__["declaration"])["value_type"] == "string"
+        ):
+            return self._attribute_value
+        return type(self).__runtime_projection__.attribute_native_value(
+            type(self), self._attribute_value
+        )
+
+    @property
+    def canonical(self) -> str | None:
+        """Exact temporal text, independent of the native view's precision."""
+        return type(self).__runtime_projection__.attribute_canonical_text(
+            type(self), self._attribute_value
+        )
 
     def runtime_attribute_value(self) -> object:
         return self._attribute_value
@@ -1104,6 +1118,8 @@ def _matches_projected(
 
 
 def _matches_scalar(value: object, scalar: str) -> bool:
+    if scalar in {"date", "datetime", "datetime_tz", "duration"} and type(value) is str:
+        return True
     if scalar == "string":
         return isinstance(value, str)
     if scalar == "long":
