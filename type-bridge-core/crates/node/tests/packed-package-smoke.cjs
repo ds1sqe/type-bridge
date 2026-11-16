@@ -142,6 +142,31 @@ function verifyPackedArtifact(artifactDirectory) {
     assert.ifError(install.error);
     assert.equal(install.status, 0, install.stderr || install.stdout);
 
+    fs.writeFileSync(path.join(stage, "consumer.ts"), `
+import { Database, type TimeoutMilliseconds } from "@type-bridge/node";
+import { QueryExecutionResourceLimits } from "@type-bridge/node/runtime-projection";
+const signal: AbortSignal = new AbortController().signal;
+const timeout: TimeoutMilliseconds = 30000;
+const limits = new QueryExecutionResourceLimits({ timeoutMilliseconds: timeout });
+declare const database: Database;
+database.databaseExistsControlled({ timeoutMilliseconds: 0n });
+void signal;
+void limits;
+`);
+    fs.writeFileSync(path.join(stage, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        target: "ES2022", lib: ["ES2022"], types: [], module: "NodeNext",
+        moduleResolution: "NodeNext", strict: true, skipLibCheck: false, noEmit: true,
+      },
+      include: ["consumer.ts"],
+    }));
+    const typecheck = spawnSync(process.execPath, [
+      path.resolve(__dirname, "../node_modules/typescript/bin/tsc"),
+      "--project", path.join(stage, "tsconfig.json"),
+    ], { encoding: "utf8", shell: false });
+    assert.ifError(typecheck.error);
+    assert.equal(typecheck.status, 0, typecheck.stderr || typecheck.stdout);
+
     // Native modules remain locked for the lifetime of their Node process on
     // Windows. Load and inspect the installed package in a child so the DLL is
     // unloaded before this parent removes the isolated installation.
