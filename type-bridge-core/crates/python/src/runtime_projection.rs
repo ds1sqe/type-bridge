@@ -1819,16 +1819,40 @@ impl PyRuntimeProjection {
             return Ok(value.unbind());
         }
         let canonical = parse_temporal_text(ValueType::from(domain), value.extract::<String>()?)?;
-        let native = if let CanonicalValue::DateTimeTz(_) = &canonical {
+        let native = if matches!(&canonical, CanonicalValue::DateTimeTz(_))
+            && self.package.scalar_hydration.is_none()
+        {
             datetime_tz_to_py(
                 py,
                 &canonical_temporal_text(&canonical).unwrap(),
                 self.package.named_zone_marker.as_ref(),
             )
         } else {
-            let hydration = ProjectedScalarHydration::capture(py)?;
+            let temporary;
+            let hydration = match &self.package.scalar_hydration {
+                Some(hydration) => hydration,
+                None => {
+                    temporary = ProjectedScalarHydration::capture(py)?;
+                    &temporary
+                }
+            };
             let pool = BatchHydrationPool::try_new(&[]).map_err(py_sdk_diagnostic)?;
-            hydration.projected_to_py(py, &canonical, None, &pool)
+            let named = matches!(&canonical, CanonicalValue::DateTimeTz(value)
+                if matches!(value.zone(), TimeZoneDesignator::Named(_)));
+            pool.reserve_exact(usize::from(
+                named && self.package.named_zone_slots.is_some(),
+            ))
+            .map_err(py_sdk_diagnostic)?;
+            let native = hydration.projected_to_py(
+                py,
+                &canonical,
+                self.package.named_zone_slots.as_ref(),
+                &pool,
+            );
+            if native.is_ok() {
+                pool.verify_fully_consumed().map_err(py_sdk_diagnostic)?;
+            }
+            native
         };
         native.map_err(|error| {
             if error.is_instance_of::<pyo3::exceptions::PyValueError>(py) {
