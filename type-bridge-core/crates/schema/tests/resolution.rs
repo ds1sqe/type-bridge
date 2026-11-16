@@ -858,3 +858,18 @@ fn odd_backslash_before_regex_quote_refuses_lossy_provider_export() {
         resolve(&schema, &profile()).unwrap();
     }
 }
+
+#[test]
+fn equal_owns_value_sets_explain_redundancy_independent_of_order() {
+    for values in ["[a, b]", "[b, a]"] {
+        let schema = declared(&format!(
+            "format: typebridge.schema/v2\nattributes:\n  code: {{value: {{type: string, values: [a, b]}}}}\nentities:\n  item:\n    owns:\n      code: {{values: {values}}}\n"
+        ));
+        let error = resolve(&schema, &profile()).unwrap_err();
+        let diagnostic = error.iter().next().unwrap().diagnostic();
+        assert_eq!(diagnostic.code().as_str(), "owns_constraint_not_narrowing");
+        assert!(diagnostic.message().contains("equal"));
+        assert!(diagnostic.message().contains("redundant"));
+        assert!(diagnostic.message().contains("remove"));
+    }
+}

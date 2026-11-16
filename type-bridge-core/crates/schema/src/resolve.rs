@@ -1135,6 +1135,13 @@ fn validate_owns_value_constraints(
                     _ => continue,
                 };
                 if !narrows {
+                    let message = if matches!((own, &inherited),
+                        (SchemaAnnotationValue::Values(own), SchemaAnnotationValue::Values(parent)) if own == parent)
+                    {
+                        "owns-level values equal the attribute-level values; this constraint is redundant regardless of order; remove the owns-level values"
+                    } else {
+                        "ownership range and values must strictly narrow the attribute constraint; an ownership regex must differ from the attribute regex"
+                    };
                     return Err(collection_mode_conflict(
                         declared,
                         &SchemaFactId::Annotation(AnnotationFactId::new(
@@ -1146,7 +1153,7 @@ fn validate_owns_value_constraints(
                             kind,
                         )),
                         "owns_constraint_not_narrowing",
-                        "ownership range and values must strictly narrow the attribute constraint; an ownership regex must differ from the attribute regex",
+                        message,
                         "attribute constraint is declared here",
                     ));
                 }

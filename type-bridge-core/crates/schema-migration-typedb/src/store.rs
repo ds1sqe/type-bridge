@@ -195,7 +195,7 @@ impl ManagedDatabasePairAdministrator {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
                     "migration_typedb_managed_pair_incomplete",
-                    "managed database carries TypeBridge control state but its journal is absent",
+                    "managed database carries TypeBridge control state but its journal is absent; to finish an interrupted pair deletion, use bare Database.delete_database()",
                 ));
             }
             return Ok(ManagedDatabasePairState::StandaloneManaged);
@@ -4203,6 +4203,47 @@ pub(crate) mod tests {
                 assert!(state.names.is_empty());
                 assert_eq!(state.deleted.last().unwrap(), "managed__tbv2_journal");
             }
+        }
+
+        for controlled in [false, true] {
+            let state = Arc::new(std::sync::Mutex::new(DeleteState {
+                names: ["managed", "managed__tb_journal"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                fail: Some("managed".to_owned()),
+                deleted: vec![],
+            }));
+            let managed = Arc::new(Database::with_backend(
+                Box::new(DeleteBackend(Arc::clone(&state))),
+                "managed",
+            ));
+            let admin = ManagedDatabasePairAdministrator::new(
+                Arc::clone(&managed),
+                Arc::new(managed.derived_journal_database()),
+                ManagedScopeId::new("delete-scope").unwrap(),
+            )
+            .unwrap();
+            let plan = admin.plan_delete().await.unwrap();
+            let result = if controlled {
+                plan.execute_controlled(&MigrationExecutionControl::default())
+                    .await
+            } else {
+                plan.execute().await
+            };
+            assert!(result.is_err());
+            let error = admin.inspect().await.unwrap_err();
+            assert_eq!(
+                error.code().as_str(),
+                "migration_typedb_managed_pair_incomplete"
+            );
+            assert!(error.message().contains("bare Database.delete_database()"));
+            state.lock().unwrap().fail = None;
+            managed.delete_database().await.unwrap();
+            assert_eq!(
+                admin.inspect().await.unwrap(),
+                ManagedDatabasePairState::Absent
+            );
         }
     }
 

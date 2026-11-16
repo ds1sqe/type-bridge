@@ -918,6 +918,10 @@ impl Database {
     ///
     /// Refuse when its reserved companion exists: only the owner-verified pair
     /// administration path may remove a managed database and its journal.
+    ///
+    /// The database administration API cannot atomically check another database
+    /// and delete this one. Serialize standalone deletion with a first migration
+    /// apply, which could create its journal after this absence check.
     pub async fn delete_database_outcome(&self) -> Result<DatabaseDeleteOutcome> {
         let journal = self.derived_journal_database();
         if journal.database_exists().await? {

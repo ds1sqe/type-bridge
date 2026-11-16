@@ -28,6 +28,7 @@ helper="$script_dir/publish_crate_idempotently.sh"
   exit 1
 }
 
+# Frozen 2.0.1 recovery graph used by the legacy recovery workflow.
 release_crates=(
   type-bridge-contract
   type-bridge-core-lib
