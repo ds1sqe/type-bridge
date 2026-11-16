@@ -210,7 +210,6 @@ def main() -> None:
     Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
     env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
     env["CARGO_TARGET_DIR"] = str(Path(env["CARGO_TARGET_DIR"]).expanduser().resolve())
-    env["CARGO_BUILD_JOBS"] = "24"
     env["TYPE_BRIDGE_COMPLEX_SIZE"] = str(args.size)
     env["TYPE_BRIDGE_COMPLEX_MODEL_IDS"] = ",".join(model_ids(args.size))
     env["TYPE_BRIDGE_COMPLEX_MODEL_COUNT"] = str(len(model_ids(args.size)))
