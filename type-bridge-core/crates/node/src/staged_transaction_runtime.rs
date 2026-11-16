@@ -31,14 +31,8 @@ pub(crate) fn staged_options(
     let mut options =
         TransactionOptions::default().with_collect_phase_timestamps(collect.unwrap_or(false));
     if let Some(timeout) = timeout {
-        let (milliseconds, lossless) = timeout.get_i64();
-        if !lossless {
-            return Err(napi::Error::new(
-                napi::Status::InvalidArg,
-                "timeoutMilliseconds must be a signed 64-bit bigint",
-            ));
-        }
-        options = options.with_timeout(type_bridge_orm::QueryTimeout::from_signed_milliseconds(
+        let milliseconds = crate::match_runtime::bigint_u64(&timeout, "timeoutMilliseconds")?;
+        options = options.with_timeout(type_bridge_orm::QueryTimeout::from_milliseconds(
             milliseconds,
         ));
     }
@@ -569,22 +563,14 @@ mod policy_tests {
             Some(60_000)
         );
         assert!(!defaults.collect_phase_timestamps);
-        for (input, expected) in [(0_i64, None), (-1, None), (86_400_001, Some(86_400_001))] {
+        for (input, expected) in [(0_i64, None), (86_400_001, Some(86_400_001))] {
             let options =
                 staged_options(Some("write"), Some(BigInt::from(input)), Some(true)).unwrap();
             assert_eq!(options.timeout.unwrap().milliseconds(), expected);
             assert!(options.collect_phase_timestamps);
         }
-        assert!(
-            staged_options(
-                None,
-                Some(BigInt {
-                    sign_bit: false,
-                    words: vec![u64::MAX]
-                }),
-                None
-            )
-            .is_err()
-        );
+        assert!(staged_options(None, Some(BigInt::from(-1_i64)), None).is_err());
+        let maximum = staged_options(None, Some(BigInt::from(u64::MAX)), None).unwrap();
+        assert_eq!(maximum.timeout.unwrap().milliseconds(), Some(u64::MAX));
     }
 }

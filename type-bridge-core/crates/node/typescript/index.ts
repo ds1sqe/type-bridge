@@ -1,3 +1,5 @@
+export type { TimeoutMilliseconds } from "./timeouts.js";
+import { normalizeTimeoutMilliseconds, type TimeoutMilliseconds } from "./timeouts.js";
 import { RawTransaction, rawNativeCall, rawNativePromise, type NativeRawTransaction, type RawValue } from "./raw-query.js";
 export { RawQueryError, RawTransaction, type RawValue } from "./raw-query.js";
 import { loadNative } from "./native.js";
@@ -111,17 +113,17 @@ export interface NativeDatabase {
   close(): void;
   databaseName(): string;
   databaseExists(): boolean;
-  databaseExistsControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): boolean;
+  databaseExistsControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): boolean;
   createDatabase(): void;
-  createDatabaseControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): void;
+  createDatabaseControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): void;
   createDatabaseOutcome(): DatabaseCreateOutcome;
-  createDatabaseOutcomeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): DatabaseCreateOutcome;
+  createDatabaseOutcomeControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): DatabaseCreateOutcome;
   deleteDatabase(): void;
   deleteDatabaseOutcome(): DatabaseDeleteOutcome;
   inspectDatabasePair(): ManagedDatabasePairState;
-  inspectDatabasePairControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabasePairState;
+  inspectDatabasePairControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabasePairState;
   planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
-  planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
+  planDatabaseDeleteControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
   resetDatabase(): void;
   transaction(transactionType?: TransactionType): NativeTransactionContext;
   stagedTransaction(kind?: string, timeoutMilliseconds?: bigint, collectPhaseTimestamps?: boolean): NativeStagedTransaction;
@@ -130,12 +132,12 @@ export interface NativeDatabase {
 export interface NativeManagedDatabaseDeletionPlan {
   inspectedState(): ManagedDatabasePairState;
   execute(): ManagedDatabaseDeleteOutcome;
-  executeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabaseDeleteOutcome;
+  executeControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabaseDeleteOutcome;
   close(): void;
 }
 
 export interface AdministrationExecutionOptions {
-  timeoutMilliseconds?: number;
+  timeoutMilliseconds?: TimeoutMilliseconds;
   cancellation?: MigrationCancellation;
 }
 
@@ -208,7 +210,7 @@ interface NativeMigrationPlan {
   executeControlled(
     database: NativeDatabase,
     holder: string,
-    timeoutMilliseconds?: number | null,
+    timeoutMilliseconds?: bigint | null,
     resources?: NativeMigrationExecutionResources | null,
     cancellation?: NativeMigrationCancellation | null,
   ): Promise<MigrationExecutionReport>;
@@ -429,7 +431,7 @@ export class MigrationPlan {
     database: Database,
     holder: string,
     options: {
-      timeoutMilliseconds?: number;
+      timeoutMilliseconds?: TimeoutMilliseconds;
       resources?: MigrationExecutionResources;
       cancellation?: MigrationCancellation;
     } = {},
@@ -437,7 +439,7 @@ export class MigrationPlan {
     return this.#native.executeControlled(
       planDatabaseHandle(database),
       holder,
-      options.timeoutMilliseconds,
+      normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.resources?.nativeHandle(),
       options.cancellation?.nativeHandle(),
     );
@@ -722,7 +724,7 @@ export class Database {
   }
 
   databaseExistsControlled(options: AdministrationExecutionOptions = {}): boolean {
-    return planNativeCall(() => this.#native.databaseExistsControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
+    return planNativeCall(() => this.#native.databaseExistsControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle()));
   }
 
   createDatabase(): void {
@@ -730,7 +732,7 @@ export class Database {
   }
 
   createDatabaseControlled(options: AdministrationExecutionOptions = {}): void {
-    planNativeCall(() => this.#native.createDatabaseControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
+    planNativeCall(() => this.#native.createDatabaseControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle()));
   }
 
   createDatabaseOutcome(): DatabaseCreateOutcome {
@@ -738,7 +740,7 @@ export class Database {
   }
 
   createDatabaseOutcomeControlled(options: AdministrationExecutionOptions = {}): DatabaseCreateOutcome {
-    return planNativeCall(() => this.#native.createDatabaseOutcomeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
+    return planNativeCall(() => this.#native.createDatabaseOutcomeControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle()));
   }
 
   deleteDatabase(): void {
@@ -754,7 +756,7 @@ export class Database {
   }
 
   inspectDatabasePairControlled(options: AdministrationExecutionOptions = {}): ManagedDatabasePairState {
-    return planNativeCall(() => this.#native.inspectDatabasePairControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
+    return planNativeCall(() => this.#native.inspectDatabasePairControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle()));
   }
 
   planDatabaseDelete(): ManagedDatabaseDeletionPlan {
@@ -762,7 +764,7 @@ export class Database {
   }
 
   planDatabaseDeleteControlled(options: AdministrationExecutionOptions = {}): ManagedDatabaseDeletionPlan {
-    return new ManagedDatabaseDeletionPlan(planNativeCall(() => this.#native.planDatabaseDeleteControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle())));
+    return new ManagedDatabaseDeletionPlan(planNativeCall(() => this.#native.planDatabaseDeleteControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle())));
   }
 
   resetDatabase(): void {
@@ -784,7 +786,7 @@ export class Database {
    */
   stagedTransaction(kind?: StagedTransactionKind, options: import("./staged-transaction.js").StagedTransactionOptions = {}): StagedTransaction {
     return new StagedTransaction(
-      planNativeCall(() => this.#native.stagedTransaction(kind, options.timeoutMilliseconds, options.collectPhaseTimestamps)),
+      planNativeCall(() => this.#native.stagedTransaction(kind, normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.collectPhaseTimestamps)),
     );
   }
 }
@@ -806,7 +808,7 @@ export class ManagedDatabaseDeletionPlan {
   }
 
   executeControlled(options: AdministrationExecutionOptions = {}): ManagedDatabaseDeleteOutcome {
-    return planNativeCall(() => this.#native.executeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
+    return planNativeCall(() => this.#native.executeControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle()));
   }
 
   close(): void {

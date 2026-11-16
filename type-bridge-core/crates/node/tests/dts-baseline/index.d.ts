@@ -1,3 +1,5 @@
+export type { TimeoutMilliseconds } from "./timeouts.js";
+import { type TimeoutMilliseconds } from "./timeouts.js";
 import { RawTransaction, type NativeRawTransaction, type RawValue } from "./raw-query.js";
 export { RawQueryError, RawTransaction, type RawValue } from "./raw-query.js";
 import type { QueryLimits } from "./runtime-projection.js";
@@ -53,17 +55,17 @@ export interface NativeDatabase {
     close(): void;
     databaseName(): string;
     databaseExists(): boolean;
-    databaseExistsControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): boolean;
+    databaseExistsControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): boolean;
     createDatabase(): void;
-    createDatabaseControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): void;
+    createDatabaseControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): void;
     createDatabaseOutcome(): DatabaseCreateOutcome;
-    createDatabaseOutcomeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): DatabaseCreateOutcome;
+    createDatabaseOutcomeControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): DatabaseCreateOutcome;
     deleteDatabase(): void;
     deleteDatabaseOutcome(): DatabaseDeleteOutcome;
     inspectDatabasePair(): ManagedDatabasePairState;
-    inspectDatabasePairControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabasePairState;
+    inspectDatabasePairControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabasePairState;
     planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
-    planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
+    planDatabaseDeleteControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): NativeTransactionContext;
     stagedTransaction(kind?: string, timeoutMilliseconds?: bigint, collectPhaseTimestamps?: boolean): NativeStagedTransaction;
@@ -71,11 +73,11 @@ export interface NativeDatabase {
 export interface NativeManagedDatabaseDeletionPlan {
     inspectedState(): ManagedDatabasePairState;
     execute(): ManagedDatabaseDeleteOutcome;
-    executeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabaseDeleteOutcome;
+    executeControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabaseDeleteOutcome;
     close(): void;
 }
 export interface AdministrationExecutionOptions {
-    timeoutMilliseconds?: number;
+    timeoutMilliseconds?: TimeoutMilliseconds;
     cancellation?: MigrationCancellation;
 }
 export type DatabaseCreateOutcome = "created" | "already_exists";
@@ -122,7 +124,7 @@ interface NativeMigrationApprovalSet {
 interface NativeMigrationPlan {
     readonly executionAuthorized: boolean;
     execute(database: NativeDatabase, holder: string): Promise<MigrationExecutionReport>;
-    executeControlled(database: NativeDatabase, holder: string, timeoutMilliseconds?: number | null, resources?: NativeMigrationExecutionResources | null, cancellation?: NativeMigrationCancellation | null): Promise<MigrationExecutionReport>;
+    executeControlled(database: NativeDatabase, holder: string, timeoutMilliseconds?: bigint | null, resources?: NativeMigrationExecutionResources | null, cancellation?: NativeMigrationCancellation | null): Promise<MigrationExecutionReport>;
 }
 interface NativeMigrationCancellation {
     readonly cancelled: boolean;
@@ -237,7 +239,7 @@ export declare class MigrationPlan {
     get executionAuthorized(): boolean;
     execute(database: Database, holder: string): Promise<MigrationExecutionReport>;
     executeControlled(database: Database, holder: string, options?: {
-        timeoutMilliseconds?: number;
+        timeoutMilliseconds?: TimeoutMilliseconds;
         resources?: MigrationExecutionResources;
         cancellation?: MigrationCancellation;
     }): Promise<MigrationExecutionReport>;

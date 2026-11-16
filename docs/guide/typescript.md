@@ -289,6 +289,11 @@ try {
 A successful `rollback()` keeps the transaction usable. You can execute more
 work and commit it; call `close()` to end it without committing.
 
+Every `timeoutMilliseconds` option accepts `number | bigint`. Numbers must be
+nonnegative safe integers; bigints must be nonnegative and fit the engine's u64
+range. Zero disables the deadline; negative values raise before I/O. Returned
+query resource limits retain their `bigint` type.
+
 Connection, administration, and typed transaction failures raise `PlanError`
 with a stable `code`. A rejected owned query finishes cleanup before rejecting,
 so `finally { db.close(); }` can close immediately. An open caller-owned

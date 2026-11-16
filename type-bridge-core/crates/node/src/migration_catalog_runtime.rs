@@ -455,17 +455,18 @@ impl NodeMigrationPlan {
         env: Env,
         database: &NodeDatabase,
         holder: String,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         resources: Option<&NodeMigrationExecutionResources>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<Object<'static>> {
         let entry = crate::perf_stages::entry();
         let _entered = entry.enter();
         let timeout_milliseconds = timeout_milliseconds
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| catalog_error("migration_execution_invalid_timeout"))?;
+            .as_ref()
+            .map(|value| crate::match_runtime::bigint_u64(value, "timeoutMilliseconds"))
+            .transpose()?;
         let deadline = timeout_milliseconds
+            .filter(|value| *value != 0)
             .map(|milliseconds| {
                 Instant::now()
                     .checked_add(Duration::from_millis(milliseconds))

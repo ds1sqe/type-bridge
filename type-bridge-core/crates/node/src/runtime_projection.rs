@@ -87,17 +87,22 @@ impl NodeCanonicalControl {
     #[allow(clippy::too_many_arguments)]
     fn capture(
         cancellation: Option<&NodeQueryCancellation>,
-        timeout_milliseconds: Option<u32>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         max_input_bytes: Option<u32>,
         max_output_bytes: Option<u32>,
         max_depth: Option<u32>,
         max_records: Option<u32>,
         max_members: Option<u32>,
     ) -> napi::Result<Self> {
-        let deadline = timeout_milliseconds
+        let milliseconds = timeout_milliseconds
+            .as_ref()
+            .map(|value| crate::match_runtime::bigint_u64(value, "timeoutMilliseconds"))
+            .transpose()?;
+        let deadline = milliseconds
+            .filter(|value| *value != 0)
             .map(|milliseconds| {
                 Instant::now()
-                    .checked_add(Duration::from_millis(u64::from(milliseconds)))
+                    .checked_add(Duration::from_millis(milliseconds))
                     .ok_or_else(|| {
                         napi_sdk_diagnostic(
                             SdkExecutionDiagnostic::projected_codec_deadline_exceeded(),
@@ -2933,7 +2938,7 @@ impl NodeRuntimeProjection {
         type_key: String,
         value_json: String,
         cancellation: Option<&NodeQueryCancellation>,
-        timeout_milliseconds: Option<u32>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         max_input_bytes: Option<u32>,
         max_output_bytes: Option<u32>,
         max_depth: Option<u32>,
@@ -2989,7 +2994,7 @@ impl NodeRuntimeProjection {
         type_key: String,
         bytes: Buffer,
         cancellation: Option<&NodeQueryCancellation>,
-        timeout_milliseconds: Option<u32>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         max_input_bytes: Option<u32>,
         max_output_bytes: Option<u32>,
         max_depth: Option<u32>,
@@ -3070,7 +3075,7 @@ impl NodeRuntimeProjection {
         &self,
         records: Vec<Buffer>,
         cancellation: Option<&NodeQueryCancellation>,
-        timeout_milliseconds: Option<u32>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         max_input_bytes: Option<u32>,
         max_output_bytes: Option<u32>,
         max_depth: Option<u32>,
@@ -3143,7 +3148,7 @@ impl NodeRuntimeProjection {
         &self,
         bytes: Buffer,
         cancellation: Option<&NodeQueryCancellation>,
-        timeout_milliseconds: Option<u32>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         max_input_bytes: Option<u32>,
         max_output_bytes: Option<u32>,
         max_depth: Option<u32>,
@@ -9481,20 +9486,28 @@ entities:
             .expect("cancelled decode is rejected");
         assert_eq!(diagnostic_code(error), "projected_codec_cancelled");
 
-        let error = runtime
-            .decode_archive_controlled(
-                Buffer::from(archive.to_vec()),
-                None,
-                Some(0),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .err()
-            .expect("expired decode is rejected");
-        assert_eq!(diagnostic_code(error), "projected_codec_deadline_exceeded");
+        assert!(
+            runtime
+                .decode_archive_controlled(
+                    Buffer::from(archive.to_vec()),
+                    None,
+                    Some(0_u64.into()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .is_ok()
+        );
+        let mut expired =
+            NodeCanonicalControl::capture(None, Some(1_u64.into()), None, None, None, None, None)
+                .unwrap();
+        expired.deadline = Some(Instant::now() - Duration::from_millis(1));
+        assert_eq!(
+            diagnostic_code(expired.check().unwrap_err()),
+            "projected_codec_deadline_exceeded"
+        );
 
         let error = runtime
             .decode_archive_controlled(

@@ -91,14 +91,16 @@ use type_bridge_orm::{
 };
 
 fn node_administration_control(
-    timeout_milliseconds: Option<i64>,
+    timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
     cancellation: Option<&NodeMigrationCancellation>,
 ) -> Result<type_bridge_schema_migration::MigrationExecutionControl> {
     let milliseconds = timeout_milliseconds
-        .map(u64::try_from)
-        .transpose()
-        .map_err(|_| Error::new(Status::InvalidArg, "timeout must be non-negative"))?;
+        .as_ref()
+        .map(|value| match_runtime::bigint_u64(value, "timeoutMilliseconds"))
+        .transpose()?;
+
     let deadline = milliseconds
+        .filter(|value| *value != 0)
         .map(|value| {
             Instant::now()
                 .checked_add(Duration::from_millis(value))
@@ -237,7 +239,7 @@ impl NodeManagedDatabaseDeletionPlan {
     #[napi(js_name = "executeControlled")]
     pub fn execute_controlled(
         &mut self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<String> {
         let control = node_administration_control(timeout_milliseconds, cancellation)?;
@@ -322,7 +324,7 @@ impl NodeDatabase {
     #[napi(js_name = "databaseExistsControlled")]
     pub fn database_exists_controlled(
         &self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<bool> {
         let control = node_administration_control(timeout_milliseconds, cancellation)?;
@@ -347,7 +349,7 @@ impl NodeDatabase {
     #[napi(js_name = "createDatabaseControlled")]
     pub fn create_database_controlled(
         &self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<()> {
         self.create_database_outcome_controlled(timeout_milliseconds, cancellation)
@@ -380,7 +382,7 @@ impl NodeDatabase {
     #[napi(js_name = "createDatabaseOutcomeControlled")]
     pub fn create_database_outcome_controlled(
         &self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<String> {
         let control = node_administration_control(timeout_milliseconds, cancellation)?;
@@ -452,7 +454,7 @@ impl NodeDatabase {
     #[napi(js_name = "inspectDatabasePairControlled")]
     pub fn inspect_database_pair_controlled(
         &self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<String> {
         let control = node_administration_control(timeout_milliseconds, cancellation)?;
@@ -478,7 +480,7 @@ impl NodeDatabase {
     #[napi(js_name = "planDatabaseDeleteControlled")]
     pub fn plan_database_delete_controlled(
         &self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<NodeManagedDatabaseDeletionPlan> {
         let control = node_administration_control(timeout_milliseconds, cancellation)?;

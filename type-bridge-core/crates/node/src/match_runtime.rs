@@ -321,15 +321,10 @@ impl NodeQueryExecutionResources {
             collect_phase_timestamps: collect_phase_timestamps.unwrap_or(false),
             timeout_milliseconds: match timeout_milliseconds {
                 None => defaults.timeout_milliseconds,
-                Some(value) => {
-                    let (milliseconds, lossless) = value.get_i64();
-                    if !lossless {
-                        return Err(invalid_arg(
-                            "timeoutMilliseconds must be a signed 64-bit bigint",
-                        ));
-                    }
-                    type_bridge_orm::QueryTimeout::from_signed_milliseconds(milliseconds)
-                }
+                Some(value) => type_bridge_orm::QueryTimeout::from_milliseconds(bigint_u64(
+                    &value,
+                    "timeoutMilliseconds",
+                )?),
             },
             items: dimension(items, defaults.items, "items")?,
             bytes: dimension(bytes, defaults.bytes, "bytes")?,

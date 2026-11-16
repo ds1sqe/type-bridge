@@ -1,3 +1,4 @@
+import { type TimeoutMilliseconds } from "./timeouts.js";
 import type { NativePendingPlanAnswer, NativeStagedTransaction } from "./native.js";
 import type { NativeAuthoredPlanResult, RuntimeProjectionMatchResult } from "./runtime-projection.js";
 import { type Plan, type StagedPlan } from "./plan.js";
@@ -5,8 +6,8 @@ import { type Plan, type StagedPlan } from "./plan.js";
 export type StagedTransactionKind = "read" | "write" | "schema";
 /** Per-commit configuration. Omission keeps the 60000 ms default and collection off. */
 export interface StagedTransactionOptions {
-    /** Zero or negative disables the execution deadline. */
-    readonly timeoutMilliseconds?: bigint;
+    /** Zero disables the execution deadline; negative values are rejected. */
+    readonly timeoutMilliseconds?: TimeoutMilliseconds;
     readonly collectPhaseTimestamps?: boolean;
 }
 /** The answer a committed `query-plan/v3` program resolves to. */

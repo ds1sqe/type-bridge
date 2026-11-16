@@ -1,3 +1,5 @@
+export type { TimeoutMilliseconds } from "./timeouts.js";
+import { type TimeoutMilliseconds } from "./timeouts.js";
 import { RawTransaction, type RawValue } from "./raw-query.js";
 import { PlanAuthority, type NativeDatabase, type NativeTransactionContext, type Database, type TransactionContext, type MigrationTransaction } from "./index.js";
 import { loadNative } from "./native.js";
@@ -53,7 +55,7 @@ export interface GeneratedSchemaAuthorityInstall {
 export interface QueryExecutionResourceLimitOptions {
     /** Collect a diagnostic timeline without a tracing subscriber. Defaults to false. */
     readonly collectPhaseTimestamps?: boolean;
-    readonly timeoutMilliseconds?: bigint;
+    readonly timeoutMilliseconds?: TimeoutMilliseconds;
     readonly items?: bigint;
     readonly bytes?: bigint;
     readonly graphNodes?: bigint;
@@ -250,10 +252,10 @@ export interface NativeProjectionHandle {
     decodeStructJson(typeKey: string, bytes: Uint8Array): string;
     encodeArchive(records: readonly Uint8Array[]): Uint8Array;
     decodeArchive(bytes: Uint8Array): Uint8Array[];
-    encodeArchiveControlled(records: readonly Uint8Array[], cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxRecords?: number, maxMembers?: number): Uint8Array;
-    decodeArchiveControlled(bytes: Uint8Array, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxRecords?: number, maxMembers?: number): Uint8Array[];
-    encodeRecordJsonControlled(recordKind: string, typeKey: string, valueJson: string, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxMembers?: number): Uint8Array;
-    decodeRecordJsonControlled(recordKind: string, typeKey: string, bytes: Uint8Array, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: number, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxMembers?: number): string;
+    encodeArchiveControlled(records: readonly Uint8Array[], cancellation?: NativeQueryCancellation, timeoutMilliseconds?: bigint, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxRecords?: number, maxMembers?: number): Uint8Array;
+    decodeArchiveControlled(bytes: Uint8Array, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: bigint, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxRecords?: number, maxMembers?: number): Uint8Array[];
+    encodeRecordJsonControlled(recordKind: string, typeKey: string, valueJson: string, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: bigint, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxMembers?: number): Uint8Array;
+    decodeRecordJsonControlled(recordKind: string, typeKey: string, bytes: Uint8Array, cancellation?: NativeQueryCancellation, timeoutMilliseconds?: bigint, maxInputBytes?: number, maxOutputBytes?: number, maxDepth?: number, maxMembers?: number): string;
     validateThingJson(typeKey: string, valueJson: string): void;
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
@@ -264,7 +266,7 @@ export interface NativeProjectionHandle {
 /** Tighten-only controls for canonical record/archive work. */
 export interface CanonicalCodecOptions {
     readonly cancellation?: QueryCancellation;
-    readonly timeoutMilliseconds?: number;
+    readonly timeoutMilliseconds?: TimeoutMilliseconds;
     readonly maxInputBytes?: number;
     readonly maxOutputBytes?: number;
     readonly maxDepth?: number;
@@ -451,4 +453,3 @@ export declare class ProxyConnection implements RuntimeProjectionRemote {
 export declare function installRuntimeProjection(input: RuntimeProjectionInstall): InstalledRuntimeProjection;
 /** @internal Verify an embedded authority before a generated package installs. */
 export declare function installGeneratedSchemaAuthority(input: GeneratedSchemaAuthorityInstall): PlanAuthority;
-export {};

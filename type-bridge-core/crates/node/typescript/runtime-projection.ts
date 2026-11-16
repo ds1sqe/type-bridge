@@ -1,3 +1,5 @@
+export type { TimeoutMilliseconds } from "./timeouts.js";
+import { normalizeTimeoutMilliseconds, type TimeoutMilliseconds } from "./timeouts.js";
 import { RawTransaction, rawNativeCall, rawNativePromise, type RawValue } from "./raw-query.js";
 import {
   createRustDatabaseFromNative,
@@ -105,7 +107,7 @@ export interface GeneratedSchemaAuthorityInstall {
 export interface QueryExecutionResourceLimitOptions {
   /** Collect a diagnostic timeline without a tracing subscriber. Defaults to false. */
   readonly collectPhaseTimestamps?: boolean;
-  readonly timeoutMilliseconds?: bigint;
+  readonly timeoutMilliseconds?: TimeoutMilliseconds;
   readonly items?: bigint;
   readonly bytes?: bigint;
   readonly graphNodes?: bigint;
@@ -122,7 +124,7 @@ export class QueryExecutionResourceLimits {
   constructor(options: QueryExecutionResourceLimitOptions = {}) {
     const native = loadNative();
     this.#native = new native.NodeQueryExecutionResources(
-      options.timeoutMilliseconds,
+      normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.items,
       options.bytes,
       options.graphNodes,
@@ -516,7 +518,7 @@ export interface NativeProjectionHandle {
   encodeArchiveControlled(
     records: readonly Uint8Array[],
     cancellation?: NativeQueryCancellation,
-    timeoutMilliseconds?: number,
+    timeoutMilliseconds?: bigint,
     maxInputBytes?: number,
     maxOutputBytes?: number,
     maxDepth?: number,
@@ -526,7 +528,7 @@ export interface NativeProjectionHandle {
   decodeArchiveControlled(
     bytes: Uint8Array,
     cancellation?: NativeQueryCancellation,
-    timeoutMilliseconds?: number,
+    timeoutMilliseconds?: bigint,
     maxInputBytes?: number,
     maxOutputBytes?: number,
     maxDepth?: number,
@@ -538,7 +540,7 @@ export interface NativeProjectionHandle {
     typeKey: string,
     valueJson: string,
     cancellation?: NativeQueryCancellation,
-    timeoutMilliseconds?: number,
+    timeoutMilliseconds?: bigint,
     maxInputBytes?: number,
     maxOutputBytes?: number,
     maxDepth?: number,
@@ -549,7 +551,7 @@ export interface NativeProjectionHandle {
     typeKey: string,
     bytes: Uint8Array,
     cancellation?: NativeQueryCancellation,
-    timeoutMilliseconds?: number,
+    timeoutMilliseconds?: bigint,
     maxInputBytes?: number,
     maxOutputBytes?: number,
     maxDepth?: number,
@@ -568,7 +570,7 @@ export interface NativeProjectionHandle {
 /** Tighten-only controls for canonical record/archive work. */
 export interface CanonicalCodecOptions {
   readonly cancellation?: QueryCancellation;
-  readonly timeoutMilliseconds?: number;
+  readonly timeoutMilliseconds?: TimeoutMilliseconds;
   readonly maxInputBytes?: number;
   readonly maxOutputBytes?: number;
   readonly maxDepth?: number;
@@ -755,7 +757,7 @@ export class InstalledRuntimeProjection {
     return this.#native.encodeArchiveControlled(
       records,
       options.cancellation?.nativeHandle(),
-      options.timeoutMilliseconds,
+      normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.maxInputBytes,
       options.maxOutputBytes,
       options.maxDepth,
@@ -772,7 +774,7 @@ export class InstalledRuntimeProjection {
     return Object.freeze(this.#native.decodeArchiveControlled(
       bytes,
       options.cancellation?.nativeHandle(),
-      options.timeoutMilliseconds,
+      normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.maxInputBytes,
       options.maxOutputBytes,
       options.maxDepth,
@@ -793,7 +795,7 @@ export class InstalledRuntimeProjection {
       typeKey,
       valueJson,
       options.cancellation?.nativeHandle(),
-      options.timeoutMilliseconds,
+      normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.maxInputBytes,
       options.maxOutputBytes,
       options.maxDepth,
@@ -813,7 +815,7 @@ export class InstalledRuntimeProjection {
       typeKey,
       bytes,
       options.cancellation?.nativeHandle(),
-      options.timeoutMilliseconds,
+      normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.maxInputBytes,
       options.maxOutputBytes,
       options.maxDepth,

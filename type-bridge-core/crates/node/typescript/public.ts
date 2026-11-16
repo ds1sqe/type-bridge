@@ -69,6 +69,7 @@ export {
 
 export type {
   WriteResult,
+  TimeoutMilliseconds,
   ProviderFailure,
   AttributeValue,
   EnsureDatabaseOptions,
