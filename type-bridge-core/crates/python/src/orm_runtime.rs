@@ -671,6 +671,17 @@ impl PyDatabase {
         tls_root_ca: Option<PathBuf>,
         query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<Self> {
+        let (username, password) = match (username, password) {
+            (None, None) => ("admin", "password"),
+            (Some(username), Some(password)) if !username.is_empty() && !password.is_empty() => {
+                (username, password)
+            }
+            _ => {
+                return Err(py_value_error(
+                    "username and password must both be nonempty when supplied",
+                ));
+            }
+        };
         let query_limits = query_limits
             .map(|limits| limits.inner().validate_plan())
             .transpose()
@@ -693,8 +704,8 @@ impl PyDatabase {
         let runtime = ProviderRuntimeOwner::new().map(Arc::new).map_err(|error| {
             py_runtime_error(format!("Failed to create Tokio runtime: {error}"))
         })?;
-        let username = username.unwrap_or("admin").to_string();
-        let password = password.unwrap_or("password").to_string();
+        let username = username.to_string();
+        let password = password.to_string();
         let connection_runtime = Arc::clone(&runtime);
         let address = address.to_owned();
         let database = database.to_owned();

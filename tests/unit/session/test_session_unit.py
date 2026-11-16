@@ -56,6 +56,16 @@ class TestDatabaseConfiguration:
                 _ = database.driver
         assert factory.mock_calls == []
 
+    @pytest.mark.parametrize(
+        ("username", "password"),
+        [("alice", ""), ("", "secret"), ("alice", None), (None, "secret"), ("", "")],
+    )
+    def test_native_constructor_rejects_partial_credentials(self, username, password):
+        from type_bridge_core import PyDatabase
+
+        with pytest.raises(ValueError, match="username and password"):
+            PyDatabase.connect("127.0.0.1:1", "unused", username, password, server_version="3.13.6")
+
     def test_driver_none_before_connect(self):
         """Driver should be None before connection."""
         db = Database()
