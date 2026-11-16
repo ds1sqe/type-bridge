@@ -233,6 +233,8 @@ async def check_direct() -> None:
     assert_type(party_var, SubtypeBoundVar[Party])
     assert_type(await query_session.query(party_var).rows(limit=10), list[Party])
     score_field = person_var.field(Person.score)
+    assert_type(score_field.ge_field(other_person_var.field(Person.foo__bar)), Predicate)
+    assert_type(score_field.eq_field(other_person_var.field(Person.score)), Predicate)
     minimum_score = integer_input(query_session, Score(18))
     assert_type(minimum_score, IntegerInput)
     qualifying_call = qualifying_score(query_session, person_var, minimum_score)

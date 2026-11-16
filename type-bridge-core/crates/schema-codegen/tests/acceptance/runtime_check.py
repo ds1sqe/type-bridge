@@ -2076,7 +2076,7 @@ from generated_ordered import schema_authority as ordered_schema_authority  # no
 from generated_package import Person as PlanPerson  # noqa: E402
 from generated_package import schema_authority  # noqa: E402
 
-from type_bridge.plan import Plan  # noqa: E402
+from type_bridge.plan import Plan, PlanError  # noqa: E402
 
 assert schema_authority() is schema_authority()
 assert ordered_schema_authority() is ordered_schema_authority()
@@ -2087,6 +2087,21 @@ _plan.where(_score.ge(20)).update(_planned, PlanPerson.score, _plan.let("next_sc
 _built = _plan.build(schema_authority())
 assert _built.writes()
 assert json.loads(_built.canonical_bytes())["bindings"][0]["variable"] == "person"
+
+# Cross-attribute numeric comparisons build; scalar-domain mismatches still fail.
+for _other_token, _valid_domains in ((PlanPerson.foo__bar, True), (PlanPerson.identifier, False)):
+    _comparison = Plan.builder()
+    _owner = _comparison.exact(PlanPerson)
+    _left = _comparison.field(_owner, PlanPerson.score)
+    _right = _comparison.field(_owner, _other_token)
+    _comparison.where(_left.ge(_right)).count()
+    try:
+        _comparison.build(schema_authority())
+    except PlanError as _error:
+        assert not _valid_domains
+        assert _error.code == "query_plan_value_type_mismatch"
+    else:
+        assert _valid_domains
 
 _emit_sdk_models_package_proof_fragment()
 
