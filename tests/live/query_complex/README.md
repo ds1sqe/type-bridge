@@ -118,3 +118,16 @@ require `subtypes` explicitly; `exact` on an abstract type fails at build with
 abstract models; the public low-level C builder receives the same build error.
 The fixture checks generic-plan refusal and subtype-count parity with managers
 in every SDK.
+
+| Comparison shape (all SDKs) | Typed query | Canonical manager | Generic Plan | Raw TypeQL |
+| --- | --- | --- | --- | --- |
+| Cross-numeric-type comparison | No | No | Yes; TypeDB semantics | Yes; TypeDB semantics |
+
+Typed queries and managers require the same scalar value type, including numeric
+types. Plan and raw comparisons are passed to TypeDB without client predicate
+evidence comparison. TypeDB 3.12.3, 3.13.6 and 3.14.0 compare integer
+`9007199254740993` equal to double `9007199254740992.0` and report decimal
+`-0.10000000000000001dec` greater than double `-0.1` (a probable upstream ordering
+bug). Cross-type results can also depend on query shape; Plan follows its exact
+emitted TypeQL statement. See the comparison section of the typed-query guide before using this
+escape hatch.

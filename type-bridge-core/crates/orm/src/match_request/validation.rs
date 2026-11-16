@@ -829,7 +829,7 @@ fn validate_expr_node(
             if attribute.value_type.as_str() != value.value_type_name() {
                 return Err(invalid(
                     "literal_type_mismatch",
-                    "literal value type does not match the descriptor field",
+                    "typed comparisons require the same scalar value type, including numeric types; use the generic Plan builder or raw TypeQL for TypeDB cross-numeric-type semantics",
                 )
                 .at(MatchErrorPathSegment::Field(field.field.clone())));
             }
@@ -859,7 +859,7 @@ fn validate_expr_node(
             if left_attr.value_type != right_attr.value_type {
                 return Err(invalid(
                     "field_type_mismatch",
-                    "field comparison requires identical descriptor value types",
+                    "typed comparisons require the same scalar value type, including numeric types; use the generic Plan builder or raw TypeQL for TypeDB cross-numeric-type semantics",
                 )
                 .at(MatchErrorPathSegment::Field(right.field.clone())));
             }

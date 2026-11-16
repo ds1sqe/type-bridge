@@ -272,7 +272,7 @@ impl ProjectedManagerFilter {
         if value.attribute_type() != &expected_attribute {
             return Err(invalid_input(
                 "wrong_scalar_domain",
-                "The projected filter literal belongs to a different field domain",
+                "Manager filter literals require the field attribute and the same scalar value type, including numeric types; use the generic Plan builder or raw TypeQL for TypeDB cross-numeric-type semantics",
                 indexed_field_path(&self.model, index, field_id),
             ));
         }

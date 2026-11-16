@@ -284,6 +284,18 @@ fn token_package_owner_domain_and_boolean_order_fail_with_frozen_categories() {
         .unwrap_err();
     assert_eq!(wrong_domain.category(), SdkDiagnosticCategory::InvalidInput);
     assert_eq!(wrong_domain.code().as_str(), "wrong_scalar_domain");
+    assert!(
+        wrong_domain
+            .message()
+            .as_str()
+            .contains("same scalar value type")
+    );
+    assert!(
+        wrong_domain
+            .message()
+            .as_str()
+            .contains("generic Plan builder or raw TypeQL")
+    );
 
     let wrong_package = filter
         .try_and(

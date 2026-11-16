@@ -384,6 +384,18 @@ fn canonical_scalars_and_create_fields_use_exact_semantic_tokens() {
         SdkDiagnosticCategory::InvalidInput,
         "wrong_scalar_domain",
     );
+    assert!(
+        wrong_domain
+            .message()
+            .as_str()
+            .contains("same scalar value type")
+    );
+    assert!(
+        wrong_domain
+            .message()
+            .as_str()
+            .contains("generic Plan builder or raw TypeQL")
+    );
     assert_eq!(
         wrong_domain.path(),
         [SdkDiagnosticPathSegment::Type(identifier.clone())]

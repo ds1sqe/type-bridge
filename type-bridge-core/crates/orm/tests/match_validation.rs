@@ -294,7 +294,14 @@ fn descriptor_field_operator_and_regex_validation_fail_closed() {
         }),
         vec![one(0)],
     );
-    assert_eq!(code(request.validate(&registry)), "literal_type_mismatch");
+    let error = request.validate(&registry).unwrap_err();
+    assert_eq!(error.code().as_str(), "literal_type_mismatch");
+    assert!(error.message().contains("same scalar value type"));
+    assert!(
+        error
+            .message()
+            .contains("generic Plan builder or raw TypeQL")
+    );
 
     let request = fetch_request(
         &registry,

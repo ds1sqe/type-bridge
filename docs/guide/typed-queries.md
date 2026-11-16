@@ -59,6 +59,27 @@ Bindings, field tokens, role tokens, predicates, selections, and queries are
 immutable and carry one projection identity. Cross-package composition fails
 before execution.
 
+### Comparison domains
+
+Typed queries and canonical manager filters require the same scalar value type
+on both sides of a comparison, including numeric comparisons: integer, double
+and decimal are distinct domains. Naive datetime and datetime-tz, date and
+datetime, integer and boolean, and string and integer also remain distinct.
+Use the generic Plan builder or raw TypeQL for cross-numeric-type comparisons;
+these pass the comparison to TypeDB unchanged and use TypeDB semantics, without
+a client-side predicate evidence comparison.
+
+Cross-type numeric comparison can lose precision. On TypeDB 3.12.3, 3.13.6
+and 3.14.0, integer `9007199254740993` compares equal to double
+`9007199254740992.0`. Those versions also report decimal
+`-0.10000000000000001dec > -0.1` (double), a probable upstream ordering bug.
+Cross-type results can also depend on query shape: a hand-written attribute
+comparison and a statement with explicit typed attribute bindings can return
+different match sets. A generic Plan follows the result of its exact emitted
+TypeQL statement. TypeBridge keeps typed-query and manager evidence checks
+within one numeric domain rather than approximating that undocumented
+cross-type comparator.
+
 ## Native plans
 
 For explicit read/write programs, use `PlanBuilder` and `Plan` from

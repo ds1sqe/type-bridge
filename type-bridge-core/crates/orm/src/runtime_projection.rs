@@ -408,7 +408,7 @@ impl InstalledRuntimeProjection {
         if value.value_type() != expected {
             return Err(invalid_input(
                 "wrong_scalar_domain",
-                "The canonical scalar belongs to a different attribute domain",
+                "The canonical scalar must have the same scalar value type as its attribute, including numeric types; for cross-numeric-type comparisons use the generic Plan builder or raw TypeQL with TypeDB semantics",
                 vec![SdkDiagnosticPathSegment::Type(id.clone())],
             )
             .try_with_detail(
