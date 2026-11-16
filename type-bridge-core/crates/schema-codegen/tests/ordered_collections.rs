@@ -2011,6 +2011,7 @@ assert.deepEqual(
   [batchRoleProof],
 );
 
+// Native batch wires contain core canonical years; Date views use expanded ISO years.
 const temporalRecord = Runtime.__testOrderedBatchMaterialize(
   Local.TemporalRecord.typeKey,
   9,
@@ -2024,7 +2025,7 @@ const temporalRecord = Runtime.__testOrderedBatchMaterialize(
         typeKey: Local.OccurredOn.typeKey,
         form: "complete",
         iid: null,
-        value: { valueType: "date", value: "+010000-01-02" },
+        value: { valueType: "date", value: "+10000-01-02" },
         values: {},
       },
       observedAt: {
@@ -2033,7 +2034,7 @@ const temporalRecord = Runtime.__testOrderedBatchMaterialize(
         iid: null,
         value: {
           valueType: "datetime",
-          value: "-009999-01-02T03:04:05",
+          value: "-9999-01-02T03:04:05",
         },
         values: {},
       },
@@ -2043,7 +2044,7 @@ const temporalRecord = Runtime.__testOrderedBatchMaterialize(
         iid: null,
         value: {
           valueType: "datetime_tz",
-          value: "-009999-01-02T03:04:05Z",
+          value: "-9999-01-02T03:04:05Z",
         },
         values: {},
       },
@@ -2052,8 +2053,11 @@ const temporalRecord = Runtime.__testOrderedBatchMaterialize(
   batchAuthority,
 );
 assert.equal(temporalRecord.occurredOn.value.toISOString(), "+010000-01-02T00:00:00.000Z");
+assert.equal(temporalRecord.occurredOn.canonical, "+10000-01-02");
 assert.equal(temporalRecord.observedAt.value.toISOString(), "-009999-01-02T03:04:05.000Z");
+assert.equal(temporalRecord.observedAt.canonical, "-9999-01-02T03:04:05");
 assert.equal(temporalRecord.reportedAt.value.toISOString(), "-009999-01-02T03:04:05.000Z");
+assert.equal(temporalRecord.reportedAt.canonical, "-9999-01-02T03:04:05Z");
 const temporalRecordInput = Runtime.__testOrderedNativeCreate(
   Local.TemporalRecord.typeKey,
   temporalRecord,
@@ -2095,20 +2099,20 @@ const negativeSmallTemporalRecord = Runtime.__testOrderedBatchMaterialize(
     values: {
       occurredOn: {
         ...temporalRecordWire.values.occurredOn,
-        value: { valueType: "date", value: "-000001-01-02" },
+        value: { valueType: "date", value: "-0001-01-02" },
       },
       observedAt: {
         ...temporalRecordWire.values.observedAt,
         value: {
           valueType: "datetime",
-          value: "-000001-01-02T03:04:05",
+          value: "-0001-01-02T03:04:05",
         },
       },
       reportedAt: {
         ...temporalRecordWire.values.reportedAt,
         value: {
           valueType: "datetime_tz",
-          value: "-000001-01-02T03:04:05Z",
+          value: "-0001-01-02T03:04:05Z",
         },
       },
     },
