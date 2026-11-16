@@ -1470,6 +1470,21 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   role documents, and Select/Distinct between write stages. Existing constructor
   defaults and canonical plan bytes remain unchanged.
 
+- `migration abandon-plan --environment ENV` clears an open apply or
+  rollback plan when the observed schema equals the last completed manifest
+  and no commit or data evidence is uncertain. It keeps the applied ledger
+  and refuses anything else with the reason. `migration verify` reports an
+  open plan.
+
+- `migration regenerate-previews [--check]` rewrites the derived `.typeql`
+  review files from the verified manifests in one atomic batch. Manifests and
+  plan bytes never change; `--check` lists the previews that differ without
+  writing.
+
+- Migrations can add and remove functions, ordered by their validated
+  dependencies, and can add role specialization to a relation with no
+  instances.
+
 ### Changed
 
 - C typed-IID update/delete exports now redirect to canonical filter terminals.
@@ -1673,6 +1688,24 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   Direct batches still skip a missing IID. Keyed proxy updates run one
   additional diagnostic read in the same transaction.
 
+- `migration plan` verifies every committed preview against its canonical
+  manifest. A workspace authored before this change that contains a regex or
+  a backfill step needs `migration regenerate-previews` once.
+
+- Struct migrations, function body or signature replacement and standalone
+  function metadata edits are refused offline with a precise message.
+
+- Code generation refuses ownership of an abstract attribute type in every
+  target, and escapes reserved member names per target: a trailing `_` in
+  Python and TypeScript, repeated `_` in Rust, and the `zk` marker in C for
+  real keyword or helper collisions. Names that were already valid, such as
+  prefixed C helpers, keep their spelling. Names that collide after escaping
+  are refused at `schema check`.
+
+- A generated connection's `delete_database()` deletes the managed database
+  together with its owned journal. A bare `Database` refuses while a journal
+  database exists and names the safe path.
+
 ### Fixed
 
 - A proxy request that exceeds the advertised budgets, such as more staged
@@ -1809,6 +1842,33 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   cost grows linearly with the batch.
 
 - Bounded queries prefetch up to 32 answer messages instead of 2.
+
+- Regex annotations keep their backslashes in migration TypeQL; `\d`, `\.`
+  and similar escapes no longer change before they reach TypeDB. A string
+  `@values` entry containing a backslash, and a regex with a backslash before
+  a double quote, are refused offline because TypeDB cannot export them
+  losslessly.
+
+- A refused apply or rollback closes its plan when no group committed, so
+  later applies are no longer blocked by a stuck journal.
+
+- `migration apply` resumes after a process crash between a schema commit and
+  its journal checkpoint, instead of failing with "equals neither supplied
+  candidate".
+
+- Removing an ownership or role with a widened cardinality is no longer
+  refused as tightening, and tightening only a maximum is allowed after the
+  existing data is checked.
+
+- An attribute named `count` works through generated managers. Specializing
+  roles keep the inherited required cardinality in generated create types.
+
+- CLI schema errors keep their diagnostic code, file, line and column.
+  `schema check` validates owns-level range and value-set narrowing and
+  redundant constraints offline, for every configured generator.
+
+- A generated Python connection keeps its configured HTTP port and
+  credentials when its retained driver is used.
 
 ## [2.3.3] - 2026-10-27
 
