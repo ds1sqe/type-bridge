@@ -1216,12 +1216,15 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert ".sort()[0]" not in package_smoke
     assert "const npmExecPath = process.env.npm_execpath;" in packed_package_smoke
     assert "npm_execpath is required; invoke this smoke through npm run" in (packed_package_smoke)
-    assert packed_package_smoke.count("spawnSync(") == 2
+    assert packed_package_smoke.count("spawnSync(") == 3
     assert 'npmExecPath,\n        "install",' in packed_package_smoke
     assert '[__filename, "--installed-root", installedRoot]' in packed_package_smoke
     assert 'spawnSync("npm"' not in packed_package_smoke
     assert "shell: false" in packed_package_smoke
     assert "assert.ifError(install.error);" in packed_package_smoke
+    assert "assert.ifError(typecheck.error);" in packed_package_smoke
+    assert 'lib: ["ES2022"], types: []' in packed_package_smoke
+    assert "skipLibCheck: false" in packed_package_smoke
     assert "assert.ifError(verify.error);" in packed_package_smoke
     assert "maxRetries: 5" in packed_package_smoke
     assert "retryDelay: 100" in packed_package_smoke
