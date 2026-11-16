@@ -75,6 +75,7 @@ export declare class PlanError extends Error {
     readonly name = "PlanError";
     constructor(category: PlanErrorCategory, code: string, diagnosticMessage: string, path: readonly PlanErrorPathSegment[], details: Readonly<Record<string, PlanErrorDetail>>, sdkCategory?: PlanErrorCategory, queryCategory?: PlanErrorCategory | null, failure?: Readonly<ProviderFailure> | undefined);
 }
+export declare function structuredPlanError(error: unknown): unknown;
 export declare function planNativeCall<Result>(operation: () => Result): Result;
 export declare function planNativePromise<Result>(promise: Promise<Result>): Promise<Result>;
 /** Decode staged data integer tokens as bigint; count envelopes remain number. */

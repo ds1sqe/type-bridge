@@ -386,7 +386,7 @@ export class MigrationApprovalSet {
   }
 
   get length(): number {
-    return this.#native.length;
+    return planNativeCall(() => this.#native.length);
   }
 
   /** @internal */
@@ -404,11 +404,11 @@ export class MigrationApprovalBuilder {
   }
 
   approve(index: number): void {
-    this.#native.approve(index);
+    planNativeCall(() => this.#native.approve(index));
   }
 
   finish(): MigrationApprovalSet {
-    return new MigrationApprovalSet(this.#native.finish());
+    return new MigrationApprovalSet(planNativeCall(() => this.#native.finish()));
   }
 }
 
@@ -421,11 +421,11 @@ export class MigrationPlan {
   }
 
   get executionAuthorized(): boolean {
-    return this.#native.executionAuthorized;
+    return planNativeCall(() => this.#native.executionAuthorized);
   }
 
   async execute(database: Database, holder: string): Promise<MigrationExecutionReport> {
-    return this.#native.execute(planDatabaseHandle(database), holder);
+    return planNativePromise(planNativeCall(() => this.#native.execute(planDatabaseHandle(database), holder)));
   }
 
   async executeControlled(
@@ -437,13 +437,13 @@ export class MigrationPlan {
       cancellation?: MigrationCancellation;
     } = {},
   ): Promise<MigrationExecutionReport> {
-    return this.#native.executeControlled(
+    return planNativePromise(planNativeCall(() => this.#native.executeControlled(
       planDatabaseHandle(database),
       holder,
       normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.resources?.nativeHandle(),
       options.cancellation?.nativeHandle(),
-    );
+    )));
   }
 }
 
@@ -452,15 +452,15 @@ export class MigrationCancellation {
 
   constructor() {
     const Native = loadNative().NodeMigrationCancellation as new () => NativeMigrationCancellation;
-    this.#native = new Native();
+    this.#native = planNativeCall(() => new Native());
   }
 
   cancel(): void {
-    this.#native.cancel();
+    planNativeCall(() => this.#native.cancel());
   }
 
   get cancelled(): boolean {
-    return this.#native.cancelled;
+    return planNativeCall(() => this.#native.cancelled);
   }
 
   /** @internal */
@@ -477,15 +477,15 @@ export class MigrationExecutionResources {
       transactionGroups: number,
       backfillObservations: number,
     ) => NativeMigrationExecutionResources;
-    this.#native = new Native(transactionGroups, backfillObservations);
+    this.#native = planNativeCall(() => new Native(transactionGroups, backfillObservations));
   }
 
   get transactionGroups(): number {
-    return this.#native.transactionGroups;
+    return planNativeCall(() => this.#native.transactionGroups);
   }
 
   get backfillObservations(): number {
-    return this.#native.backfillObservations;
+    return planNativeCall(() => this.#native.backfillObservations);
   }
 
   /** @internal */
@@ -503,27 +503,27 @@ export class MigrationPreview {
   }
 
   get direction(): "apply" | "rollback" {
-    return this.#native.direction;
+    return planNativeCall(() => this.#native.direction);
   }
 
   get executionAuthorized(): boolean {
-    return this.#native.executionAuthorized;
+    return planNativeCall(() => this.#native.executionAuthorized);
   }
 
   migrationCount(): number {
-    return this.#native.migrationCount();
+    return planNativeCall(() => this.#native.migrationCount());
   }
 
   migration(index: number): MigrationPreviewEntry | null {
-    return this.#native.migration(index);
+    return planNativeCall(() => this.#native.migration(index));
   }
 
   approvalBuilder(): MigrationApprovalBuilder {
-    return new MigrationApprovalBuilder(this.#native.approvalBuilder());
+    return new MigrationApprovalBuilder(planNativeCall(() => this.#native.approvalBuilder()));
   }
 
   authorize(approvals: MigrationApprovalSet): MigrationPlan {
-    return new MigrationPlan(this.#native.authorize(approvals.nativeHandle()));
+    return new MigrationPlan(planNativeCall(() => this.#native.authorize(approvals.nativeHandle())));
   }
 }
 
@@ -537,37 +537,37 @@ export class MigrationCatalog {
 
   /** Register async user code before creating a migration preview. */
   register(stepId: string, forward: (tx: MigrationTransaction) => Promise<void>, reverse?: (tx: MigrationTransaction) => Promise<void>): void {
-    this.#native.register(stepId,
+    planNativeCall(() => this.#native.register(stepId,
       (tx) => forward(createMigrationTransaction(tx)),
-      reverse ? (tx) => reverse(createMigrationTransaction(tx)) : undefined);
+      reverse ? (tx) => reverse(createMigrationTransaction(tx)) : undefined));
   }
 
   get length(): number {
-    return this.#native.length;
+    return planNativeCall(() => this.#native.length);
   }
 
   fingerprintJson(): string {
-    return this.#native.fingerprintJson();
+    return planNativeCall(() => this.#native.fingerprintJson());
   }
 
   isEmpty(): boolean {
-    return this.#native.isEmpty();
+    return planNativeCall(() => this.#native.isEmpty());
   }
 
   heads(): MigrationIdentity[] {
-    return this.#native.heads();
+    return planNativeCall(() => this.#native.heads());
   }
 
   entry(index: number): MigrationHistoryEntry | null {
-    return this.#native.entry(index);
+    return planNativeCall(() => this.#native.entry(index));
   }
 
   verify(database: Database): MigrationVerificationReport {
-    return this.#native.verify(planDatabaseHandle(database));
+    return planNativeCall(() => this.#native.verify(planDatabaseHandle(database)));
   }
 
   appliedMigrations(database: Database): MigrationIdentity[] {
-    return this.#native.appliedMigrations(planDatabaseHandle(database));
+    return planNativeCall(() => this.#native.appliedMigrations(planDatabaseHandle(database)));
   }
 
   previewApply(
@@ -575,7 +575,7 @@ export class MigrationCatalog {
     targets?: MigrationIdentity[],
   ): MigrationPreview {
     return new MigrationPreview(
-      this.#native.previewApply(applied, targets ?? null),
+      planNativeCall(() => this.#native.previewApply(applied, targets ?? null)),
     );
   }
 
@@ -583,7 +583,7 @@ export class MigrationCatalog {
     applied: MigrationIdentity[],
     removals: MigrationIdentity[],
   ): MigrationPreview {
-    return new MigrationPreview(this.#native.previewRollback(applied, removals));
+    return new MigrationPreview(planNativeCall(() => this.#native.previewRollback(applied, removals)));
   }
 }
 
@@ -591,12 +591,12 @@ export function openMigrationCatalog(
   schemaAuthority: Uint8Array,
   historyBundle: Uint8Array,
 ): MigrationCatalog {
-  return new MigrationCatalog(
+  return planNativeCall(() => new MigrationCatalog(
     loadNative().openMigrationCatalog(
       ownedByteSnapshot(schemaAuthority, loadNative().MAX_CANONICAL_BYTES),
       ownedByteSnapshot(historyBundle, loadNative().MAX_REMOTE_ENVELOPE_BYTES),
     ),
-  );
+  ));
 }
 
 export function ensureDatabase(

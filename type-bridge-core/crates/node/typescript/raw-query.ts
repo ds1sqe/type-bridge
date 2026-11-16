@@ -1,3 +1,5 @@
+import { structuredPlanError } from "./plan-internals.js";
+
 /** Provider JSON in native JavaScript types, preserving large integer tokens. */
 export type RawValue = null | boolean | string | number | bigint | RawValue[] | { [key: string]: RawValue };
 
@@ -27,7 +29,7 @@ export class RawQueryError extends Error {
 }
 
 function rawError(error: unknown): unknown {
-  if (!(error instanceof Error) || !error.message.startsWith("typebridge.raw:")) return error;
+  if (!(error instanceof Error) || !error.message.startsWith("typebridge.raw:")) return structuredPlanError(error);
   try {
     const fields = JSON.parse(error.message.slice("typebridge.raw:".length)) as RawErrorFields;
     return new RawQueryError(fields);

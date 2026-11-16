@@ -177,7 +177,7 @@ function nativeDiagnostic(message: string): NativeDiagnostic | null {
     : null;
 }
 
-function structuredPlanError(error: unknown): unknown {
+export function structuredPlanError(error: unknown): unknown {
   if (!(error instanceof Error)) {
     return error;
   }

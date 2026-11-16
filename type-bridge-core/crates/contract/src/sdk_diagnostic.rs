@@ -951,7 +951,11 @@ impl SdkExecutionDiagnostic {
             ),
             SdkQueryDiagnosticCategory::ResourceLimit => (
                 SdkDiagnosticCategory::ResourceLimit,
-                "The typed query exceeded a binding neutral execution limit",
+                if code.as_str() == "resource_in_use" {
+                    "The connection is retained by an active transaction"
+                } else {
+                    "The typed query exceeded a binding neutral execution limit"
+                },
             ),
             SdkQueryDiagnosticCategory::Cancelled => (
                 SdkDiagnosticCategory::Cancelled,
@@ -1450,6 +1454,18 @@ fn static_name(value: &'static str) -> SdkDiagnosticName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_resource_in_use_message_describes_its_active_owner() {
+        let diagnostic = SdkExecutionDiagnostic::query_failure(
+            SdkQueryDiagnosticCategory::ResourceLimit,
+            static_code("resource_in_use"),
+        );
+        assert_eq!(
+            serde_json::to_value(diagnostic.host_json()).unwrap()["message"],
+            "The connection is retained by an active transaction"
+        );
+    }
 
     #[test]
     fn signed_failure_details_round_trip_every_phase_and_reason() {

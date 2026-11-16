@@ -500,7 +500,7 @@ impl NodeMigrationPlan {
                 }
             }.map(node_execution_report).map_err(|error| {
                 if error.code().as_str() == "migration_user_step_failed" {
-                    Error::from_reason(format!("migration catalog rejected [{}]: {error}", error.code()))
+                    catalog_error_with_message(error.code().as_str(), format!("migration catalog rejected [{}]: {error}", error.code()))
                 } else { catalog_error(error.code().as_str()) }
             })
         }.instrument(entry.clone()))
@@ -654,7 +654,16 @@ fn safety_name(safety: SafetyClass) -> &'static str {
 }
 
 fn catalog_error(code: &str) -> Error {
-    Error::from_reason(format!("migration catalog rejected [{code}]"))
+    catalog_error_with_message(code, format!("migration catalog rejected [{code}]"))
+}
+
+fn catalog_error_with_message(code: &str, message: String) -> Error {
+    use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+    crate::plan_runtime::napi_error(&Diagnostic::new(
+        DiagnosticCategory::InvalidContract,
+        DiagnosticCode::new(code).expect("migration codes are canonical"),
+        message,
+    ))
 }
 
 fn node_execution_report(

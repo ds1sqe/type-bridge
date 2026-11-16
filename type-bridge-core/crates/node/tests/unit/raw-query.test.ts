@@ -43,3 +43,13 @@ test("legacy manager transaction exposes no raw query method", async () => {
   assert.equal("query" in TransactionContext.prototype, false);
   assert.equal(typeof RawTransaction.prototype.executeQuery, "function");
 });
+
+
+test("raw facades lower contract refusals to PlanError without losing raw provider errors", async () => {
+  const { PlanError } = await import("../../typescript/plan-internals.js");
+  const diagnostic = { version: 1, category: "invalid_input", code: "transaction_kind", message: "invalid transaction kind", path: [], details: {} };
+  const refusal = () => Object.assign(new Error(JSON.stringify(diagnostic)), {code: "InvalidArg"});
+  const check = (error: unknown) => error instanceof PlanError && error.code === "transaction_kind";
+  assert.throws(() => rawNativeCall(() => { throw refusal(); }), check);
+  await assert.rejects(rawNativePromise(Promise.reject(refusal())), check);
+});
