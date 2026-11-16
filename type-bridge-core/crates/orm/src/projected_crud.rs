@@ -573,6 +573,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 .await;
         }
         let prepared = self.prepare_entity_create(input)?;
+        let deadline = QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default());
         let transaction = self
             .open_transaction(
                 database,
@@ -584,7 +585,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let result = self
             .insert_entity_prepared(&transaction, &prepared, ExecutionMode::default())
             .await;
-        finish_owned_write(transaction, &prepared.type_id, result).await
+        finish_owned_write(transaction, &prepared.type_id, deadline, result).await
     }
 
     /// Insert and completely rehydrate one exact entity in a borrowed write transaction.
@@ -621,6 +622,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 .await;
         }
         let prepared = self.prepare_entity_create(input)?;
+        let deadline = QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default());
         let transaction = self
             .open_transaction(
                 database,
@@ -632,7 +634,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let result = self
             .put_entity_prepared(&transaction, &prepared, ExecutionMode::default())
             .await;
-        finish_owned_write(transaction, &prepared.type_id, result).await
+        finish_owned_write(transaction, &prepared.type_id, deadline, result).await
     }
 
     /// Put and completely rehydrate one exact entity in a borrowed write transaction.
@@ -734,6 +736,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         }
         let prepared = self.prepare_entity_create(input)?;
         validate_iid(&prepared.type_id, iid)?;
+        let deadline = QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default());
         let transaction = self
             .open_transaction(
                 database,
@@ -745,7 +748,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let result = self
             .update_entity_prepared(&transaction, iid, &prepared, ExecutionMode::default())
             .await;
-        finish_owned_write(transaction, &prepared.type_id, result).await
+        finish_owned_write(transaction, &prepared.type_id, deadline, result).await
     }
 
     /// Replace and completely rehydrate one exact entity in a borrowed write transaction.
@@ -795,6 +798,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 .await;
         }
         let prepared = self.prepare_entity_identity(type_id, iid)?;
+        let deadline = QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default());
         let transaction = self
             .open_transaction(
                 database,
@@ -807,7 +811,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .delete_entity_prepared(&transaction, &prepared, ExecutionMode::default(), false)
             .await
             .map(|_| ());
-        finish_owned_write(transaction, &prepared.type_id, result).await
+        finish_owned_write(transaction, &prepared.type_id, deadline, result).await
     }
 
     /// Blind-delete one exact entity in a borrowed write transaction.
@@ -856,6 +860,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 .await;
         }
         let prepared = self.prepare_entity_identity(type_id, iid)?;
+        let deadline = QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default());
         let transaction = self
             .open_transaction(
                 database,
@@ -867,7 +872,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let result = self
             .delete_entity_prepared(&transaction, &prepared, ExecutionMode::default(), true)
             .await;
-        finish_owned_write(transaction, &prepared.type_id, result).await
+        finish_owned_write(transaction, &prepared.type_id, deadline, result).await
     }
 
     /// Delete an exact entity and return every pre-delete snapshot in a write result.
@@ -995,6 +1000,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 .await;
         }
         let prepared = self.prepare_relation_identity(type_id, iid)?;
+        let deadline = QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default());
         let transaction = self
             .open_transaction(
                 database,
@@ -1006,7 +1012,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let result = self
             .delete_relation_prepared(&transaction, &prepared, ExecutionMode::default(), true)
             .await;
-        finish_owned_write(transaction, &prepared.type_id, result).await
+        finish_owned_write(transaction, &prepared.type_id, deadline, result).await
     }
 
     /// Delete an exact relation and return every pre-delete snapshot in a write result.
@@ -1220,6 +1226,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let prepared = self.prepare_relation_create(input)?;
         let database_identity = database.execution_identity();
         require_role_player_database_identity(&prepared, &database_identity)?;
+        let deadline = QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default());
         let transaction = self
             .open_transaction(
                 database,
@@ -1231,7 +1238,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let result = self
             .insert_relation_prepared(&transaction, &prepared, ExecutionMode::default())
             .await;
-        finish_owned_write(transaction, &prepared.type_id, result).await
+        finish_owned_write(transaction, &prepared.type_id, deadline, result).await
     }
 
     /// Insert and completely rehydrate one exact relation in a borrowed write transaction.
@@ -1271,6 +1278,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let prepared = self.prepare_relation_create(input)?;
         let database_identity = database.execution_identity();
         require_role_player_database_identity(&prepared, &database_identity)?;
+        let deadline = QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default());
         let transaction = self
             .open_transaction(
                 database,
@@ -1282,7 +1290,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let result = self
             .put_relation_prepared(&transaction, &prepared, input, ExecutionMode::default())
             .await;
-        finish_owned_write(transaction, &prepared.type_id, result).await
+        finish_owned_write(transaction, &prepared.type_id, deadline, result).await
     }
 
     /// Put and completely rehydrate one exact relation in a borrowed write transaction.
@@ -1387,6 +1395,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         validate_iid(&prepared.type_id, iid)?;
         let database_identity = database.execution_identity();
         require_role_player_database_identity(&prepared, &database_identity)?;
+        let deadline = QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default());
         let transaction = self
             .open_transaction(
                 database,
@@ -1398,7 +1407,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let result = self
             .update_relation_prepared(&transaction, iid, &prepared, ExecutionMode::default())
             .await;
-        finish_owned_write(transaction, &prepared.type_id, result).await
+        finish_owned_write(transaction, &prepared.type_id, deadline, result).await
     }
 
     /// Replace and completely rehydrate one exact relation in a borrowed write transaction.
@@ -1449,6 +1458,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 .await;
         }
         let prepared = self.prepare_relation_identity(type_id, iid)?;
+        let deadline = QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits::default());
         let transaction = self
             .open_transaction(
                 database,
@@ -1461,7 +1471,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .delete_relation_prepared(&transaction, &prepared, ExecutionMode::default(), false)
             .await
             .map(|_| ());
-        finish_owned_write(transaction, &prepared.type_id, result).await
+        finish_owned_write(transaction, &prepared.type_id, deadline, result).await
     }
 
     /// Blind-delete one exact relation in a borrowed write transaction.
@@ -5819,6 +5829,7 @@ fn require_role_player_database_identity(
 async fn finish_owned_write<T>(
     transaction: TransactionContext,
     type_id: &TypeId,
+    deadline: QueryExecutionDeadline,
     result: Result<T, SdkExecutionDiagnostic>,
 ) -> Result<T, SdkExecutionDiagnostic> {
     match result {
@@ -5836,10 +5847,15 @@ async fn finish_owned_write<T>(
             Ok(value)
         }
         Err(primary) => {
+            let cancellation = AnswerCancellation::default();
+            if primary.category() == SdkDiagnosticCategory::Cancelled {
+                cancellation.cancel();
+            }
             if primary.code().as_str() == "transaction_deadline_exceeded" {
-                let _ = transaction.close().await;
+                let _ = await_crud_controlled(transaction.close(), deadline, &cancellation).await;
             } else {
-                let _ = transaction.rollback().await;
+                let _ =
+                    await_crud_controlled(transaction.rollback(), deadline, &cancellation).await;
             }
             Err(primary)
         }
@@ -6878,6 +6894,8 @@ mod tests {
     enum ControlledProviderResponse {
         Items(Vec<AnswerItem>),
         Error(&'static str),
+        Cancelled,
+        Deadline,
         Pending(Arc<Notify>),
     }
 
@@ -6893,6 +6911,7 @@ mod tests {
         commits: usize,
         rollbacks: usize,
         closes: usize,
+        pending_cleanup: bool,
     }
 
     struct ControlledProviderBackend {
@@ -7022,13 +7041,29 @@ mod tests {
         }
 
         fn rollback(&mut self) -> BoxFuture<'_, crate::Result<()>> {
-            self.state.lock().unwrap().rollbacks += 1;
-            Box::pin(async { Ok(()) })
+            let mut state = self.state.lock().unwrap();
+            state.rollbacks += 1;
+            let pending_cleanup = state.pending_cleanup;
+            Box::pin(async move {
+                if pending_cleanup {
+                    pending().await
+                } else {
+                    Ok(())
+                }
+            })
         }
 
         fn close(&mut self) -> BoxFuture<'_, crate::Result<()>> {
-            self.state.lock().unwrap().closes += 1;
-            Box::pin(async { Ok(()) })
+            let mut state = self.state.lock().unwrap();
+            state.closes += 1;
+            let pending_cleanup = state.pending_cleanup;
+            Box::pin(async move {
+                if pending_cleanup {
+                    pending().await
+                } else {
+                    Ok(())
+                }
+            })
         }
     }
 
@@ -7059,12 +7094,48 @@ mod tests {
                 ControlledProviderResponse::Error(message) => {
                     Err(OrmError::QueryExecution(message.to_owned()))
                 }
+                ControlledProviderResponse::Deadline => Err(OrmError::ExecutionDiagnostic(Box::new(SdkExecutionDiagnostic::data_operation_deadline_exceeded()))),
+                ControlledProviderResponse::Cancelled => Err(OrmError::ExecutionDiagnostic(
+                    Box::new(SdkExecutionDiagnostic::data_operation_cancelled()),
+                )),
                 ControlledProviderResponse::Pending(entered) => {
                     entered.notify_one();
                     pending::<crate::Result<BoundedAnswerStats>>().await
                 }
             }
         })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn exact_owned_write_cleanup_is_bounded_for_pending_close_and_rollback() {
+        let installed = controlled_installed();
+        let executor = ProjectedCrudExecutor::new(&installed);
+        let input = controlled_create(&installed, TypeKind::Entity);
+        for (response, code) in [
+            (
+                ControlledProviderResponse::Error("original failure"),
+                "provider_operation_failed",
+            ),
+            (ControlledProviderResponse::Cancelled, "provider_cancelled"),
+            (
+                ControlledProviderResponse::Deadline,
+                "transaction_deadline_exceeded",
+            ),
+        ] {
+            let (database, state) = controlled_database(vec![response]);
+            state.lock().unwrap().pending_cleanup = true;
+            let started = tokio::time::Instant::now();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(61),
+                executor.insert_entity(&database, &input),
+            )
+            .await
+            .expect("owned exact cleanup exceeded its operation deadline");
+            let error = result.unwrap_err();
+            assert_eq!(error.code().as_str(), code, "{error:?}");
+            assert!(started.elapsed() <= std::time::Duration::from_secs(60));
+            assert_eq!(state.lock().unwrap().commits, 0);
+        }
     }
 
     fn controlled_installed() -> InstalledRuntimeProjection {
