@@ -217,7 +217,8 @@ must be declared, including inherited declarations.
 A Set is `{"kind":"field","owner":B,"field":ownership,"operand":O}` or
 `{"kind":"link","relation":B,"role":R,"player":B}`. Key ownerships cannot
 be updated, including keys declared on any descendant of a subtype-inclusive
-match. Descendants are enumerated from the declared subtype facts. A Delete is `{"kind":"thing","binding":B}`,
+match (`query_plan_key_update`). Field updates require an ownership whose
+maximum cardinality is one (`query_plan_update_cardinality`). Descendants are enumerated from the declared subtype facts. A Delete is `{"kind":"thing","binding":B}`,
 `{"kind":"has","owner":B,"field":ownership}`, or
 `{"kind":"links","relation":B,"role":R,"player":B}`, or
 `{"kind":"players","relation":B,"role":R}`. A players deletion removes every
@@ -228,8 +229,11 @@ Thing deletion ends its binding lifetime after that stage (all thing
 deletions of a stage end together at its boundary, not in item order);
 scalar let/function results are not thing deletion targets; later
 stages/output cannot refer to it.
-Ownership/link/players deletion leaves the owner/relation alive. All inferred possible
-owner/player types must satisfy the requested fact; inference is conservative.
+Ownership/link/players deletion leaves the owner/relation alive. Key ownership
+clears are refused at build time (`query_plan_key_delete`). Required ownerships
+must be replaced in the same plan (`query_plan_required_field_delete`). All
+inferred possible owner/player types must satisfy the requested fact;
+inference is conservative.
 
 An Attach is `{"kind":"has","owner":B,"field":ownership,"operand":O}` or
 `{"kind":"links","relation":B,"role":R,"player":B}`. It adds a value or a
@@ -237,7 +241,8 @@ player to a bound thing and keeps the existing ones, which `update` (a
 replacement, valid only up to one value) cannot do for multi-valued
 ownerships and roles. Key ownerships may be attached under
 `query.write.attach-key`; the provider enforces key uniqueness and cardinality.
-A replacement must clear the old key first. Targets, scalar domains and roles
+Key ownerships cannot be cleared or replaced. Attaching a key to an existing
+thing must preserve its stored key value. Targets, scalar domains and roles
 are checked against the declared ownership and plays facts. An attach adds
 `query.write.attach`.
 

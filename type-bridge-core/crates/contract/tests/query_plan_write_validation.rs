@@ -9,6 +9,7 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::query_plan::QueryPattern;
 use type_bridge_contract::query_plan::{InsertThing, QueryPlan, Set, Stage};
 use type_bridge_contract::schema::*;
+use type_bridge_contract::value::Cardinality;
 
 #[test]
 fn insert_and_put_reject_attribute_types_and_playerless_relations() {
@@ -163,4 +164,213 @@ fn subtype_inclusive_updates_check_keys_declared_on_descendants() {
             assert_eq!(result.unwrap_err().code().as_str(), "query_plan_key_update");
         }
     }
+}
+
+#[test]
+fn update_rejects_multi_valued_ownerships_before_dispatch() {
+    let original = schema();
+    let source = original
+        .source(&original.facts().next().unwrap().id())
+        .unwrap()
+        .clone();
+    let mut facts: Vec<_> = original.facts().cloned().collect();
+    facts.push(SchemaFact::Annotation(
+        AnnotationFact::new(
+            AnnotationFactId::new(
+                AnnotationSubjectId::Owns(field("score")),
+                AnnotationKindId::Card,
+            ),
+            SchemaAnnotationValue::Cardinality(Cardinality::new(0, None).unwrap()),
+        )
+        .unwrap(),
+    ));
+    let schema = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        CapabilitySet::new(),
+        facts
+            .into_iter()
+            .map(|fact| SourcedSchemaFact::new(fact, source.clone())),
+    )
+    .unwrap();
+    let error = QueryPlan::new(
+        spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![isa(0, entity("account")).into()],
+                },
+                Stage::Update {
+                    sets: vec![Set::Field {
+                        owner: id(0),
+                        field: field("score"),
+                        operand: literal(1),
+                    }],
+                },
+            ],
+            vec![0],
+        ),
+        &schema,
+    )
+    .unwrap_err();
+    assert_eq!(error.code().as_str(), "query_plan_update_cardinality");
+}
+
+#[test]
+fn delete_field_rejects_keys_and_required_ownerships_but_allows_replacement() {
+    use type_bridge_contract::query_plan::{AttachItem, DeleteItem};
+    let original = schema();
+    let source = original
+        .source(&original.facts().next().unwrap().id())
+        .unwrap()
+        .clone();
+    let mut facts: Vec<_> = original.facts().cloned().collect();
+    facts.push(SchemaFact::Annotation(
+        AnnotationFact::new(
+            AnnotationFactId::new(
+                AnnotationSubjectId::Owns(field("score")),
+                AnnotationKindId::Card,
+            ),
+            SchemaAnnotationValue::Cardinality(Cardinality::new(1, Some(1)).unwrap()),
+        )
+        .unwrap(),
+    ));
+    let schema = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        CapabilitySet::new(),
+        facts
+            .into_iter()
+            .map(|fact| SourcedSchemaFact::new(fact, source.clone())),
+    )
+    .unwrap();
+    for (name, code) in [
+        ("id", "query_plan_key_delete"),
+        ("score", "query_plan_required_field_delete"),
+    ] {
+        let mut stages = vec![
+            Stage::Match {
+                patterns: vec![isa(0, entity("account")).into()],
+            },
+            Stage::Delete {
+                items: vec![DeleteItem::Has {
+                    owner: id(0),
+                    field: field(name),
+                }],
+            },
+        ];
+        assert_eq!(
+            QueryPlan::new(spec(stages.clone(), vec![0]), &schema)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            code
+        );
+        if name == "score" {
+            stages.push(Stage::Attach {
+                items: vec![AttachItem::Has {
+                    optional: false,
+                    owner: id(0),
+                    field: field(name),
+                    operand: literal(2),
+                }],
+            });
+            QueryPlan::new(spec(stages, vec![0]), &schema).unwrap();
+        }
+    }
+}
+
+#[test]
+fn update_uses_effective_cardinality_of_each_possible_owner_type() {
+    let original = schema();
+    let source = original
+        .source(&original.facts().next().unwrap().id())
+        .unwrap()
+        .clone();
+    let child =
+        OwnsFactId::new(entity("child_account"), AttributeId::new("score").unwrap()).unwrap();
+    let mut facts: Vec<_> = original.facts().cloned().collect();
+    facts.push(SchemaFact::Owns(OwnsFact::new(child.clone())));
+    for (field, cardinality) in [
+        (field("score"), Cardinality::new(0, None).unwrap()),
+        (child, Cardinality::new(0, Some(1)).unwrap()),
+    ] {
+        facts.push(SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(AnnotationSubjectId::Owns(field), AnnotationKindId::Card),
+                SchemaAnnotationValue::Cardinality(cardinality),
+            )
+            .unwrap(),
+        ));
+    }
+    let schema = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        CapabilitySet::new(),
+        facts
+            .into_iter()
+            .map(|fact| SourcedSchemaFact::new(fact, source.clone())),
+    )
+    .unwrap();
+    for (owner, include_subtypes, accepted) in [
+        (entity("account"), false, false),
+        (entity("account"), true, false),
+        (entity("child_account"), false, true),
+    ] {
+        let result = QueryPlan::new(
+            spec(
+                vec![
+                    Stage::Match {
+                        patterns: vec![
+                            QueryPattern::Isa {
+                                binding: id(0),
+                                type_id: owner,
+                                include_subtypes,
+                            }
+                            .into(),
+                        ],
+                    },
+                    Stage::Update {
+                        sets: vec![Set::Field {
+                            owner: id(0),
+                            field: field("score"),
+                            operand: literal(1),
+                        }],
+                    },
+                ],
+                vec![0],
+            ),
+            &schema,
+        );
+        assert_eq!(result.is_ok(), accepted, "{result:?}");
+    }
+}
+
+#[test]
+fn selective_key_ownership_deletion_is_also_refused_before_dispatch() {
+    use type_bridge_contract::query_plan::DeleteItem;
+    let error = QueryPlan::new(
+        spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![
+                        isa(0, entity("account")).into(),
+                        QueryPattern::Has {
+                            owner: id(0),
+                            attribute: id(1),
+                            attribute_id: AttributeId::new("id").unwrap(),
+                        }
+                        .into(),
+                    ],
+                },
+                Stage::Delete {
+                    items: vec![DeleteItem::HasValue {
+                        owner: id(0),
+                        field: field("id"),
+                        value: id(1),
+                    }],
+                },
+            ],
+            vec![0],
+        ),
+        &schema(),
+    )
+    .unwrap_err();
+    assert_eq!(error.code().as_str(), "query_plan_key_delete");
 }

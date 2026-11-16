@@ -1193,6 +1193,12 @@ fn validate_stages(
             "a plan requires at least one stage",
         ));
     };
+    let profile = crate::semantic_profile::SemanticProfile::resolve(
+        spec.managed_semantics
+            .as_fingerprint()
+            .semantic_profile()
+            .expect("managed schema fingerprints carry a profile"),
+    )?;
     let index = SchemaIndex::new(schema);
     let mut mandatory = BTreeSet::new();
     let mut optional = BTreeSet::new();
@@ -1578,6 +1584,16 @@ fn validate_stages(
                         } => {
                             bound(*owner, &mandatory)?;
                             index.ownership(*owner, field, &types, true)?;
+                            if index
+                                .ownership_bounds(*owner, field, &types, &profile)
+                                .1
+                                .is_none_or(|max| max > 1)
+                            {
+                                return Err(invalid(
+                                    "query_plan_update_cardinality",
+                                    "update requires a single-valued ownership; clear and attach collection values instead",
+                                ));
+                            }
                             validate_operand(operand, &mandatory, &optional, spec.inputs.len())?;
                             index.field_value(field, operand, &scalar_types, &spec.inputs)?;
                         }
@@ -1697,6 +1713,25 @@ fn validate_stages(
                                 bound(*owner, &optional)?;
                             }
                             index.ownership(*owner, field, &types, false)?;
+                            if index.ownership_is_key(*owner, field, &types) {
+                                return Err(invalid(
+                                    "query_plan_key_delete",
+                                    "key ownerships cannot be deleted",
+                                ));
+                            }
+                            let minimum = index.ownership_bounds(*owner, field, &types, &profile).0;
+                            if minimum > 0 {
+                                let replacement_values = spec.pipeline[stage_index + 1..].iter().flat_map(|stage| match stage {
+                                    Stage::Attach { items } => items.as_slice(), _ => &[],
+                                }).filter(|item| matches!(item, AttachItem::Has { optional: false, owner: target, field: replaced, .. } if target == owner && replaced == field)).count() as u64;
+                                let deleting_owner = spec.pipeline[stage_index + 1..].iter().any(|stage| matches!(stage, Stage::Delete { items } if items.iter().any(|item| matches!(item, DeleteItem::Thing { binding } if binding == owner))));
+                                if replacement_values < minimum && !deleting_owner {
+                                    return Err(invalid(
+                                        "query_plan_required_field_delete",
+                                        "required ownerships must be replaced in the same plan",
+                                    ));
+                                }
+                            }
                         }
                         DeleteItem::HasValue {
                             owner,
@@ -1706,6 +1741,13 @@ fn validate_stages(
                             bound(*owner, &mandatory)?;
                             bound(*value, &mandatory)?;
                             index.ownership(*owner, field, &types, false)?;
+                            if index.ownership_is_key(*owner, field, &types) {
+                                return Err(invalid(
+                                    "query_plan_key_delete",
+                                    "key ownerships cannot be deleted",
+                                ));
+                            }
+
                             let attribute = TypeId::new(
                                 TypeKind::Attribute,
                                 field.attribute().label().as_str(),
@@ -2373,6 +2415,87 @@ impl<'a> SchemaIndex<'a> {
         }
         Ok(())
     }
+    fn ownership_is_key(
+        &self,
+        owner: BindingId,
+        field: &OwnsFactId,
+        types: &BTreeMap<BindingId, BTreeSet<TypeId>>,
+    ) -> bool {
+        types.get(&owner).is_some_and(|types| {
+            types.iter().any(|type_id| {
+                self.ancestors(type_id).iter().any(|owner| {
+                    OwnsFactId::new(owner.clone(), field.attribute().clone())
+                        .ok()
+                        .is_some_and(|id| {
+                            self.annotation(AnnotationSubjectId::Owns(id), AnnotationKindId::Key)
+                        })
+                })
+            })
+        })
+    }
+
+    fn ownership_bounds(
+        &self,
+        owner: BindingId,
+        field: &OwnsFactId,
+        types: &BTreeMap<BindingId, BTreeSet<TypeId>>,
+        profile: &crate::semantic_profile::SemanticProfile,
+    ) -> (u64, Option<u64>) {
+        let mut minimum = 0;
+        let mut maximum = Some(0);
+        for candidate in types.get(&owner).into_iter().flatten() {
+            let mut candidate_minimum = 0;
+            let mut candidate_maximum = None;
+            for owner in self.ancestors(candidate) {
+                let Ok(id) = OwnsFactId::new(owner, field.attribute().clone()) else {
+                    continue;
+                };
+                if self.schema.fact(&SchemaFactId::Owns(id.clone())).is_none() {
+                    continue;
+                }
+                let cardinality = self.ownership_cardinality(&id, profile);
+                candidate_minimum = candidate_minimum.max(cardinality.min());
+                candidate_maximum = match (candidate_maximum, cardinality.max()) {
+                    (Some(left), Some(right)) => Some(std::cmp::min(left, right)),
+                    (left, right) => left.or(right),
+                };
+            }
+            minimum = minimum.max(candidate_minimum);
+            maximum = match (maximum, candidate_maximum) {
+                (Some(left), Some(right)) => Some(std::cmp::max(left, right)),
+                _ => None,
+            };
+        }
+        (minimum, maximum)
+    }
+
+    fn ownership_cardinality(
+        &self,
+        field: &OwnsFactId,
+        profile: &crate::semantic_profile::SemanticProfile,
+    ) -> crate::value::Cardinality {
+        let explicit = match self
+            .schema
+            .fact(&SchemaFactId::Annotation(AnnotationFactId::new(
+                AnnotationSubjectId::Owns(field.clone()),
+                AnnotationKindId::Card,
+            ))) {
+            Some(SchemaFact::Annotation(annotation)) => match annotation.value() {
+                crate::schema::SchemaAnnotationValue::Cardinality(value) => Some(*value),
+                _ => None,
+            },
+            _ => None,
+        };
+        profile.effective_cardinality(
+            crate::semantic_profile::InterfaceKind::Owns,
+            explicit,
+            self.annotation(
+                AnnotationSubjectId::Owns(field.clone()),
+                AnnotationKindId::Key,
+            ),
+        )
+    }
+
     fn ownership(
         &self,
         owner: BindingId,
