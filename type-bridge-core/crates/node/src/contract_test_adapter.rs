@@ -201,10 +201,22 @@ impl TransactionOps for ProjectionRecordingTransaction {
     }
 
     fn commit(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
-        Box::pin(async move {
-            self.commit_classified()
-                .await
-                .map_err(ClassifiedCommitError::into_orm_error)
+        if self
+            .state
+            .lock()
+            .expect("recording state poisoned")
+            .commit_conflict
+        {
+            return Box::pin(async move {
+                self.commit_classified()
+                    .await
+                    .map_err(ClassifiedCommitError::into_orm_error)
+            });
+        }
+        Box::pin(async {
+            Err(OrmError::QueryExecution(
+                "contract recording adapter used the lossy commit path".to_owned(),
+            ))
         })
     }
 
@@ -281,7 +293,7 @@ impl ProjectionRecordingFixture {
             Some(_) => {
                 return Err(Error::new(
                     Status::InvalidArg,
-                    "commit failure must be 'definitely_aborted' or 'unknown'",
+                    "commit failure must be 'conflict', 'definitely_aborted' or 'unknown'",
                 ));
             }
         };
