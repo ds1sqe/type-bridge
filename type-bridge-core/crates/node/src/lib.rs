@@ -570,6 +570,21 @@ impl NodeRustTransactionContext {
     }
 }
 
+fn connection_credentials(
+    username: Option<String>,
+    password: Option<String>,
+) -> Result<(String, String)> {
+    match (username, password) {
+        (None, None) => Ok(("admin".into(), "password".into())),
+        (Some(username), Some(password)) if !username.is_empty() && !password.is_empty() => {
+            Ok((username, password))
+        }
+        _ => Err(napi_orm_error(OrmError::Connection(
+            "username and password must both be nonempty when supplied".into(),
+        ))),
+    }
+}
+
 #[napi]
 impl NodeRustTransactionContext {
     #[napi(js_name = "executeQuery", ts_return_type = "Promise<unknown>")]
@@ -640,6 +655,7 @@ pub fn ensure_rust_database(
     tls_enabled: Option<bool>,
     tls_root_ca: Option<String>,
 ) -> Result<()> {
+    let (username, password) = connection_credentials(username, password)?;
     let options = napi_secure_connect_options(http_port, server_version, tls_enabled, tls_root_ca)?;
     let prepared = options
         .prepare_transport()
@@ -650,8 +666,6 @@ pub fn ensure_rust_database(
             format!("Failed to create Tokio runtime: {error}"),
         )
     })?;
-    let username = username.unwrap_or_else(|| "admin".to_string());
-    let password = password.unwrap_or_else(|| "password".to_string());
     runtime
         .block_on(type_bridge_orm::ensure_database_exists_prepared_secure(
             &address, &database, &username, &password, prepared,
@@ -676,6 +690,7 @@ pub fn connect_rust_database(
     tls_root_ca: Option<String>,
     query_limits: Option<&match_runtime::NodeQueryLimits>,
 ) -> Result<NodeDatabase> {
+    let (username, password) = connection_credentials(username, password)?;
     let query_limits = query_limits
         .map(|limits| limits.inner().validate_plan())
         .transpose()
@@ -690,8 +705,6 @@ pub fn connect_rust_database(
             format!("Failed to create Tokio runtime: {error}"),
         )
     })?;
-    let username = username.unwrap_or_else(|| "admin".to_string());
-    let password = password.unwrap_or_else(|| "password".to_string());
     let db = runtime
         .block_on(
             type_bridge_orm::Database::connect_prepared_secure_with_options(
@@ -1132,5 +1145,34 @@ mod tests {
         );
         assert!(napi_secure_connect_options(None, None, None, Some("ca.pem".into())).is_err());
         assert!(napi_secure_connect_options(None, None, Some(true), Some(String::new())).is_err());
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::connection_credentials;
+
+    #[test]
+    fn defaults_require_a_fully_omitted_pair() {
+        assert_eq!(
+            connection_credentials(None, None).unwrap(),
+            ("admin".into(), "password".into())
+        );
+        assert_eq!(
+            connection_credentials(Some("alice".into()), Some("secret".into())).unwrap(),
+            ("alice".into(), "secret".into())
+        );
+        for (username, password) in [
+            (Some("alice"), None),
+            (None, Some("secret")),
+            (Some("alice"), Some("")),
+            (Some(""), Some("secret")),
+            (Some(""), Some("")),
+        ] {
+            let error =
+                connection_credentials(username.map(str::to_owned), password.map(str::to_owned))
+                    .unwrap_err();
+            assert!(error.reason.contains("username and password"));
+        }
     }
 }
