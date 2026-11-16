@@ -157,14 +157,14 @@ mod tests {
                 .unwrap();
             return;
         }
-        assert_eq!(RUNTIME_SOURCE.len(), 160_825);
+        assert_eq!(RUNTIME_SOURCE.len(), 161_760);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "7ff9ff179191f1f77effdb14a9c5f84e1a56ccb9a7787f684caa9cd6abcf3b48"
+            "1d8ce4c8fa13bbda9ee4c5241fe4e4a30a7e4e45c2b9d12283a4a52328410d44"
         );
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "70aa0655023cf342140d848fb3c1ef4e132ca8d1b50bf62e04ffed3d18de31f8"
+            "1257ed470eb50762808e89248873123e2080ded4e5afbfe1beb760d7c579b38b"
         );
     }
 
@@ -201,14 +201,10 @@ mod tests {
         assert!(source.contains("native.deleteManyProjected("));
         assert!(source.contains("projectedBatchMaterializer: materializeProjectedBatch"));
         assert!(source.contains("function canonicalOrderedTemporalIso(iso: string): string"));
-        assert!(
-            source.contains("function lowerOrderedProjectedValue(value: unknown): ProjectedWire")
-        );
-        assert!(source.contains("const wire = lowerOrderedProjectedValue(instance)"));
-        assert!(source.contains("JSON.stringify(lowerOrderedProjectedValue(result))"));
-        assert!(
-            source.contains("JSON.stringify(orderedScalarToWire(definition.valueType, input))")
-        );
+        assert!(source.contains("function lowerProjectedValue(value: unknown): ProjectedWire"));
+        assert!(source.contains("const wire = lowerProjectedValue(instance)"));
+        assert!(source.contains("JSON.stringify(lowerProjectedValue(result))"));
+        assert!(source.contains("JSON.stringify(scalarToWire(definition.valueType, input))"));
         assert!(source.contains("kind: \"root\" as const"));
         assert!(source.contains("kind: \"role\" as const"));
         assert!(source.contains("Parameters<NativeProjectedManager[\"insertProjected\"]>"));
@@ -241,6 +237,16 @@ mod tests {
     fn ordered_batch_materializer_transitive_slice_is_pure_and_closed() {
         let source = std::str::from_utf8(RUNTIME_SOURCE).unwrap().to_owned();
         let slices = [
+            exact_source_slice(
+                &source,
+                "function isTemporal(",
+                "\n\nfunction attributeInputFromWire(",
+            ),
+            exact_source_slice(
+                &source,
+                "function installAttributeScalar(",
+                "\n\nconst COMPLETE_BRAND",
+            ),
             exact_source_slice(
                 &source,
                 "function assertRecord(",
@@ -317,6 +323,20 @@ mod tests {
         assert_eq!(
             identifier_calls(&graph),
             BTreeSet::from([
+                "Number".to_owned(),
+                "RangeError".to_owned(),
+                "String".to_owned(),
+                "abs".to_owned(),
+                "defineProperties".to_owned(),
+                "exec".to_owned(),
+                "installAttributeScalar".to_owned(),
+                "isTemporal".to_owned(),
+                "padStart".to_owned(),
+                "replace".to_owned(),
+                "slice".to_owned(),
+                "startsWith".to_owned(),
+                "test".to_owned(),
+                "toString".to_owned(),
                 "BigInt".to_owned(),
                 "Date".to_owned(),
                 "Iid".to_owned(),
@@ -370,6 +390,7 @@ mod tests {
             "canonicalOrderedTemporalIso",
             "orderedScalarToWire",
             "lowerOrderedProjectedValue",
+            "lowerProjectedValue",
             "manager(",
             ".manager(",
             "session(",
