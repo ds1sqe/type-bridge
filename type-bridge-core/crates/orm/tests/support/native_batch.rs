@@ -106,11 +106,12 @@ pub fn result(source: &str, result: QueryResult) -> QueryResult {
     if !native {
         return QueryResult::Documents(documents);
     }
+    let shape = FixtureSource::new(source);
     if source.contains("fetch") {
         QueryResult::Documents(
             documents
                 .into_iter()
-                .map(|document| match item(source, document) {
+                .map(|document| match shape.item(document) {
                     AnswerItem::Document(document) => document,
                     _ => panic!("native fetch fixture"),
                 })
@@ -120,7 +121,7 @@ pub fn result(source: &str, result: QueryResult) -> QueryResult {
         QueryResult::Rows(
             documents
                 .into_iter()
-                .map(|document| match item(source, document) {
+                .map(|document| match shape.item(document) {
                     AnswerItem::Row(row) => row,
                     _ => panic!("native row fixture"),
                 })
@@ -129,174 +130,212 @@ pub fn result(source: &str, result: QueryResult) -> QueryResult {
     }
 }
 
-pub fn item(source: &str, mut document: Value) -> AnswerItem {
-    if source.contains("$actual1") && source.contains("$matched2") {
-        return AnswerItem::Row(
-            json!({"ordinal0":scalar(&document["ordinal"]), "actual1":{"kind":"absent"}, "matched2":{"kind":"absent"}}),
-        );
-    }
-    let snapshot = source.contains("$root0")
-        && !source.contains("$ordinal1")
-        && !source.contains("\"ordinal\"")
-        && (source.contains("fetch") || source.contains("delete"));
-    if !snapshot && !source.contains("$ordinal0") && !source.contains("$ordinal1") {
-        return AnswerItem::Document(document);
-    }
-    if snapshot {
-        document
-            .as_object_mut()
-            .expect("snapshot fixture object")
-            .remove("ordinal");
-    }
-    if source.contains("fetch") {
-        if source.contains("\"_role_0_players\"")
-            && document.get("role_players").is_none()
-            && document.get("_role_0_iid").is_some()
-        {
-            let mut players = Vec::new();
-            for index in 0..32 {
-                let Some(iid) = document
-                    .as_object_mut()
-                    .unwrap()
-                    .remove(&format!("_role_{index}_iid"))
-                else {
-                    break;
-                };
-                let kind = document
-                    .as_object_mut()
-                    .unwrap()
-                    .remove(&format!("_role_{index}_type"))
-                    .unwrap_or(Value::Null);
-                let attributes = document
-                    .as_object_mut()
-                    .unwrap()
-                    .remove(&format!("_role_{index}_attributes"))
-                    .unwrap_or(json!({}));
-                let variable = format!("PlanFetchRole{index}");
-                let marker = format!(": ${variable})");
-                let role = source
-                    .split(&marker)
-                    .next()
-                    .unwrap()
-                    .rsplit('(')
-                    .next()
-                    .unwrap()
-                    .trim();
-                if !iid.is_null() {
-                    players.push(
-                        json!({"role":role,"iid":iid,"type_name":kind,"attributes":attributes}),
-                    );
-                }
-            }
-            document["role_players"] = players.into();
+/// Cache query-shape searches once per fixture stream, rather than scanning
+/// thousands of literal IID branches again for each answered document.
+pub struct FixtureSource<'a> {
+    text: &'a str,
+    positions: std::sync::Mutex<std::collections::BTreeMap<String, Option<usize>>>,
+}
+
+impl<'a> FixtureSource<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            positions: Default::default(),
         }
-        let players = document
-            .as_object_mut()
-            .and_then(|object| object.remove("role_players"));
-        if let Some(players) = players {
-            let players = players.as_array().expect("legacy role fixture list");
-            let variable = if source.contains("$root0") {
-                "$root0"
-            } else {
-                "$thing1"
-            };
-            let exact = format!("{variable} isa! ");
-            let inclusive = format!("{variable} isa ");
-            let relation = source
-                .split(&exact)
-                .skip(1)
-                .chain(source.split(&inclusive).skip(1))
-                .filter_map(|value| value.split([';', ',', ' ']).next())
-                .find(|label| !label.starts_with('$'))
-                .unwrap_or("");
-            if players.iter().any(|player| {
-                player["role"].as_str().is_some_and(|role| {
-                    role.contains(':') && !role.starts_with(&format!("{relation}:"))
-                })
-            }) {
-                document["_role_99_players"] = json!([]);
-            }
-            for index in 0..32 {
-                let key = format!("_role_{index}_players");
-                let iid_key = format!("_role_{index}_iid");
-                let collected = source.contains(&format!("\"{key}\""));
-                if !collected && !source.contains(&format!("\"{iid_key}\"")) {
-                    break;
+    }
+
+    fn find(&self, needle: &str) -> Option<usize> {
+        *self
+            .positions
+            .lock()
+            .unwrap()
+            .entry(needle.to_owned())
+            .or_insert_with(|| self.text.find(needle))
+    }
+
+    fn contains(&self, needle: &str) -> bool {
+        self.find(needle).is_some()
+    }
+
+    fn before(&self, needle: &str) -> &str {
+        &self.text[..self.find(needle).unwrap_or(self.text.len())]
+    }
+
+    pub fn item(&self, mut document: Value) -> AnswerItem {
+        let source = self;
+
+        if source.contains("$actual1") && source.contains("$matched2") {
+            return AnswerItem::Row(
+                json!({"ordinal0":scalar(&document["ordinal"]), "actual1":{"kind":"absent"}, "matched2":{"kind":"absent"}}),
+            );
+        }
+        let snapshot = source.contains("$root0")
+            && !source.contains("$ordinal1")
+            && !source.contains("\"ordinal\"")
+            && (source.contains("fetch") || source.contains("delete"));
+        if !snapshot && !source.contains("$ordinal0") && !source.contains("$ordinal1") {
+            return AnswerItem::Document(document);
+        }
+        if snapshot {
+            document
+                .as_object_mut()
+                .expect("snapshot fixture object")
+                .remove("ordinal");
+        }
+        if source.contains("fetch") {
+            if source.contains("\"_role_0_players\"")
+                && document.get("role_players").is_none()
+                && document.get("_role_0_iid").is_some()
+            {
+                let mut players = Vec::new();
+                for index in 0..32 {
+                    let Some(iid) = document
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(&format!("_role_{index}_iid"))
+                    else {
+                        break;
+                    };
+                    let kind = document
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(&format!("_role_{index}_type"))
+                        .unwrap_or(Value::Null);
+                    let attributes = document
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(&format!("_role_{index}_attributes"))
+                        .unwrap_or(json!({}));
+                    let variable = format!("PlanFetchRole{index}");
+                    let marker = format!(": ${variable})");
+                    let role = source.before(&marker).rsplit('(').next().unwrap().trim();
+                    if !iid.is_null() {
+                        players.push(
+                            json!({"role":role,"iid":iid,"type_name":kind,"attributes":attributes}),
+                        );
+                    }
                 }
-                let variable = format!("PlanFetchRole{index}");
-                let marker = format!(": ${variable})");
-                let prefix = source
-                    .split(&marker)
-                    .next()
-                    .expect("role variable in native fetch");
-                let role = prefix.rsplit('(').next().expect("native role label").trim();
-                let selected = players
-                    .iter()
-                    .filter(|player| {
-                        player["role"]
-                            .as_str()
-                            .is_some_and(|name| name.rsplit(':').next() == Some(role))
+                document["role_players"] = players.into();
+            }
+            let players = document
+                .as_object_mut()
+                .and_then(|object| object.remove("role_players"));
+            if let Some(players) = players {
+                let players = players.as_array().expect("legacy role fixture list");
+                let variable = if source.contains("$root0") {
+                    "$root0"
+                } else {
+                    "$thing1"
+                };
+                let exact = format!("{variable} isa! ");
+                let inclusive = format!("{variable} isa ");
+                let relation = source
+                    .split(&exact)
+                    .skip(1)
+                    .chain(source.split(&inclusive).skip(1))
+                    .filter_map(|value| value.split([';', ',', ' ']).next())
+                    .find(|label| !label.starts_with('$'))
+                    .unwrap_or("");
+                if players.iter().any(|player| {
+                    player["role"].as_str().is_some_and(|role| {
+                        role.contains(':') && !role.starts_with(&format!("{relation}:"))
                     })
-                    .collect::<Vec<_>>();
-                if collected {
-                    document[&key] = selected.into_iter().map(|player| {
+                }) {
+                    document["_role_99_players"] = json!([]);
+                }
+                for index in 0..32 {
+                    let key = format!("_role_{index}_players");
+                    let iid_key = format!("_role_{index}_iid");
+                    let collected = source.contains(&format!("\"{key}\""));
+                    if !collected && !source.contains(&format!("\"{iid_key}\"")) {
+                        break;
+                    }
+                    let variable = format!("PlanFetchRole{index}");
+                    let marker = format!(": ${variable})");
+                    let prefix = source.before(&marker);
+                    let role = prefix.rsplit('(').next().expect("native role label").trim();
+                    let selected = players
+                        .iter()
+                        .filter(|player| {
+                            player["role"]
+                                .as_str()
+                                .is_some_and(|name| name.rsplit(':').next() == Some(role))
+                        })
+                        .collect::<Vec<_>>();
+                    if collected {
+                        document[&key] = selected.into_iter().map(|player| {
                         let mut attributes_value = player["attributes"].clone(); attributes(&mut attributes_value);
                         json!({"_iid":player["iid"], "_type":player["type_name"], "attributes":attributes_value})
                     }).collect::<Vec<_>>().into();
-                } else {
-                    assert!(
-                        selected.len() <= 1,
-                        "uncollected role fixtures expand in separate documents"
-                    );
-                    let player = selected.first().copied();
-                    document[&iid_key] = player.map_or(Value::Null, |player| player["iid"].clone());
-                    document[format!("_role_{index}_type")] =
-                        player.map_or(Value::Null, |player| player["type_name"].clone());
-                    let mut attributes_value =
-                        player.map_or(Value::Null, |player| player["attributes"].clone());
-                    attributes(&mut attributes_value);
-                    document[format!("_role_{index}_attributes")] = attributes_value;
+                    } else {
+                        assert!(
+                            selected.len() <= 1,
+                            "uncollected role fixtures expand in separate documents"
+                        );
+                        let player = selected.first().copied();
+                        document[&iid_key] =
+                            player.map_or(Value::Null, |player| player["iid"].clone());
+                        document[format!("_role_{index}_type")] =
+                            player.map_or(Value::Null, |player| player["type_name"].clone());
+                        let mut attributes_value =
+                            player.map_or(Value::Null, |player| player["attributes"].clone());
+                        attributes(&mut attributes_value);
+                        document[format!("_role_{index}_attributes")] = attributes_value;
+                    }
                 }
             }
+            if let Some(values) = document.get_mut("attributes") {
+                attributes(values);
+            }
+            return AnswerItem::Document(document);
         }
-        if let Some(values) = document.get_mut("attributes") {
-            attributes(values);
+        if source.contains("$root0") && source.contains("$ordinal1") && !source.contains("fetch") {
+            let label = document
+                .get("_type")
+                .and_then(Value::as_str)
+                .unwrap_or("person");
+            return AnswerItem::Row(json!({
+                "ordinal1": scalar(&document["ordinal"]),
+                "root0": {"kind":"thing", "iid":document["iid"], "type_id":{"kind":if relation(label) {"relation"} else {"entity"}, "label":label}},
+            }));
         }
-        return AnswerItem::Document(document);
-    }
-    if source.contains("$root0") && source.contains("$ordinal1") && !source.contains("fetch") {
-        let label = document
-            .get("_type")
-            .and_then(Value::as_str)
-            .unwrap_or("person");
-        return AnswerItem::Row(json!({
-            "ordinal1": scalar(&document["ordinal"]),
-            "root0": {"kind":"thing", "iid":document["iid"], "type_id":{"kind":if relation(label) {"relation"} else {"entity"}, "label":label}},
-        }));
-    }
-    if snapshot {
-        return AnswerItem::Row(json!({}));
-    }
-    if source.contains("$kind0") {
-        let label = document["type"].as_str().unwrap_or("person");
-        return AnswerItem::Row(
-            json!({"kind0":scalar(&document["kind"]), "ordinal1":scalar(&document["ordinal"]), "reference2":scalar(&document["reference_ordinal"]), "thing3":{"kind":"thing", "iid": document["iid"], "type_id":{"kind":if relation(label) {"relation"} else {"entity"}, "label":label}}}),
-        );
-    }
-    let mut row = json!({"ordinal0":scalar(&document["ordinal"])});
-    if source.ends_with("select $ordinal0, $thing1;") {
-        let after = source.split("$thing1 isa").nth(1).unwrap_or(" person;");
-        let label = after
-            .trim_start_matches('!')
-            .trim()
-            .split([';', ',', ' '])
-            .next()
-            .unwrap();
-        if let Some(iid) = document.get("iid") {
-            row["thing1"] = json!({"kind":"thing", "iid":iid, "type_id":{"kind":if relation(label) {"relation"} else {"entity"}, "label":label}});
-        } else {
-            row["thing1"] = json!({"kind":"absent"});
+        if snapshot {
+            return AnswerItem::Row(json!({}));
         }
+        if source.contains("$kind0") {
+            let label = document["type"].as_str().unwrap_or("person");
+            return AnswerItem::Row(
+                json!({"kind0":scalar(&document["kind"]), "ordinal1":scalar(&document["ordinal"]), "reference2":scalar(&document["reference_ordinal"]), "thing3":{"kind":"thing", "iid": document["iid"], "type_id":{"kind":if relation(label) {"relation"} else {"entity"}, "label":label}}}),
+            );
+        }
+        let mut row = json!({"ordinal0":scalar(&document["ordinal"])});
+        if source.ends_with("select $ordinal0, $thing1;") {
+            let after = source.split("$thing1 isa").nth(1).unwrap_or(" person;");
+            let label = after
+                .trim_start_matches('!')
+                .trim()
+                .split([';', ',', ' '])
+                .next()
+                .unwrap();
+            if let Some(iid) = document.get("iid") {
+                row["thing1"] = json!({"kind":"thing", "iid":iid, "type_id":{"kind":if relation(label) {"relation"} else {"entity"}, "label":label}});
+            } else {
+                row["thing1"] = json!({"kind":"absent"});
+            }
+        }
+        AnswerItem::Row(row)
     }
-    AnswerItem::Row(row)
+}
+
+impl std::ops::Deref for FixtureSource<'_> {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.text
+    }
+}
+
+#[allow(dead_code)] // Shared single-answer seam used by ORM and SDK mocks.
+pub fn item(source: &str, document: Value) -> AnswerItem {
+    FixtureSource::new(source).item(document)
 }

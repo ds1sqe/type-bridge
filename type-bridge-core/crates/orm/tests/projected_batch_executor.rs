@@ -216,13 +216,12 @@ impl TransactionOps for RecordingTransaction {
         };
         let source = typeql.to_owned();
         Box::pin(async move {
+            let shape = native_batch::FixtureSource::new(&source);
             let mut reader = BoundedAnswerReader::new(limits);
             reader.check_before_read()?;
             let mut deliver = |documents: Vec<Value>| -> Result<(), OrmError> {
                 for document in documents {
-                    if reader.accept(native_batch::item(&source, document), consumer)?
-                        == AnswerControl::Stop
-                    {
+                    if reader.accept(shape.item(document), consumer)? == AnswerControl::Stop {
                         break;
                     }
                 }
@@ -252,9 +251,7 @@ impl TransactionOps for RecordingTransaction {
                 }
                 Response::Underreported(documents) => {
                     for document in documents {
-                        if consumer.accept(native_batch::item(&source, document))?
-                            == AnswerControl::Stop
-                        {
+                        if consumer.accept(shape.item(document))? == AnswerControl::Stop {
                             break;
                         }
                     }

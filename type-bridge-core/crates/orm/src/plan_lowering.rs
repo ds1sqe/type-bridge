@@ -210,6 +210,66 @@ struct PatternScope {
     next_iid: usize,
 }
 
+fn lower_input_iids(
+    inputs: &[InputColumn],
+    bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
+    binding: type_bridge_contract::migration_assertion::BindingId,
+    operand: &QueryOperand,
+    column: type_bridge_contract::query_plan::InputColumnId,
+    rows: &[InputRow],
+    policy: Option<&crate::query_plan_exec::LiteralComparisonPolicy<'_>>,
+) -> Result<tql::Pattern, Diagnostic> {
+    use type_bridge_contract::value::CanonicalValue;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut branches = Vec::new();
+    let fallback = std::cell::Cell::new(
+        type_bridge_contract::limits::QueryLimits::default()
+            .codec
+            .max_bytes,
+    );
+    let remaining = policy.map_or(&fallback, |policy| &policy.remaining);
+    for row in rows {
+        let Some(Some(CanonicalValue::String(iid))) = row.values().get(usize::from(column.get()))
+        else {
+            continue;
+        };
+        if !seen.insert(iid.as_str()) {
+            continue;
+        }
+        let literal = ast(tql::thing(
+            local_variable(bindings, binding)?,
+            vec![ast(tql::iid(iid.as_str()))?],
+        ))?;
+        if rows.len() == 1 {
+            return Ok(literal);
+        }
+        let guard = ast(tql::compare(
+            lower_operand(inputs, bindings, operand, None)?,
+            "==",
+            lower_operand(
+                inputs,
+                bindings,
+                &QueryOperand::Literal {
+                    value: CanonicalValue::String(iid.clone()),
+                },
+                None,
+            )?,
+        ))?;
+        let bytes =
+            ast(tql::render_pattern(&guard))?.len() + ast(tql::render_pattern(&literal))?.len();
+        let next = remaining.get().checked_sub(bytes).ok_or_else(|| {
+            failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_plan_lowered_typeql_byte_limit",
+                "literal IID terms exceed the lowered TypeQL byte ceiling",
+            )
+        })?;
+        remaining.set(next);
+        branches.push(vec![guard, literal]);
+    }
+    Ok(tql::or(branches))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lower_scoped_patterns_inner(
     inputs: &[InputColumn],
@@ -236,14 +296,22 @@ fn lower_scoped_patterns_inner(
                 } else if scope.negative_depth == 0
                     && !literal_policy.is_some_and(|policy| policy.redact_inputs)
                     && let QueryOperand::Input { column } = iid
-                    && let Some([row]) = values
-                    && let Some(Some(type_bridge_contract::value::CanonicalValue::String(iid))) =
-                        row.values().get(usize::from(column.get()))
+                    && let Some(rows) = values
+                    && rows.iter().any(|row| {
+                        row.values()
+                            .get(usize::from(column.get()))
+                            .is_some_and(Option::is_some)
+                    })
                 {
-                    output.push(ast(tql::thing(
-                        local_variable(bindings, *binding)?,
-                        vec![ast(tql::iid(iid.as_str()))?],
-                    ))?);
+                    output.push(lower_input_iids(
+                        inputs,
+                        bindings,
+                        *binding,
+                        iid,
+                        *column,
+                        rows,
+                        literal_policy,
+                    )?);
                 } else if scope.negative_depth > 0 {
                     // TypeDB 3.12.3 drops the connection for direct iid() filters in negated disjunctions.
                     let actual = format!("PlanNestedIid{}", scope.next_iid);
@@ -567,6 +635,46 @@ pub(crate) fn failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multirow_given_iids_keep_each_literal_correlated_and_redacted() {
+        use crate::query_plan_exec::{lower, lower_redacted, race};
+        use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+        let rows = ["0x0123", "0xabcd", "0x0123"].map(|iid| {
+            InputRow::new(vec![Some(CanonicalValue::String(
+                CanonicalString::new(iid).unwrap(),
+            ))])
+        });
+        let plan = race::scoped_given_iid("0x0123", false, false)
+            .with_given_rows(rows.to_vec(), &race::schema())
+            .unwrap();
+        let query = tql::render(&lower(&plan).unwrap().query).unwrap();
+        for iid in ["0x0123", "0xabcd"] {
+            assert!(
+                query.contains(&format!(
+                    "{{ $wanted_iid == \"{iid}\"; $buyer iid {iid}; }}"
+                )),
+                "{query}"
+            );
+            assert!(query.contains(&format!("$buyer iid {iid}")), "{query}");
+        }
+        assert!(!query.contains("iid($buyer)"), "{query}");
+        let redacted = tql::render(&lower_redacted(&plan).unwrap().query).unwrap();
+        assert!(
+            !redacted.contains("0x0123") && !redacted.contains("0xabcd"),
+            "{redacted}"
+        );
+        let staged = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+        assert!(!staged.redacted_typeql.unwrap().contains("0xabcd"));
+        let negative = race::scoped_given_iid("0x0123", true, false)
+            .with_given_rows(rows.to_vec(), &race::schema())
+            .unwrap();
+        let query = tql::render(&lower(&negative).unwrap().query).unwrap();
+        assert!(
+            query.contains("PlanNestedIid") && !query.contains("iid 0x"),
+            "{query}"
+        );
+    }
 
     #[test]
     fn singleton_given_iids_use_checked_literals_without_changing_negation() {

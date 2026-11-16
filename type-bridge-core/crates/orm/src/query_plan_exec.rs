@@ -1651,7 +1651,7 @@ fn literal_input_columns(plan: &QueryPlan) -> BTreeSet<String> {
                 QueryPattern::Iid {
                     iid: QueryOperand::Input { column },
                     ..
-                } if plan.given_rows().is_some_and(|rows| rows.len() == 1) => {
+                } if plan.given_rows().is_some() => {
                     columns.insert(
                         plan.inputs()[usize::from(column.get())]
                             .public_name()
@@ -1689,7 +1689,7 @@ fn literal_input_columns(plan: &QueryPlan) -> BTreeSet<String> {
 
 pub(crate) struct LiteralComparisonPolicy<'a> {
     inputs: &'a [InputColumn],
-    remaining: std::cell::Cell<usize>,
+    pub(crate) remaining: std::cell::Cell<usize>,
     pub(crate) redact_inputs: bool,
 }
 

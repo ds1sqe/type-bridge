@@ -1,7 +1,7 @@
 given $ordinal_input: integer, $field_0_0: string?, $player_0_0: string?, $player_1_0: string?; match try { $optional_player3 isa! person; 
- iid($optional_player3) == $player_0_0; 
+ { $player_0_0 == "0x10"; $optional_player3 iid 0x10; }; 
 }; { not { $player_0_0 == $player_0_0; 
-}; } or { $guard2 isa! person; iid($guard2) == $player_0_0; }; try { $optional_player6 isa! person; 
+}; } or { $guard2 isa! person; { $player_0_0 == "0x10"; $guard2 iid 0x10; }; }; try { $optional_player6 isa! person; 
  $optional_player6 has identifier $key7; 
  $key7 isa! identifier; 
  $key7 == $player_1_0; 

@@ -9950,10 +9950,9 @@ plays:
                 };
                 let mut reader = BoundedAnswerReader::new(limits);
                 reader.check_before_read()?;
+                let shape = native_batch::FixtureSource::new(&source);
                 for document in documents {
-                    if reader.accept(native_batch::item(&source, document), consumer)?
-                        == AnswerControl::Stop
-                    {
+                    if reader.accept(shape.item(document), consumer)? == AnswerControl::Stop {
                         break;
                     }
                 }

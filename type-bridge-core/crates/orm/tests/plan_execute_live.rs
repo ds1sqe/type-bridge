@@ -1685,53 +1685,63 @@ async fn wide_relation_clear_case(size: usize, kept: usize) -> Option<[std::time
     let iid = relations[0]["iid"].as_str().unwrap();
     let mut times = Vec::new();
     for put in [false, true] {
-        let notes = (0..size)
-            .map(|i| format!("has note \"old{i}\""))
-            .collect::<Vec<_>>()
-            .join(", ");
-        db.execute_raw(
-            &format!("match $r isa membership, iid {iid}; insert $r {notes};"),
-            TxType::Write,
-        )
-        .await
-        .unwrap();
-        db.execute_raw(
-            &format!(
-                "match $r isa membership, iid {iid}; $p isa person; insert $r links (member: $p);"
-            ),
-            TxType::Write,
-        )
-        .await
-        .unwrap();
-        let replacement = input(if put { "put" } else { "new" });
-        let started = std::time::Instant::now();
-        let result = if put {
-            crud.put_relation_controlled(&db, &replacement, Default::default(), Default::default())
-                .await
-        } else {
-            crud.update_relation_controlled(
-                &db,
-                iid,
-                &replacement,
-                Default::default(),
-                Default::default(),
+        let mut samples = Vec::new();
+        for sample in 0..if kept == 1 { 1 } else { 4 } {
+            let notes = (0..size)
+                .map(|i| format!("has note \"old{i}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            db.execute_raw(
+                &format!("match $r isa membership, iid {iid}; insert $r {notes};"),
+                TxType::Write,
             )
             .await
+            .unwrap();
+            let restore_players = format!(
+                "match $r isa membership, iid {iid}; $p isa person; insert $r links (member: $p);"
+            );
+            db.execute_raw(&restore_players, TxType::Write)
+                .await
+                .unwrap();
+            let replacement = input(if put { "put" } else { "new" });
+            let started = std::time::Instant::now();
+            let result = if put {
+                crud.put_relation_controlled(
+                    &db,
+                    &replacement,
+                    Default::default(),
+                    Default::default(),
+                )
+                .await
+            } else {
+                crud.update_relation_controlled(
+                    &db,
+                    iid,
+                    &replacement,
+                    Default::default(),
+                    Default::default(),
+                )
+                .await
+            }
+            .unwrap();
+            let elapsed = started.elapsed();
+            println!("wide clear size={size} kept={kept} put={put}: {elapsed:?}");
+            if kept == 1 || sample > 0 {
+                samples.push(elapsed);
+            }
+            assert_eq!(result.count(), 1);
+            assert_eq!(result.item().unwrap().roles()[&role].len(), kept);
+            assert_eq!(
+                result.item().unwrap().fields()[&field(&kind, "note")].len(),
+                1
+            );
+            assert!(
+                elapsed < std::time::Duration::from_secs(if kept == 1 { 1 } else { 20 }),
+                "put={put}: {elapsed:?}"
+            );
         }
-        .unwrap();
-        let elapsed = started.elapsed();
-        println!("wide clear size={size} kept={kept} put={put}: {elapsed:?}");
-        times.push(elapsed);
-        assert_eq!(result.count(), 1);
-        assert_eq!(result.item().unwrap().roles()[&role].len(), kept);
-        assert_eq!(
-            result.item().unwrap().fields()[&field(&kind, "note")].len(),
-            1
-        );
-        assert!(
-            elapsed < std::time::Duration::from_secs(if kept == 1 { 1 } else { 20 }),
-            "put={put}: {elapsed:?}"
-        );
+        samples.sort();
+        times.push(samples[samples.len() / 2]);
     }
     db.delete_database().await.unwrap();
     db.close().unwrap();
@@ -1746,21 +1756,10 @@ async fn projected_wide_relation_update_and_keyed_put_avoid_cartesian_clears() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn projected_full_reference_replacement_is_bounded() {
     for size in [50, 150] {
-        let mut times = Vec::new();
-        for _ in 0..3 {
-            let Some(time) = wide_relation_clear_case(size, size).await else {
-                return;
-            };
-            times.push(time);
-        }
-        let mut updates = times.iter().map(|time| time[0]).collect::<Vec<_>>();
-        let mut puts = times.iter().map(|time| time[1]).collect::<Vec<_>>();
-        updates.sort();
-        puts.sort();
-        println!(
-            "MEDIAN size={size}: update={:?} put={:?}",
-            updates[1], puts[1]
-        );
+        let Some([update, put]) = wide_relation_clear_case(size, size).await else {
+            return;
+        };
+        println!("WARM MEDIAN size={size}: update={update:?} put={put:?}");
     }
 }
 
