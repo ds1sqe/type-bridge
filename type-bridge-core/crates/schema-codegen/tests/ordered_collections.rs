@@ -565,6 +565,10 @@ fn assert_generated_packages_compile_for_all_targets(source: &str) {
     )
     .unwrap();
     copy_tree(&node_package.join("dist"), &installed_node.join("dist"));
+    copy_tree(
+        &node_package.join("node_modules"),
+        &installed_node.join("node_modules"),
+    );
     checked_command(
         Command::new(node_package.join("node_modules/.bin/tsc"))
             .arg("--project")
@@ -1123,6 +1127,10 @@ export function __testOrderedBatchMaterialize(
     )
     .unwrap();
     copy_tree(&node_package.join("dist"), &installed_node.join("dist"));
+    copy_tree(
+        &node_package.join("node_modules"),
+        &installed_node.join("node_modules"),
+    );
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
