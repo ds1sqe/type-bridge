@@ -272,7 +272,41 @@ fn delete_field_rejects_keys_and_required_ownerships_but_allows_replacement() {
                     operand: literal(2),
                 }],
             });
-            QueryPlan::new(spec(stages, vec![0]), &schema).unwrap();
+            QueryPlan::new(spec(stages.clone(), vec![0]), &schema).unwrap();
+            let Stage::Attach { items } = stages.last_mut().unwrap() else {
+                unreachable!()
+            };
+            let AttachItem::Has {
+                optional, operand, ..
+            } = &mut items[0]
+            else {
+                unreachable!()
+            };
+            *optional = true;
+            *operand = type_bridge_contract::query_plan::QueryOperand::Input {
+                column: type_bridge_contract::query_plan::InputColumnId::new(0),
+            };
+            let mut bound = spec(stages, vec![0]);
+            bound.inputs = vec![type_bridge_contract::query_plan::InputColumn::new(
+                type_bridge_contract::query_plan::InputColumnId::new(0),
+                type_bridge_contract::migration_assertion::QueryVariable::new("replacement")
+                    .unwrap(),
+                type_bridge_contract::value::ValueTypeTag::Long,
+                true,
+            )];
+            bound.given_rows = Some(vec![type_bridge_contract::query_plan::InputRow::new(vec![
+                Some(type_bridge_contract::value::CanonicalValue::Long(2)),
+            ])]);
+            QueryPlan::new(bound.clone(), &schema).unwrap();
+            bound
+                .given_rows
+                .as_mut()
+                .unwrap()
+                .push(type_bridge_contract::query_plan::InputRow::new(vec![None]));
+            assert_eq!(
+                QueryPlan::new(bound, &schema).unwrap_err().code().as_str(),
+                "query_plan_required_field_delete"
+            );
         }
     }
 }

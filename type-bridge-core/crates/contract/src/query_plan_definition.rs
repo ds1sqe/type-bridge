@@ -1173,6 +1173,27 @@ fn invalid(code: &'static str, message: &'static str) -> Diagnostic {
     failure(DiagnosticCategory::InvalidContract, code, message)
 }
 
+fn operand_is_present(
+    spec: &PlanSpec,
+    operand: &QueryOperand,
+    mandatory: &BTreeSet<BindingId>,
+) -> bool {
+    match operand {
+        QueryOperand::Literal { .. } => true,
+        QueryOperand::Binding { binding } => mandatory.contains(binding),
+        QueryOperand::Input { column } => {
+            let index = usize::from(column.get());
+            spec.inputs
+                .get(index)
+                .is_some_and(|input| !input.optional())
+                || spec.given_rows.as_ref().is_some_and(|rows| {
+                    rows.iter()
+                        .all(|row| row.values().get(index).is_some_and(Option::is_some))
+                })
+        }
+    }
+}
+
 fn validate_stages(
     spec: &PlanSpec,
     schema: &DeclaredSchema,
@@ -1721,9 +1742,26 @@ fn validate_stages(
                             }
                             let minimum = index.ownership_bounds(*owner, field, &types, &profile).0;
                             if minimum > 0 {
-                                let replacement_values = spec.pipeline[stage_index + 1..].iter().flat_map(|stage| match stage {
-                                    Stage::Attach { items } => items.as_slice(), _ => &[],
-                                }).filter(|item| matches!(item, AttachItem::Has { optional: false, owner: target, field: replaced, .. } if target == owner && replaced == field)).count() as u64;
+                                let replacement_values = spec.pipeline[stage_index + 1..]
+                                    .iter()
+                                    .flat_map(|stage| match stage {
+                                        Stage::Attach { items } => items.as_slice(),
+                                        _ => &[],
+                                    })
+                                    .filter(|item| match item {
+                                        AttachItem::Has {
+                                            optional,
+                                            owner: target,
+                                            field: replaced,
+                                            operand,
+                                        } if target == owner && replaced == field => {
+                                            !optional
+                                                || operand_is_present(spec, operand, &mandatory)
+                                        }
+                                        _ => false,
+                                    })
+                                    .count()
+                                    as u64;
                                 let deleting_owner = spec.pipeline[stage_index + 1..].iter().any(|stage| matches!(stage, Stage::Delete { items } if items.iter().any(|item| matches!(item, DeleteItem::Thing { binding } if binding == owner))));
                                 if replacement_values < minimum && !deleting_owner {
                                     return Err(invalid(
