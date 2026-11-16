@@ -74,3 +74,30 @@ async function rawFailure(scenario: "stc2" | "cnt5" | "cnt9" | "paused", address
       db.deleteDatabase(); db.close();
     }
 }
+
+test("caught raw query failure aborts earlier writes and refuses commit", {
+  skip: !process.env["TYPEDB_ADDRESS"] && "requires live TypeDB",
+}, async () => {
+  const db = Database.connect(process.env["TYPEDB_ADDRESS"]!, `${INTG_DATABASE}_raw_query_failure`, {
+    httpPort: Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
+  });
+  db.createDatabase();
+  let transaction: RawTransaction | undefined;
+  try {
+    await db.executeQuery("define entity raw-failure-test;", "schema");
+    transaction = await db.rawTransaction("write");
+    await transaction.executeQuery("insert $x isa raw-failure-test;");
+    await assert.rejects(transaction.executeQuery("insert $x isa no-such-type;"), RawQueryError);
+    await assert.rejects(transaction.commit(), (error: unknown) => {
+      assert.ok(error instanceof RawQueryError);
+      assert.equal(error.code, "raw_transaction_failed");
+      assert.equal(error.commitOutcome, "definitely_aborted");
+      return true;
+    });
+    assert.deepEqual((await db.executeQuery("match $x isa raw-failure-test; fetch { 'iid': iid($x) };") as { answers: unknown }).answers, []);
+  } finally {
+    await transaction?.close();
+    db.deleteDatabase();
+    db.close();
+  }
+});

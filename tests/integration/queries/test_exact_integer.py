@@ -24,3 +24,21 @@ def test_integers_beyond_two_to_the_53_round_trip_exactly(clean_db: Database) ->
 
     assert [row["data"]["n"]["value"] for row in rows["answers"]] == [BEYOND_F64]
     assert documents["answers"] == [{"n": BEYOND_F64}]
+
+
+def test_caught_raw_query_error_prevents_commit(clean_db: Database) -> None:
+    from type_bridge import RawQueryError
+
+    clean_db.execute_query("define entity raw-failure-test;", "schema")
+    with pytest.raises(RawQueryError) as failed_commit:
+        with clean_db.raw_transaction("write") as transaction:
+            transaction.execute_query("insert $x isa raw-failure-test;")
+            with pytest.raises(RawQueryError):
+                transaction.execute_query("insert $x isa no-such-type;")
+    assert failed_commit.value.code == "raw_transaction_failed"
+    assert (
+        clean_db.execute_query("match $x isa raw-failure-test; fetch { 'iid': iid($x) };")[
+            "answers"
+        ]
+        == []
+    )

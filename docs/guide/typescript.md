@@ -325,7 +325,12 @@ Direct raw transactions allow multiple statements and atomic rollback. Always
 await `commit()`, `rollback()`, or `close()` to release the transaction; a direct
 schema transaction holds its schema lock until then. Use `try/finally` with
 `close()` as above so failed queries also release it. Closing without committing
-discards pending writes. On a proxy connection a raw
+discards pending writes. A provider query error also aborts a direct transaction,
+discarding earlier writes even when the caller catches the error. Further queries
+and commit reject with `raw_transaction_failed` and `commitOutcome` set to
+`definitely_aborted`; open a new transaction to continue.
+
+On a proxy connection a raw
 transaction holds one query, because `/v3/raw` runs each request as its own
 transaction. A second query raises `raw_transaction_single_query`; after a
 successful proxy write, `commit()` is a no-op and `rollback()` raises

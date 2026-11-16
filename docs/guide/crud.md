@@ -220,6 +220,8 @@ with db.transaction("write") as transaction:
 ```
 
 The context commits on normal exit and rolls back when an exception escapes.
+Unknown transaction kinds raise before opening a transaction. Entering an
+already active context raises and preserves its pending writes.
 A generated manager never commits a caller-owned transaction. Read transactions
 can be shared with `Person.query(transaction)` for multiple terminal calls.
 Canonical manager filters can borrow that same read transaction; each terminal

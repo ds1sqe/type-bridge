@@ -744,8 +744,9 @@ class Database:
     ) -> RawTransaction:
         """Open an eager raw context; clean context-manager exit commits by default.
 
-        If an exception is caught inside ``with`` and the block exits normally,
-        the direct transaction commits its other successful queries. Call
+        A provider query error aborts the direct transaction, including earlier
+        writes. Catching it inside ``with`` does not permit commit; clean exit
+        raises ``raw_transaction_failed`` with a definite abort outcome. Call
         ``rollback()`` or use ``commit_on_exit=False`` to discard pending writes.
         An exception escaping the block closes the context without committing.
         """
@@ -842,7 +843,7 @@ class _NativeTransactionView:
 
 
 class TransactionContext:
-    """Context manager for sharing a TypeDB transaction across operations."""
+    """Share one TypeDB transaction across operations; active re-entry raises."""
 
     def __init__(self, db: Database, tx_type: TransactionType):
         self.db = db

@@ -90,6 +90,7 @@ enum State {
     Committed,
     Closed,
     Failed,
+    QueryFailed,
     Unknown,
 }
 
@@ -151,11 +152,22 @@ impl RawTransaction {
         self.require_open()?;
         match &mut self.route {
             Route::Direct(transaction) => {
-                transaction
+                let result = transaction
                     .as_mut()
                     .expect("open raw transaction retains its provider")
                     .query_raw(query)
-                    .await
+                    .await;
+                if result.is_err() {
+                    // No commit was sent. Drop all earlier writes and refuse
+                    // further work even when the caller catches this error.
+                    self.state = State::QueryFailed;
+                    if let Some(mut provider) = transaction.take() {
+                        if let Err(error) = provider.close_raw().await {
+                            tracing::warn!(code = %error.code, "failed raw transaction cleanup failed");
+                        }
+                    }
+                }
+                result
             }
             Route::Proxy {
                 exchange,
@@ -301,6 +313,14 @@ impl RawTransaction {
     fn require_open(&self) -> Result<(), RawQueryError> {
         match self.state {
             State::Open => Ok(()),
+            State::QueryFailed => {
+                let mut error = RawQueryError::refusal(
+                    "raw_transaction_failed",
+                    "a raw query failed; the transaction aborted without committing",
+                );
+                error.commit_outcome = Some(CommitFailureCertainty::DefinitelyAborted);
+                Err(error)
+            }
             State::Unknown => Err(RawQueryError::refusal(
                 "commit_outcome_unknown",
                 "the raw transaction outcome is unknown",
@@ -432,7 +452,13 @@ mod tests {
             query: &'a str,
         ) -> BoxFuture<'a, Result<Vec<u8>, RawQueryError>> {
             self.events.lock().unwrap().push(query.to_owned());
-            Box::pin(async move { Ok(query.as_bytes().to_vec()) })
+            Box::pin(async move {
+                if query == "fail" {
+                    Err(RawQueryError::refusal("INF2", "provider rejected query"))
+                } else {
+                    Ok(query.as_bytes().to_vec())
+                }
+            })
         }
         fn commit_raw(&mut self) -> BoxFuture<'_, Result<(), RawQueryError>> {
             self.events.lock().unwrap().push("commit".into());
@@ -453,6 +479,39 @@ mod tests {
                 Ok(())
             })
         }
+    }
+
+    #[tokio::test]
+    async fn failed_direct_query_cannot_commit_earlier_writes() {
+        let events = Arc::new(Mutex::new(vec![]));
+        let mut transaction = RawTransaction::direct(
+            Box::new(Direct {
+                events: events.clone(),
+                unknown_commit: false,
+                pending_close: false,
+            }),
+            TxType::Write,
+        );
+        transaction.execute_query("insert").await.unwrap();
+        assert_eq!(
+            transaction.execute_query("fail").await.unwrap_err().code,
+            "INF2"
+        );
+        let error = transaction.commit().await.unwrap_err();
+        assert_eq!(error.code, "raw_transaction_failed");
+        assert_eq!(
+            error.commit_outcome,
+            Some(CommitFailureCertainty::DefinitelyAborted)
+        );
+        assert_eq!(
+            transaction.execute_query("again").await.unwrap_err().code,
+            "raw_transaction_failed"
+        );
+        transaction.close().await.unwrap();
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            ["insert", "fail", "close", "drop"]
+        );
     }
 
     #[tokio::test]
@@ -799,6 +858,31 @@ mod live_tests {
                 2
             );
             transaction.rollback().await?;
+            let outside = db
+                .execute_query(
+                    "match $x isa raw-test; fetch { 'iid': iid($x) };",
+                    TxType::Read,
+                )
+                .await?;
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&outside).unwrap()["answers"],
+                serde_json::json!([])
+            );
+            let mut failed = db.raw_transaction(TxType::Write).await?;
+            failed.execute_query("insert $x isa raw-test;").await?;
+            assert!(
+                failed
+                    .execute_query("insert $x isa no-such-type;")
+                    .await
+                    .is_err()
+            );
+            let refused = failed.commit().await.unwrap_err();
+            assert_eq!(refused.code, "raw_transaction_failed");
+            assert_eq!(
+                refused.commit_outcome,
+                Some(CommitFailureCertainty::DefinitelyAborted)
+            );
+            failed.close().await?;
             let outside = db
                 .execute_query(
                     "match $x isa raw-test; fetch { 'iid': iid($x) };",

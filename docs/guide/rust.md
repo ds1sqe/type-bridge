@@ -560,7 +560,12 @@ tx.execute_query("insert $x isa person, has name \"Ada\";").await?;
 tx.rollback().await?;
 ```
 
-Direct raw contexts share one real transaction across calls. On a proxy
+Direct raw contexts share one real transaction across calls. A failed direct
+raw query aborts the transaction, discarding earlier writes.
+Further queries and commit return `raw_transaction_failed` with a definite
+abort outcome, even if the caller caught the provider error.
+
+On a proxy
 connection a raw transaction holds one query, because `/v3/raw` runs each
 request as its own transaction. A second query returns
 `raw_transaction_single_query` before I/O. After a proxy write or schema call,
