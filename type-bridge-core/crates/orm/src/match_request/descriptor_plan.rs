@@ -24,9 +24,7 @@ use type_bridge_contract::query_plan::{
     ModelStableOrder, ModelValue,
 };
 use type_bridge_contract::schema::DocumentId;
-use type_bridge_contract::temporal::{
-    CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
-};
+use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDuration};
 use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, DecimalValue, ValueTypeTag,
 };
@@ -964,10 +962,12 @@ pub(crate) fn adapt_value(value: &AttributeValue) -> Result<ModelValue, Diagnost
             Ok(value) => Some(CanonicalValue::DateTime(value)),
             Err(_) => return ModelValue::released_datetime(value.clone()),
         },
-        AttributeValue::DateTimeTZ(value) => match value.parse::<CanonicalDateTimeTz>() {
-            Ok(value) => Some(CanonicalValue::DateTimeTz(value)),
-            Err(_) => return ModelValue::released_datetime_tz(value.clone()),
-        },
+        AttributeValue::DateTimeTZ(value) => {
+            match type_bridge_schema::parse_provider_datetime_tz_evidence(value) {
+                Ok(value) => Some(CanonicalValue::DateTimeTz(value)),
+                Err(_) => return ModelValue::released_datetime_tz(value.clone()),
+            }
+        }
         AttributeValue::Decimal(value) => {
             let canonical = DecimalValue::new(value.as_str()).map_err(|_| malformed())?;
             if canonical.as_str() != value {

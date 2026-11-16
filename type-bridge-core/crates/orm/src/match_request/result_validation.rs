@@ -21,9 +21,7 @@ use type_bridge_contract::query_plan::{
     ModelField, ModelReductionKey, ModelReductionKind, ModelReductionTerm, ModelValue,
     ModelValueKind,
 };
-use type_bridge_contract::temporal::{
-    CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
-};
+use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDuration};
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_core_lib::decimal::parse_decimal;
 use unicase::UniCase;
@@ -1139,10 +1137,13 @@ pub(crate) fn canonicalize_provider_attribute_value(
             .parse::<CanonicalDateTime>()
             .map(|value| AttributeValue::DateTime(value.to_string()))
             .map_err(|_| malformed()),
-        AttributeValue::DateTimeTZ(value) => normalize_provider_datetime_tz(value)
-            .parse::<CanonicalDateTimeTz>()
+        AttributeValue::DateTimeTZ(value) => {
+            type_bridge_schema::parse_provider_datetime_tz_evidence(
+                &normalize_provider_datetime_tz(value),
+            )
             .map(|value| AttributeValue::DateTimeTZ(value.to_string()))
-            .map_err(|_| malformed()),
+            .map_err(|_| malformed())
+        }
         AttributeValue::Decimal(value) => parse_decimal(&value)
             .map(|value| AttributeValue::Decimal(value.canonical_string()))
             .ok_or_else(malformed),
@@ -1550,6 +1551,14 @@ impl PartialOrd for DateTimeKey {
 }
 
 fn parse_datetime(value: &str, timezone_required: bool) -> Option<DateTimeKey> {
+    if timezone_required {
+        let value = type_bridge_schema::parse_provider_datetime_tz_evidence(value).ok()?;
+        let mut local = parse_datetime(&value.local().to_string(), false)?;
+        local.seconds = local
+            .seconds
+            .checked_sub(i64::from(value.effective_offset_seconds()))?;
+        return Some(local);
+    }
     let (date, raw_time) = value.split_once('T')?;
     let days = parse_date(date)?;
     let (time, offset_seconds, has_timezone) = if let Some(time) = raw_time.strip_suffix('Z') {
@@ -1960,6 +1969,29 @@ fn validated_witness_reduction(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn provider_named_timezones_hydrate_and_compare_without_precision_loss() {
+        for spelling in [
+            "2024-01-01T00:00:00.123456789 Asia/Seoul",
+            "2024-01-01T00:00:00.123456789[Asia/Seoul]",
+        ] {
+            let hydrated =
+                canonicalize_provider_attribute_value(AttributeValue::DateTimeTZ(spelling.into()))
+                    .unwrap();
+            assert_eq!(
+                hydrated,
+                AttributeValue::DateTimeTZ("2024-01-01T00:00:00.123456789[Asia/Seoul]".into(),)
+            );
+            assert_eq!(
+                value_order(
+                    &hydrated,
+                    &AttributeValue::DateTimeTZ("2024-01-01T00:00:00.123456789+09:00".into(),)
+                ),
+                Some(Ordering::Equal),
+            );
+        }
+    }
+
     use type_bridge_contract::query_plan::ModelReductionKey;
 
     use super::*;

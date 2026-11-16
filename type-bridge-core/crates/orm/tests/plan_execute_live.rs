@@ -3601,3 +3601,57 @@ async fn keyless_put_is_typeql_put_on_the_exact_type_live() {
     assert_eq!(count(wide).await, 1000);
     db.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn named_timezone_values_hydrate_through_shared_manager_validation() {
+    use std::sync::Arc;
+    use type_bridge_orm::_manager::DynamicEntityManager;
+    use type_bridge_orm::AttributeValue;
+    let Some(db) = live_database("named_timezone").await else {
+        return;
+    };
+    db.execute_raw(
+        "define attribute identifier, value string; attribute seen-tz, value datetime-tz; entity person, owns identifier @key, owns seen-tz;",
+        TxType::Schema,
+    ).await.unwrap();
+    db.execute_raw(
+        "insert $p isa person, has identifier \"P\", has seen-tz 2024-01-01T00:00:00.123456789 Asia/Seoul;",
+        TxType::Write,
+    ).await.unwrap();
+    let yaml = r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  seen-tz: { value: datetime-tz }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      seen-tz: {}
+"#;
+    let version = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION").unwrap();
+    let profile = if version.starts_with("3.12.") {
+        "typedb-3.12.1/v1"
+    } else {
+        "typedb-3.13.6/v1"
+    };
+    let installed = party_projection_for_profile(yaml, profile);
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let manager = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("person").unwrap(),
+    );
+    let result = manager.get_with_query(&[], &[], None, None).await.unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result[0]
+            .attributes
+            .iter()
+            .find(|(name, _)| name == "seen-tz")
+            .unwrap()
+            .1,
+        AttributeValue::DateTimeTZ("2024-01-01T00:00:00.123456789[Asia/Seoul]".into(),)
+    );
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}

@@ -5018,7 +5018,6 @@ fn install_projection_with_structs(
             models.len()
         )));
     }
-    let ordered_projection = projection_uses_ordered_collections(&runtime);
     let successor_batch = runtime.generator_handlers()
         == [type_bridge_contract::projection::ProjectionHandler::python_v2()];
     let trusted_type_slots = successor_batch
@@ -5129,9 +5128,7 @@ fn install_projection_with_structs(
         installed = installed.with_schema_authority(authority);
     }
     let installed = Arc::new(installed);
-    let named_zone_marker = ordered_projection
-        .then(|| named_zone_marker_class(py))
-        .transpose()?;
+    let named_zone_marker = Some(named_zone_marker_class(py)?);
     let named_zone_slots = match (successor_batch, named_zone_marker.as_ref()) {
         (true, Some(marker)) => Some(ProjectedNamedZoneSlots::capture(
             py,
@@ -8645,43 +8642,30 @@ fn datetime_tz_to_py(
     value: &str,
     named_zone_marker: Option<&Py<PyType>>,
 ) -> PyResult<Py<PyAny>> {
-    let Some((evidence, zone)) = value
-        .strip_suffix(']')
-        .and_then(|value| value.rsplit_once('['))
-    else {
+    let canonical =
+        type_bridge_schema::parse_provider_datetime_tz_evidence(value).map_err(py_diagnostic)?;
+    let TimeZoneDesignator::Named(zone) = canonical.zone() else {
         return py
             .import("datetime")?
             .getattr("datetime")?
-            .call_method1("fromisoformat", (value,))
+            .call_method1("fromisoformat", (canonical.to_string(),))
             .map(Bound::unbind);
     };
-    let marker = named_zone_marker
-        .ok_or_else(|| py_runtime_error("named-zone hydration requires successor evidence"))?;
+    let marker = named_zone_marker.ok_or_else(|| {
+        py_runtime_error("named-zone hydration requires installed timezone slots")
+    })?;
     let resolved = py
         .import("datetime")?
         .getattr("datetime")?
-        .call_method1("fromisoformat", (evidence,))?;
-    let offset_seconds = python_timedelta_integral_seconds(&resolved.call_method0("utcoffset")?)?;
-    let timezone = marker.bind(py).call1((offset_seconds, zone))?;
+        .call_method1("fromisoformat", (canonical.local().to_string(),))?;
+    let timezone = marker
+        .bind(py)
+        .call1((canonical.effective_offset_seconds(), zone))?;
     let kwargs = PyDict::new(py);
     kwargs.set_item("tzinfo", timezone)?;
     resolved
         .call_method("replace", (), Some(&kwargs))
         .map(Bound::unbind)
-}
-
-fn python_timedelta_integral_seconds(value: &Bound<'_, PyAny>) -> PyResult<i32> {
-    let days = value.getattr("days")?.extract::<i32>()?;
-    let seconds = value.getattr("seconds")?.extract::<i32>()?;
-    let microseconds = value.getattr("microseconds")?.extract::<i32>()?;
-    if microseconds != 0 {
-        return Err(py_runtime_error(
-            "timezone offsets must resolve to an integral number of seconds",
-        ));
-    }
-    days.checked_mul(86_400)
-        .and_then(|days| days.checked_add(seconds))
-        .ok_or_else(|| py_runtime_error("timezone offset exceeds the supported range"))
 }
 
 fn duration_to_py(py: Python<'_>, value: &str) -> PyResult<Py<PyAny>> {
@@ -9918,47 +9902,45 @@ plays:
     }
 
     #[test]
-    fn unordered_datetime_tz_keeps_offset_only_predecessor_behavior() {
+    fn unordered_datetime_tz_supports_named_zones() {
         Python::initialize();
         Python::attach(|py| {
+            let (_, package) = install(py);
+            let marker = package.named_zone_marker.as_ref();
+            let evidence = "2024-01-01T00:00:00.123456+09:00[Asia/Seoul]";
+            let hydrated =
+                attribute_value_to_py(py, &AttributeValue::DateTimeTZ(evidence.into()), marker)
+                    .unwrap();
+            assert_eq!(
+                canonical_python_datetime_tz(py, hydrated.bind(py), marker).unwrap(),
+                evidence
+            );
             let authored = py
                 .import("datetime")
                 .unwrap()
                 .getattr("datetime")
                 .unwrap()
-                .call_method1("fromisoformat", ("2026-11-01T01:30:00-05:00",))
+                .call_method1("fromisoformat", ("2024-01-01T00:00:00.123456",))
                 .unwrap();
-            assert_eq!(
-                canonical_attribute_value_from_py(py, &authored, ValueType::DateTimeTz, None)
-                    .unwrap(),
-                AttributeValue::DateTimeTZ("2026-11-01T01:30:00-05:00".into())
-            );
-
-            let hydrated = attribute_value_to_py(
-                py,
-                &AttributeValue::DateTimeTZ("2026-11-01T01:30:00-05:00".into()),
-                None,
-            )
-            .unwrap();
-            assert!(
-                hydrated
-                    .bind(py)
-                    .getattr("tzinfo")
-                    .unwrap()
-                    .getattr("key")
-                    .is_err(),
-                "legacy unordered hydration must not upgrade offset evidence to ZoneInfo",
-            );
-            assert!(
-                attribute_value_to_py(
-                    py,
-                    &AttributeValue::DateTimeTZ(
-                        "2026-11-01T01:30:00-05:00[America/New_York]".into(),
-                    ),
-                    None,
+            let kwargs = PyDict::new(py);
+            kwargs
+                .set_item(
+                    "tzinfo",
+                    py.import("zoneinfo")
+                        .unwrap()
+                        .getattr("ZoneInfo")
+                        .unwrap()
+                        .call1(("Asia/Seoul",))
+                        .unwrap(),
                 )
-                .is_err(),
-                "legacy unordered hydration keeps rejecting bracketed named-zone evidence",
+                .unwrap();
+            let authored = authored.call_method("replace", (), Some(&kwargs)).unwrap();
+            let value =
+                canonical_attribute_value_from_py(py, &authored, ValueType::DateTimeTz, marker)
+                    .unwrap();
+            assert_eq!(
+                canonical_struct_scalar(value).unwrap(),
+                canonical_struct_scalar(AttributeValue::DateTimeTZ(evidence.into())).unwrap()
             );
         });
     }
