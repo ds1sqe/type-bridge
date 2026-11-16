@@ -95,7 +95,10 @@ relations:
 
 `as` specializes a parent role. Generated constructors expose the effective
 child role, while exact/subtype queries preserve the canonical declaring-role
-identity required by TypeDB.
+identity required by TypeDB. Specialization is supported in the first
+migration and when adding new relation types. Changing specialization on an
+existing relation uses a no-instances assertion, including its subtypes;
+populated relations require an explicit data migration before that change.
 
 Ordered/list roles are declared with the Split-YAML ordering facts supported by
 the selected semantic profile. Provider capability checks remain authoritative;

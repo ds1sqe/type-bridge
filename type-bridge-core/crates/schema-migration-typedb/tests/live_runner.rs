@@ -60,6 +60,7 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
         .as_nanos();
     let managed_name = format!("{database}_{}_{unique:x}", std::process::id());
     let journal_name = derived_journal_database_name(&managed_name);
+    eprintln!("isolated migration pair: {managed_name}, {journal_name}");
     type_bridge_orm::ensure_database_exists(&address, &managed_name, &username, &password, options)
         .await
         .expect("create isolated managed database");
@@ -2248,6 +2249,93 @@ async fn runner_tightens_maximum_and_removes_widened_interfaces() {
             .unwrap()
             .is_clean()
     );
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_migrates_role_specialization_in_first_and_later_migrations() {
+    let (managed, journal) = databases().await;
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let initial = "define relation base @abstract, relates source; relation initial-link sub base, relates origin as source; relation later-link sub base, relates local;";
+    let added = format!("{initial} relation added-link sub base, relates added-origin as source;");
+    let changed = added.replace("relates local;", "relates local as source;");
+    let first_target =
+        typeql_to_declared(DocumentId::new("role-first.tql").unwrap(), initial).unwrap();
+    let second_target =
+        typeql_to_declared(DocumentId::new("role-added.tql").unwrap(), &added).unwrap();
+    let third_target =
+        typeql_to_declared(DocumentId::new("role-changed.tql").unwrap(), &changed).unwrap();
+    let first = manifest_with_derived_assertions(
+        "0001_specialization",
+        vec![],
+        &genesis,
+        &first_target,
+        &context,
+    );
+    let second = manifest_with_derived_assertions(
+        "0002_specialization",
+        vec![first.id().clone()],
+        &first_target,
+        &second_target,
+        &context,
+    );
+    let graph = type_bridge_schema_migration::MigrationHistoryGraph::from_verified([
+        first.clone(),
+        second.clone(),
+    ])
+    .unwrap();
+    let generated = type_bridge_schema_migration::generate_next_migration(
+        &graph,
+        &type_bridge_schema_migration::MigrationGenerationRequest {
+            app_label: "live-runner",
+            base_name: "specialization",
+            genesis_source: &genesis,
+            desired: &third_target,
+            context: &context,
+        },
+    )
+    .unwrap();
+    let type_bridge_schema_migration::MigrationGenerationOutcome::Generated(generated) = generated
+    else {
+        panic!("expected specialization migration")
+    };
+    let third = generated.manifest().clone();
+    let directory = TempDirectory::new();
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-specialization").unwrap();
+    for migration in [&first, &second, &third] {
+        write_manifest(directory.path(), migration);
+        assert!(matches!(
+            runner
+                .apply(
+                    directory.path(),
+                    &MigrationApplyTarget::DefaultHead,
+                    &holder,
+                    &[]
+                )
+                .await
+                .unwrap(),
+            MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+        ));
+        assert!(
+            runner
+                .verify(directory.path(), None)
+                .await
+                .unwrap()
+                .is_clean()
+        );
+    }
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }

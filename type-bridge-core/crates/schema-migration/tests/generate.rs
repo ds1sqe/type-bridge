@@ -1015,3 +1015,42 @@ fn removed_widened_interfaces_and_maximum_tightening_are_authorable() {
             .any(|step| step.as_assertion().is_some())
     );
 }
+
+#[test]
+fn role_specialization_can_be_authored_initially_and_incrementally() {
+    use type_bridge_schema_compat::typeql_to_declared;
+    let base = "define relation base @abstract, relates source; entity person, plays base:source;";
+    let specialized = "define relation base @abstract, relates source; relation child sub base, relates origin as source; entity person, plays base:source;";
+    let unspecialized = specialized.replace("relates origin as source", "relates origin");
+    let mut capabilities = generation_capabilities();
+    capabilities.insert(CapabilityId::new("schema.redefine").unwrap());
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("example-schema").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        capabilities,
+    );
+    let target =
+        typeql_to_declared(DocumentId::new("specialized.tql").unwrap(), specialized).unwrap();
+    for (name, source) in [
+        ("genesis_role", declared(&[])),
+        (
+            "new_child_role",
+            typeql_to_declared(DocumentId::new("base.tql").unwrap(), base).unwrap(),
+        ),
+        (
+            "existing_child_role",
+            typeql_to_declared(DocumentId::new("child.tql").unwrap(), &unspecialized).unwrap(),
+        ),
+    ] {
+        let migration = generated(&empty_graph(), &request(name, &source, &target, &context));
+        assert_eq!(migration.manifest().safety(), SafetyClass::Conditional);
+        assert_eq!(
+            migration
+                .manifest()
+                .steps()
+                .iter()
+                .any(|step| step.as_assertion().is_some()),
+            name == "existing_child_role"
+        );
+    }
+}
