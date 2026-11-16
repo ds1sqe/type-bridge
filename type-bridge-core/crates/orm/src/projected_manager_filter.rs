@@ -145,7 +145,7 @@ struct ProjectedManagerFieldPredicate {
     value: ProjectedAttributeValue,
 }
 
-/// One persistent generated-field filter, exact by default.
+/// One persistent generated-field filter, exact for concrete models by default.
 ///
 /// Every transition returns a new value. Field-token provenance is nominally
 /// fenced by generated facades before they pass the resolved
@@ -162,7 +162,7 @@ pub struct ProjectedManagerFilter {
 }
 
 impl ProjectedManagerFilter {
-    /// Start an empty conjunction for one exact projected entity or relation.
+    /// Start an empty conjunction; abstract models read their concrete descendants.
     pub fn try_new(
         installed: &InstalledRuntimeProjection,
         model: TypeId,
