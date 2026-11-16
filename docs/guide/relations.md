@@ -99,6 +99,11 @@ identity required by TypeDB. Specialization is supported in the first
 migration and when adding new relation types. Changing specialization on an
 existing relation uses a no-instances assertion, including its subtypes;
 populated relations require an explicit data migration before that change.
+A specializing role must satisfy both its local cardinality (including the
+default) and the parent's cardinality. Generated create inputs use their
+intersection, so an inherited minimum of one makes the specializing player
+required even when the child omits `card`.
+
 
 Ordered/list roles are declared with the Split-YAML ordering facts supported by
 the selected semantic profile. Provider capability checks remain authoritative;

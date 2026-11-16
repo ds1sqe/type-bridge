@@ -15,6 +15,7 @@ use type_bridge_contract::schema::{
     AnnotationKindId, AnnotationSubjectId, CollectionMode, DocumentId, OwnsFactId, RelatesFactId,
     SchemaFactId, SubFactId,
 };
+use type_bridge_contract::value::Cardinality;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
 fn projection(source: &str) -> type_bridge_contract::projection::RuntimeProjection {
@@ -1559,4 +1560,56 @@ entities:
         decode_runtime_projection_verified(&bytes, &semantic, &binding).unwrap(),
         first
     );
+}
+
+#[test]
+fn specializing_role_inputs_preserve_the_inherited_required_minimum() {
+    let source = r#"format: typebridge.schema/v2
+entities:
+  person: {}
+relations:
+  base:
+    abstract: true
+    relates:
+      source: {card: 1}
+  child:
+    sub: base
+    relates:
+      origin: {as: source}
+plays:
+  person:
+    child: [origin]
+"#;
+    let child = TypeId::new(TypeKind::Relation, "child").unwrap();
+    let origin = RoleId::new("child", "origin").unwrap();
+    for (target, config, handler) in [
+        (
+            BindingTarget::Python,
+            ProjectionConfig::python(),
+            ProjectionHandler::python_v1(),
+        ),
+        (
+            BindingTarget::TypeScript,
+            ProjectionConfig::typescript(),
+            ProjectionHandler::typescript_v1(),
+        ),
+        (
+            BindingTarget::Rust,
+            ProjectionConfig::rust(),
+            ProjectionHandler::rust_v1(),
+        ),
+        (
+            BindingTarget::C,
+            ProjectionConfig::c(CSymbolPrefix::new("required_role").unwrap()),
+            ProjectionHandler::c_v1(),
+        ),
+    ] {
+        let projected = projection_for(source, target, config, handler);
+        let role = &projected.models()[&child].create().roles()[&origin];
+        assert!(role.multiplicity().required(), "{}", target.as_str());
+        assert_eq!(
+            role.multiplicity().cardinality(),
+            Cardinality::new(1, Some(1)).unwrap()
+        );
+    }
 }

@@ -780,6 +780,8 @@ pub fn resolve_schema_with_capabilities(
             let annotations =
                 annotations_for(&index, AnnotationSubjectId::Relates(relates.id().clone()));
             let mut replaced_roles = BTreeSet::new();
+            let mut effective_cardinality =
+                cardinality(&annotations, &profile, InterfaceKind::Relates);
             if let Some(specialized) = relates.specializes() {
                 let replaced_role = resolved
                     .relates
@@ -810,6 +812,15 @@ pub fn resolve_schema_with_capabilities(
                         "effective parent-role collection mode is declared here",
                     ));
                 }
+                let inherited = replaced.cardinality;
+                let maximum = match (effective_cardinality.max(), inherited.max()) {
+                    (Some(local), Some(parent)) => Some(local.min(parent)),
+                    (local, parent) => local.or(parent),
+                };
+                effective_cardinality = Cardinality::new(effective_cardinality.min().max(inherited.min()), maximum)
+                    .map_err(|_| source_error(declared, &SchemaFactId::Relates(relates.id().clone()),
+                        "incompatible_specialization_cardinality",
+                        "specializing and parent role cardinality constraints have no common interval"))?;
                 let replaced = resolved
                     .relates
                     .remove(&replaced_role)
@@ -821,7 +832,7 @@ pub fn resolve_schema_with_capabilities(
                 id: EffectiveRelatesId::new(id.clone(), relates.id().role().clone()),
                 origin: ResolutionOrigin::direct(SchemaFactId::Relates(relates.id().clone())),
                 collection_mode: relates.collection_mode(),
-                cardinality: cardinality(&annotations, &profile, InterfaceKind::Relates),
+                cardinality: effective_cardinality,
                 is_abstract: annotations.contains_key(&AnnotationKindId::Abstract),
                 annotations,
                 replaced_roles,

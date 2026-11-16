@@ -2497,3 +2497,63 @@ async fn runner_applies_split_yaml_reference_fixture_as_first_migration() {
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn specializing_role_requires_its_inherited_player() {
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let target = typeql_to_declared(DocumentId::new("required-specialization.tql").unwrap(),
+        "define relation base @abstract, relates source @card(1); relation child sub base, relates origin as source; entity person, plays child:origin;").unwrap();
+    let migration =
+        manifest_with_derived_assertions("0001_required_role", vec![], &genesis, &target, &context);
+    let (managed, journal) = databases().await;
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &migration);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-required-role").unwrap();
+    let outcome = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+        ),
+        "{outcome:?}"
+    );
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("insert $r isa child;").await.unwrap();
+    let error = tx.commit().await.unwrap_err();
+    assert!(error.to_string().contains("CNT5"), "{error}");
+    tx.close().await.unwrap();
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("insert $p isa person; $r isa child, links (origin: $p);")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    tx.close().await.unwrap();
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}

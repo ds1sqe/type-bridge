@@ -673,3 +673,67 @@ attributes:
     );
     assert!(diagnostic.primary().is_some());
 }
+
+#[test]
+fn specializing_roles_intersect_local_and_parent_cardinality_constraints() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+relations:
+  base:
+    abstract: true
+    relates:
+      source: {card: 1}
+  child:
+    sub: base
+    relates:
+      origin: {as: source}
+"#,
+    );
+    let resolved = resolve(&schema, &profile()).unwrap();
+    let child = TypeId::new(TypeKind::Relation, "child").unwrap();
+    let origin = RoleId::new("child", "origin").unwrap();
+    assert_eq!(
+        resolved.types()[&child].relates()[&origin].cardinality(),
+        type_bridge_contract::value::Cardinality::new(1, Some(1)).unwrap()
+    );
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+relations:
+  base:
+    relates:
+      source: {card: {min: 1, max: 3}}
+  child:
+    sub: base
+    relates:
+      origin: {as: source, card: {min: 0, max: 2}}
+"#,
+    );
+    let resolved = resolve(&schema, &profile()).unwrap();
+    assert_eq!(
+        resolved.types()[&child].relates()[&origin].cardinality(),
+        type_bridge_contract::value::Cardinality::new(1, Some(2)).unwrap()
+    );
+}
+
+#[test]
+fn contradictory_specialization_cardinality_is_source_diagnosed() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+relations:
+  base:
+    relates:
+      source: {card: {min: 2, max: 3}}
+  child:
+    sub: base
+    relates:
+      origin: {as: source}
+"#,
+    );
+    let diagnostics = resolve(&schema, &profile()).unwrap_err();
+    let diagnostic = diagnostics.iter().next().unwrap();
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "incompatible_specialization_cardinality"
+    );
+    assert!(diagnostic.primary().is_some());
+}
