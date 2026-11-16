@@ -1,0 +1,13 @@
+format: typebridge.schema/v2
+attributes:
+  person-id: {value: string}
+  legacy-name: {value: string}
+  display-name: {value: string}
+  code: {value: {type: string, regex: '^[A-Z]{2}\d+$'}}
+entities:
+  person:
+    owns:
+      person-id: {key: true}
+      legacy-name: {}
+      display-name: {}
+      code: {}

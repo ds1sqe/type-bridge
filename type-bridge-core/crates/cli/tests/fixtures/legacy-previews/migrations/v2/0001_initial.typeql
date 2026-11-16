@@ -1,0 +1,29 @@
+define entity person;
+
+define attribute code;
+
+define attribute display-name;
+
+define attribute legacy-name;
+
+define attribute person-id;
+
+define code, value string;
+
+define display-name, value string;
+
+define legacy-name, value string;
+
+define person-id, value string;
+
+define person, owns code;
+
+define person, owns display-name;
+
+define person, owns legacy-name;
+
+define person, owns person-id;
+
+define code, value string @regex("^[A-Z]{2}\\d+$");
+
+define person, owns person-id @key;

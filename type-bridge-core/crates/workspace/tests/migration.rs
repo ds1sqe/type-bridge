@@ -1025,3 +1025,60 @@ entities:
         assert!(preview.contains(r#"@doc("D\\u0041D")"#), "{preview}");
     }
 }
+
+#[test]
+fn preview_regeneration_publishes_into_the_retained_directory_after_rename() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(initial) = workspace.migration_make("init").unwrap()
+    else {
+        panic!("initial migration");
+    };
+    workspace.write_generated_migration(&initial).unwrap();
+    let authority = workspace.open_migration_directory().unwrap();
+    let canonical = fs::read(directory.0.join("migrations/v2/0001_init.typeql")).unwrap();
+    directory.write("migrations/v2/0001_init.typeql", "old renderer\n");
+    fs::rename(
+        directory.0.join("migrations/v2"),
+        directory.0.join("migrations/pinned"),
+    )
+    .unwrap();
+    directory.write("migrations/v2/0001_init.typeql", "replacement directory\n");
+    assert_eq!(
+        workspace
+            .migration_regenerate_previews_in(&authority, true)
+            .unwrap(),
+        ["0001_init.typeql"]
+    );
+    assert_eq!(
+        fs::read(directory.0.join("migrations/pinned/0001_init.typeql")).unwrap(),
+        b"old renderer\n"
+    );
+    assert_eq!(
+        workspace
+            .migration_regenerate_previews_in(&authority, false)
+            .unwrap(),
+        ["0001_init.typeql"]
+    );
+    assert_eq!(
+        fs::read(directory.0.join("migrations/pinned/0001_init.typeql")).unwrap(),
+        canonical
+    );
+    assert_eq!(
+        fs::read(directory.0.join("migrations/v2/0001_init.typeql")).unwrap(),
+        b"replacement directory\n"
+    );
+    assert_eq!(
+        fs::read(
+            directory
+                .0
+                .join("migrations/pinned/0001_init.tbmigration.json")
+        )
+        .unwrap(),
+        initial.canonical_bytes()
+    );
+}

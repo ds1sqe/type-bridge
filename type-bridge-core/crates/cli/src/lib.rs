@@ -94,6 +94,12 @@ enum MigrationCommand {
     },
     /// Order the committed chain and report each manifest's safety class.
     Plan,
+    /// Regenerate derived TypeQL previews from verified canonical manifests.
+    RegeneratePreviews {
+        /// List differing previews without writing; differences exit nonzero.
+        #[arg(long)]
+        check: bool,
+    },
     /// Apply the committed chain to one named environment.
     Apply {
         /// The manifest environment to apply against.
@@ -253,51 +259,32 @@ fn run(cli: &Cli) -> Result<(), String> {
         Command::Schema {
             command: SchemaCommand::ExportDeclared { output },
         } => run_schema_export_declared(&workspace, output),
-        Command::Migration { command } => match command {
-            MigrationCommand::Make {
-                name,
-                backfill_intent,
-                data_step,
-            } => {
-                let directory = workspace.ensure_migration_directory().map_err(display)?;
-                if !data_step.is_empty() {
-                    let generated = workspace
-                        .author_data_migration_in(&directory, name, data_step)
-                        .map_err(display_workspace)?;
-                    println!(
-                        "wrote {}\n  safety: {:?}\n  reversible: {}",
-                        directory
-                            .display_path()
-                            .join(generated.file_name())
-                            .display(),
-                        generated.manifest().safety(),
-                        generated.manifest().reversible()
-                    );
-                    return Ok(());
-                }
-                if let Some(intent) = backfill_intent {
-                    let generated = workspace
-                        .author_backfill_migration_in(&directory, name, intent)
-                        .map_err(display_workspace)?;
-                    let path = directory.display_path().join(generated.file_name());
-                    println!(
-                        "wrote {}\n  safety: {:?}\n  preview: {}",
-                        path.display(),
-                        generated.manifest().safety(),
-                        path.with_file_name(generated.preview_file_name()).display(),
-                    );
-                    return Ok(());
-                }
-                match workspace
-                    .migration_make_in(&directory, name)
-                    .map_err(display_workspace)?
-                {
-                    MigrationGenerationOutcome::UpToDate => {
-                        println!("history already reaches the desired schema");
+        Command::Migration { command } => {
+            match command {
+                MigrationCommand::Make {
+                    name,
+                    backfill_intent,
+                    data_step,
+                } => {
+                    let directory = workspace.ensure_migration_directory().map_err(display)?;
+                    if !data_step.is_empty() {
+                        let generated = workspace
+                            .author_data_migration_in(&directory, name, data_step)
+                            .map_err(display_workspace)?;
+                        println!(
+                            "wrote {}\n  safety: {:?}\n  reversible: {}",
+                            directory
+                                .display_path()
+                                .join(generated.file_name())
+                                .display(),
+                            generated.manifest().safety(),
+                            generated.manifest().reversible()
+                        );
+                        return Ok(());
                     }
-                    MigrationGenerationOutcome::Generated(generated) => {
-                        workspace
-                            .write_generated_migration_in(&directory, &generated)
+                    if let Some(intent) = backfill_intent {
+                        let generated = workspace
+                            .author_backfill_migration_in(&directory, name, intent)
                             .map_err(display_workspace)?;
                         let path = directory.display_path().join(generated.file_name());
                         println!(
@@ -306,73 +293,113 @@ fn run(cli: &Cli) -> Result<(), String> {
                             generated.manifest().safety(),
                             path.with_file_name(generated.preview_file_name()).display(),
                         );
+                        return Ok(());
                     }
+                    match workspace
+                        .migration_make_in(&directory, name)
+                        .map_err(display_workspace)?
+                    {
+                        MigrationGenerationOutcome::UpToDate => {
+                            println!("history already reaches the desired schema");
+                        }
+                        MigrationGenerationOutcome::Generated(generated) => {
+                            workspace
+                                .write_generated_migration_in(&directory, &generated)
+                                .map_err(display_workspace)?;
+                            let path = directory.display_path().join(generated.file_name());
+                            println!(
+                                "wrote {}\n  safety: {:?}\n  preview: {}",
+                                path.display(),
+                                generated.manifest().safety(),
+                                path.with_file_name(generated.preview_file_name()).display(),
+                            );
+                        }
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            MigrationCommand::Apply {
-                environment,
-                approvals,
-            } => run_connected(
-                &workspace,
-                environment,
-                ConnectedAction::Apply {
-                    approvals: approvals.clone(),
-                },
-            ),
-            MigrationCommand::Verify { environment } => {
-                run_connected(&workspace, environment, ConnectedAction::Verify)
-            }
-            MigrationCommand::AbandonPlan { environment } => {
-                run_connected(&workspace, environment, ConnectedAction::AbandonPlan)
-            }
-            MigrationCommand::Rollback {
-                environment,
-                removals,
-                approvals,
-                execute,
-                output,
-            } => run_migration_rollback(
-                &workspace,
-                environment,
-                removals,
-                approvals,
-                *execute,
-                *output,
-            ),
-            MigrationCommand::UpgradeProfile {
-                environment,
-                to,
-                name,
-            } => run_connected(
-                &workspace,
-                environment,
-                ConnectedAction::UpgradeProfile {
-                    to: to.clone(),
-                    name: name.clone(),
-                },
-            ),
-            MigrationCommand::Plan => {
-                let directory = workspace.open_migration_directory().map_err(display)?;
-                let plan = workspace
-                    .migration_plan_in(&directory, &BTreeSet::new())
-                    .map_err(display_workspace)?;
-                if plan.is_empty() {
-                    println!("no committed migrations");
-                    return Ok(());
+                MigrationCommand::Apply {
+                    environment,
+                    approvals,
+                } => run_connected(
+                    &workspace,
+                    environment,
+                    ConnectedAction::Apply {
+                        approvals: approvals.clone(),
+                    },
+                ),
+                MigrationCommand::Verify { environment } => {
+                    run_connected(&workspace, environment, ConnectedAction::Verify)
                 }
-                for entry in plan {
-                    println!(
-                        "{}/{}  safety={:?}  reversible={}",
-                        entry.id().app_label().as_str(),
-                        entry.id().name().as_str(),
-                        entry.safety(),
-                        entry.reversible(),
-                    );
+                MigrationCommand::AbandonPlan { environment } => {
+                    run_connected(&workspace, environment, ConnectedAction::AbandonPlan)
                 }
-                Ok(())
+                MigrationCommand::Rollback {
+                    environment,
+                    removals,
+                    approvals,
+                    execute,
+                    output,
+                } => run_migration_rollback(
+                    &workspace,
+                    environment,
+                    removals,
+                    approvals,
+                    *execute,
+                    *output,
+                ),
+                MigrationCommand::UpgradeProfile {
+                    environment,
+                    to,
+                    name,
+                } => run_connected(
+                    &workspace,
+                    environment,
+                    ConnectedAction::UpgradeProfile {
+                        to: to.clone(),
+                        name: name.clone(),
+                    },
+                ),
+                MigrationCommand::RegeneratePreviews { check } => {
+                    let directory = workspace.open_migration_directory().map_err(display)?;
+                    let changed = workspace
+                        .migration_regenerate_previews_in(&directory, *check)
+                        .map_err(display_workspace)?;
+                    for name in &changed {
+                        println!(
+                            "{} {name}",
+                            if *check { "would rewrite" } else { "rewrote" }
+                        );
+                    }
+                    if *check && !changed.is_empty() {
+                        return Err("derived previews differ; run type-bridge migration regenerate-previews".to_owned());
+                    }
+                    if changed.is_empty() {
+                        println!("migration previews are current");
+                    }
+                    Ok(())
+                }
+                MigrationCommand::Plan => {
+                    let directory = workspace.open_migration_directory().map_err(display)?;
+                    let plan = workspace
+                        .migration_plan_in(&directory, &BTreeSet::new())
+                        .map_err(display_workspace)?;
+                    if plan.is_empty() {
+                        println!("no committed migrations");
+                        return Ok(());
+                    }
+                    for entry in plan {
+                        println!(
+                            "{}/{}  safety={:?}  reversible={}",
+                            entry.id().app_label().as_str(),
+                            entry.id().name().as_str(),
+                            entry.safety(),
+                            entry.reversible(),
+                        );
+                    }
+                    Ok(())
+                }
             }
-        },
+        }
     }
 }
 
@@ -1736,8 +1763,8 @@ struct ProfileUpgradeBridge {
 /// lock, so the bridge can never continue a stale head. The bridge's
 /// identity follows `migration make`: the next ordinal prefix and `name`.
 /// A file created here is removed again when the published history does
-/// not replay-verify. An already bridged history publishes nothing, so a
-/// retry after a failed connection reuses the committed bridge.
+/// not replay-verify. An already bridged history reuses the committed bridge
+/// and repairs only its derived preview before retrying the connection.
 fn publish_profile_upgrade_bridge(
     workspace: &TypeBridgeWorkspace,
     migration_directory: &type_bridge_workspace::MigrationDirectoryAuthority,
@@ -1771,11 +1798,12 @@ fn publish_profile_upgrade_bridge(
                     workspace.delta_context(),
                 )
                 .map_err(display)?;
-                publish_authority(
-                    directory,
-                    &format!("{}.typeql", bridge.name().as_str()),
-                    preview.as_bytes(),
-                )?;
+                migration_directory
+                    .__internal_output_directory()?
+                    .write_atomic(
+                        format!("{}.typeql", bridge.name().as_str()).as_ref(),
+                        preview.as_bytes(),
+                    )?;
                 return Ok(ProfileUpgradeBridge { id: bridge });
             }
             type_bridge_schema_migration::MigrationProfileUpgrade::Pending {
@@ -3024,17 +3052,27 @@ mod migration_command_tests {
         );
         assert_eq!(fs::read(&bridge).expect("bridge"), published);
         fs::remove_file(&preview).unwrap();
+        let directory_authority = workspace.open_migration_directory().unwrap();
+        let mismatch = workspace
+            .migration_plan_in(&directory_authority, &BTreeSet::new())
+            .unwrap_err();
+        assert!(mismatch.to_string().contains("migration upgrade-profile"));
+        for check in [true, false] {
+            let mismatch = workspace
+                .migration_regenerate_previews_in(&directory_authority, check)
+                .unwrap_err();
+            assert!(mismatch.to_string().contains("migration upgrade-profile"));
+            assert!(!preview.exists());
+            assert_eq!(fs::read(&bridge).unwrap(), published);
+        }
         let error = run_connected(&workspace, "dev", upgrade(NEW_PROFILE, None)).unwrap_err();
         assert!(error.contains("credential environment variable"), "{error}");
         assert_eq!(fs::read(&preview).unwrap(), b"\n");
         fs::write(&preview, b"tampered review artifact").unwrap();
         let error = run_connected(&workspace, "dev", upgrade(NEW_PROFILE, None)).unwrap_err();
-        assert!(
-            error.contains("already exists with different authority bytes"),
-            "{error}"
-        );
-        assert_before_credentials(&error);
-        fs::write(&preview, b"\n").unwrap();
+        assert!(error.contains("credential environment variable"), "{error}");
+        assert_eq!(fs::read(&preview).unwrap(), b"\n");
+        assert_eq!(fs::read(&bridge).unwrap(), published);
 
         // The next authored migration continues after the bridge.
         fs::write(

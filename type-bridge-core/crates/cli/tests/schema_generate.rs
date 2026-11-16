@@ -795,3 +795,72 @@ attributes:
     assert!(!root.join("migrations").exists());
     assert!(!root.join("generated").exists());
 }
+
+#[test]
+fn base_cli_workspace_previews_regenerate_without_manifest_or_plan_changes() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy-previews");
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    for (relative, bytes) in snapshot(&fixture) {
+        if relative == "README.md" {
+            continue;
+        }
+        let target = root.join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, bytes).unwrap();
+    }
+    let original = snapshot(root);
+    let plan = run_cli(root, &["migration", "plan"]);
+    assert!(!plan.status.success());
+    assert!(String::from_utf8_lossy(&plan.stderr).contains("migration regenerate-previews"));
+    let checked = run_cli(root, &["migration", "regenerate-previews", "--check"]);
+    assert!(!checked.status.success());
+    let differences = String::from_utf8_lossy(&checked.stdout);
+    assert!(differences.contains("0001_initial.typeql"), "{differences}");
+    assert!(
+        differences.contains("0002_copy-name.typeql"),
+        "{differences}"
+    );
+    assert_eq!(snapshot(root), original, "--check is read-only");
+    assert_success(
+        &run_cli(root, &["migration", "regenerate-previews"]),
+        "regenerate derived previews",
+    );
+    let regenerated = snapshot(root);
+    for (relative, bytes) in &original {
+        if !relative.ends_with(".typeql") {
+            assert_eq!(
+                regenerated.get(relative),
+                Some(bytes),
+                "canonical or source file changed: {relative}"
+            );
+        }
+    }
+    assert_success(
+        &run_cli(root, &["migration", "plan"]),
+        "plan regenerated base history",
+    );
+    assert_success(
+        &run_cli(root, &["migration", "regenerate-previews", "--check"]),
+        "idempotent preview check",
+    );
+    assert_eq!(snapshot(root), regenerated);
+    fs::write(
+        root.join("migrations/v2/0002_copy-name.tbmigration.json"),
+        b"{}",
+    )
+    .unwrap();
+    let invalid = snapshot(root);
+    for args in [
+        vec!["migration", "regenerate-previews"],
+        vec!["migration", "regenerate-previews", "--check"],
+    ] {
+        let output = run_cli(root, &args);
+        assert!(!output.status.success());
+        assert_eq!(
+            snapshot(root),
+            invalid,
+            "invalid manifests never derive previews"
+        );
+    }
+}

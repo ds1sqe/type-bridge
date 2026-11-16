@@ -64,7 +64,23 @@ type-bridge --manifest typebridge.yaml migration verify --environment developmen
 
 Review the committed migration and preview before applying. `migration plan`
 re-renders every committed `.typeql` preview from its verified manifest and
-refuses missing, stale, or edited previews, including already-applied entries. When the workspace
+refuses missing, stale, or edited previews, including already-applied entries.
+A renderer upgrade can change these derived files even when their committed
+bytes were canonical under the older CLI. Inspect and regenerate them offline:
+
+```bash
+type-bridge migration regenerate-previews --check
+type-bridge migration regenerate-previews
+```
+
+`--check` lists differences and exits nonzero without writing. Regeneration
+verifies the complete canonical history before rendering, then replaces only
+its derived `.typeql` previews under the authoring lock. Manifest and plan bytes
+never change. Invalid manifests and linked output files are refused. For a
+profile-bridge preview, rerun `migration upgrade-profile` with the bridge's
+original environment and target profile instead.
+
+When the workspace
 requires approval for destructive changes, approve the exact compound migration
 identity:
 

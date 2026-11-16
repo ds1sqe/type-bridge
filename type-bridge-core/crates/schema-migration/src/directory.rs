@@ -66,6 +66,12 @@ impl std::fmt::Debug for MigrationDirectory {
 }
 
 impl MigrationDirectory {
+    /// Retained filesystem capability for the workspace's derived-output writer.
+    #[doc(hidden)]
+    pub const fn __internal_retained_directory(&self) -> &Dir {
+        &self.directory
+    }
+
     /// Open an ambient path for compatibility callers of the path-based APIs.
     pub fn open_ambient(path: &Path) -> io::Result<Self> {
         Ok(Self {

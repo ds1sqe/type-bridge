@@ -67,3 +67,9 @@ first to the second.
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-cli/3.0.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)
+
+`type-bridge migration regenerate-previews --check` lists derived review files
+that differ from verified canonical history and exits nonzero without writing.
+Omit `--check` to regenerate those previews; canonical manifest and plan bytes
+remain unchanged. Profile-bridge previews are repaired by rerunning
+`migration upgrade-profile` for the original environment and target profile.
