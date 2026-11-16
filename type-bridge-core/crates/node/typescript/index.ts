@@ -627,7 +627,7 @@ export function ensureDatabase(
   options?: EnsureDatabaseOptions,
 ): void {
   validateConnectionTransport(options ?? {});
-  loadNative().ensureRustDatabase(
+  planNativeCall(() => loadNative().ensureRustDatabase(
     address,
     database,
     options?.username ?? null,
@@ -636,7 +636,7 @@ export function ensureDatabase(
     options?.serverVersion ?? null,
     options?.tlsEnabled ?? null,
     options?.tlsRootCa ?? null,
-  );
+  ));
 }
 
 /** Opaque declared-schema authority for staged plan execution. */
@@ -719,7 +719,7 @@ export class Database {
     options: DatabaseConnectOptions = {},
   ): Database {
     validateConnectionTransport(options);
-    const native = loadNative().connectRustDatabase(
+    const native = planNativeCall(() => loadNative().connectRustDatabase(
       address,
       databaseName,
       options.username ?? null,
@@ -729,79 +729,79 @@ export class Database {
       options.tlsEnabled ?? null,
       options.tlsRootCa ?? null,
       options.queryLimits?.nativeHandle(),
-    );
+    ));
     return new Database(native);
   }
 
   isConnected(): boolean {
-    return this.#native.isConnected();
+    return planNativeCall(() => this.#native.isConnected());
   }
 
   close(): void {
-    this.#native.close();
+    planNativeCall(() => this.#native.close());
   }
 
   databaseName(): string {
-    return this.#native.databaseName();
+    return planNativeCall(() => this.#native.databaseName());
   }
 
   databaseExists(): boolean {
-    return this.#native.databaseExists();
+    return planNativeCall(() => this.#native.databaseExists());
   }
 
   databaseExistsControlled(options: AdministrationExecutionOptions = {}): boolean {
-    return this.#native.databaseExistsControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+    return planNativeCall(() => this.#native.databaseExistsControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
   }
 
   createDatabase(): void {
-    this.#native.createDatabase();
+    planNativeCall(() => this.#native.createDatabase());
   }
 
   createDatabaseControlled(options: AdministrationExecutionOptions = {}): void {
-    this.#native.createDatabaseControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+    planNativeCall(() => this.#native.createDatabaseControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
   }
 
   createDatabaseOutcome(): DatabaseCreateOutcome {
-    return this.#native.createDatabaseOutcome();
+    return planNativeCall(() => this.#native.createDatabaseOutcome());
   }
 
   createDatabaseOutcomeControlled(options: AdministrationExecutionOptions = {}): DatabaseCreateOutcome {
-    return this.#native.createDatabaseOutcomeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+    return planNativeCall(() => this.#native.createDatabaseOutcomeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
   }
 
   deleteDatabase(): void {
-    this.#native.deleteDatabase();
+    planNativeCall(() => this.#native.deleteDatabase());
   }
 
   deleteDatabaseOutcome(): DatabaseDeleteOutcome {
-    return this.#native.deleteDatabaseOutcome();
+    return planNativeCall(() => this.#native.deleteDatabaseOutcome());
   }
 
   inspectDatabasePair(): ManagedDatabasePairState {
-    return this.#native.inspectDatabasePair();
+    return planNativeCall(() => this.#native.inspectDatabasePair());
   }
 
   inspectDatabasePairControlled(options: AdministrationExecutionOptions = {}): ManagedDatabasePairState {
-    return this.#native.inspectDatabasePairControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+    return planNativeCall(() => this.#native.inspectDatabasePairControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
   }
 
   planDatabaseDelete(): ManagedDatabaseDeletionPlan {
-    return new ManagedDatabaseDeletionPlan(this.#native.planDatabaseDelete());
+    return new ManagedDatabaseDeletionPlan(planNativeCall(() => this.#native.planDatabaseDelete()));
   }
 
   planDatabaseDeleteControlled(options: AdministrationExecutionOptions = {}): ManagedDatabaseDeletionPlan {
-    return new ManagedDatabaseDeletionPlan(this.#native.planDatabaseDeleteControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
+    return new ManagedDatabaseDeletionPlan(planNativeCall(() => this.#native.planDatabaseDeleteControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle())));
   }
 
   resetDatabase(): void {
-    this.#native.resetDatabase();
+    planNativeCall(() => this.#native.resetDatabase());
   }
 
   transaction(
     transactionType: TransactionType = "read",
   ): TransactionContext {
     return createRustTransactionContext(
-      this.#native.transaction(transactionType),
+      planNativeCall(() => this.#native.transaction(transactionType)),
     );
   }
 
@@ -826,19 +826,19 @@ export class ManagedDatabaseDeletionPlan {
   }
 
   inspectedState(): ManagedDatabasePairState {
-    return this.#native.inspectedState();
+    return planNativeCall(() => this.#native.inspectedState());
   }
 
   execute(): ManagedDatabaseDeleteOutcome {
-    return this.#native.execute();
+    return planNativeCall(() => this.#native.execute());
   }
 
   executeControlled(options: AdministrationExecutionOptions = {}): ManagedDatabaseDeleteOutcome {
-    return this.#native.executeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+    return planNativeCall(() => this.#native.executeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
   }
 
   close(): void {
-    this.#native.close();
+    planNativeCall(() => this.#native.close());
   }
 }
 
@@ -903,15 +903,15 @@ export class TransactionContext {
 
   /** Roll back writes and keep this transaction usable. */
   rollback(): void {
-    this.#native.rollback();
+    planNativeCall(() => this.#native.rollback());
   }
 
   close(): void {
-    this.#native.close();
+    planNativeCall(() => this.#native.close());
   }
 
   transactionType(): TransactionType {
-    return this.#native.transactionType();
+    return planNativeCall(() => this.#native.transactionType());
   }
 }
 

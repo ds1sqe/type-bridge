@@ -57,6 +57,16 @@ pub(crate) fn staged_options(
     Ok(options.with_kind(kind))
 }
 
+fn lifecycle_error(code: &'static str, message: &'static str) -> napi::Error {
+    use type_bridge_contract::sdk_diagnostic::{
+        SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
+    };
+    crate::match_runtime::napi_sdk_diagnostic(SdkExecutionDiagnostic::transaction_failure(
+        SdkDiagnosticCode::new(code).expect("static lifecycle code"),
+        SdkDiagnosticMessage::new(message).expect("static lifecycle message"),
+    ))
+}
+
 fn pending_error(error: &PendingError) -> napi::Error {
     match error {
         PendingError::Failed { diagnostic, .. } => {
@@ -69,7 +79,23 @@ fn pending_error(error: &PendingError) -> napi::Error {
         PendingError::Refused { diagnostic, .. } => {
             crate::match_runtime::napi_sdk_diagnostic(diagnostic.as_ref().clone())
         }
-        other => napi::Error::new(napi::Status::GenericFailure, other.to_string()),
+        PendingError::NotCommitted => lifecycle_error(
+            "transaction_not_committed",
+            "The transaction has not committed",
+        ),
+        PendingError::Closed => lifecycle_error("transaction_closed", "The transaction is closed"),
+        PendingError::RolledBack => lifecycle_error(
+            "transaction_rolled_back",
+            "The staged query was rolled back",
+        ),
+        PendingError::ReadOnly => lifecycle_error(
+            "transaction_read_only",
+            "A read transaction cannot stage writes",
+        ),
+        _ => lifecycle_error(
+            "transaction_invalid_state",
+            "The transaction lifecycle operation is invalid",
+        ),
     }
 }
 
@@ -314,9 +340,9 @@ impl NodeStagedTransaction {
 
     fn lock(&self) -> napi::Result<tokio::sync::MutexGuard<'_, Transaction>> {
         self.inner.try_lock().map_err(|_| {
-            napi::Error::new(
-                napi::Status::GenericFailure,
-                "transaction_busy: a commit on this transaction is still running",
+            lifecycle_error(
+                "transaction_busy",
+                "A commit on this transaction is still running",
             )
         })
     }
@@ -493,6 +519,21 @@ mod document_answer_tests {
 #[cfg(test)]
 mod pending_diagnostic_redaction_tests {
     use super::*;
+    #[test]
+    fn pending_lifecycle_errors_have_stable_transaction_codes() {
+        for (error, code) in [
+            (PendingError::NotCommitted, "transaction_not_committed"),
+            (PendingError::Closed, "transaction_closed"),
+            (PendingError::RolledBack, "transaction_rolled_back"),
+            (PendingError::ReadOnly, "transaction_read_only"),
+        ] {
+            let diagnostic: serde_json::Value =
+                serde_json::from_str(&pending_error(&error).reason).unwrap();
+            assert_eq!(diagnostic["code"], code);
+            assert_eq!(diagnostic["category"], "transaction");
+        }
+    }
+
     #[test]
     fn pending_failure_uses_the_canonical_diagnostic_without_server_text() {
         let error = PendingError::Failed {

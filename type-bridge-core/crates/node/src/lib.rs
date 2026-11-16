@@ -292,10 +292,7 @@ fn node_delete_outcome(
 }
 
 fn napi_administration_error(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
-    Error::new(
-        Status::GenericFailure,
-        format!("database administration failed [{}]", error.code().as_str()),
-    )
+    crate::plan_runtime::napi_error(&error)
 }
 
 #[napi]
