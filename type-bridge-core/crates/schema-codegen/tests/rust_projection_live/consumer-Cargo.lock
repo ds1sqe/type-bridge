@@ -2508,6 +2508,7 @@ dependencies = [
  "type-bridge-core-lib",
  "type-bridge-query",
  "type-bridge-schema",
+ "type-bridge-schema-compat",
 ]
 
 [[package]]

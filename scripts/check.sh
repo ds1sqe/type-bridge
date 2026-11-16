@@ -47,6 +47,9 @@ run_rust() {
     run_step "cargo audit (all maintained lockfiles)" \
         bash scripts/ci/check_dependency_security.sh
 
+    run_step "frozen Rust consumer locks" \
+        python scripts/ci/refresh_rust_consumer_locks.py --check
+
     run_step "cargo check --all-targets" \
         cargo check --manifest-path type-bridge-core/Cargo.toml --all-targets
 

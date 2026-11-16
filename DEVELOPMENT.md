@@ -166,6 +166,22 @@ the ordinary GitHub draft. See the [C release procedure](docs/development/c-rele
 for the selected Ubuntu 24.04 shared-runtime matrix, provenance, partial-upload
 recovery and independent public acceptance required before claiming support.
 
+Maintained Rust consumer locks have one offline regeneration path. Seeded
+resolution preserves registry versions and checksums; ordinary refreshes change
+only local package records:
+
+```bash
+python scripts/ci/refresh_rust_consumer_locks.py
+python scripts/ci/refresh_rust_consumer_locks.py --check
+```
+
+The check also runs in `scripts/check.sh rust`. For a deliberate advisory update,
+cache the chosen release first and use `--update PACKAGE` (or
+`PACKAGE@OLD_VERSION` when Cargo needs a disambiguating package specification).
+Repeat the flag for every registry package allowed to change; unexpected
+transitive changes refuse the entire refresh. The tool stages all five consumer
+graphs and verifies them before writing any lock. It compiles no Rust code.
+
 ## Documentation system
 
 The site uses MkDocs Material:
