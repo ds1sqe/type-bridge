@@ -4507,6 +4507,32 @@ test("generated temporal values and staged integers remain exact", { timeout: 36
     }
 
     const publicRuntime = await import(pathToFileURL(resolve(NODE_RUNTIME_PACKAGE, "dist/public.js")).href);
+    const expanded = (score: bigint) => Person.create({
+      identifier: Identifier.create("expanded-native-years"), score: Score.create(score),
+      valBool: ValBool.create(true), valConstrained: ValConstrained.create(20n),
+      valDate: ValDate.create(new Date("+010000-01-02T00:00:00.000Z")),
+      valDatetime: ValDatetime.create(new Date("-009999-01-02T03:04:05.000Z")),
+      valDatetimeTz: ValDatetimeTz.create(new Date("-000001-01-02T03:04:05.000Z")),
+      valDecimal: ValDecimal.create("0.0000001"), valDouble: ValDouble.create(3.5),
+      valDuration: ValDuration.create("PT123S"),
+    });
+    const expandedRow = oneWritten(personManager.insert(expanded(1n)));
+    const expandedQuery = 'match $p isa person, has identifier "expanded-native-years", has val_date $d, has val_datetime $t, has val_datetime_tz $z; fetch {"d": $d, "t": $t, "z": $z};';
+    const expandedBefore = await database.executeQuery(expandedQuery, "read");
+    const assertExpanded = () => {
+      const row = personManager.getByIid(expandedRow.iid);
+      assert.equal(row.valDate.canonical, "+10000-01-02");
+      assert.equal(row.valDatetime.canonical, "-9999-01-02T03:04:05");
+      assert.equal(row.valDatetimeTz.canonical, "-0001-01-02T03:04:05Z");
+    };
+    assertExpanded();
+    personManager.put(expanded(2n));
+    assertExpanded();
+    assert.deepEqual(await database.executeQuery(expandedQuery, "read"), expandedBefore);
+    personManager.update(expandedRow.iid, expanded(3n));
+    assertExpanded();
+    assert.deepEqual(await database.executeQuery(expandedQuery, "read"), expandedBefore);
+    personManager.delete(expandedRow.iid);
     const numericLeaves = (value: unknown): (number | bigint)[] => {
       if (typeof value === "number" || typeof value === "bigint") return [value];
       if (value === null || typeof value !== "object") return [];

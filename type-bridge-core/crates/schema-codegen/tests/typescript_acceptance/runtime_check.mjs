@@ -1505,6 +1505,15 @@ await rejectsClosedRemoteTerminal(() => remoteLifecycleClone.one());
 emitSdkModelsPackageProofFragment();
 
 // Temporal wrappers keep the exact value even when Date cannot project it.
+for (const [token, iso, canonical] of [
+  [ValDate, "+010000-01-02T00:00:00.000Z", "+10000-01-02"],
+  [ValDatetime, "-009999-01-02T03:04:05.000Z", "-9999-01-02T03:04:05"],
+  [ValDatetimeTz, "-000001-01-02T03:04:05.000Z", "-0001-01-02T03:04:05Z"],
+]) {
+  const value = token.create(new Date(iso));
+  assert.equal(value.canonical, canonical);
+  assert.equal(value.value.toISOString(), iso);
+}
 for (const [token, text, native] of [
   [ValDate, "-0001-01-01", "-000001-01-01T00:00:00.000Z"],
   [ValDatetime, "2024-01-01T00:00:00.123456789", null],
