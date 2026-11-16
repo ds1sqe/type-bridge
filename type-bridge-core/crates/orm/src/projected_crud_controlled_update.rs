@@ -2468,7 +2468,7 @@ mod tests {
             BindingTarget::Rust,
         ] {
             for kind in [TypeKind::Entity, TypeKind::Relation] {
-                for (single, count) in [(true, 1), (false, 1), (false, 2), (false, 257)] {
+                for (single, count) in [(true, 1_usize), (false, 1), (false, 2), (false, 257)] {
                     for roots in [0, 1] {
                         let model = TypeId::new(
                             kind,
@@ -2536,16 +2536,16 @@ mod tests {
                         {
                             let seen = transport.seen.lock().unwrap();
                             assert_eq!(seen.len(), 1);
-                            assert_eq!(seen[0].plans().len(), 1);
-                            assert_eq!(
-                                seen[0].plans()[0].plan().canonical_bytes().unwrap(),
-                                direct
-                            );
+                            assert_eq!(seen[0].plans().len(), count.div_ceil(64));
+                            if count <= 64 {
+                                assert_eq!(seen[0].plans()[0].plan().canonical_bytes().unwrap(), direct);
+                            }
+                            assert!(seen[0].plans().iter().all(|plan| plan.rows().len() <= 64));
                             assert_eq!(
                                 transport
                                     .dispatched_writes
                                     .load(std::sync::atomic::Ordering::Relaxed),
-                                1
+                                count.div_ceil(64)
                             );
                         }
                         let iids = (0..count)
