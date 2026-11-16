@@ -214,11 +214,24 @@ class TestDatabaseTransactionCreation:
         ctx = db.transaction(TransactionType.WRITE)
         assert ctx.tx_type == TransactionType.WRITE
 
-    def test_transaction_invalid_string_defaults_to_read(self):
-        """transaction() with invalid string should default to READ."""
+    @pytest.mark.parametrize("kind", ["wirte", "", "WRITE", 1, object()])
+    def test_transaction_invalid_kind_raises(self, kind):
         db = Database()
-        ctx = db.transaction("invalid")
-        assert ctx.tx_type == TransactionType.READ
+        with pytest.raises(ValueError, match="transaction type"):
+            db.transaction(kind)
+
+    def test_transaction_reentry_keeps_the_active_transaction(self, monkeypatch):
+        native_db = MagicMock()
+        native_tx = native_db.transaction.return_value
+        monkeypatch.setattr("type_bridge._native.core_database_for", lambda db: native_db)
+        context = Database().transaction("write")
+        with context:
+            with pytest.raises(RuntimeError, match="already entered"):
+                context.__enter__()
+            assert context._native_tx is native_tx
+        native_db.transaction.assert_called_once_with("write")
+        native_tx.commit.assert_called_once_with()
+        native_tx.close.assert_called_once_with()
 
 
 class TestConnectionTypeAlias:

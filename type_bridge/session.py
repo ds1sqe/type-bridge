@@ -119,7 +119,10 @@ def _tx_type_wire_name(tx_type: TransactionType) -> str:
         TransactionType.WRITE: "write",
         TransactionType.SCHEMA: "schema",
     }
-    return names.get(tx_type, "read")
+    try:
+        return names[tx_type]
+    except KeyError:
+        raise ValueError("transaction type must be read, write, or schema") from None
 
 
 class Database:
@@ -699,9 +702,13 @@ class Database:
         }
 
         if isinstance(transaction_type, str):
-            tx_type = tx_type_map.get(transaction_type, TransactionType.READ)
+            try:
+                tx_type = tx_type_map[transaction_type]
+            except KeyError:
+                raise ValueError("transaction type must be read, write, or schema") from None
         else:
             tx_type = cast(TransactionType, transaction_type)
+        _tx_type_wire_name(tx_type)
 
         logger.debug(
             f"Creating {_tx_type_name(tx_type)} transaction for database: {self.database_name}"
@@ -852,6 +859,8 @@ class TransactionContext:
         self._native_finalized = False
 
     def __enter__(self) -> TransactionContext:
+        if self._native_tx is not None:
+            raise RuntimeError("TransactionContext is already entered")
         logger.debug(
             f"Opening {_tx_type_name(self.tx_type)} transaction context for database: {self.db.database_name}"
         )
