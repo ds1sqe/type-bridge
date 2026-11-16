@@ -41,7 +41,7 @@ ARG CREATED=1970-01-01T00:00:00Z
 ARG RELEASE_IDENTITY=unreleased
 
 LABEL org.opencontainers.image.title="TypeBridge Server" \
-      org.opencontainers.image.description="TypeBridge TypeDB query proxy with the V1 compatibility and V2 prepared-query surfaces" \
+      org.opencontainers.image.description="TypeBridge TypeDB staged plan and opt-in raw query proxy" \
       org.opencontainers.image.url="https://ds1sqe.github.io/type-bridge/" \
       org.opencontainers.image.source="https://github.com/ds1sqe/type-bridge" \
       org.opencontainers.image.documentation="https://ds1sqe.github.io/type-bridge/guide/server-container/" \
@@ -72,6 +72,7 @@ COPY --from=builder \
     /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY server.container.toml /etc/type-bridge/server.toml
 COPY LICENSE /usr/share/licenses/type-bridge/LICENSE
+COPY crates/node/THIRD_PARTY_NOTICES.md /usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md
 RUN chmod 0555 /usr/local/bin/type-bridge-server \
     && chmod 0444 /etc/ssl/certs/ca-certificates.crt \
       /etc/type-bridge/server.toml /usr/share/licenses/type-bridge/LICENSE

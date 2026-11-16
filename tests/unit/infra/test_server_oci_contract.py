@@ -94,6 +94,10 @@ def test_server_image_build_and_runtime_are_immutable_and_least_privilege() -> N
     assert "USER 10001:10001" in source
     assert 'ENTRYPOINT ["/usr/local/bin/type-bridge-server"]' in source
     assert 'CMD ["--config", "/etc/type-bridge/server.toml"]' in source
+    assert (
+        "COPY crates/node/THIRD_PARTY_NOTICES.md /usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md"
+        in source
+    )
     assert "HEALTHCHECK" not in source
     assert "server.toml /app/server.toml" not in source
     assert "apt-get" not in source
@@ -154,6 +158,7 @@ def test_oci_layout_validator_is_fail_closed() -> None:
         "etc/type-bridge/server.toml",
         "usr/local/bin/type-bridge-server",
         "usr/share/licenses/type-bridge/LICENSE",
+        "usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md",
     ):
         assert required in source
     assert "10001:10001" in source
@@ -192,6 +197,9 @@ def _layer_bytes(
         "etc/type-bridge/server.toml": CONTAINER_CONFIG.read_bytes(),
         "usr/local/bin/type-bridge-server": b"\x7fELFsynthetic server",
         "usr/share/licenses/type-bridge/LICENSE": b"MIT\n",
+        "usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md": (
+            CORE / "crates/node/THIRD_PARTY_NOTICES.md"
+        ).read_bytes(),
     }
     if shadow_backup_entry is not None:
         files["etc/shadow-"] = f"{shadow_backup_entry}\n".encode()

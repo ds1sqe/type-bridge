@@ -23,11 +23,12 @@ REQUIRED_FILES = {
     "etc/type-bridge/server.toml",
     "usr/local/bin/type-bridge-server",
     "usr/share/licenses/type-bridge/LICENSE",
+    "usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md",
 }
 EXPECTED_LABELS = {
     "org.opencontainers.image.title": "TypeBridge Server",
     "org.opencontainers.image.description": (
-        "TypeBridge TypeDB query proxy with the V1 compatibility and V2 prepared-query surfaces"
+        "TypeBridge TypeDB staged plan and opt-in raw query proxy"
     ),
     "org.opencontainers.image.url": "https://ds1sqe.github.io/type-bridge/",
     "org.opencontainers.image.source": "https://github.com/ds1sqe/type-bridge",
