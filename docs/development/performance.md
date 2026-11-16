@@ -286,9 +286,13 @@ where a version has no call for the op.
 
 ## Run the Python binding benchmarks locally
 
-`benchmarks/` measures native validation through the Python
-`type_bridge_core` binding. Legacy raw-query compilation and marshalling
-benchmarks were removed in 3.0 together with their implementation. Build the native module in release mode first (as
+`benchmarks/` measures the retained native IID and canonical enum boundaries
+through the Python `type_bridge_core` binding. The legacy `ValidationEngine`
+benchmarks were removed with that Python API: all fourteen
+`binding.python.validation.*` metrics are retired, rather than reassigned to a
+different operation. The retained Rust core validation metrics still measure
+identifier validation. Legacy raw-query compilation and marshalling benchmarks
+were removed in 3.0 together with their implementation. Build the native module in release mode first (as
 `uv sync` does), then:
 
 ```bash

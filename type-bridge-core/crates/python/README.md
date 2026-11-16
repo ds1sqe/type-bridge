@@ -9,10 +9,9 @@ Python extension module via [PyO3](https://pyo3.rs) and
 [maturin](https://www.maturin.rs).
 
 Applications use generated models and the `type_bridge` query API. This
-extension provides native projection, plan execution, validation and value
-coercion. `ValidationEngine` validates identifiers and custom data rules;
-`ValueCoercer`, `format_value()` and `coerce_value()` handle scalar values.
-Legacy query-node wrappers and `QueryCompiler` were removed in 3.0.
+extension provides native projection, plan execution, diagnostics and canonical
+value boundaries. Generated models own schema validation and value conversion.
+Legacy validators, scalar formatters and query-node wrappers were removed in 3.0.
 
 ## Building
 
@@ -32,10 +31,11 @@ the abi3-py312 wheel baseline and GIL requirement.
 ## Usage from Python
 
 ```python
-from type_bridge_core import ValidationEngine
+from type_bridge_core import Iid, canonical_enum_spelling
 
-engine = ValidationEngine()
-assert engine.validate_type_name("person", "entity")
+iid = Iid("0x1e00000000000000000001")
+assert str(iid) == "0x1e00000000000000000001"
+assert canonical_enum_spelling("manager_lookup", "exact") == "eq"
 ```
 
 ## Staged remote execution

@@ -1,4 +1,8 @@
-"""The native Python package exposes only the supported 3.0 surface."""
+"""Pin the supported surface and audit repo consumers, including benchmark/CI scripts.
+
+The accompanying whole-repository import grep covers workflow snippets and SDK
+names in other languages; this AST check also catches multiline Python imports.
+"""
 
 import type_bridge_core
 
@@ -122,6 +126,8 @@ def test_public_exports_are_explicit_and_exact() -> None:
     wildcard: dict[str, object] = {}
     exec("from type_bridge_core import *", wildcard)
     assert set(wildcard) - {"__builtins__"} == set(PUBLIC_EXPORTS)
+    # README and the typed-query guide document this helper as public.
+    assert callable(wildcard["blocking"])
     for removed in (
         "ValidationEngine",
         "ValueCoercer",
@@ -133,3 +139,38 @@ def test_public_exports_are_explicit_and_exact() -> None:
         "_render_schema_owns",
     ):
         assert not hasattr(type_bridge_core, removed), removed
+
+
+def test_repository_python_consumers_do_not_import_retired_native_names():
+    import ast
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    files = subprocess.check_output(["git", "ls-files", "--", "*.py"], cwd=root, text=True)
+    removed = {
+        "ValidationEngine",
+        "ValueCoercer",
+        "coerce_value",
+        "format_value",
+        "_clear_attribute_query",
+        "_render_schema_annotations",
+        "_render_schema_definition",
+        "_render_schema_owns",
+    }
+    imports = []
+    for relative in files.splitlines():
+        source = root / relative
+        if not source.exists():
+            continue
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and node.module in {
+                "type_bridge_core",
+                "type_bridge_core.type_bridge_core",
+            }:
+                imports.extend(
+                    f"{relative}:{node.lineno}: {name.name}"
+                    for name in node.names
+                    if name.name in removed
+                )
+    assert not imports, "Retired native imports: " + ", ".join(imports)
