@@ -1137,3 +1137,112 @@ async fn completed_legacy_history_then_evolve_live() {
     journal.delete_database().await.unwrap();
     managed.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn regex_escape_spellings_survive_make_apply_export_and_value_checks() {
+    let address = std::env::var("TYPEDB_ADDRESS").unwrap();
+    let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap();
+    let username = std::env::var("TYPEDB_USERNAME").unwrap();
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap();
+    let database_name = support::live_database_name("regex-spellings");
+    let journal_name =
+        type_bridge_schema_migration_typedb::derived_journal_database_name(&database_name);
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    let cases = [
+        ("code-unicode", r"^\u0041+$", "AAA", "BBB"),
+        ("code-braced", r"^\u{41}+$", "AAA", "BBB"),
+        ("code-hex", r"^\x41+$", "AAA", "BBB"),
+        ("code-digit", r"^\d+$", "123", "abc"),
+        ("code-slash", r"^a\\b$", r"a\b", "ab"),
+        ("code-quote", r#"^a"b$"#, "a\"b", "ab"),
+        ("code-newline", "^a\nb$", "a\nb", "ab"),
+    ];
+    let mut schema = String::from("format: typebridge.schema/v2\nattributes:\n");
+    for (label, pattern, _, _) in &cases {
+        let scalar = if pattern.contains('\n') {
+            serde_json::to_string(pattern).unwrap()
+        } else {
+            format!("'{pattern}'")
+        };
+        schema.push_str(&format!(
+            "  {label}: {{value: {{type: string, regex: {scalar}}}}}\n"
+        ));
+    }
+    schema.push_str("entities:\n  item:\n    doc: 'D\\u0041D'\n    owns:\n");
+    for (label, _, _, _) in &cases {
+        schema.push_str(&format!("      {label}: {{}}\n"));
+    }
+    fs::write(root.join("schema/model.yaml"), schema).unwrap();
+    write_manifest(root, &address, &http_port, &[("live", &database_name)]);
+    assert_success(
+        &run_cli(root, &["migration", "make", "--name", "escapes"]),
+        "make escape spellings",
+    );
+    assert_success(
+        &run_cli(root, &["migration", "apply", "--environment", "live"]),
+        "apply escape spellings",
+    );
+    assert_success(
+        &run_cli(root, &["migration", "verify", "--environment", "live"]),
+        "verify escape spellings",
+    );
+    let managed = Database::connect_with_options(
+        &address,
+        &database_name,
+        &username,
+        &password,
+        connect_options(&http_port),
+    )
+    .await
+    .unwrap();
+    let journal = Database::connect_with_options(
+        &address,
+        &journal_name,
+        &username,
+        &password,
+        connect_options(&http_port),
+    )
+    .await
+    .unwrap();
+    let export = managed.schema_text().await.unwrap();
+    let declared = type_bridge_schema_compat::typeql_to_declared(
+        DocumentId::new("exported-escapes.tql").unwrap(),
+        &export,
+    )
+    .unwrap();
+    for (label, pattern, accepted, rejected) in &cases {
+        assert!(declared.facts().any(|fact| matches!(fact, SchemaFact::Annotation(annotation)
+            if matches!(annotation.value(), type_bridge_contract::schema::SchemaAnnotationValue::Regex(value) if value.as_str() == *pattern)
+            && matches!(annotation.id().subject(), type_bridge_contract::schema::AnnotationSubjectId::Value(id) if id.attribute().label().as_str() == *label))), "{label}: {export}");
+        let insert = |value: &str| {
+            format!(
+                "insert $x isa item, has {label} {};",
+                serde_json::to_string(value).unwrap()
+            )
+        };
+        let mut tx = managed.write_transaction().await.unwrap();
+        tx.query(&insert(accepted))
+            .await
+            .unwrap_or_else(|error| panic!("{label} accepted value: {error}"));
+        tx.commit().await.unwrap();
+        let mut tx = managed.write_transaction().await.unwrap();
+        let rejected = if tx.query(&insert(rejected)).await.is_err() {
+            true
+        } else {
+            tx.commit().await.is_err()
+        };
+        assert!(rejected, "{label} admitted the rejected value");
+    }
+    assert!(declared.facts().any(|fact| matches!(fact, SchemaFact::Annotation(annotation)
+        if matches!(annotation.value(), type_bridge_contract::schema::SchemaAnnotationValue::Doc(value) if value.as_str() == r"D\u0041D"))));
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}

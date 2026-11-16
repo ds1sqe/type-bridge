@@ -1116,7 +1116,16 @@ mod tests {
 
     #[test]
     fn regex_lowering_preserves_regex_escapes() {
-        for pattern in [r"^[A-Z]{2}\d+$", r"^\w+\.\s*$", r#"^a"b$"#] {
+        for pattern in [
+            r"^[A-Z]{2}\d+$",
+            r"^\w+\.\s*$",
+            r#"^a"b$"#,
+            r"^\u0024",
+            r"^\u{0024}",
+            r"^\x24",
+            r"^a\\b$",
+            "^a\nb$",
+        ] {
             let fact = annotation(
                 AnnotationSubjectId::Value(ValueFactId::new(attribute_id("code"))),
                 AnnotationKindId::Regex,
@@ -1130,11 +1139,8 @@ mod tests {
                 &catalog,
             )
             .unwrap_or_else(|error| panic!("{pattern:?}: {error:?}"));
-            assert!(
-                rendered[0]
-                    .query()
-                    .contains(&format!("@regex(\"{}\")", pattern.replace('"', "\\\"")),)
-            );
+            let expected = format!("@regex(\"{}\")", pattern.replace('"', "\\\""));
+            assert!(rendered[0].query().contains(&expected), "{rendered:?}");
         }
     }
 

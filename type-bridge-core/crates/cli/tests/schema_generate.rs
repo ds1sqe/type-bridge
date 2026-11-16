@@ -759,3 +759,39 @@ fn invalid_schema_diagnostics_keep_code_file_line_and_reason() {
     assert!(!root.join("generated").exists());
     assert!(!root.join("migrations").exists());
 }
+
+#[test]
+fn unexportable_regex_quote_refuses_before_generating_or_authoring() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("schema/model.yaml"),
+        r#"format: typebridge.schema/v2
+attributes:
+  code: {value: {type: string, regex: 'a\"b'}}
+"#,
+    )
+    .unwrap();
+    fs::write(root.join("typebridge.yaml"), "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: quote-check\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: quotecheck\n").unwrap();
+    for args in [
+        vec!["schema", "check"],
+        vec!["schema", "generate"],
+        vec!["migration", "make", "--name", "initial"],
+    ] {
+        let output = run_cli(root, &args);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("unsupported_regex_escaped_quote"), "{error}");
+        assert!(error.contains("model.yaml:3:"), "{error}");
+        assert!(error.contains("post-commit observation"), "{error}");
+        assert!(error.contains("redundant backslash"), "{error}");
+    }
+    assert!(!root.join("migrations").exists());
+    assert!(!root.join("generated").exists());
+}

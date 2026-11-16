@@ -989,3 +989,39 @@ fn plan_rechecks_every_review_preview_against_its_manifest() {
         assert!(workspace.migration_plan(&BTreeSet::new()).is_err());
     }
 }
+
+#[test]
+fn migration_make_retains_unicode_escape_text_in_regex_and_doc() {
+    for (scalar, expected) in [
+        (r"'^\u0024'", r"^\u0024"),
+        (r#""^\u0024""#, "^$"),
+        (r#""^\\u0024""#, r"^\u0024"),
+    ] {
+        let directory = TempDirectory::new();
+        directory.schema(&format!(
+            r"format: typebridge.schema/v2
+attributes:
+  code: {{value: {{type: string, regex: {scalar}}}}}
+entities:
+  item: {{doc: 'D\u0041D', owns: [code]}}
+"
+        ));
+        let secrets = AcceptSecrets(AtomicUsize::new(0));
+        let extensions = AcceptExtensions(AtomicUsize::new(0));
+        let available = capabilities();
+        let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+        let MigrationGenerationOutcome::Generated(generated) =
+            workspace.migration_make("escapes").unwrap()
+        else {
+            panic!("nonempty schema");
+        };
+        workspace.write_generated_migration(&generated).unwrap();
+        let preview =
+            fs::read_to_string(directory.0.join("migrations/v2/0001_escapes.typeql")).unwrap();
+        assert!(
+            preview.contains(&format!("@regex(\"{expected}\")")),
+            "{preview}"
+        );
+        assert!(preview.contains(r#"@doc("D\\u0041D")"#), "{preview}");
+    }
+}

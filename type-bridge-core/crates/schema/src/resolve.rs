@@ -671,6 +671,25 @@ pub fn resolve_schema_with_capabilities(
     })?;
     for fact in declared.facts() {
         if let SchemaFact::Annotation(annotation) = fact
+            && let SchemaAnnotationValue::Regex(pattern) = annotation.value()
+            && pattern.as_str().match_indices('"').any(|(offset, _)| {
+                pattern.as_str()[..offset]
+                    .bytes()
+                    .rev()
+                    .take_while(|byte| *byte == b'\\')
+                    .count()
+                    % 2
+                    == 1
+            })
+        {
+            return Err(source_error(
+                declared,
+                &fact.id(),
+                "unsupported_regex_escaped_quote",
+                "supported TypeDB lines export a regex with an odd backslash before a double quote as an invalid literal, preventing post-commit observation; write the quote without the redundant backslash (a double quote needs no escape in a regex)",
+            ));
+        }
+        if let SchemaFact::Annotation(annotation) = fact
             && let SchemaAnnotationValue::Values(values) = annotation.value()
             && values.iter().any(|value| matches!(value,
                 type_bridge_contract::value::CanonicalValue::String(text) if text.as_str().contains('\\')))

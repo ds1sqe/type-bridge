@@ -163,10 +163,14 @@ the structured form requires `min` and may omit `max` for an unbounded maximum.
 `meta` is a string-keyed map of string values. Unknown or inapplicable keys are
 errors.
 
-Regex patterns retain their backslashes when lowered to TypeQL; use YAML
-single quotes for patterns such as `'^[A-Z]{2}\d+$'`. String `values` entries
-containing a backslash are refused during schema resolution because supported
-TypeDB servers cannot export those constraints losslessly.
+Regex patterns retain their decoded YAML text when lowered to TypeQL. Use YAML
+single quotes, such as `'^[A-Z]{2}\d+$'`; double-quoted YAML decodes escapes,
+so double each backslash there, as in `"^[A-Z]{2}\\d+$"`. Two forms are refused during schema resolution because supported TypeDB servers
+cannot export them losslessly: string `values` entries containing a backslash,
+and regexes with an odd number of backslashes immediately before a double quote.
+The latter exports as an invalid TypeQL literal, which would prevent post-commit
+observation. Write the quote without the redundant backslash; a double quote
+needs no escape in a regex (for example, use YAML `'a"b'`).
 
 Schema extensions declare capability requirements only:
 

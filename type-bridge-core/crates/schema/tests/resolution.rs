@@ -830,3 +830,31 @@ fn owns_constraints_accept_strict_subsets_and_distinct_conjunctive_regexes() {
         "owns_constraint_not_narrowing"
     );
 }
+
+#[test]
+fn odd_backslash_before_regex_quote_refuses_lossy_provider_export() {
+    for pattern in [r#"a\"b"#, r#"a\\\"b"#] {
+        let schema = declared(&format!(
+            "format: typebridge.schema/v2\nattributes:\n  code: {{value: {{type: string, regex: '{pattern}'}}}}\n"
+        ));
+        let error = resolve(&schema, &profile()).unwrap_err();
+        let diagnostic = error.iter().next().unwrap();
+        assert_eq!(
+            diagnostic.diagnostic().code().as_str(),
+            "unsupported_regex_escaped_quote"
+        );
+        assert!(
+            diagnostic
+                .diagnostic()
+                .to_string()
+                .contains("redundant backslash")
+        );
+        assert!(diagnostic.primary().is_some());
+    }
+    for pattern in [r#"a"b"#, r#"a\\"b"#] {
+        let schema = declared(&format!(
+            "format: typebridge.schema/v2\nattributes:\n  code: {{value: {{type: string, regex: '{pattern}'}}}}\n"
+        ));
+        resolve(&schema, &profile()).unwrap();
+    }
+}
