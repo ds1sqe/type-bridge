@@ -3192,7 +3192,7 @@ def test_generated_temporal_fidelity_live(
         "2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]"
     )
     person.val_duration = generated.ValDuration("P1M")
-    person.val_decimal = generated.ValDecimal(Decimal("3.5"))
+    person.val_decimal = generated.ValDecimal(Decimal("1E-7"))
     people.insert(person)
     assert person.iid is not None
     query = (
@@ -3207,7 +3207,7 @@ def test_generated_temporal_fidelity_live(
     assert stored.val_datetime_tz.canonical == person.val_datetime_tz.canonical
     assert stored.val_date.canonical == "-0001-01-01"
     assert stored.val_duration.canonical == "P1M"
-    assert stored.val_decimal.value == Decimal("3.5")
+    assert stored.val_decimal.value == Decimal("0.0000001")
     for attribute in (
         stored.val_datetime,
         stored.val_datetime_tz,

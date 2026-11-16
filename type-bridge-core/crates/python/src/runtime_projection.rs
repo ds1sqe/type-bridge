@@ -8071,7 +8071,8 @@ fn attribute_value_from_py(
         ValueType::DateTimeTz => exact_temporal_string(py, value, "datetime", true)
             .map(|value| AttributeValue::DateTimeTZ(canonical_python_datetime(&value, true))),
         ValueType::Decimal => {
-            exact_module_value_string(py, value, "decimal", "Decimal").map(AttributeValue::Decimal)
+            exact_module_value_string(py, value, "decimal", "Decimal")?;
+            python_decimal_fixed_text(value).map(AttributeValue::Decimal)
         }
         ValueType::Duration => canonical_duration_from_py(py, value).map(AttributeValue::Duration),
     }
@@ -8363,11 +8364,7 @@ fn canonical_projected_decimal(
     if !value.get_type().is(hydration.decimal_type.bind(py)) {
         return Err(wrong());
     }
-    let rendered = value.str().map_err(|_| wrong())?;
-    let text = rendered.to_str().map_err(|_| wrong())?;
-    // The core parser bounds every spelling `str(Decimal)` can produce: at
-    // most 19 significant whole digits within the i64 range and at most 19
-    // fraction digits.
+    let text = python_decimal_fixed_text(value).map_err(|_| wrong())?;
     DecimalValue::new(text).map_err(|_| wrong())
 }
 
@@ -8583,6 +8580,34 @@ fn canonical_python_datetime(value: &str, timezone_required: bool) -> String {
     }
 }
 
+
+fn python_decimal_fixed_text(value: &Bound<'_, PyAny>) -> PyResult<String> {
+    if value.call_method0("is_zero")?.extract::<bool>()? {
+        return Ok("0".into());
+    }
+    let tuple = value.call_method0("as_tuple")?;
+    let digits = tuple.getattr("digits")?.cast_into::<PyTuple>()?;
+    let mut significant = digits.len();
+    while significant > 0 && digits.get_item(significant - 1)?.extract::<u8>()? == 0 {
+        significant -= 1;
+    }
+    let exponent = tuple
+        .getattr("exponent")?
+        .extract::<i64>()?
+        .checked_add((digits.len() - significant) as i64)
+        .ok_or_else(|| py_value_error("decimal exponent is outside the provider range"))?;
+    let adjusted = value.call_method0("adjusted")?.extract::<i64>()?;
+    // Bound fixed-point expansion before formatting an authored exponent.
+    if exponent < -19 || !(-19..=18).contains(&adjusted) {
+        return Err(py_value_error("decimal exceeds the provider's exact range"));
+    }
+    let sign = tuple.getattr("sign")?.extract::<u8>()?;
+    let normalized =
+        value
+            .get_type()
+            .call1(((sign, digits.get_slice(0, significant), exponent),))?;
+    normalized.call_method1("__format__", ("f",))?.extract()
+}
 
 fn exact_module_value_string(
     py: Python<'_>,
@@ -10039,6 +10064,37 @@ plays:
         });
     }
 
+
+    #[test]
+    fn python_decimal_exponents_convert_without_rounding_or_unbounded_expansion() {
+        Python::initialize();
+        Python::attach(|py| {
+            let hydration = ProjectedScalarHydration::capture(py).unwrap();
+            let decimal = py.import("decimal").unwrap().getattr("Decimal").unwrap();
+            for (text, expected) in [
+                ("1E-7", "0.0000001"),
+                ("1E+2", "100"),
+                ("-1.25E+2", "-125"),
+                ("0E+1000000000", "0"),
+                ("1.0E-19", "0.0000000000000000001"),
+            ] {
+                let value = decimal.call1((text,)).unwrap();
+                let actual = canonical_projected_decimal(py, &value, &hydration, &[]).unwrap();
+                assert_eq!(actual.as_str(), expected);
+                assert_eq!(
+                    canonical_struct_scalar(
+                        attribute_value_from_py(py, &value, ValueType::Decimal).unwrap()
+                    )
+                    .unwrap(),
+                    CanonicalValue::Decimal(actual)
+                );
+            }
+            for text in ["1E-20", "1E+1000000000", "NaN", "Infinity"] {
+                let value = decimal.call1((text,)).unwrap();
+                assert!(canonical_projected_decimal(py, &value, &hydration, &[]).is_err());
+            }
+        });
+    }
 
     #[test]
     fn scalar_only_temporal_precision_errors_name_domain_and_column() {
