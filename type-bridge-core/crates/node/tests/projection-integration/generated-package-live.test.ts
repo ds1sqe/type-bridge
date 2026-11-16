@@ -993,7 +993,7 @@ async function sdkModelsCounterPlanLifecycle(generated: any, database: any): Pro
   const session = new generated.QuerySession(transaction);
   const root = session.exact(generated.Counter);
   const pending = await session.query(root).countBy(root);
-  assert.throws(() => pending.result(), /Transaction has not committed/);
+  assert.throws(() => pending.result(), { name: "PlanError", code: "transaction_not_committed" });
   session.close();
   modelPlanMark("borrowed_transaction_lifecycle.staged_count");
   await transaction.commit();
@@ -3288,7 +3288,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         const reduced = await query.reduce(root, [aggregate.count()] as const);
         const grouped = await query.groupBy(root, root.field(Robot.robotId)).reduce([aggregate.count()] as const);
         assert.ok(one instanceof Pending);
-        assert.throws(() => one.result(), /Transaction has not committed/);
+        assert.throws(() => one.result(), { name: "PlanError", code: "transaction_not_committed" });
         session.close();
         await transaction.commit();
         const robot = one.result();
