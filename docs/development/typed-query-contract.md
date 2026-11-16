@@ -595,11 +595,12 @@ refusals name the configured `canonical_string_bytes` limit.
 | `diagnostic_bytes` | 65,536 | none | One serialized diagnostic |
 | `remote_request_bytes` | 32 MiB | 32 MiB | One remote request envelope |
 
-Every limit must be at least one. The three supported maxima are properties of
+Every limit must be at least one. The supported maxima are properties of
 the implementation, not policy: the JSON parser decodes at most 127 nesting
 levels and a request frames the plan in one, binding identities are 16 bits
 wide, and generated tuple typing in every binding is sealed at sixteen
-positions. `selected_slots` can therefore be lowered but not raised.
+positions. The remote codec accepts envelopes of at most 32 MiB.
+`selected_slots` can therefore be lowered but not raised.
 
 Rules that hold in every binding:
 
