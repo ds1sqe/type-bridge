@@ -113,6 +113,29 @@ async fn live_proxy_key_guards_refuse_atomically_and_measure_added_reads() {
             assert_eq!(stored.fields()[&OwnsFactId::new(kind.clone(), AttributeId::new("item-tag").unwrap()).unwrap()][0].value(), &CanonicalValue::String(CanonicalString::new("tag-0").unwrap()));
         }
     }
+    // Cross several proof/gate chunks and report the original row in the last one.
+    let inserts = ProjectedBatch::try_new(&installed, kind.clone(), ProjectedBatchOperation::Insert,
+        (0..130).map(|index| ProjectedBatchRow::Create(proxy_batch_input(&installed, &kind, 1, &format!("chunk-key-{index}")))).collect()).unwrap();
+    let ProjectedBatchResult::Things(created) = batches.execute(&db, &inserts, control()).await.unwrap() else { panic!("inserted things") };
+    let chunk_iids = created.items().iter().map(|thing| thing.iid().to_owned()).collect::<Vec<_>>();
+    for wrong in [false, true] {
+        let rows = chunk_iids.iter().enumerate().map(|(index, iid)| {
+            let replacement = proxy_batch_input(&installed, &kind, 1, &if wrong && index == 129 { "changed-key".into() } else { format!("chunk-key-{index}") });
+            let fields = replacement.fields().iter().map(|(field, values)| (field.clone(), if wrong && index == 0 && field.attribute().label().as_str() == "item-tag" {
+                vec![ProjectedAttributeValue::try_new(&installed, TypeId::new(TypeKind::Attribute, "item-tag").unwrap(), CanonicalValue::String(CanonicalString::new("must-not-write-chunk").unwrap())).unwrap()]
+            } else { values.clone() })).collect();
+            ProjectedBatchRow::Update { iid: iid.clone(), replacement: ProjectedCreate::try_new(&installed, kind.clone(), fields, vec![]).unwrap() }
+        }).collect();
+        let batch = ProjectedBatch::try_new(&installed, kind.clone(), ProjectedBatchOperation::Update, rows).unwrap();
+        let result = batches.execute_on_target_mapped(QueryTarget::Proxy(&proxy), &batch, control(), (), |_| Ok(())).await;
+        if wrong {
+            let diagnostic = result.unwrap_err().into_diagnostic(SdkProviderOperation::Write);
+            assert_eq!(diagnostic.code().as_str(), "query_plan_key_update");
+            assert!(diagnostic.path().contains(&SdkDiagnosticPathSegment::Index(129)), "{diagnostic:?}");
+        } else { result.unwrap(); }
+        let first = crud.get_entity_by_iid(&db, &kind, &chunk_iids[0]).await.unwrap().unwrap();
+        assert_eq!(first.fields()[&OwnsFactId::new(kind.clone(), AttributeId::new("item-tag").unwrap()).unwrap()][0].value(), &CanonicalValue::String(CanonicalString::new("tag-0").unwrap()));
+    }
     drop(proxy);
     drop(server);
     db.delete_database().await.unwrap();

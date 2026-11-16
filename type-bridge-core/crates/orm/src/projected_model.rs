@@ -2391,10 +2391,10 @@ fn same_projected_player(
     left: &ProjectedReference,
     right: &ProjectedReference,
 ) -> bool {
-    if let (Some(left), Some(right)) = (&left.iid, &right.iid) {
-        if left.eq_ignore_ascii_case(right) {
-            return true;
-        }
+    if let (Some(left), Some(right)) = (&left.iid, &right.iid)
+        && left.eq_ignore_ascii_case(right)
+    {
+        return true;
     }
     (is_same_or_subtype(installed, &left.type_id, &right.type_id)
         || is_same_or_subtype(installed, &right.type_id, &left.type_id))
