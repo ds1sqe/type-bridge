@@ -5694,6 +5694,8 @@ static int check_temporal_replacement_live(
   size_t iid_length = 0u;
   fixture_person_create_args_v1_t args = {0};
   fixture_score *score = NULL;
+  fixture_score *observed_score = NULL;
+  int64_t observed_score_value = 0;
   CHECK(open_person_create(package, "temporal-fidelity", 1, &input, diagnostics) == 0);
   CHECK(TEST_SINGLE_WRITE(fixture_person, insert,
       fixture_person_database_insert(database, input, NULL, NULL, &fixture_person_insert_result, diagnostics),
@@ -5728,6 +5730,10 @@ static int check_temporal_replacement_live(
       fixture_person_database_update(database, iid, input, NULL, NULL, &fixture_person_update_result, diagnostics),
       &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(temporal_person_fields_match(person, diagnostics) == 0);
+  CHECK(fixture_person_score(person, &observed_score, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_score_value(observed_score, &observed_score_value, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(observed_score_value == 2);
+  CHECK(fixture_score_close(&observed_score) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_person_create_close(&input) == TYPE_BRIDGE_STATUS_OK);
 #define RELEASE_TEMPORAL_FIELD(member, kind) CHECK(kind##_close(&member) == TYPE_BRIDGE_STATUS_OK)

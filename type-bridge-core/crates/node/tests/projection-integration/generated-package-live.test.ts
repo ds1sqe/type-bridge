@@ -4427,6 +4427,7 @@ test("generated temporal values and staged integers remain exact", { timeout: 36
       valDouble: temporalStored.valDouble, valDuration: temporalStored.valDuration,
     });
     personManager.update(fidelity.iid, temporalReplacement);
+    assert.equal(personManager.getByIid(fidelity.iid).valBool.value, false);
     assert.deepEqual(await database.executeQuery(temporalQuery, "read"), temporalBefore);
     personManager.put(temporalReplacement);
     assert.deepEqual(await database.executeQuery(temporalQuery, "read"), temporalBefore);
