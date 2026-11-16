@@ -61,7 +61,8 @@ The successful attempt-one verification run produces
 evidence archive and a verification receipt binding their hashes to the
 source, CI run and policy. Public filenames are assigned by copying the
 accepted archive bytes; archive members and embedded artifact provenance
-remain unchanged. The artifact's nonpublishing disposition is preserved.
+remain unchanged. The recorded distribution channel is `signed-github-release`;
+audit and verification evidence retain `publication_authority: false`.
 
 ## Protected promotion
 
@@ -101,7 +102,7 @@ The issuer is `https://token.actions.githubusercontent.com`; the certificate's
 workflow SHA must equal the accepted source commit. The signed promotion
 record binds the tag object, source tree, original artifact set, CI and
 verification runs, public names and payload hashes. It is the separate release
-authorization record for the previously nonpublishing artifact bytes.
+authorization record for the verified, previously unpublished artifact bytes.
 
 Promotion adds twelve C assets to the existing GitHub draft and downloads
 them again for byte and signature verification. It cannot create a release,
