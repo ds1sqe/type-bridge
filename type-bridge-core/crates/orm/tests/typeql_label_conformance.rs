@@ -220,3 +220,47 @@ entities:
     assert!(lowered.contains(&format!("$thing has {combining_label} $combining_value;")));
     typeql::parse_query(lowered).expect("TypeQL 3.12 accepts lowered query");
 }
+
+#[test]
+fn keyword_labels_agree_with_the_provider_in_all_schema_positions() {
+    // Independently probed on TypeDB 3.13.6 in attribute/entity/relation/role positions.
+    for label in [
+        "label", "count", "value", "type", "kind", "sum", "max", "min", "mean", "median", "std",
+        "list", "check", "like", "contains", "limit", "offset", "sort", "select", "reduce",
+        "within", "abstract",
+    ] {
+        assert!(Label::new(label).is_ok(), "contract rejected {label}");
+        assert!(
+            type_bridge_core_lib::compiler::is_valid_typeql_label(label),
+            "compiler rejected {label}"
+        );
+        for definition in [
+            format!("define attribute {label}, value string;"),
+            format!("define entity {label};"),
+            format!("define relation {label}, relates member;"),
+            format!("define relation keyword-owner, relates {label};"),
+        ] {
+            typeql::parse_query(&definition)
+                .unwrap_or_else(|error| panic!("{definition}: {error}"));
+        }
+    }
+    for label in [
+        "iid", "first", "last", "is", "in", "fetch", "match", "insert", "delete", "update", "put",
+        "define", "undefine", "redefine", "has", "isa", "sub", "owns", "plays", "relates", "links",
+        "as", "true", "false",
+    ] {
+        assert!(
+            typeql::is_reserved_keyword(label),
+            "parser does not reserve {label}"
+        );
+        assert!(!type_bridge_core_lib::compiler::is_valid_typeql_label(
+            label
+        ));
+        let error = Label::new(label).unwrap_err();
+        assert_eq!(error.code().as_str(), "malformed_id");
+        assert!(
+            error.message().contains(label),
+            "diagnostic omitted {label}"
+        );
+    }
+}

@@ -6,7 +6,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-use crate::diagnostic::{Diagnostic, DiagnosticCategory};
+use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 
 /// Maximum UTF-8 byte length of one canonical label.
 pub const MAX_LABEL_BYTES: usize = 255;
@@ -155,11 +155,21 @@ impl Label {
     /// Validate and construct a label.
     pub fn new(value: impl Into<String>) -> Result<Self, Diagnostic> {
         let value = value.into();
+        if is_typeql_3_12_1_reserved_label(&value) {
+            return Err(Diagnostic::new(
+                DiagnosticCategory::InvalidContract,
+                DiagnosticCode::new("malformed_id").expect("static diagnostic code"),
+                format!("reserved TypeQL keyword {value:?} cannot be used as a schema label"),
+            )
+            .with_detail(
+                "maximum_bytes",
+                i64::try_from(MAX_LABEL_BYTES).unwrap_or(i64::MAX),
+            ));
+        }
         let mut chars = value.chars();
         let valid = value.len() <= MAX_LABEL_BYTES
             && chars.next().is_some_and(|ch| ch == '_' || is_xid_start(ch))
-            && chars.all(|ch| ch == '-' || is_xid_continue(ch))
-            && !is_typeql_3_12_1_reserved_label(&value);
+            && chars.all(|ch| ch == '-' || is_xid_continue(ch));
         if valid {
             Ok(Self(value))
         } else {
@@ -355,6 +365,14 @@ mod tests {
         }
         assert!(Label::new("matching").is_ok());
         assert!(Label::new("entity-type").is_ok());
+    }
+
+    #[test]
+    fn reserved_label_diagnostic_names_the_keyword() {
+        let error = Label::new("iid").unwrap_err();
+        assert_eq!(error.code().as_str(), "malformed_id");
+        assert!(error.message().contains("iid"));
+        assert!(error.message().contains("reserved"));
     }
 
     #[test]
