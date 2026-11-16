@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import math
+import subprocess
 import tarfile
 import tomllib
 from pathlib import Path
@@ -718,3 +719,32 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert "packages: write" in workflow
     assert workflow.count("packages: write") == 1
     assert "body_path: dist/server-oci-release.md" in workflow
+
+
+def test_shipped_notice_covers_every_server_normal_dependency() -> None:
+    notice = (CORE / "crates/node/THIRD_PARTY_NOTICES.md").read_text()
+    tree = subprocess.check_output(
+        [
+            "cargo",
+            "+1.94.1",
+            "tree",
+            "--locked",
+            "-p",
+            "type-bridge-server",
+            "-e",
+            "normal",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ],
+        cwd=CORE,
+        text=True,
+    )
+    packages = {tuple(row.split()[:2]) for row in tree.splitlines()}
+    missing = sorted(
+        (name, version)
+        for name, version in packages
+        if f"| `{name}` | `{version.removeprefix('v')}` |" not in notice
+    )
+    assert not missing, f"server dependencies absent from shipped notice: {missing}"

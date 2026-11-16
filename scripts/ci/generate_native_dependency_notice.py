@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify the native Python/Node/CLI/C Rust dependency notice.
+"""Generate and verify the native Python/Node/CLI/C/server Rust dependency notice.
 
 The custom TypeDB ownership, compatibility-band provenance, and TypeBridge MIT
 sections remain hand-audited in the notice. This tool owns only the delimited
@@ -71,6 +71,7 @@ ROOT_SPECS = (
     RootSpec("Node", Path("crates/node/Cargo.toml")),
     RootSpec("CLI", Path("crates/cli/Cargo.toml")),
     RootSpec("C", Path("crates/c/Cargo.toml")),
+    RootSpec("Server", Path("crates/server/Cargo.toml")),
 )
 
 
@@ -591,6 +592,7 @@ def render_generated_block(
         f"- Node root: `{ROOT_SPECS[1].manifest.as_posix()}` with default features",
         f"- CLI root: `{ROOT_SPECS[2].manifest.as_posix()}` with default features",
         f"- C root: `{ROOT_SPECS[3].manifest.as_posix()}` with default features",
+        f"- Server root: `{ROOT_SPECS[4].manifest.as_posix()}` with default features",
         f"- Release targets: {target_list}",
         "- Excluded from this package inventory: build-only and development-only "
         "dependencies, plus private TypeBridge-authored crates covered by the MIT section",
@@ -840,6 +842,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--node-json", type=Path, help="pre-generated Node JSON for tests")
     parser.add_argument("--cli-json", type=Path, help="pre-generated CLI JSON for tests")
     parser.add_argument("--c-json", type=Path, help="pre-generated C JSON for tests")
+    parser.add_argument("--server-json", type=Path, help="pre-generated server JSON for tests")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="verify committed notices (default)")
     mode.add_argument("--write", action="store_true", help="regenerate committed notices")
@@ -851,10 +854,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     workspace = args.workspace.resolve()
     try:
         policy = load_policy(workspace)
-        supplied_json = (args.python_json, args.node_json, args.cli_json, args.c_json)
+        supplied_json = (
+            args.python_json,
+            args.node_json,
+            args.cli_json,
+            args.c_json,
+            args.server_json,
+        )
         if any(supplied_json) and not all(supplied_json):
             raise ValidationError(
-                "--python-json, --node-json, --cli-json, and --c-json must be supplied together"
+                "--python-json, --node-json, --cli-json, --c-json, and --server-json must be supplied together"
             )
         if all(supplied_json):
             payloads = {
@@ -862,6 +871,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "Node": load_json(args.node_json, label="Node"),
                 "CLI": load_json(args.cli_json, label="CLI"),
                 "C": load_json(args.c_json, label="C"),
+                "Server": load_json(args.server_json, label="Server"),
             }
         else:
             verify_cargo_about_version(args.cargo_about, workspace=workspace)
