@@ -470,10 +470,16 @@ fn lower_operation(
     verifier_resolved: bool,
     destructive_approved: bool,
 ) -> Result<StatementUnit, SchemaLoweringDiagnostic> {
-    let classification = classify_operation_transition(operation).map_err(|error| {
+    let mut classification = classify_operation_transition(operation).map_err(|error| {
         SchemaLoweringDiagnostic::new(CODE_INVALID_TRANSITION, error.message())
             .at_operation(operation_index)
     })?;
+    if let Some(SchemaFact::Annotation(annotation)) = operation.undefined_fact()
+        && matches!(annotation.id().subject(), AnnotationSubjectId::Function(id)
+            if target_facts.get(&SchemaFactId::Function(id.clone())).is_none())
+    {
+        classification.safety = SafetyClass::SchemaMetadata;
+    }
     let missing = classification
         .required_capabilities
         .iter()
@@ -589,6 +595,13 @@ fn render_operation_inner(
     source_facts: &SchemaFactCatalog,
     target_facts: &SchemaFactCatalog,
 ) -> Result<Vec<TypeQlStatement>, RenderFailure> {
+    if let Some(SchemaFact::Annotation(annotation)) = operation.undefined_fact()
+        && matches!(annotation.id().subject(), AnnotationSubjectId::Function(id)
+            if target_facts.get(&SchemaFactId::Function(id.clone())).is_none())
+    {
+        // Undefining the function removes its stored metadata as well.
+        return Ok(vec![]);
+    }
     match operation.kind() {
         SchemaOperationKind::Define => {
             let facts = operation.defined_facts().expect("define exposes facts");

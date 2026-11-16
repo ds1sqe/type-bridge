@@ -38,6 +38,18 @@ type-bridge --manifest typebridge.yaml migration apply --environment development
 type-bridge --manifest typebridge.yaml schema generate
 ```
 
+Canonical migrations support adding and removing functions, including the first
+migration. Authoring parses each body and verifies its static type, role and
+function dependencies. TypeDB validates and executes the body itself.
+Function bodies that select types dynamically or reference TypeBridge control
+schema are refused before migration publication.
+
+Body/signature replacement and standalone `doc`/`meta` changes are not supported
+in 3.0. Remove the function in one migration and add its new definition in the
+next. Initial metadata is emitted with the function definition. Check the
+manifest's `reversible` flag: removing functions with metadata may require a
+new migration to restore them rather than automatic rollback.
+
 Generated packages expose an exact `FunctionRef`/function token with the
 projected parameter and return types. For example, generated Python typing
 preserves `FunctionRef[[Event], Iterator[Event]]`. Application code imports the

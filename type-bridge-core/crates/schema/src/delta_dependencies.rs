@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::id::{AttributeId, Label, RoleId, TypeId, TypeKind};
+use type_bridge_contract::id::{AttributeId, FunctionId, Label, RoleId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
     AnnotationSubjectId, DeclaredSchema, RelatesFactId, SchemaFact, SchemaFactId, SchemaOperation,
     SubFactId, ValueFactId,
@@ -25,6 +25,13 @@ impl FactDependencyGraph {
     /// Build the graph from a complete fact inventory.
     pub fn from_facts<'a>(
         facts: impl IntoIterator<Item = &'a SchemaFact>,
+    ) -> Result<Self, Diagnostic> {
+        Self::from_facts_with_function_dependencies(facts, &BTreeMap::new())
+    }
+
+    pub(crate) fn from_facts_with_function_dependencies<'a>(
+        facts: impl IntoIterator<Item = &'a SchemaFact>,
+        function_dependencies: &BTreeMap<FunctionId, BTreeSet<SchemaFactId>>,
     ) -> Result<Self, Diagnostic> {
         let mut inventory = BTreeMap::new();
         for fact in facts {
@@ -65,10 +72,17 @@ impl FactDependencyGraph {
 
         let mut dependencies = BTreeMap::new();
         for fact in inventory.values() {
-            dependencies.insert(
-                fact.id(),
-                dependencies_for(fact, &labels, &sub_by_child, &inventory)?,
-            );
+            let mut required = dependencies_for(fact, &labels, &sub_by_child, &inventory)?;
+            if let SchemaFact::Function(function) = fact {
+                required.extend(
+                    function_dependencies
+                        .get(function.id())
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+            }
+            dependencies.insert(fact.id(), required);
         }
 
         let mut dependents: BTreeMap<SchemaFactId, BTreeSet<SchemaFactId>> = BTreeMap::new();
@@ -123,10 +137,24 @@ pub fn plan_schema_operations(
     source: &DeclaredSchema,
     target: &DeclaredSchema,
 ) -> Result<Vec<SchemaOperation>, Diagnostic> {
+    plan_schema_operations_with_function_dependencies(source, target, &BTreeMap::new())
+}
+
+pub(crate) fn plan_schema_operations_with_function_dependencies(
+    source: &DeclaredSchema,
+    target: &DeclaredSchema,
+    function_dependencies: &BTreeMap<FunctionId, BTreeSet<SchemaFactId>>,
+) -> Result<Vec<SchemaOperation>, Diagnostic> {
     let source_facts = fact_map(source);
     let target_facts = fact_map(target);
-    let source_graph = FactDependencyGraph::from_declared(source)?;
-    let target_graph = FactDependencyGraph::from_declared(target)?;
+    let source_graph = FactDependencyGraph::from_facts_with_function_dependencies(
+        source.facts(),
+        function_dependencies,
+    )?;
+    let target_graph = FactDependencyGraph::from_facts_with_function_dependencies(
+        target.facts(),
+        function_dependencies,
+    )?;
     source_graph.validate_complete()?;
     target_graph.validate_complete()?;
 
@@ -140,27 +168,44 @@ pub fn plan_schema_operations(
         .cloned()
         .collect();
 
-    for id in added.iter().chain(removed.iter()).chain(redefined.iter()) {
-        if matches!(
-            source_facts.get(id).or_else(|| target_facts.get(id)),
-            Some(SchemaFact::Function(_))
-        ) {
+    for id in added.iter().chain(&removed).chain(&redefined) {
+        if let Some(SchemaFact::Function(function)) =
+            source_facts.get(id).or_else(|| target_facts.get(id))
+            && (redefined.contains(id) || !function_dependencies.contains_key(function.id()))
+        {
             return Err(failure(
                 "unsupported_function_migration",
-                "automatic migration of opaque function bodies is unsupported",
+                "function body replacement is unsupported; remove the function in one migration and add it in the next",
             ));
         }
     }
 
     let mut operations = Vec::new();
 
-    // Establish all new identities before replacements can refer to them.
+    // Initial function metadata belongs to the same TypeQL definition.
+    let mut folded = BTreeSet::new();
     for component in ordered_components(&target_graph, &added) {
-        let facts = component
-            .into_iter()
-            .map(|id| target_facts[&id].clone())
-            .collect();
-        operations.push(SchemaOperation::define(facts)?);
+        let mut facts = Vec::new();
+        for id in component {
+            if folded.contains(&id) {
+                continue;
+            }
+            let fact = target_facts[&id].clone();
+            if let SchemaFact::Function(function) = &fact {
+                for annotation in &added {
+                    if matches!(target_facts.get(annotation), Some(SchemaFact::Annotation(annotation))
+                        if matches!(annotation.id().subject(), AnnotationSubjectId::Function(id) if id == function.id()))
+                    {
+                        facts.push(target_facts[annotation].clone());
+                        folded.insert(annotation.clone());
+                    }
+                }
+            }
+            facts.push(fact);
+        }
+        if !facts.is_empty() {
+            operations.push(SchemaOperation::define(facts)?);
+        }
     }
 
     // Replacements retain their identity, so SCC members can be emitted in stable ID order.

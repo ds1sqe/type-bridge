@@ -2339,3 +2339,108 @@ async fn runner_migrates_role_specialization_in_first_and_later_migrations() {
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_adds_executes_observes_and_removes_functions_with_metadata() {
+    use type_bridge_schema_migration::{
+        MigrationGenerationOutcome, MigrationGenerationRequest, MigrationHistoryGraph,
+        generate_next_migration,
+    };
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let target = typeql_to_declared(DocumentId::new("functions.tql").unwrap(),
+        "define fun z_value() -> integer: match let $n = 7; return first $n; fun a_caller() -> integer @doc(\"calls z_value\"): match let $n = z_value(); return first $n;").unwrap();
+    let MigrationGenerationOutcome::Generated(first) = generate_next_migration(
+        &MigrationHistoryGraph::from_verified([]).unwrap(),
+        &MigrationGenerationRequest {
+            app_label: "live-runner",
+            base_name: "functions",
+            genesis_source: &genesis,
+            desired: &target,
+            context: &context,
+        },
+    )
+    .unwrap() else {
+        panic!("function migration")
+    };
+    let graph = MigrationHistoryGraph::from_verified([first.manifest().clone()]).unwrap();
+    let MigrationGenerationOutcome::Generated(second) = generate_next_migration(
+        &graph,
+        &MigrationGenerationRequest {
+            app_label: "live-runner",
+            base_name: "remove_functions",
+            genesis_source: &genesis,
+            desired: &genesis,
+            context: &context,
+        },
+    )
+    .unwrap() else {
+        panic!("function removal")
+    };
+    let (managed, journal) = databases().await;
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), first.manifest());
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-functions").unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    let mut tx = managed.read_transaction().await.unwrap();
+    let result = tx
+        .query("match let $answer = a_caller(); fetch { \"answer\": $answer };")
+        .await
+        .unwrap();
+    let type_bridge_orm::session::backend::QueryResult::Documents(documents) = result else {
+        panic!("function fetch documents")
+    };
+    assert_eq!(documents, vec![serde_json::json!({"answer": 7})]);
+    tx.close().await.unwrap();
+    write_manifest(directory.path(), second.manifest());
+    let approval = MigrationApplyApproval::for_manifest(second.manifest()).unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[approval]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}

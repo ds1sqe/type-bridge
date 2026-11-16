@@ -2263,3 +2263,17 @@ mod tests {
         );
     }
 }
+
+/// Internal canonical migration integration, outside the public SDK surface.
+#[doc(hidden)]
+pub mod __internal {
+    use crate::FunctionBodyReferences;
+    use type_bridge_contract::{diagnostic::Diagnostic, schema::FunctionFact};
+
+    /// Parse static body references without requiring a complete schema export.
+    pub fn inspect_function_body(
+        function: &FunctionFact,
+    ) -> Result<FunctionBodyReferences, Diagnostic> {
+        crate::function_references::inspect_function_body(function)
+    }
+}

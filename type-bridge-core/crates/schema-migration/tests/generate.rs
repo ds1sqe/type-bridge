@@ -1054,3 +1054,137 @@ fn role_specialization_can_be_authored_initially_and_incrementally() {
         );
     }
 }
+
+#[test]
+fn functions_with_metadata_add_remove_and_order_body_dependencies() {
+    use type_bridge_schema_compat::typeql_to_declared;
+    let source = declared(&[]);
+    let target = typeql_to_declared(DocumentId::new("functions.tql").unwrap(),
+        "define entity person; fun z_value() -> integer: match let $n = 7; return first $n; fun a_caller() -> integer @doc(\"calls z_value\"): match let $n = z_value(); return first $n;").unwrap();
+    let context = context();
+    let first = generated(
+        &empty_graph(),
+        &request("add_functions", &source, &target, &context),
+    );
+    let preview = render_migration_preview(first.manifest(), &context).unwrap();
+    assert!(preview.find("fun z_value").unwrap() < preview.find("fun a_caller").unwrap());
+    assert!(preview.contains("@doc(\"calls z_value\")"));
+    let graph = MigrationHistoryGraph::from_verified([first.manifest().clone()]).unwrap();
+    let removed = generated(
+        &graph,
+        &request("remove_functions", &source, &source, &context),
+    );
+    assert_eq!(removed.manifest().safety(), SafetyClass::Destructive);
+    let preview = render_migration_preview(removed.manifest(), &context).unwrap();
+    assert!(preview.find("fun a_caller").unwrap() < preview.find("fun z_value").unwrap());
+}
+
+#[test]
+fn function_replacement_and_broken_body_dependencies_refuse_before_publication() {
+    use type_bridge_schema_compat::typeql_to_declared;
+    let empty = declared(&[]);
+    let context = context();
+    let source = typeql_to_declared(
+        DocumentId::new("functions.tql").unwrap(),
+        "define fun a_value() -> integer: match let $n = 7; return first $n;",
+    )
+    .unwrap();
+    let changed = typeql_to_declared(
+        DocumentId::new("changed.tql").unwrap(),
+        "define fun a_value() -> integer: match let $n = 8; return first $n;",
+    )
+    .unwrap();
+    let error = generate_next_migration(
+        &empty_graph(),
+        &request("change", &source, &changed, &context),
+    )
+    .unwrap_err();
+    assert_eq!(error.code().as_str(), "unsupported_function_migration");
+    let missing = typeql_to_declared(
+        DocumentId::new("missing.tql").unwrap(),
+        "define fun a_value() -> integer: match let $n = missing_value(); return first $n;",
+    )
+    .unwrap();
+    let error = generate_next_migration(
+        &empty_graph(),
+        &request("missing", &empty, &missing, &context),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code().as_str(),
+        "schema_delta_missing_function_reference"
+    );
+}
+
+#[test]
+fn function_metadata_dynamic_reserved_and_invalid_bodies_are_refused() {
+    use type_bridge_schema_compat::typeql_to_declared;
+    let empty = declared(&[]);
+    let context = context();
+    let source = typeql_to_declared(
+        DocumentId::new("source.tql").unwrap(),
+        "define fun a_value() -> integer: match let $n = 7; return first $n;",
+    )
+    .unwrap();
+    let metadata = typeql_to_declared(
+        DocumentId::new("metadata.tql").unwrap(),
+        "define fun a_value() -> integer @doc(\"changed\"): match let $n = 7; return first $n;",
+    )
+    .unwrap();
+    assert_eq!(
+        generate_next_migration(
+            &empty_graph(),
+            &request("metadata", &source, &metadata, &context)
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "unsupported_function_metadata_migration"
+    );
+    for (text, code) in [
+        (
+            "define entity person; fun people($candidate: person) -> { person }: match $candidate isa $kind; return { $candidate };",
+            "migration_dynamic_function_reference",
+        ),
+        (
+            "define fun a_value() -> integer: match $x isa typebridge-internal-migration-control; let $n = 7; return first $n;",
+            "reserved_schema_cross_reference",
+        ),
+    ] {
+        let target = typeql_to_declared(DocumentId::new("body.tql").unwrap(), text).unwrap();
+        assert_eq!(
+            generate_next_migration(
+                &empty_graph(),
+                &request("invalid", &empty, &target, &context)
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+            code
+        );
+    }
+    let function = source
+        .facts()
+        .find_map(|fact| match fact {
+            SchemaFact::Function(function) => Some(function),
+            _ => None,
+        })
+        .unwrap();
+    let target = declared_facts(vec![SchemaFact::Function(
+        type_bridge_contract::schema::FunctionFact::new(
+            function.id().clone(),
+            function.signature().clone(),
+            type_bridge_contract::schema::FunctionBody::new("not TypeQL").unwrap(),
+        ),
+    )]);
+    assert_eq!(
+        generate_next_migration(
+            &empty_graph(),
+            &request("invalid", &empty, &target, &context)
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "invalid_function_body"
+    );
+}

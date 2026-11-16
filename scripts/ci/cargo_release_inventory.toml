@@ -52,7 +52,7 @@ manifest = "crates/schema-migration/Cargo.toml"
 classification = "public-first-party"
 role = "supporting"
 version-policy = "lockstep"
-publish-order = 5
+publish-order = 6
 docs-target = "lib"
 
 [[packages]]
@@ -61,7 +61,7 @@ manifest = "crates/schema-compat/Cargo.toml"
 classification = "public-first-party"
 role = "supporting"
 version-policy = "lockstep"
-publish-order = 6
+publish-order = 5
 docs-target = "lib"
 
 [[packages]]

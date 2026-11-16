@@ -1,5 +1,7 @@
 //! Closed, replay-verified canonical schema migration manifests.
 
+use crate::function_dependencies::apply_delta;
+use crate::function_dependencies::plan_schema_operations;
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
@@ -33,9 +35,8 @@ use type_bridge_query::{
 };
 use type_bridge_schema::{
     DeltaError, ManagedDeltaContext, RequiredSafetyCondition, SafetyClass, SafetyCondition,
-    SafetyConditionDomainIndex, SafetyDerivationProfile, apply_delta,
-    classify_schema_operation_safety, derive_safety_conditions_with_domain_index,
-    managed_schema_state, plan_schema_operations, resolve,
+    SafetyConditionDomainIndex, SafetyDerivationProfile,
+    derive_safety_conditions_with_domain_index, managed_schema_state, resolve,
 };
 
 use crate::legacy::{
@@ -563,13 +564,14 @@ fn rebuild_verified_manifest(
                 "schema step source does not chain from the preceding verified target",
             )
         })?;
-        let planned = plan_schema_operations(&current_schema, &target_schema).map_err(|_| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "migration_manifest_dependency_plan_invalid",
-                "schema step cannot be reproduced by the dependency planner",
-            )
-        })?;
+        let planned = plan_schema_operations(&current_schema, &target_schema, delta_context)
+            .map_err(|_| {
+                failure(
+                    DiagnosticCategory::Integrity,
+                    "migration_manifest_dependency_plan_invalid",
+                    "schema step cannot be reproduced by the dependency planner",
+                )
+            })?;
         if planned != delta.operations() {
             return Err(failure(
                 DiagnosticCategory::Integrity,
@@ -606,8 +608,8 @@ fn rebuild_verified_manifest(
                     "schema step inverse does not replay from its verified target",
                 )
             })?;
-            let planned_reverse =
-                plan_schema_operations(&target_schema, &restored).map_err(|_| {
+            let planned_reverse = plan_schema_operations(&target_schema, &restored, delta_context)
+                .map_err(|_| {
                     failure(
                         DiagnosticCategory::Integrity,
                         "migration_manifest_inverse_plan_invalid",
@@ -998,10 +1000,8 @@ pub(crate) fn verify_assertion_coverage(
         if discharged {
             discharged_operation_indices.push(operation_index);
         }
-        effective_safety = effective_safety.max(verified_forward_safety(
-            classify_schema_operation_safety(operation),
-            discharged,
-        )?);
+        effective_safety =
+            effective_safety.max(verified_forward_safety(derived.policy(), discharged)?);
     }
 
     let expected: &[RequiredSafetyCondition] = if assertions.is_empty() {

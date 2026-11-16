@@ -517,7 +517,15 @@ pub fn derive_safety_conditions_with_domain_index(
     })?;
     validate_exact_transition(operation, source_declared, target_declared)?;
     let semantic = SemanticProfile::resolve(profile.semantic().id())?;
-    let policy = classify_schema_operation_safety(operation);
+    let policy = match operation.undefined_fact() {
+        Some(SchemaFact::Annotation(annotation))
+            if matches!(annotation.id().subject(), AnnotationSubjectId::Function(id)
+            if target_declared.fact(&SchemaFactId::Function(id.clone())).is_none()) =>
+        {
+            SafetyClass::SchemaMetadata
+        }
+        _ => classify_schema_operation_safety(operation),
+    };
     let mut conditions = Vec::new();
 
     match operation.kind() {

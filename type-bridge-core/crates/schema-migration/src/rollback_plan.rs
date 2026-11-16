@@ -6,6 +6,7 @@
 //! provider I/O. A manifest without a real semantic inverse cannot be rolled
 //! back through this path — it stays manually reversible.
 
+use crate::function_dependencies::apply_delta;
 use std::collections::BTreeSet;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
@@ -13,7 +14,7 @@ use type_bridge_contract::migration::{
     MigrationId, MigrationManifestDigest, MigrationStep, MigrationStepId,
 };
 use type_bridge_contract::schema::{DeclaredSchema, ManagedSchemaState, SchemaDelta};
-use type_bridge_schema::{ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, apply_delta};
+use type_bridge_schema::{ManagedDeltaContext, SafetyClass, SafetyDerivationProfile};
 
 use crate::apply_plan::{MigrationApplyPlanError, coherent_frontier_state, contract_failure};
 use crate::history::MigrationHistoryGraph;

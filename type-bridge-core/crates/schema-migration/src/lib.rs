@@ -7,6 +7,7 @@ mod catalog;
 mod coordinator;
 mod directory;
 mod execution;
+mod function_dependencies;
 mod generate;
 mod history;
 mod history_bundle;

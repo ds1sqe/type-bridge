@@ -1,5 +1,6 @@
 //! Provider-neutral, pre-I/O verification of one canonical migration apply plan.
 
+use crate::function_dependencies::apply_delta;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
@@ -11,7 +12,7 @@ use type_bridge_contract::migration::{MigrationId, MigrationManifestDigest, Migr
 use type_bridge_contract::migration_assertion::AssertionExpectation;
 use type_bridge_contract::schema::{DeclaredSchema, ManagedSchemaState};
 use type_bridge_query::ValidatedMigrationAssertionPlan;
-use type_bridge_schema::{DeltaError, ManagedDeltaContext, SafetyDerivationProfile, apply_delta};
+use type_bridge_schema::{DeltaError, ManagedDeltaContext, SafetyDerivationProfile};
 
 use crate::history::MigrationHistoryGraph;
 use crate::lowering::{

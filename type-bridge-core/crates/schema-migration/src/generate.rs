@@ -7,6 +7,8 @@
 //! no timestamps, no environment — so a clean checkout regenerates identical
 //! bytes.
 
+use crate::function_dependencies::apply_delta;
+use crate::function_dependencies::diff_managed;
 use std::error::Error;
 use std::fmt;
 use std::io::{Read as _, Write};
@@ -23,8 +25,7 @@ use type_bridge_contract::schema::{DeclaredSchema, SchemaDelta};
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
     ManagedDeltaContext, SafetyClass, SafetyConditionDomainIndex, SafetyDerivationProfile,
-    apply_delta, derive_safety_conditions_with_domain_index, diff_managed, inverse_delta,
-    managed_schema_state, resolve,
+    derive_safety_conditions_with_domain_index, inverse_delta, managed_schema_state, resolve,
 };
 
 use crate::history::MigrationHistoryGraph;

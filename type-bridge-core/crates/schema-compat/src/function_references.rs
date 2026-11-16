@@ -474,3 +474,30 @@ impl Collector {
         }
     }
 }
+
+/// Inspect a canonical function through the official grammar without assembling
+/// an incomplete schema containing only its signature references.
+pub(crate) fn inspect_function_body(
+    function: &type_bridge_contract::schema::FunctionFact,
+) -> Result<FunctionBodyReferences, Diagnostic> {
+    use type_bridge_core_lib::__internal as tql;
+    use typeql::query::{QueryStructure, schema::SchemaQuery};
+    use typeql::schema::definable::Definable;
+    let invalid = || {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "invalid_function_body",
+            "function signature or body is not valid TypeQL",
+        )
+    };
+    let definition = tql::schema_function_fact(function, vec![]).map_err(|_| invalid())?;
+    let source = tql::render(&tql::schema_define(vec![definition])).map_err(|_| invalid())?;
+    let query = typeql::parse_query(&source).map_err(|_| invalid())?;
+    let QueryStructure::Schema(SchemaQuery::Define(define)) = query.structure else {
+        return Err(invalid());
+    };
+    let [Definable::Function(function)] = define.definables.as_slice() else {
+        return Err(invalid());
+    };
+    collect_function_body_references(&function.block)
+}
