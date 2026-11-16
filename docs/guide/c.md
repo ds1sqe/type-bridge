@@ -2,7 +2,7 @@
 
 TypeBridge 3.0 uses native ABI 2.0 for **Ubuntu 24.04, x86_64 GNU/Linux,
 shared runtime**. C17 and C++17 applications consume generated schema packages
-through CMake or pkg-config. This is the 3.0 development guide; release
+through CMake or pkg-config. Release
 publication and platform claims follow the [C release procedure](../development/c-release.md).
 
 The SDK shares Rust-owned schema, CRUD, query, migration, serialization,

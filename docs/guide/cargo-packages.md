@@ -81,7 +81,7 @@ ABI 2.0 and must be regenerated when upgrading from ABI 1.x.
 The runtime CMake and pkg-config package version is `2.0.0`, the C ABI version.
 It is distinct from the TypeBridge product version reported by
 `type_bridge_runtime_version`. See the [C SDK guide](c.md) for distribution
-and platform requirements; the 3.0 release is in preparation.
+and platform requirements.
 
 ## Release contract
 

@@ -86,7 +86,7 @@ setup.
 TypeBridge 3.0 uses the ABI 2.0 shared runtime. Install the runtime and CLI
 from the same product release, then regenerate your C package. C17 and C++17
 applications use CMake or pkg-config; application execution does not require
-Python or Cargo. The 3.0 release is in preparation.
+Python or Cargo.
 
 Follow the [C SDK guide](../guide/c.md) for generation, linking, and the
 supported runtime matrix, and [upgrade to 3.0](../guide/upgrade-3.0.md) for
