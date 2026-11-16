@@ -22,7 +22,7 @@ import standalone_cli_artifact as cli
 
 ROOT = Path(__file__).resolve().parents[2]
 FORMAT = "typebridge.c-artifact-clean-consumer/v1"
-DISPOSITION = "artifact-only-unpublished-unsupported"
+DISPOSITION = packages.PUBLICATION_DISPOSITION
 EXPECTED_SERVER_VERSION_ENV = "TYPE_BRIDGE_EXPECTED_SERVER_VERSION"
 FULL_CONSUMER = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/consumer.c"
 QUERY_CONSUMER = (

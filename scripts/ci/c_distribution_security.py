@@ -31,7 +31,7 @@ SECURITY_FORMAT = "typebridge.c-artifact-security-scan/v1"
 SIGNATURE_FORMAT = "typebridge.c-signature-policy/v1"
 AUDIT_VERSION = "0.22.2"
 TARGET = "x86_64-unknown-linux-gnu"
-DISPOSITION = "artifact-only-unpublished-unsupported"
+DISPOSITION = packages.PUBLICATION_DISPOSITION
 EVIDENCE_NAMES = (
     "artifact-manifest.json",
     "cli.spdx.json",

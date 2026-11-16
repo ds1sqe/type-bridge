@@ -141,7 +141,9 @@ def validate_documentation(root: Path = ROOT) -> list[dict[str, Any]]:
         except (OSError, UnicodeDecodeError) as error:
             reject("invalid_documentation", f"cannot read {relative}: {error}")
         if any(fence not in body for fence in fences):
-            reject("unsupported_documentation_claim", f"artifact-only fence drifted in {relative}")
+            reject(
+                "unsupported_documentation_claim", f"public support boundary drifted in {relative}"
+            )
         output.append({"path": relative, "sha256": sha256(path)})
     return output
 

@@ -176,7 +176,7 @@ def assemble_report(
         reject("invalid_source_commit", "producer source commit is invalid")
     if (
         acceptance.get("format") != "typebridge.c-artifact-acceptance-report/v1"
-        or acceptance.get("publication-disposition") != "artifact-only-unpublished-unsupported"
+        or acceptance.get("publication-disposition") != artifact_journey.DISPOSITION
     ):
         reject("invalid_acceptance_report", "Artifact acceptance aggregate identity is invalid")
     conformance.exact_sha(acceptance_sha256, "Artifact acceptance aggregate")
@@ -381,7 +381,7 @@ def compose(
     steps = acceptance.get("steps")
     if (
         acceptance.get("format") != "typebridge.c-artifact-acceptance-report/v1"
-        or acceptance.get("publication-disposition") != "artifact-only-unpublished-unsupported"
+        or acceptance.get("publication-disposition") != artifact_journey.DISPOSITION
         or (not isinstance(steps, list))
         or (len(steps) != 14)
         or any(not isinstance(step, dict) or step.get("status") != "passed" for step in steps)
