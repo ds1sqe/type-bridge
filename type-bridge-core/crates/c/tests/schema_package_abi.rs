@@ -4622,8 +4622,20 @@ int main(void) {
   {
     const relation_container_item_player *players[] = {
         event_player, event_player};
+    relation_event_ref *overflow_events[3] = {NULL, NULL, NULL};
+    relation_container_item_player *overflow_players[3] = {NULL, NULL, NULL};
+    const type_bridge_byte_view_t overflow_iids[] = {
+        VIEW("0xde0"), VIEW("0xde1"), VIEW("0xde2")};
+    for (size_t index = 0u; index < 3u; ++index) {
+      CHECK(relation_event_ref_from_iid(
+                package, overflow_iids[index], &overflow_events[index],
+                &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      CHECK(relation_container_item_player_from_event(
+                overflow_events[index], &overflow_players[index],
+                &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    }
     const relation_container_item_player *too_many[] = {
-        event_player, event_player, event_player, event_player};
+        event_player, overflow_players[0], overflow_players[1], overflow_players[2]};
     relation_container_create_role_item_chunks_v1_t chunk = {0};
     relation_container_create_args_v1_t args = {0};
     chunk.struct_size = sizeof(chunk);
@@ -4637,6 +4649,10 @@ int main(void) {
               package, &args, &container_create, &diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(container_create != NULL && diagnostics == NULL);
+    CHECK(type_bridge_projected_create_role_count(
+              (const type_bridge_projected_create_t *)container_create,
+              &CONTAINER_ROLE_TOKEN, &count, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(count == 1u && diagnostics == NULL);
     CHECK(relation_container_create_close(&container_create) ==
           TYPE_BRIDGE_STATUS_OK);
     chunk.values = too_many;
@@ -4648,6 +4664,12 @@ int main(void) {
     CHECK(execution_code_is(diagnostics, "role_cardinality_violation"));
     CHECK(type_bridge_execution_diagnostics_close(&diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
+    for (size_t index = 0u; index < 3u; ++index) {
+      CHECK(relation_container_item_player_close(&overflow_players[index]) ==
+            TYPE_BRIDGE_STATUS_OK);
+      CHECK(relation_event_ref_close(&overflow_events[index]) ==
+            TYPE_BRIDGE_STATUS_OK);
+    }
   }
   {
     const type_bridge_projected_reference_t *references[] = {

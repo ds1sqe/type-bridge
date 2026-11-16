@@ -1353,9 +1353,12 @@ for (const operation of ["insert", "put", "update"]) {
   for (const count of [0, 1, 2]) {
     if (operation === "update" && count === 2) continue;
     const proofTarget = fixture([]);
-    const single = fixture([documents(...Array.from({ length: count }, (_, index) =>
+    const diagnosticRead = operation === "update" && count === 0;
+    const responses = [documents(...Array.from({ length: count }, (_, index) =>
       recordDocument(index === 0 ? "0xd5" : "0xd6", `single-${index}`, []),
-    ))]);
+    ))];
+    if (diagnosticRead) responses.push(documents());
+    const single = fixture(responses);
     const callbacks = [];
     Runtime.__testConfigureOrderedBatchMaterializer("none", -1, (ordinal, value) => {
       callbacks.push(ordinal);
@@ -1372,7 +1375,10 @@ for (const operation of ["insert", "put", "update"]) {
     assert.equal(Object.isFrozen(result.items), true);
     assert.deepEqual(callbacks, Array.from({ length: count }, (_, index) => index));
     assert.deepEqual(counters(proofTarget), zeroCounters);
-    assert.equal(counters(single).queries.length, 1);
+    assert.equal(counters(single).queries.length, 1 + Number(diagnosticRead));
+    if (diagnosticRead) {
+      assert.doesNotMatch(counters(single).queries[1], /\b(insert|delete|update|put)\b/);
+    }
     assert.equal(counters(single).commits, 1);
     assert.equal(counters(single).rollbacks, 0);
   }

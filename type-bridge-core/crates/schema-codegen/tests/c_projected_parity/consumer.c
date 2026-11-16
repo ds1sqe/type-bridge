@@ -1341,8 +1341,19 @@ static int run_role_and_package_evidence(
                 (const type_bridge_projected_create_t *)container_create,
                 &LOCAL_ROLE_CONTAINER_ITEM, 0u, VIEW("0x50")));
     {
-      const projected_container_item_player *too_many[] = {event_item, event_item,
-                                                         event_item};
+      projected_event_ref *overflow_events[2] = {NULL, NULL};
+      projected_container_item_player *overflow_items[2] = {NULL, NULL};
+      const type_bridge_byte_view_t overflow_iids[] = {VIEW("0x51"), VIEW("0x52")};
+      for (size_t index = 0u; index < 2u; ++index) {
+        REQUIRE(projected_event_ref_from_iid(
+                    package, overflow_iids[index], &overflow_events[index],
+                    &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
+                projected_container_item_player_from_event(
+                    overflow_events[index], &overflow_items[index],
+                    &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+      }
+      const projected_container_item_player *too_many[] = {
+          event_item, overflow_items[0], overflow_items[1]};
       projected_container_create *rejected =
           (projected_container_create *)(uintptr_t)1u;
       chunk.values = too_many;
@@ -1355,6 +1366,12 @@ static int run_role_and_package_evidence(
                             TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_INVALID_INPUT,
                             "role_cardinality_violation") &&
               close_diagnostics(&diagnostics));
+      for (size_t index = 0u; index < 2u; ++index) {
+        REQUIRE(projected_container_item_player_close(&overflow_items[index]) ==
+                    TYPE_BRIDGE_STATUS_OK &&
+                projected_event_ref_close(&overflow_events[index]) ==
+                    TYPE_BRIDGE_STATUS_OK);
+      }
     }
   }
   {
