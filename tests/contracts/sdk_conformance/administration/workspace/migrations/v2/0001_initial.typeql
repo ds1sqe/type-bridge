@@ -1,23 +1,15 @@
-define
-entity person;
+define entity person;
 
-define
-attribute legacy-name;
+define attribute legacy-name;
 
-define
-attribute person-id;
+define attribute person-id;
 
-define
-legacy-name value string;
+define legacy-name, value string;
 
-define
-person-id value string;
+define person-id, value string;
 
-define
-person owns legacy-name;
+define person, owns legacy-name;
 
-define
-person owns person-id;
+define person, owns person-id;
 
-define
-person owns person-id @key;
+define person, owns person-id @key;

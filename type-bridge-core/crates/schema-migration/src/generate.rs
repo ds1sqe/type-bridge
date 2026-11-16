@@ -351,6 +351,18 @@ pub fn render_migration_preview(
     let mut pending = Vec::new();
     let mut queries = Vec::new();
     for step in manifest.steps() {
+        if let Some((_, plan)) = step.as_backfill() {
+            // The review artifact binds the complete plan, not a mutable source
+            // intent filename which is absent from canonical history.
+            let bytes = type_bridge_contract::codec::to_canonical_json(plan)?;
+            queries.push(format!(
+                "-- binding-neutral backfill migration: {}/{}\n-- canonical backfill plan: {}",
+                manifest.id().app_label().as_str(),
+                manifest.id().name().as_str(),
+                String::from_utf8_lossy(&bytes)
+            ));
+            continue;
+        }
         if let Some(data) = step.as_data() {
             let reverse = if data.reverse().is_some() {
                 "reverse declared"

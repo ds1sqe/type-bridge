@@ -306,7 +306,9 @@ fn workspace_authors_backfill_intent_under_one_directory_lock() {
     let preview =
         fs::read_to_string(directory.0.join("migrations/v2/0002_copy-name.typeql")).unwrap();
     assert!(preview.contains("binding-neutral backfill migration"));
-    assert!(preview.contains("copy-name.backfill.yaml"));
+    assert!(preview.contains("canonical backfill plan:"));
+    assert!(preview.contains("legacy-name") && preview.contains("display-name"));
+    assert_eq!(workspace.migration_plan(&BTreeSet::new()).unwrap().len(), 2);
 }
 
 #[test]
@@ -939,4 +941,51 @@ fn implicit_history_refuses_old_layout_then_replays_the_moved_bytes() {
         implicit.migration_make("noop").unwrap(),
         MigrationGenerationOutcome::UpToDate
     ));
+}
+
+#[test]
+fn plan_rechecks_every_review_preview_against_its_manifest() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(initial) = workspace.migration_make("init").unwrap()
+    else {
+        panic!("initial generated")
+    };
+    workspace.write_generated_migration(&initial).unwrap();
+    let path = directory.0.join("migrations/v2/0001_init.typeql");
+    let original = fs::read(&path).unwrap();
+    assert_eq!(workspace.migration_plan(&BTreeSet::new()).unwrap().len(), 1);
+    let applied = BTreeSet::from([initial.manifest().id().clone()]);
+    for replacement in [
+        Some(b"define entity attacker;\n".as_slice()),
+        Some(b"".as_slice()),
+        None,
+    ] {
+        match replacement {
+            Some(bytes) => fs::write(&path, bytes).unwrap(),
+            None => fs::remove_file(&path).unwrap(),
+        }
+        for state in [&BTreeSet::new(), &applied] {
+            let error = workspace.migration_plan(state).unwrap_err();
+            assert_eq!(
+                error.contract().unwrap().code().as_str(),
+                "workspace_migration_preview_mismatch"
+            );
+            assert!(error.to_string().contains("0001_init.typeql"));
+        }
+        fs::write(&path, &original).unwrap();
+        assert!(workspace.migration_plan(&applied).unwrap().is_empty());
+    }
+    #[cfg(unix)]
+    {
+        let outside = directory.0.join("untrusted.typeql");
+        fs::write(&outside, &original).unwrap();
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(outside, path).unwrap();
+        assert!(workspace.migration_plan(&BTreeSet::new()).is_err());
+    }
 }

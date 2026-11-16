@@ -58,3 +58,17 @@ live SDK reports on both semantic profiles. The standalone report comparator
 needs these pins without a generated workspace or Rust runtime. The CLI history
 test regenerates both histories and checks the pins; `profiles.json` and the
 original manifests retain their historical format-1 fingerprints.
+
+Canonical migration review previews are derived from the verified manifests.
+After changing the renderer, regenerate only the `.typeql` files from the
+repository root and review the diff:
+
+```bash
+cargo +1.94.1 test --manifest-path type-bridge-core/Cargo.toml \
+  -p type-bridge-schema-migration --test generate \
+  regenerate_administration_previews -- --exact --ignored
+```
+
+The normal `committed_administration_previews_match_verified_manifests` test
+checks that the committed previews match. Regeneration leaves canonical
+manifests and plan bytes unchanged.

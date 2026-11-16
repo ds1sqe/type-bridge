@@ -62,7 +62,9 @@ type-bridge --manifest typebridge.yaml migration apply --environment development
 type-bridge --manifest typebridge.yaml migration verify --environment development
 ```
 
-Review the committed migration and preview before applying. When the workspace
+Review the committed migration and preview before applying. `migration plan`
+re-renders every committed `.typeql` preview from its verified manifest and
+refuses missing, stale, or edited previews, including already-applied entries. When the workspace
 requires approval for destructive changes, approve the exact compound migration
 identity:
 

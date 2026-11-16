@@ -1,5 +1,3 @@
-undefine
-owns legacy-name from person;
+undefine owns legacy-name from person;
 
-undefine
-legacy-name;
+undefine legacy-name;

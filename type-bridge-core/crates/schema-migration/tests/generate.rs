@@ -1188,3 +1188,27 @@ fn function_metadata_dynamic_reserved_and_invalid_bodies_are_refused() {
         "invalid_function_body"
     );
 }
+
+fn administration_fixture_previews() -> Vec<(PathBuf, String)> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/contracts/sdk_conformance/administration/workspace/migrations/v2");
+    let context = ManagedDeltaContext::new(ManagedScopeId::new("administration").unwrap(), SemanticProfileId::new("typedb-3.12.1/v1").unwrap(), backfill_context().available_capabilities().clone());
+    let graph = discover_verified_migration_chain(&path, &declared(&[]), &context).unwrap();
+    graph.manifests().map(|(id, manifest)| {
+        (path.join(format!("{}.typeql", id.name().as_str())), render_migration_preview(manifest, &context).unwrap())
+    }).collect()
+}
+
+#[test]
+fn committed_administration_previews_match_verified_manifests() {
+    for (path, expected) in administration_fixture_previews() {
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected, "{} needs canonical preview regeneration; see the administration fixture README", path.display());
+    }
+}
+
+#[test]
+#[ignore = "rewrites committed review fixtures; run only after reviewing a renderer change"]
+fn regenerate_administration_previews() {
+    for (path, expected) in administration_fixture_previews() {
+        fs::write(path, expected).unwrap();
+    }
+}

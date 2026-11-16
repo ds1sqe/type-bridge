@@ -299,12 +299,8 @@ impl TypeBridgeWorkspace {
                 context: self.delta_context(),
             },
         )?;
-        let preview = format!(
-            "-- binding-neutral backfill migration: {}/{}\n-- reviewed source intent: {}\n",
-            generated.manifest().id().app_label().as_str(),
-            generated.manifest().id().name().as_str(),
-            intent_name.display(),
-        );
+        let preview = render_migration_preview(generated.manifest(), self.delta_context())
+            .map_err(preview_diagnostic)?;
         write_generated_migration_under_lock(&authoring_lock, &generated, &preview)?;
         Ok(generated)
     }
@@ -425,6 +421,40 @@ impl TypeBridgeWorkspace {
         applied: &BTreeSet<MigrationId>,
     ) -> Result<Vec<MigrationPlanEntry>, TypeBridgeWorkspaceError> {
         let graph = self.discover_migrations_in(directory)?;
+        for (_, manifest) in graph.manifests() {
+            let context = type_bridge_schema::ManagedDeltaContext::new(
+                self.delta_context().scope_id().clone(),
+                manifest.semantic_profile().id().clone(),
+                self.delta_context().available_capabilities().clone(),
+            );
+            let expected =
+                render_migration_preview(manifest, &context).map_err(preview_diagnostic)?;
+            let name = format!("{}.typeql", manifest.id().name().as_str());
+            let mismatch = || {
+                TypeBridgeWorkspaceError::Contract(Diagnostic::new(
+                    type_bridge_contract::diagnostic::DiagnosticCategory::Integrity,
+                    type_bridge_contract::diagnostic::DiagnosticCode::new(
+                        "workspace_migration_preview_mismatch",
+                    )
+                    .expect("static diagnostic code"),
+                    format!(
+                        "migration preview {name} is missing, unreadable, or differs from its verified manifest; restore the canonical committed preview"
+                    ),
+                ))
+            };
+            let file = directory
+                .directory()
+                .open_regular_readonly(name.as_ref())
+                .map_err(|_| mismatch())?;
+            let mut actual = Vec::new();
+            let limit = type_bridge_contract::limits::MAX_CANONICAL_BYTES;
+            file.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+                .read_to_end(&mut actual)
+                .map_err(|_| mismatch())?;
+            if actual.len() > limit || actual != expected.as_bytes() {
+                return Err(mismatch());
+            }
+        }
         let order = graph.plan_apply_to_default_head(applied)?;
         order
             .into_iter()
