@@ -813,7 +813,10 @@ impl<'db> DynamicEntityManager<'db> {
         let plans = &self.plans;
         let program =
             plans.single_write_program(&self.descriptor.type_name, kind, iid, attributes, &[])?;
-        let checks = if matches!(kind, WriteKind::Update | WriteKind::PartialUpdate) {
+        let checks = if matches!(kind, WriteKind::Update | WriteKind::PartialUpdate)
+            && iid.is_some()
+            && matches!(&program, ManagerWrite::Pieces(_))
+        {
             plans.update_key_checks(
                 &self.descriptor.type_name,
                 &[(iid.unwrap_or_default().to_owned(), attributes.clone())],
@@ -841,12 +844,6 @@ impl<'db> DynamicEntityManager<'db> {
                 }
             }
             Ok(written)
-        };
-        let program = match program {
-            ManagerWrite::One(plan) if !checks.is_empty() => ManagerWrite::Pieces(
-                crate::plan_builders::bulk_write::WriteProgram::compact(vec![plan]),
-            ),
-            program => program,
         };
         match program {
             ManagerWrite::One(plan) => {
@@ -1779,7 +1776,10 @@ impl<'db> DynamicRelationManager<'db> {
             attributes,
             role_players,
         )?;
-        let checks = if matches!(kind, WriteKind::Update | WriteKind::PartialUpdate) {
+        let checks = if matches!(kind, WriteKind::Update | WriteKind::PartialUpdate)
+            && iid.is_some()
+            && matches!(&program, ManagerWrite::Pieces(_))
+        {
             plans.update_key_checks(
                 &self.descriptor.type_name,
                 &[(iid.unwrap_or_default().to_owned(), attributes.clone())],
@@ -1807,12 +1807,6 @@ impl<'db> DynamicRelationManager<'db> {
                 }
             }
             Ok(written)
-        };
-        let program = match program {
-            ManagerWrite::One(plan) if !checks.is_empty() => ManagerWrite::Pieces(
-                crate::plan_builders::bulk_write::WriteProgram::compact(vec![plan]),
-            ),
-            program => program,
         };
         match program {
             ManagerWrite::One(plan) => {

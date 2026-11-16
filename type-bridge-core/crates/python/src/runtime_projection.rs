@@ -11527,8 +11527,12 @@ class StructBase:
                 values.append(fixture_iid(py, iid.as_str())).unwrap();
             }
             kwargs.set_item("iid__in", values).unwrap();
-            let (database, state) =
-                BatchRecordingBackend::fixture(vec![BatchResponse::Documents(vec![])], false);
+            let (database, state) = BatchRecordingBackend::fixture(
+                (0..257_usize.div_ceil(64))
+                    .map(|_| BatchResponse::Documents(vec![]))
+                    .collect(),
+                false,
+            );
             let manager = origin_manager(
                 Arc::clone(&package),
                 model.clone(),
@@ -11550,9 +11554,14 @@ class StructBase:
                 .delete_many(py, kwargs.get_item("iid__in").unwrap().unwrap())
                 .unwrap();
             let actual = state.lock().unwrap().calls.clone();
-            assert_eq!(actual.len(), 1);
-            let (database, old_state) =
-                BatchRecordingBackend::fixture(vec![BatchResponse::Documents(vec![])], false);
+            assert_eq!(actual.len(), 257_usize.div_ceil(64));
+            assert!(actual.iter().all(|(_, rows)| rows.rows.len() <= 64));
+            let (database, old_state) = BatchRecordingBackend::fixture(
+                (0..257_usize.div_ceil(64))
+                    .map(|_| BatchResponse::Documents(vec![]))
+                    .collect(),
+                false,
+            );
             let old = origin_manager(
                 package,
                 model,

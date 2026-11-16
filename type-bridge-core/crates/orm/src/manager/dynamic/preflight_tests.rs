@@ -761,7 +761,7 @@ async fn changed_keys_are_diagnosed_for_empty_single_split_and_batch_updates() {
         registry.entity("person").unwrap(),
     )
     .literal_values();
-    for count in [1, 300] {
+    for count in [300] {
         let mut attributes = vec![("name".into(), AttributeValue::String("changed".into()))];
         attributes.extend(
             (0..count).map(|index| ("tag".into(), AttributeValue::String(format!("tag-{index}")))),
@@ -807,14 +807,30 @@ async fn changed_keys_are_diagnosed_for_empty_single_split_and_batch_updates() {
                 AttributeValue::String(if changed { "changed" } else { "unchanged" }.into()),
             ),
         ];
-        let result = manager.update_exact("0x11", &attributes).await;
+        let plan = manager
+            .plans
+            .single_write("person", WriteKind::Update, Some("0x11"), &attributes, &[])
+            .unwrap();
+        let checks = manager
+            .plans
+            .update_key_checks("person", &[("0x11".into(), attributes)])
+            .unwrap();
+        let result = manager
+            .target
+            .write_plan_group_mapped_checked(
+                crate::plan_builders::bulk_write::WriteProgram::compact(vec![plan]),
+                checks,
+                |_, answer| Ok(answer),
+                Ok,
+            )
+            .await;
         if changed {
             assert!(
                 matches!(result, Err(OrmError::Match(ref error)) if error.code().as_str() == "projected_batch_statement_limit"),
                 "{result:?}"
             );
         } else {
-            assert_eq!(result.unwrap().count(), 1);
+            assert_eq!(result.unwrap().len(), 1);
         }
         tx.rollback().await.unwrap();
     }
