@@ -1320,6 +1320,9 @@ fn compatible_role_bindings(
                 "_SubtypeBoundVar[{}]",
                 ancestor.target_name().as_str()
             ));
+            if ancestor.declaration().is_abstract() {
+                bindings.insert(format!("_BoundVar[{}]", ancestor.target_name().as_str()));
+            }
         }
     }
     if bindings.is_empty() {

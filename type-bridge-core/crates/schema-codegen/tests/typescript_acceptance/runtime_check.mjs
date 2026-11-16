@@ -17,6 +17,7 @@ import { installRuntimeProjection } from "@type-bridge/node/runtime-projection";
 import { loadNative } from "../../crates/node/dist/native.js";
 
 import {
+  Actor,
   Aliases,
   aggregate,
   Container,
@@ -700,6 +701,8 @@ const generatedRemoteSession = new QuerySession(
   },
 );
 const generatedRemotePerson = generatedRemoteSession.exact(Person);
+const abstractRolePlayer = generatedRemoteSession.exact(Actor);
+assert(generatedRemoteSession.exact(Employment).role(Employment.employee).links(abstractRolePlayer));
 const generatedRemoteMinimum = integerInput(generatedRemoteSession, Score.create(2n));
 const generatedRemoteCall = qualifyingScore(
   generatedRemoteSession,

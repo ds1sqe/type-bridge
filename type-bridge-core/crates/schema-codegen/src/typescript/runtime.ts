@@ -3704,7 +3704,15 @@ function nominalUpcastTypeKeys(entry: RuntimeModelEntry): ReadonlySet<string> {
 }
 
 function modelDomainTypeKeys(state: BoundVarState): ReadonlySet<string> {
-  if (state.matchMode === "exact") return new Set([state.modelTypeKey]);
+  const entry = runtimeModels.get(state.modelTypeKey);
+  if (entry === undefined) throw new TypeError("generated binding has no model");
+  const metadata = entry.definition.metadata;
+  assertRecord(metadata, "generated model metadata");
+  const declaration = metadata["declaration"];
+  assertRecord(declaration, "generated model declaration");
+  if (state.matchMode === "exact" && declaration["is_abstract"] !== true) {
+    return new Set([state.modelTypeKey]);
+  }
   const domain = new Set<string>();
   for (const [typeKey, entry] of runtimeModels) {
     if (

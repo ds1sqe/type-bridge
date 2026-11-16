@@ -10,6 +10,9 @@ import sys
 from datetime import datetime
 
 from complex_models import (
+    Association,
+    Friendship,
+    Relay,
     Assignment,
     Blocked,
     Company,
@@ -107,6 +110,180 @@ async def main() -> None:
         abstract_result = abstract_count.result()
         assert isinstance(abstract_result, Count)
         assert abstract_result.count == Party.manager(db).count()
+        # Each abstract type is exercised in every supported read position.
+        if not os.environ.get("TYPE_BRIDGE_COMPLEX_WIDTH"):
+            matrix_session = Party.query(db)
+
+            async def entity_case() -> None:
+                expected_ids = [f"P{i:04d}" for i in range(1, size + 1)]
+                manager = Party.manager(db)
+                stored = manager.all()
+                assert len(stored) == manager.count() == size
+                assert manager.exists()
+                assert stored[0].iid is not None
+                fetched = manager.get_by_iid(stored[0].iid)
+                assert fetched is not None and fetched.iid == stored[0].iid
+                filtered = manager.filter(identifier=expected_ids[0]).first()
+                assert filtered is not None and filtered.identifier.value == expected_ids[0]
+                canonical = manager.where(
+                    Party.identifier, ProjectedManagerComparison.EQ, Identifier(expected_ids[0])
+                )
+                assert canonical.count() == 1 and canonical.exists()
+                assert len(canonical.all()) == 1
+                canonical_first = canonical.first()
+                assert (
+                    canonical_first is not None
+                    and canonical_first.identifier.value == expected_ids[0]
+                )
+                for mode in (matrix_session.exact, matrix_session.subtypes):
+                    root = mode(Party)
+                    field = root.field(Party.identifier)
+                    root_query = matrix_session.query(root)
+                    assert [
+                        item.identifier.value
+                        for item in await root_query.rows(limit=limit, sort=(field.asc(),))
+                    ] == expected_ids
+                    first = await root_query.first(sort=(field.asc(),))
+                    assert first is not None and first.identifier.value == expected_ids[0]
+                    assert (
+                        await root_query.where(field.eq(Identifier(expected_ids[0]))).one()
+                    ).identifier.value == expected_ids[0]
+                    assert await root_query.count_by(root) == size
+                    assert await root_query.exists_by(root)
+                    page = await root_query.page_by(
+                        root, limit=limit, include_total=True, sort=(field.asc(),)
+                    )
+                    assert [
+                        item.identifier.value for item in page.items
+                    ] == expected_ids and page.total == size
+                    groups = await root_query.group_by(root, field).reduce(aggregate.count())
+                    assert sorted((key.value, values[0]) for key, values in groups) == [
+                        (key, 1) for key in expected_ids
+                    ]
+                    edge = matrix_session.exact(Friendship)
+                    linked = (
+                        matrix_session.query(root)
+                        .match(edge)
+                        .where(edge.role(Friendship.participant).links(root))
+                    )
+                    assert await linked.count_by(root) == size
+                    model_groups = (
+                        await matrix_session.query(edge)
+                        .match(root)
+                        .where(edge.role(Friendship.participant).links(root))
+                        .group_by(edge, root)
+                        .reduce(aggregate.count())
+                    )
+                    assert len(model_groups) == size
+                    # Nested relation-role hydration checks the same abstract domain.
+                    nested = (
+                        await matrix_session.query(edge)
+                        .match(root)
+                        .where(edge.role(Friendship.participant).links(root))
+                        .rows(limit=limit)
+                    )
+                    assert len(nested) == size
+                    collected = matrix_session.query(edge, root.collect()).where(
+                        edge.role(Friendship.participant).links(root)
+                    )
+                    collection_page = await collected.page_by(edge, limit=limit, include_total=True)
+                    assert collection_page.total == size
+                    assert (
+                        sorted(
+                            item.identifier.value
+                            for _, items in collection_page.items
+                            for item in items
+                        )
+                        == expected_ids
+                    )
+
+            async def relation_case() -> None:
+                expected_ids = [f"F{i:04d}" for i in range(1, size + 1)]
+                manager = Association.manager(db)
+                stored = manager.all()
+                assert len(stored) == manager.count() == size
+                assert manager.exists()
+                assert stored[0].iid is not None
+                fetched = manager.get_by_iid(stored[0].iid)
+                assert fetched is not None and fetched.iid == stored[0].iid
+                filtered = manager.filter(identifier=expected_ids[0]).first()
+                assert filtered is not None and filtered.identifier.value == expected_ids[0]
+                canonical = manager.where(
+                    Association.identifier,
+                    ProjectedManagerComparison.EQ,
+                    Identifier(expected_ids[0]),
+                )
+                assert canonical.count() == 1 and canonical.exists()
+                assert len(canonical.all()) == 1
+                canonical_first = canonical.first()
+                assert (
+                    canonical_first is not None
+                    and canonical_first.identifier.value == expected_ids[0]
+                )
+                for mode in (matrix_session.exact, matrix_session.subtypes):
+                    root = mode(Association)
+                    field = root.field(Association.identifier)
+                    root_query = matrix_session.query(root)
+                    assert [
+                        item.identifier.value
+                        for item in await root_query.rows(limit=limit, sort=(field.asc(),))
+                    ] == expected_ids
+                    first = await root_query.first(sort=(field.asc(),))
+                    assert first is not None and first.identifier.value == expected_ids[0]
+                    assert (
+                        await root_query.where(field.eq(Identifier(expected_ids[0]))).one()
+                    ).identifier.value == expected_ids[0]
+                    assert await root_query.count_by(root) == size
+                    assert await root_query.exists_by(root)
+                    page = await root_query.page_by(
+                        root, limit=limit, include_total=True, sort=(field.asc(),)
+                    )
+                    assert [
+                        item.identifier.value for item in page.items
+                    ] == expected_ids and page.total == size
+                    groups = await root_query.group_by(root, field).reduce(aggregate.count())
+                    assert sorted((key.value, values[0]) for key, values in groups) == [
+                        (key, 1) for key in expected_ids
+                    ]
+                    edge = matrix_session.exact(Relay)
+                    linked = (
+                        matrix_session.query(root)
+                        .match(edge)
+                        .where(edge.role(Relay.edge).links(root))
+                    )
+                    assert await linked.count_by(root) == size
+                    model_groups = (
+                        await matrix_session.query(edge)
+                        .match(root)
+                        .where(edge.role(Relay.edge).links(root))
+                        .group_by(edge, root)
+                        .reduce(aggregate.count())
+                    )
+                    assert len(model_groups) == size
+                    # Nested relation-role hydration checks the same abstract domain.
+                    nested = (
+                        await matrix_session.query(edge)
+                        .match(root)
+                        .where(edge.role(Relay.edge).links(root))
+                        .rows(limit=limit)
+                    )
+                    assert len(nested) == size
+                    collected = matrix_session.query(edge, root.collect()).where(
+                        edge.role(Relay.edge).links(root)
+                    )
+                    collection_page = await collected.page_by(edge, limit=limit, include_total=True)
+                    assert collection_page.total == size
+                    assert (
+                        sorted(
+                            item.identifier.value
+                            for _, items in collection_page.items
+                            for item in items
+                        )
+                        == expected_ids
+                    )
+
+            for case in (entity_case, relation_case):
+                await case()
         session = Party.query(db)
         p = session.subtypes(Person)
         c = session.exact(Company)

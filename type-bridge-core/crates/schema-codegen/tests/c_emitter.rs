@@ -203,9 +203,16 @@ fn publish_sdk_models_package_fragment(results: Vec<Value>) {
 }
 
 fn projected(resources: &[CodeResourceDigest]) -> (RuntimeProjection, VerifiedSchemaAuthority) {
+    projected_source(SOURCE, resources)
+}
+
+fn projected_source(
+    source: &str,
+    resources: &[CodeResourceDigest],
+) -> (RuntimeProjection, VerifiedSchemaAuthority) {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("c-emitter.yaml").expect("fixture document ID is valid"),
-        SOURCE,
+        source,
     )])
     .expect("C emitter fixture parses");
     let declared = normalize_documents(&documents).expect("C emitter fixture normalizes");
@@ -219,7 +226,7 @@ fn projected(resources: &[CodeResourceDigest]) -> (RuntimeProjection, VerifiedSc
         resources,
     )
     .expect("C emitter fixture projects");
-    (projection, support::authority(SOURCE))
+    (projection, support::authority(source))
 }
 
 fn ordered_successor_projected() -> (RuntimeProjection, VerifiedSchemaAuthority) {
@@ -5943,6 +5950,18 @@ fn sdk_models_generated_package_integrity() {
         "generated C package has the requested namespace"
     );
 
+    let abstract_factory_names: BTreeSet<_> = emitted_function_names(&emitted)
+        .into_iter()
+        .filter(|name| projection.models().values().any(|model| {
+            model.declaration().is_abstract() && ["exact", "subtypes"].iter().any(|mode| {
+                name.ends_with(&format!("query_role_player_{}_{}", model.target_name().as_str().trim_start_matches("fixture_"), mode))
+            })
+        }))
+        .collect();
+    assert!(!abstract_factory_names.is_empty());
+    println!("abstract role-player constructor symbols added: {}", abstract_factory_names.len());
+    for name in &abstract_factory_names { println!("abstract role-player constructor: {name}"); }
+
     let root = sdk_models_repository_root();
     let journey: Value = serde_json::from_slice(
         &fs::read(root.join("tests/contracts/sdk_conformance/models/journey.json"))
@@ -5976,4 +5995,52 @@ fn refuses_abstract_attribute_ownership_with_a_source_diagnostic() {
     support::assert_abstract_attribute_ownership_refused(
         type_bridge_contract::projection::BindingTarget::C,
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn abstract_role_player_factories_compile_in_c17_and_cpp17() {
+    let emitter = CEmitter::new();
+    let source = SOURCE.replace("actor", "kind");
+    let (projection, authority) = projected_source(&source, &emitter.code_resources().unwrap());
+    let package = emitter.emit(&projection, &authority).unwrap();
+    let stage = TempDirectory::new();
+    write_package(&package, stage.path());
+    let consumer = stage.path().join("abstract-player.c");
+    fs::write(
+        &consumer,
+        r#"#include <acme/models.h>
+void abstract_players(const acme_kind_query_exact_binding *exact,
+                      const acme_kind_query_subtypes_binding *subtypes) {
+  (void)acme_membership_member_query_role_player_kind_exact(exact);
+  (void)acme_membership_member_query_role_player_kind_subtypes(subtypes);
+}
+"#,
+    )
+    .unwrap();
+    for (compiler, standard, language) in [("cc", "c17", "c"), ("c++", "c++17", "c++")] {
+        let output = Command::new(compiler)
+            .args([
+                "-x",
+                language,
+                &format!("-std={standard}"),
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-pedantic-errors",
+                "-fsyntax-only",
+            ])
+            .arg("-I")
+            .arg(runtime_include())
+            .arg("-I")
+            .arg(stage.path().join("include"))
+            .arg(&consumer)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{compiler}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

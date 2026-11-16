@@ -721,6 +721,8 @@ adult = person_var.field(Person.score).ge(Score(18))
 query = query_session.query(person_var).where(adult).match(party_var)
 assert query is not None
 employee = employment_var.role(Employment.employee).links(person_var)
+abstract_player = query_session.exact(Actor)
+assert employment_var.role(Employment.employee).links(abstract_player) is not None
 named = query_session.query_as(
     EmploymentRow,
     person=person_var,

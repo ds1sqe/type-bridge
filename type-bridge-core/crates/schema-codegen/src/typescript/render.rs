@@ -323,7 +323,11 @@ fn render_model_shell(
     let _ = writeln!(output, "export interface {name}RoleTokens {{");
     for token in model.query_tokens().roles().values() {
         let role = identity_literal!(token.role());
-        let players = logical_player_union(projection, token.accepted_players(), "")?;
+        let players = logical_player_union(
+            projection,
+            &compatible_exact_players(projection, token.accepted_players())?,
+            "",
+        )?;
         let subtype_roots = logical_player_union(
             projection,
             &compatible_subtype_roots(projection, token.accepted_players())?,
@@ -438,7 +442,11 @@ fn render_model_link(
     output.push_str("  },\n  roles: {\n");
     for token in model.query_tokens().roles().values() {
         let role = identity_literal!(token.role());
-        let players = logical_player_union(projection, token.accepted_players(), "")?;
+        let players = logical_player_union(
+            projection,
+            &compatible_exact_players(projection, token.accepted_players())?,
+            "",
+        )?;
         let subtype_roots = logical_player_union(
             projection,
             &compatible_subtype_roots(projection, token.accepted_players())?,
@@ -968,6 +976,19 @@ fn logical_player_union(
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|values| values.join(" | "))
+}
+
+fn compatible_exact_players(
+    projection: &RuntimeProjection,
+    accepted_players: &BTreeSet<TypeId>,
+) -> Result<BTreeSet<TypeId>, Diagnostic> {
+    let mut players = accepted_players.clone();
+    for root in compatible_subtype_roots(projection, accepted_players)? {
+        if projection.models()[&root].declaration().is_abstract() {
+            players.insert(root);
+        }
+    }
+    Ok(players)
 }
 
 fn compatible_subtype_roots(

@@ -30,7 +30,9 @@ $m isa membership, links (member: $p, department: $d);
 $a isa assignment, links (worker: $p, project: $j);
 $x isa project-task, links (project: $j, task: $t);
 $l isa located, links (department: $d, office: $o);
-$z isa company-office, links (company: $c, office: $o);''')
+$z isa company-office, links (company: $c, office: $o);
+$f isa friendship, links (participant: $p, peer: $p), has identifier "F{i:04d}";
+$r isa relay, links (edge: $f, peer: $p);''')
     if size >= 4:
         queries.append("""match $p isa party, has identifier "P0002";
 $c isa company, has identifier "C0004";

@@ -221,6 +221,182 @@ static uint64_t abstract_subtypes_plan_count(void) {
   return count;
 }
 
+static void abstract_query_terminals(
+    tb_complex_query *q, tb_complex_query_root_v1_t root,
+    const tb_complex_query_order *order,
+    tb_complex_query_field_group_ref_v1_t field,
+    uint64_t expected) {
+  const tb_complex_query_order *sort[] = {order};
+  tb_complex_query_rows_terminal *rows_terminal = NULL;
+  tb_complex_query_rows_result *rows = NULL;
+  OK(tb_complex_query_rows(q, sort, 1, 0, expected + 1, &rows_terminal, &diagnostics));
+  OK(tb_complex_database_query_execute_rows(db, rows_terminal, NULL, NULL, &rows, &diagnostics));
+  assert(row_count(rows) == expected);
+  OK(tb_complex_query_rows_result_close(&rows));
+  OK(tb_complex_query_rows_terminal_close(&rows_terminal));
+  tb_complex_query_first_terminal *first_terminal = NULL;
+  OK(tb_complex_query_first(q, sort, 1, &first_terminal, &diagnostics));
+  OK(tb_complex_database_query_execute_first(db, first_terminal, NULL, NULL, &rows, &diagnostics));
+  assert(row_count(rows) == 1);
+  OK(tb_complex_query_rows_result_close(&rows));
+  OK(tb_complex_query_first_terminal_close(&first_terminal));
+  tb_complex_query_count_terminal *count_terminal = NULL;
+  tb_complex_query_count_result *count_result = NULL;
+  uint64_t count = 0;
+  OK(tb_complex_query_count_by(root, &count_terminal, &diagnostics));
+  OK(tb_complex_database_query_execute_count(db, count_terminal, NULL, NULL, &count_result, &diagnostics));
+  OK(tb_complex_query_count_result_value(count_result, &count, &diagnostics));
+  assert(count == expected);
+  OK(tb_complex_query_count_result_close(&count_result));
+  OK(tb_complex_query_count_terminal_close(&count_terminal));
+  tb_complex_query_exists_terminal *exists_terminal = NULL;
+  tb_complex_query_exists_result *exists_result = NULL;
+  uint8_t exists = 0;
+  OK(tb_complex_query_exists_by(root, &exists_terminal, &diagnostics));
+  OK(tb_complex_database_query_execute_exists(db, exists_terminal, NULL, NULL, &exists_result, &diagnostics));
+  OK(tb_complex_query_exists_result_value(exists_result, &exists, &diagnostics));
+  assert(exists);
+  OK(tb_complex_query_exists_result_close(&exists_result));
+  OK(tb_complex_query_exists_terminal_close(&exists_terminal));
+  tb_complex_query_page_terminal *page_terminal = NULL;
+  tb_complex_query_page_result *page = NULL;
+  OK(tb_complex_query_page_by(root, sort, 1, 0, expected + 1, 1, &page_terminal, &diagnostics));
+  OK(tb_complex_database_query_execute_page(db, page_terminal, NULL, NULL, &page, &diagnostics));
+  size_t page_count = 0;
+  type_bridge_query_page_metadata_v1_t metadata;
+  OK(tb_complex_query_result_row_count(tb_complex_query_page_result_ref(page), &page_count, &diagnostics));
+  OK(tb_complex_query_page_metadata(page, &metadata, &diagnostics));
+  assert(page_count == expected && metadata.has_total && metadata.total == expected);
+  OK(tb_complex_query_page_result_close(&page));
+  OK(tb_complex_query_page_terminal_close(&page_terminal));
+  tb_complex_query_reducer_ref_v1_t reducer = tb_complex_query_reducer_count();
+  tb_complex_query_field_reduction_terminal *field_terminal = NULL;
+  tb_complex_query_field_reduction_result *field_result = NULL;
+  OK(tb_complex_query_reduce_field(root, field, &reducer, 1, &field_terminal, &diagnostics));
+  OK(tb_complex_database_query_execute_field_reduction(db, field_terminal, NULL, NULL, &field_result, &diagnostics));
+  size_t groups = 0;
+  OK(tb_complex_query_reduction_result_row_count(tb_complex_query_field_reduction_result_ref(field_result), &groups, &diagnostics));
+  assert(groups == expected);
+  OK(tb_complex_query_field_reduction_result_close(&field_result));
+  OK(tb_complex_query_field_reduction_terminal_close(&field_terminal));
+
+}
+
+static void abstract_model_groups(tb_complex_query_root_v1_t root,
+    tb_complex_query_binding_group_ref_v1_t model, uint64_t expected) {
+  tb_complex_query_reducer_ref_v1_t reducer = tb_complex_query_reducer_count();
+  tb_complex_query_reduction_terminal *model_terminal = NULL;
+  tb_complex_query_reduction_result *model_result = NULL;
+  OK(tb_complex_query_reduce_grouped(root, model, &reducer, 1, &model_terminal, &diagnostics));
+  OK(tb_complex_database_query_execute_reduction(db, model_terminal, NULL, NULL, &model_result, &diagnostics));
+  size_t groups = 0;
+  OK(tb_complex_query_reduction_result_row_count(tb_complex_query_reduction_result_ref(model_result), &groups, &diagnostics));
+  assert(groups == expected);
+  OK(tb_complex_query_reduction_result_close(&model_result));
+  OK(tb_complex_query_reduction_terminal_close(&model_terminal));
+}
+
+#define ABSTRACT_READ_CASE(MODEL, MODE, EDGE, ROLE, PREFIX) \
+static void abstract_##MODEL##_##MODE(tb_complex_query_session *session, uint64_t size) { \
+  BIND(MODEL, MODE, root); \
+  BIND(EDGE, exact, edge); \
+  tb_complex_##MODEL##_query_##MODE##_one_selection *selection = NULL; \
+  tb_complex_##EDGE##_query_exact_one_selection *edge_selection = NULL; \
+  tb_complex_##MODEL##_identifier_query_field *field = NULL; \
+  tb_complex_query_order *order = NULL; \
+  OK(tb_complex_##MODEL##_query_##MODE##_one_selection_open(root, &selection, &diagnostics)); \
+  OK(tb_complex_##EDGE##_query_exact_one_selection_open(edge, &edge_selection, &diagnostics)); \
+  OK(tb_complex_##MODEL##_identifier_query_field_from_##MODE(root, &field, &diagnostics)); \
+  OK(tb_complex_##MODEL##_identifier_query_field_order(field, TYPE_BRIDGE_QUERY_SORT_ASCENDING, &order, &diagnostics)); \
+  tb_complex_query *q = NULL, *next = NULL; \
+  OK(tb_complex_query_positional_1(session, tb_complex_##MODEL##_query_##MODE##_one_selection_ref(selection), &q, &diagnostics)); \
+  abstract_query_terminals(q, tb_complex_##MODEL##_query_##MODE##_binding_root(q, root), order, \
+      tb_complex_##MODEL##_identifier_query_field_reduction_group_slot_v1_t_from(field), \
+      size); \
+  tb_complex_identifier *identifier = NULL; \
+  tb_complex_query_predicate *identity = NULL; \
+  OK(tb_complex_identifier_open(package, view(PREFIX "0001"), &identifier, &diagnostics)); \
+  OK(tb_complex_##MODEL##_identifier_query_field_compare_value(field, TYPE_BRIDGE_QUERY_COMPARE_EQUAL, identifier, &identity, &diagnostics)); \
+  OK(tb_complex_query_where(q, identity, &next, &diagnostics)); \
+  tb_complex_query_rows_terminal *one_terminal = NULL; \
+  tb_complex_query_rows_result *rows = NULL; \
+  OK(tb_complex_query_one(next, NULL, 0, &one_terminal, &diagnostics)); \
+  OK(tb_complex_database_query_execute_rows(db, one_terminal, NULL, NULL, &rows, &diagnostics)); \
+  assert(row_count(rows) == 1); \
+  OK(tb_complex_query_rows_result_close(&rows)); \
+  OK(tb_complex_query_rows_terminal_close(&one_terminal)); \
+  OK(tb_complex_query_close(&next)); \
+  OK(tb_complex_query_predicate_close(&identity)); \
+  OK(tb_complex_identifier_close(&identifier)); \
+  tb_complex_##EDGE##_##ROLE##_query_role *role = NULL; \
+  tb_complex_query_predicate *link = NULL; \
+  OK(tb_complex_##EDGE##_##ROLE##_query_role_from_exact(edge, &role, &diagnostics)); \
+  OK(tb_complex_##EDGE##_##ROLE##_query_role_links(role, tb_complex_##EDGE##_##ROLE##_query_role_player_##MODEL##_##MODE(root), &link, &diagnostics)); \
+  OK(tb_complex_query_match(q, tb_complex_##EDGE##_query_exact_binding_ref(edge), &next, &diagnostics)); \
+  OK(tb_complex_query_close(&q)); q = next; next = NULL; \
+  OK(tb_complex_query_where(q, link, &next, &diagnostics)); \
+  OK(tb_complex_query_close(&q)); q = next; next = NULL; \
+  abstract_query_terminals(q, tb_complex_##MODEL##_query_##MODE##_binding_root(q, root), order, \
+      tb_complex_##MODEL##_identifier_query_field_reduction_group_slot_v1_t_from(field), \
+      size); \
+  OK(tb_complex_query_close(&q)); \
+  /* Selecting the relation hydrates its nested abstract role player. */ \
+  OK(tb_complex_query_positional_1(session, tb_complex_##EDGE##_query_exact_one_selection_ref(edge_selection), &q, &diagnostics)); \
+  OK(tb_complex_query_match(q, tb_complex_##MODEL##_query_##MODE##_binding_ref(root), &next, &diagnostics)); \
+  OK(tb_complex_query_close(&q)); q = next; next = NULL; \
+  OK(tb_complex_query_where(q, link, &next, &diagnostics)); \
+  OK(tb_complex_query_close(&q)); q = next; next = NULL; \
+  abstract_model_groups(tb_complex_##EDGE##_query_exact_binding_root(q, edge), tb_complex_##MODEL##_query_##MODE##_reduction_group_slot_v1_t_from(root), size); \
+  tb_complex_query_rows_terminal *terminal = NULL; \
+  OK(tb_complex_query_rows(q, NULL, 0, 0, size + 1, &terminal, &diagnostics)); \
+  OK(tb_complex_database_query_execute_rows(db, terminal, NULL, NULL, &rows, &diagnostics)); \
+  assert(row_count(rows) == size); \
+  OK(tb_complex_query_rows_result_close(&rows)); \
+  OK(tb_complex_query_rows_terminal_close(&terminal)); \
+  OK(tb_complex_query_close(&q)); \
+  tb_complex_##MODEL##_query_##MODE##_collect_selection *collected = NULL; \
+  OK(tb_complex_##MODEL##_query_##MODE##_collect_selection_open(root, 1, NULL, 0, &collected, &diagnostics)); \
+  OK(tb_complex_query_positional_2(session, tb_complex_##EDGE##_query_exact_one_selection_ref(edge_selection), tb_complex_##MODEL##_query_##MODE##_collect_selection_ref(collected), &q, &diagnostics)); \
+  OK(tb_complex_query_where(q, link, &next, &diagnostics)); \
+  OK(tb_complex_query_close(&q)); q = next; next = NULL; \
+  tb_complex_query_page_terminal *page_terminal = NULL; \
+  tb_complex_query_page_result *page = NULL; \
+  OK(tb_complex_query_page_by(tb_complex_##EDGE##_query_exact_binding_root(q, edge), NULL, 0, 0, size + 1, 1, &page_terminal, &diagnostics)); \
+  OK(tb_complex_database_query_execute_page(db, page_terminal, NULL, NULL, &page, &diagnostics)); \
+  size_t count = 0; \
+  OK(tb_complex_query_result_row_count(tb_complex_query_page_result_ref(page), &count, &diagnostics)); \
+  assert(count == size); \
+  for (size_t i = 0; i < count; ++i) { \
+    size_t members = 0; \
+    OK(tb_complex_##MODEL##_query_##MODE##_collect_count(tb_complex_##MODEL##_query_##MODE##_collect_result_slot_v1_t_page(page, 1), i, &members, &diagnostics)); \
+    assert(members == 1); \
+  } \
+  OK(tb_complex_query_page_result_close(&page)); \
+  OK(tb_complex_query_page_terminal_close(&page_terminal)); \
+  OK(tb_complex_query_close(&q)); \
+  OK(tb_complex_##MODEL##_query_##MODE##_collect_selection_close(&collected)); \
+  OK(tb_complex_query_predicate_close(&link)); \
+  OK(tb_complex_##EDGE##_##ROLE##_query_role_close(&role)); \
+  OK(tb_complex_##MODEL##_identifier_query_field_close(&field)); \
+  OK(tb_complex_query_order_close(&order)); \
+  OK(tb_complex_##MODEL##_query_##MODE##_one_selection_close(&selection)); \
+  OK(tb_complex_##EDGE##_query_exact_one_selection_close(&edge_selection)); \
+  CLOSE_BIND(MODEL, MODE, root); CLOSE_BIND(EDGE, exact, edge); \
+}
+ABSTRACT_READ_CASE(party, exact, friendship, participant, "P")
+ABSTRACT_READ_CASE(party, subtypes, friendship, participant, "P")
+ABSTRACT_READ_CASE(association, exact, relay, edge, "F")
+ABSTRACT_READ_CASE(association, subtypes, relay, edge, "F")
+
+static void abstract_read_matrix(tb_complex_query_session *session, uint64_t size) {
+  void (*cases[])(tb_complex_query_session *, uint64_t) = {
+      abstract_party_exact, abstract_party_subtypes,
+      abstract_association_exact, abstract_association_subtypes};
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+    cases[i](session, size);
+}
+
+
 int main(void) {
   const char *width_env = getenv("TYPE_BRIDGE_COMPLEX_WIDTH");
   unsigned width = width_env ? (unsigned)strtoul(width_env, NULL, 10) : 12u;
@@ -271,6 +447,7 @@ int main(void) {
   uint64_t generic_abstract_count = abstract_subtypes_plan_count();
   tb_complex_query_session *session = NULL;
   OK(tb_complex_query_session_open(package, &session, &diagnostics));
+  if (!width_env) abstract_read_matrix(session, size);
   BIND(person, subtypes, p);
   BIND(company, exact, c);
   BIND(department, exact, d);

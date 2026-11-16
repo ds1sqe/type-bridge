@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Database, Plan } from "@type-bridge/node";
 import {
+  Association, Friendship, Relay,
   Assignment, Blocked, Company, CompanyOffice, Department, Done, Employment,
   Identifier, Note, Located, Membership, Office, Party, Person, Priority, Project,
   ProjectTask, QuerySession, Score, Site, Tag, Task, schemaAuthority, aggregate,
@@ -37,6 +38,69 @@ async function main(): Promise<void> {
     const size = BigInt(process.env.TYPE_BRIDGE_COMPLEX_SIZE!);
     const limit = size + 1n;
     const s = new QuerySession(db);
+    if (!process.env.TYPE_BRIDGE_COMPLEX_WIDTH) {
+      const cases = [
+        async () => {
+          const model = Party, edge = s.exact(Friendship);
+          for (const root of [s.exact(Party), s.subtypes(Party)]) {
+            const field = root.field(Party.identifier), q = s.query(root);
+            const expected = Array.from({ length: Number(size) }, (_, i) => `P${String(i + 1).padStart(4, "0")}`);
+            assert.deepEqual((await q.rows({ limit, sort: [field.asc()] })).map(x => x.identifier.value), expected);
+            assert.equal((await q.first({ sort: [field.asc()] }))!.identifier.value, expected[0]);
+            assert.equal((await q.where(field.eq(Identifier.create(expected[0]!))).one()).identifier.value, expected[0]);
+            assert.equal(await q.countBy(root), size); assert(await q.existsBy(root));
+            const page = await q.pageBy(root, { limit, includeTotal: true, sort: [field.asc()] });
+            assert.equal(page.total, size); assert.deepEqual(page.items.map(x => x.identifier.value), expected);
+            assert.equal((await q.groupBy(root, field).reduce([aggregate.count()])).length, Number(size));
+            const link = edge.role(Friendship.participant).links(root);
+            assert.equal((await s.query(edge).match(root).where(link).groupBy(edge, root).reduce([aggregate.count()])).length, Number(size));
+            assert.equal(await s.query(root).match(edge).where(link).countBy(root), size);
+            const nested = await s.query(edge).match(root).where(link).rows({ limit });
+            assert.equal(nested.length, Number(size));
+            assert(nested.every(x => x.participant.identifier.value.startsWith("P")));
+            const collected = await s.query(edge, root.collect()).where(link).pageBy(edge, { limit, includeTotal: true });
+            assert.equal(collected.total, size);
+            assert.deepEqual(collected.items.flatMap(([,items]) => items.map(x => x.identifier.value)).sort(), expected);
+          }
+          assert.equal(model.manager(db).count(), size); assert.equal(model.manager(db).all().length, Number(size));
+          const canonical = model.manager(db).where(Party.identifier, "eq", Identifier.create("P0001"));
+          assert.equal(canonical.count(), 1n); assert(canonical.exists());
+          assert.equal(canonical.all().length, 1); assert.equal(canonical.first()!.identifier.value, "P0001");
+          const stored = model.manager(db).filter({ identifier: Identifier.create("P0001") }).first()!;
+          assert.equal(model.manager(db).getByIid(stored.iid!)!.iid!.toString(), stored.iid!.toString());
+        },
+        async () => {
+          const model = Association, edge = s.exact(Relay);
+          for (const root of [s.exact(Association), s.subtypes(Association)]) {
+            const field = root.field(Association.identifier), q = s.query(root);
+            const expected = Array.from({ length: Number(size) }, (_, i) => `F${String(i + 1).padStart(4, "0")}`);
+            assert.deepEqual((await q.rows({ limit, sort: [field.asc()] })).map(x => x.identifier.value), expected);
+            assert.equal((await q.first({ sort: [field.asc()] }))!.identifier.value, expected[0]);
+            assert.equal((await q.where(field.eq(Identifier.create(expected[0]!))).one()).identifier.value, expected[0]);
+            assert.equal(await q.countBy(root), size); assert(await q.existsBy(root));
+            const page = await q.pageBy(root, { limit, includeTotal: true, sort: [field.asc()] });
+            assert.equal(page.total, size); assert.deepEqual(page.items.map(x => x.identifier.value), expected);
+            assert.equal((await q.groupBy(root, field).reduce([aggregate.count()])).length, Number(size));
+            const link = edge.role(Relay.edge).links(root);
+            assert.equal((await s.query(edge).match(root).where(link).groupBy(edge, root).reduce([aggregate.count()])).length, Number(size));
+            assert.equal(await s.query(root).match(edge).where(link).countBy(root), size);
+            const nested = await s.query(edge).match(root).where(link).rows({ limit });
+            assert.equal(nested.length, Number(size));
+            assert(nested.every(x => x.edge.identifier.value.startsWith("F")));
+            const collected = await s.query(edge, root.collect()).where(link).pageBy(edge, { limit, includeTotal: true });
+            assert.equal(collected.total, size);
+            assert.deepEqual(collected.items.flatMap(([,items]) => items.map(x => x.identifier.value)).sort(), expected);
+          }
+          assert.equal(model.manager(db).count(), size); assert.equal(model.manager(db).all().length, Number(size));
+          const canonical = model.manager(db).where(Association.identifier, "eq", Identifier.create("F0001"));
+          assert.equal(canonical.count(), 1n); assert(canonical.exists());
+          assert.equal(canonical.all().length, 1); assert.equal(canonical.first()!.identifier.value, "F0001");
+          const stored = model.manager(db).filter({ identifier: Identifier.create("F0001") }).first()!;
+          assert.equal(model.manager(db).getByIid(stored.iid!)!.iid!.toString(), stored.iid!.toString());
+        },
+      ];
+      for (const test of cases) await test();
+    }
     const p = s.subtypes(Person), c = s.exact(Company), d = s.exact(Department);
     const j = s.exact(Project), t = s.exact(Task), o = s.exact(Office);
     const e = s.exact(Employment), m = s.exact(Membership), a = s.exact(Assignment);

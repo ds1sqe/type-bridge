@@ -15,6 +15,25 @@ mod function;
 mod manager;
 mod reduction;
 
+// Read bindings of an abstract ancestor cover its constructible descendants.
+fn compatible_role_players(
+    projection: &RuntimeProjection,
+    accepted: &BTreeSet<TypeId>,
+) -> BTreeSet<TypeId> {
+    let mut players = accepted.clone();
+    for player in accepted {
+        for ancestor in projection.models()[player]
+            .complete_read()
+            .nominal_upcasts()
+        {
+            if projection.models()[ancestor].declaration().is_abstract() {
+                players.insert(ancestor.clone());
+            }
+        }
+    }
+    players
+}
+
 const QUERY_MODES: [(&str, &str); 2] = [
     ("exact", "TYPE_BRIDGE_QUERY_MATCH_EXACT"),
     ("subtypes", "TYPE_BRIDGE_QUERY_MATCH_SUBTYPES"),
@@ -477,7 +496,7 @@ pub(super) fn function_names(
             if !role.accepted_players().is_empty() {
                 names.insert(generated_symbol(&base, "links")?);
             }
-            for player in role.accepted_players() {
+            for player in &compatible_role_players(projection, role.accepted_players()) {
                 let player_model = projection
                     .models()
                     .get(player)
@@ -831,7 +850,7 @@ fn render_model_declarations(
              {role_ref} TYPE_BRIDGE_CALL {base}_ref(const {base} *role);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {base}_close({base} **role);\n",
         );
-        for player in role.accepted_players() {
+        for player in &compatible_role_players(projection, role.accepted_players()) {
             let player_model = projection
                 .models()
                 .get(player)
@@ -2039,7 +2058,7 @@ fn render_model_definitions(
                return type_bridge_query_role_close((type_bridge_query_role_t **)role);\n\
              }}\n\n",
         );
-        for player in role.accepted_players() {
+        for player in &compatible_role_players(projection, role.accepted_players()) {
             let player_model = projection
                 .models()
                 .get(player)

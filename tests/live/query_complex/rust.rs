@@ -8,6 +8,18 @@ use type_bridge::{
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+fn friendship_player_identifier(item: &Friendship) -> &Identifier {
+    match item.participant() {
+        FriendshipParticipantPlayer::Employee(player) => player.identifier().expect("nested player retains its key"),
+        FriendshipParticipantPlayer::Person(player) => player.identifier().expect("nested player retains its key"),
+    }
+}
+fn relay_player_identifier(item: &Relay) -> &Identifier {
+    match item.edge() {
+        RelayEdgePlayer::Friendship(player) => player.identifier().expect("nested player retains its key"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let db = Database::connect(
@@ -47,6 +59,49 @@ async fn main() -> Result<()> {
     );
     transaction.close()?;
     let mut s = db.query()?;
+    let size: u64 = std::env::var("TYPE_BRIDGE_COMPLEX_SIZE")?.parse()?;
+    if std::env::var("TYPE_BRIDGE_COMPLEX_WIDTH").is_err() {
+        // Rust exact<Abstract> remains a compile-time refusal; families cover all reads.
+        macro_rules! abstract_case {
+            ($model:ty, $token:ident, $manager:ident, $prefix:literal, $edge:ty, $edge_token:ident, $role:ident, $nested_id:ident) => {{
+                let root = s.subtypes::<$model>()?;
+                let edge = s.exact::<$edge>()?;
+                let field = root.field($token::identifier);
+                let expected = (1..=size).map(|i| format!("{}{i:04}", $prefix)).collect::<Vec<_>>();
+                let q = s.query(root)?;
+                let rows = q.rows(RowsOptions::new(size + 1).sort(field.asc())).await?;
+                assert_eq!(rows.iter().map(|x| x.identifier().value()).collect::<Vec<_>>(), expected.iter().map(String::as_str).collect::<Vec<_>>());
+                assert_eq!(q.first(field.asc()).await?.unwrap().identifier().value(), &expected[0]);
+                assert_eq!(q.clone().where_all([field.eq(Identifier::new(expected[0].clone())?)])?.one().await?.identifier().value(), &expected[0]);
+                assert_eq!(q.count_by(root).await?, size);
+                assert!(q.exists_by(root).await?);
+                let page = q.page_by(root, PageOptions::new(size + 1).sort(field.asc()).include_total(true)).await?;
+                assert_eq!(page.items().len() as u64, size); assert_eq!(page.total(), Some(size));
+                assert_eq!(q.group_by_field(field)?.reduce((aggregate::count(),)).await?.len() as u64, size);
+                let link = edge.role($edge_token::$role).links(root);
+                assert_eq!(s.query(edge)?.matching(root)?.where_all([link.clone()])?.group_by(root)?.reduce((aggregate::count(),)).await?.len() as u64, size);
+                assert_eq!(s.query(root)?.matching(edge)?.where_all([link.clone()])?.count_by(root).await?, size);
+                let nested = s.query(edge)?.matching(root)?.where_all([link.clone()])?.rows(RowsOptions::new(size + 1)).await?;
+                assert_eq!(nested.len() as u64, size);
+                for item in nested { assert!($nested_id(&item).value().starts_with($prefix)); }
+                let collections = s.query((edge, root.collect()))?.where_all([link])?.page_by(edge, PageOptions::new(size + 1).include_total(true)).await?;
+                assert_eq!(collections.total(), Some(size));
+                let mut ids = collections.items().iter().flat_map(|(_, items)| items.iter().map(|x| x.identifier().value().to_owned())).collect::<Vec<_>>();
+                ids.sort(); assert_eq!(ids, expected);
+                let manager = db.$manager::<$model>().subtypes();
+                assert_eq!(manager.count().await?, size); assert!(manager.filter()?.exists().await?);
+                let items = manager.all().await?; assert_eq!(items.len() as u64, size);
+                assert_eq!(manager.get_by_iid(items[0].iid()).await?.unwrap().identifier().value(), items[0].identifier().value());
+            }};
+        }
+        for case in ["abstract entity and role player", "abstract relation and role player"] {
+            match case {
+                "abstract entity and role player" => abstract_case!(Party, PartyType, entities, "P", Friendship, FriendshipType, participant, friendship_player_identifier),
+                "abstract relation and role player" => abstract_case!(Association, AssociationType, relations, "F", Relay, RelayType, edge, relay_player_identifier),
+                _ => unreachable!(),
+            }
+        }
+    }
     let p = s.subtypes::<Person>()?;
     let c = s.exact::<Company>()?;
     let d = s.exact::<Department>()?;
@@ -60,7 +115,6 @@ async fn main() -> Result<()> {
     let l = s.exact::<Located>()?;
     let z = s.exact::<CompanyOffice>()?;
     let abstract_binding = s.subtypes::<Party>()?;
-    let size: u64 = std::env::var("TYPE_BRIDGE_COMPLEX_SIZE")?.parse()?;
     let limit = size + 1;
     let width: u32 = std::env::var("TYPE_BRIDGE_COMPLEX_WIDTH")
         .unwrap_or_else(|_| "12".into())

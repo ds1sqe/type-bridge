@@ -41,6 +41,18 @@ entities:
       identifier: { key: true }
       site: { card: 1 }
 relations:
+  association:
+    abstract: true
+    owns:
+      identifier: { key: true }
+    relates:
+      participant: { card: 1 }
+      peer: { card: 1 }
+  friendship: { sub: association }
+  relay:
+    relates:
+      edge: { card: 1 }
+      peer: { card: 1 }
   employment:
     owns:
       note: { card: { min: 0, max: 1 } }
@@ -69,6 +81,8 @@ relations:
       office: { card: 1 }
 plays:
   party:
+    association: [participant, peer]
+    relay: [peer]
     employment: [worker]
     membership: [member]
     assignment: [worker]
@@ -86,3 +100,5 @@ plays:
   office:
     located: [office]
     company-office: [office]
+  association:
+    relay: [edge]

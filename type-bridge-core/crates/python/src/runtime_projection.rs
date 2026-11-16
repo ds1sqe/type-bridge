@@ -7733,6 +7733,18 @@ fn hydrate_validated_relation(
     hydrate_complete(py, package, id, &values, Some(thing.concept_id().as_str()))
 }
 
+fn reference_key_attributes(descriptor: &TypeDescriptor) -> Vec<OwnedAttributeDescriptor> {
+    let attributes = match descriptor {
+        TypeDescriptor::Entity(descriptor) => &descriptor.owned_attributes,
+        TypeDescriptor::Relation(descriptor) => &descriptor.owned_attributes,
+    };
+    attributes
+        .iter()
+        .filter(|attribute| attribute.is_key())
+        .cloned()
+        .collect()
+}
+
 fn hydrate_validated_player(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -7751,23 +7763,16 @@ fn hydrate_validated_player(
         .ok_or_else(|| {
             py_runtime_error("query role player is not accepted by the projected role")
         })?;
-    let descriptors = match package.projection.descriptor(id).map_err(py_orm_error)? {
-        TypeDescriptor::Entity(descriptor) => match projected.form() {
-            ProjectedModelForm::Complete => descriptor.owned_attributes.clone(),
-            ProjectedModelForm::Reference => descriptor
-                .owned_attributes
-                .iter()
-                .filter(|attribute| attribute.is_key())
-                .cloned()
-                .collect(),
-        },
-        TypeDescriptor::Relation(_) => {
-            if projected.form() == ProjectedModelForm::Complete {
-                return Err(py_runtime_error(
-                    "nested complete relation query hydration is forbidden",
-                ));
-            }
-            Vec::new()
+    let descriptor = package.projection.descriptor(id).map_err(py_orm_error)?;
+    let descriptors = match (projected.form(), descriptor) {
+        (ProjectedModelForm::Reference, descriptor) => reference_key_attributes(descriptor),
+        (ProjectedModelForm::Complete, TypeDescriptor::Entity(descriptor)) => {
+            descriptor.owned_attributes.clone()
+        }
+        (ProjectedModelForm::Complete, TypeDescriptor::Relation(_)) => {
+            return Err(py_runtime_error(
+                "nested complete relation query hydration is forbidden",
+            ));
         }
     };
     let values = hydrate_validated_attributes(py, package, id, &descriptors, player.attributes())?;
@@ -7926,15 +7931,8 @@ fn hydrate_player(
                 .player_iid
                 .as_deref()
                 .ok_or_else(|| py_runtime_error("reference role-player row has no IID"))?;
-            let descriptors = match package.projection.descriptor(id).map_err(py_orm_error)? {
-                TypeDescriptor::Entity(descriptor) => descriptor
-                    .owned_attributes
-                    .iter()
-                    .filter(|attribute| attribute.is_key())
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                TypeDescriptor::Relation(_) => Vec::new(),
-            };
+            let descriptors =
+                reference_key_attributes(package.projection.descriptor(id).map_err(py_orm_error)?);
             let values = hydrate_attributes(py, package, id, &descriptors, &attributes)?;
             hydrate_reference(py, package, id, &values, iid)
         }
@@ -13601,6 +13599,45 @@ def decode(proof):
                     .default_match_session()
                     .unwrap()
                     .projected_companion_enabled(),
+            );
+        });
+    }
+
+    #[test]
+    fn relation_reference_hydration_retains_inherited_key_fields() {
+        Python::initialize();
+        Python::attach(|py| {
+            let schema = SCHEMA.replace("  event: {}", "  parent-event:\n    abstract: true\n    owns:\n      identifier: { key: true }\n  event:\n    sub: parent-event");
+            let (_, package) = install_ordered_schema(py, &schema);
+            let event = package
+                .type_by_label("event", TypeKind::Relation)
+                .unwrap()
+                .clone();
+            let allowed =
+                BTreeSet::from([type_bridge_contract::projection::ProjectedModelUse::new(
+                    event,
+                    ProjectedModelForm::Reference,
+                )]);
+            let player = DynamicRolePlayer {
+                role_name: "item".into(),
+                player_iid: Some("0xa1".into()),
+                player_type_name: Some("event".into()),
+                attributes: vec![("identifier".into(), serde_json::json!("event-key"))],
+            };
+            let reference = hydrate_player(py, package.as_ref(), &allowed, &player).unwrap();
+            let values = reference.bind(py).call_method0("runtime_values").unwrap();
+            let values = values.cast::<PyDict>().unwrap();
+            let identifier = values
+                .get_item("identifier")
+                .unwrap()
+                .expect("relation reference retains its inherited key");
+            assert_eq!(
+                identifier
+                    .call_method0("runtime_attribute_value")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "event-key"
             );
         });
     }

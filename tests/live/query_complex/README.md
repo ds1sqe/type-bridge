@@ -131,3 +131,22 @@ evidence comparison. TypeDB 3.12.3, 3.13.6 and 3.14.0 compare integer
 bug). Cross-type results can also depend on query shape; Plan follows its exact
 emitted TypeQL statement. See the comparison section of the typed-query guide before using this
 escape hatch.
+
+The abstract-read matrix uses abstract entity `Party`, abstract relation
+`Association` (concrete `Friendship`), and both types as role players
+(`Friendship.participant` and `Relay.edge`). Each SDK runs a table of cases:
+
+| Read position | Python / Node | Rust | C |
+| --- | --- | --- | --- |
+| Standalone binding, rows / first / one / count / exists | Exact and subtypes | Subtype family | Exact and subtypes |
+| Role player and selected links peer | Exact and subtypes | Subtype family | Exact and subtypes |
+| Nested role-player hydration | Both model kinds | Both model kinds | Both model kinds |
+| Field and non-root model group keys | Both model kinds | Both model kinds | Both model kinds |
+| Sort key, page with total, collected page | Both model kinds | Both model kinds | Both model kinds |
+| Manager and filtered reads / IID lookup | Both model kinds | Subtype manager / filter | No abstract canonical manager; typed queries above |
+
+Grouping a root by that same binding remains an intentional contract refusal;
+the model-group test groups selected relation roots by their abstract player.
+Rust keeps its compile-time refusal of exact abstract typed bindings. C's
+nominal role-player factories include compatible abstract ancestors in exact
+and subtype modes; generated opaque carrier structs are never manufactured.
