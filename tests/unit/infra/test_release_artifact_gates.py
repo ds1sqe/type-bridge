@@ -700,8 +700,9 @@ def test_python_npm_publication_is_serial_after_global_candidate_gates() -> None
     )
     assert needs_line(core_publish) == (
         "    needs: [build-core-wheels, build-core-sdist, "
-        "release-tag-preflight, publish-server-oci]"
+        "release-tag-preflight, publish-server-oci, publish-crates]"
     )
+    assert "needs.publish-crates.result == 'success'" in core_publish
     assert needs_line(root_publish) == (
         "    needs: [build-python, release-tag-preflight, publish-core-pypi]"
     )
@@ -1420,3 +1421,8 @@ def test_publishers_consume_same_run_artifacts_and_recheck_the_frozen_tag() -> N
         assert 'test "$(jq -r \'.object.type\' <<<"$tag_json")" = commit' in check
         assert 'test "$(jq -r \'.object.sha\' <<<"$tag_json")" = "$RELEASE_REVISION"' in check
         assert 'test "$tag_object" = "$EXPECTED_RELEASE_TAG_OBJECT"' in check
+
+
+def test_stable_publication_requires_a_dated_changelog() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text()
+    assert "run: python scripts/ci/check_upgrade_guide.py --release" in workflow

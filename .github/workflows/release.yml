@@ -174,6 +174,10 @@ jobs:
           --expected-release-version "$RELEASE_VERSION"
           --expected-manifest-sha256 "${{ steps.cargo-candidate.outputs.manifest_sha256 }}"
 
+      - name: Require dated publication changelog
+        if: github.event_name == 'push'
+        run: python scripts/ci/check_upgrade_guide.py --release
+
       # Bind Python, npm, Cargo, and OCI artifacts to one release identity.
       - name: Validate identity and retained TypeDB package provenance
         run: |
@@ -2126,8 +2130,9 @@ jobs:
       needs.release-tag-preflight.result == 'success' &&
       needs.build-core-wheels.result == 'success' &&
       needs.build-core-sdist.result == 'success' &&
-      needs.publish-server-oci.result == 'success'
-    needs: [build-core-wheels, build-core-sdist, release-tag-preflight, publish-server-oci]
+      needs.publish-server-oci.result == 'success' &&
+      needs.publish-crates.result == 'success'
+    needs: [build-core-wheels, build-core-sdist, release-tag-preflight, publish-server-oci, publish-crates]
     runs-on: ubuntu-24.04
     environment: release
     permissions:

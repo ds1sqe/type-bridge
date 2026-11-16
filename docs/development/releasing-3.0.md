@@ -18,10 +18,15 @@ artifact hashes and public-consumer reports together as release evidence.
    Write `release-pr.md` with the reviewed changes and validation first. Merge
    through the PR after required checks and review; master uses PRs and branch
    protection may reject direct pushes. Preserve the reviewed release history.
+   Merging documentation to master deploys the 3.0 Pages site before registry
+   publication. Keep this interval short; the public examples require 3.0 and
+   are incompatible with the currently published 2.x packages.
 2. Immediately before the tagging phase, change `3.0.0 - Unreleased` in
    `CHANGELOG.md` to the actual publication date in a final PR. Merge that PR
    before accepting the final source. Do not date the changelog in a new commit
    after acceptance: every source-bound gate must cover the exact dated SHA.
+   `python scripts/ci/check_upgrade_guide.py --release` requires a valid
+   publication date; the tag workflow runs this gate before publication.
 3. Require complete attempt-one master CI on that SHA:
 
    ```bash
