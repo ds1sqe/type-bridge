@@ -308,3 +308,16 @@ def test_contract_document_pins_required_sections_and_implemented_import_status(
     assert "A seventeenth" in contract
     assert "no SQL wildcard meaning" in contract
     assert "does not accept handwritten descriptors" in contract
+
+
+def test_complex_fixture_surface_table_matches_canonical_string_operators() -> None:
+    readme = (ROOT / "tests/live/query_complex/README.md").read_text()
+    rows = {
+        parts[0]: parts
+        for line in readme.splitlines()
+        if line.startswith("| ")
+        if len(parts := [cell.strip() for cell in line.strip("|").split("|")]) == 8
+    }
+    for sdk in ("Python", "Node", "Rust", "C"):
+        assert rows[f"{sdk} manager filter"][2].startswith("No")
+    assert rows["Rust generic Plan"][2] == "Yes"

@@ -98,13 +98,13 @@ refer to the canonical filter unless the compatibility lookup is named.
 | Node typed query | Yes | Yes | Finite OR; IID set | Yes / Yes | Hydration only | Yes | Yes |
 | Rust typed query | Yes | Yes | Finite OR; IID set | Yes / Yes | Hydration only | Yes | Yes |
 | C typed query | Yes | Yes | Finite OR; IID set | Yes / Yes | Hydration only | Yes | Yes |
-| Python manager filter | Yes | Yes | Compatibility `__in` lookup | No / No | No | No | No |
-| Node manager filter | Yes | Yes | Compatibility `__in` lookup | No / No | No | No | No |
-| Rust manager filter | Yes | Yes | No | No / No | No | No | No |
-| C manager filter | Yes | Yes | No | No / No | No | No | No |
+| Python manager filter | Yes | No; compatibility string lookups only | Compatibility `__in` lookup | No / No | No | No | No |
+| Node manager filter | Yes | No; compatibility string lookups only | Compatibility `__in` lookup | No / No | No | No | No |
+| Rust manager filter | Yes | No | No | No / No | No | No | No |
+| C manager filter | Yes | No | No | No / No | No | No | No |
 | Python generic Plan | Yes | Yes in context DSL | No | No / No | No | Yes | No |
 | Node generic Plan | Yes | Yes in context DSL | No | No / No | No | Yes | No |
-| Rust generic Plan | Yes | No | No | No / No | No | Yes | No |
+| Rust generic Plan | Yes | Yes | No | No / No | No | Yes | No |
 | C generic Plan | Yes | No | No | No / No | No | Yes | No |
 | Python raw TypeQL | Yes | Yes | Server capability | Yes / Yes | Yes | Yes | Yes |
 | Node raw TypeQL | Yes | Yes | Server capability | Yes / Yes | Yes | Yes | Yes |
