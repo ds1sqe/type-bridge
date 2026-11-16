@@ -1296,6 +1296,32 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   `exchange_staged()` methods. Implement the required `capabilities()`
   (`GET /v3/capabilities`) and `exchange()` (`POST /v3/staged`), which every
   terminal and transaction now calls; move any `staged_*` override into them.
+- The server refuses to start from a configuration that relied on default
+  TypeDB credentials, and the C ABI refuses an empty password as well as a
+  missing or partial pair. Supply an explicit, non-empty username and
+  password. The Python, Node and Rust connection options apply the TypeDB
+  default pair only when both values are omitted; a partial pair or an empty
+  string is refused before any connection.
+- A raw transaction stays usable after a query error only while TypeDB keeps
+  the transaction open, which it does after a failed `match`. When TypeDB has
+  closed it, as after a failed insert or schema definition, further queries
+  are refused with `raw_transaction_failed` and commit or context exit
+  reports a definite abort.
+- The native Python package `type_bridge_core` no longer exports
+  `ValidationEngine`, `ValueCoercer`, `coerce_value`, `format_value` or the
+  unused schema-render and clear-attribute helpers. Its wildcard export is an
+  explicit public list.
+- The Node package root no longer exports the unused 2.x types `FilterInput`,
+  `AggregateInput`, `AttributeInput` and `RuntimeAttributeValue`, and the
+  `type-bridge-orm` crate root no longer exports `Expr` and `EntityQuery`.
+- Node rejects a negative `timeoutMilliseconds` everywhere; the staged API
+  used to treat a negative value as disabled. Use `0` to disable a timeout.
+- The `type-bridge-typedb-runtime` `ConnectOptions` and
+  `SecureConnectOptions` structs are `non_exhaustive`. Build them with
+  `Default` and assign fields; struct literals no longer compile.
+- Python rejects an unknown transaction kind, where a misspelled kind used to
+  open a read transaction, and rejects entering a transaction context that is
+  already open.
 
 <!-- --8<-- [end:breaking-3-0] -->
 
@@ -1706,6 +1732,20 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   together with its owned journal. A bare `Database` refuses while a journal
   database exists and names the safe path.
 
+- Every Node `timeoutMilliseconds` option accepts `number | bigint`. A number
+  must be a non-negative safe integer and a bigint a non-negative `u64`;
+  `0` disables the timeout. Returned timeout values remain `bigint`.
+
+- The Python package no longer depends on `pydantic`, `isodate`, `jinja2` or
+  `typer`, none of which it imported.
+
+- Python binding benchmarks measure the IID and canonical enum operations
+  that remain; the metric ids of the removed `ValidationEngine` benchmarks
+  are retired.
+
+- Examples forward the credential environment variables unchanged, so a
+  half-set environment is refused instead of being completed with a default.
+
 ### Fixed
 
 - A proxy request that exceeds the advertised budgets, such as more staged
@@ -1869,6 +1909,31 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
 
 - A generated Python connection keeps its configured HTTP port and
   credentials when its retained driver is used.
+
+- Closing a database immediately after a rejected typed query no longer
+  fails with `resource_in_use`. The transaction opened for the rejected
+  operation is closed, within a bounded wait, before the rejection is
+  returned, in Python, Node, Rust and C.
+
+- A generated Python connection keeps its TLS policy and the verified custom
+  root snapshot for both the native connection and the retained Python
+  driver, instead of falling back to plaintext for the driver.
+
+- Node lifecycle, raw-query, staged-kind and migration catalog errors are
+  `PlanError`s with stable codes, and the `resource_in_use` refusal on close
+  has its own message. Python, Node and C share one secure-connection error
+  mapping that carries no credentials or private key paths.
+
+- Python connection identity representations redact the password.
+
+- Node byte inputs to the record and archive codecs and to migration
+  catalogs are copied before use, and `SharedArrayBuffer` inputs are refused.
+
+- The Node package reports unsupported musl targets instead of loading a
+  glibc binary, no longer promises a source build from the npm tarball, and
+  its declarations compile without the DOM library.
+
+- The server builds with only its `typedb` feature enabled.
 
 ## [2.3.3] - 2026-10-27
 
