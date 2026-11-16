@@ -7094,7 +7094,9 @@ mod tests {
                 ControlledProviderResponse::Error(message) => {
                     Err(OrmError::QueryExecution(message.to_owned()))
                 }
-                ControlledProviderResponse::Deadline => Err(OrmError::ExecutionDiagnostic(Box::new(SdkExecutionDiagnostic::data_operation_deadline_exceeded()))),
+                ControlledProviderResponse::Deadline => Err(OrmError::ExecutionDiagnostic(
+                    Box::new(SdkExecutionDiagnostic::data_operation_deadline_exceeded()),
+                )),
                 ControlledProviderResponse::Cancelled => Err(OrmError::ExecutionDiagnostic(
                     Box::new(SdkExecutionDiagnostic::data_operation_cancelled()),
                 )),

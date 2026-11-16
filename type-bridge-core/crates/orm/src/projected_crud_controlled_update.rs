@@ -1281,9 +1281,24 @@ mod tests {
                                 .take(self.roots)
                                 .enumerate()
                                 .map(|(position, iid)| {
-                                    let index = input_indexes
-                                        .as_ref()
-                                        .map_or(0, |indexes| indexes[position]);
+                                    let index = input_indexes.as_ref().map_or_else(
+                                        || {
+                                            entry
+                                                .rows()
+                                                .first()
+                                                .and_then(|row| row.values().first())
+                                                .and_then(Option::as_ref)
+                                                .and_then(|value| {
+                                                    if let CanonicalValue::Long(index) = value {
+                                                        usize::try_from(*index).ok()
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                                .unwrap_or(0)
+                                        },
+                                        |indexes| indexes[position],
+                                    );
                                     let mut row = vec![RemoteValue::Value {
                                         value: CanonicalValue::Long(index as i64),
                                     }];
@@ -2538,7 +2553,10 @@ mod tests {
                             assert_eq!(seen.len(), 1);
                             assert_eq!(seen[0].plans().len(), count.div_ceil(64));
                             if count <= 64 {
-                                assert_eq!(seen[0].plans()[0].plan().canonical_bytes().unwrap(), direct);
+                                assert_eq!(
+                                    seen[0].plans()[0].plan().canonical_bytes().unwrap(),
+                                    direct
+                                );
                             }
                             assert!(seen[0].plans().iter().all(|plan| plan.rows().len() <= 64));
                             assert_eq!(
@@ -2578,7 +2596,18 @@ mod tests {
                             .unwrap();
                         let seen = transport.seen.lock().unwrap();
                         assert_eq!(seen.len(), 2);
-                        assert_eq!(seen[1].plans()[0].plan().canonical_bytes().unwrap(), direct);
+                        assert_eq!(
+                            seen[1]
+                                .plans()
+                                .iter()
+                                .map(|plan| plan.plan().canonical_bytes().unwrap())
+                                .collect::<Vec<_>>(),
+                            seen[0]
+                                .plans()
+                                .iter()
+                                .map(|plan| plan.plan().canonical_bytes().unwrap())
+                                .collect::<Vec<_>>()
+                        );
                     }
                 }
             }
