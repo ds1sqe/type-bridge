@@ -7,7 +7,8 @@
   ],
   "exclude": [
     "tests/unit/type-check-except",
-    "tests/contracts/typed_query/python/documented_examples.py"
+    "tests/contracts/typed_query/python/documented_examples.py",
+    "tests/live/query_complex/python.py"
   ],
   "venvPath": ".",
   "venv": ".venv",
