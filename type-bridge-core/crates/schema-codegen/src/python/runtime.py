@@ -1397,7 +1397,8 @@ def connect(
     try:
         # Both transports consume the same retained root bytes, even if the
         # caller replaces the configured file after the native connection.
-        prepared = database._prepared_connection_options()
+        # This package-owned adapter shares Database's private transport lifecycle.
+        prepared = database._prepared_connection_options()  # pyright: ignore[reportPrivateUsage]
         native = projection.connect_direct(
             policy.endpoint,
             policy.database,
@@ -1412,8 +1413,8 @@ def connect(
             policy.query_limits,
         )
     except BaseException:
-        database._discard_uncommitted_transport()
+        database._discard_uncommitted_transport()  # pyright: ignore[reportPrivateUsage]
         raise
     setattr(database, "_native_database", native)
-    database._transport_committed = True
+    database._transport_committed = True  # pyright: ignore[reportPrivateUsage]
     return database
