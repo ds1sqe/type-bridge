@@ -229,6 +229,46 @@ fn plan_helpers_refuse_real_type_override_collisions() {
 }
 
 #[test]
+fn row_header_collisions_escape_only_the_view_payload_members() {
+    let source = "format: typebridge.schema/v2\nattributes:\n  kind: {value: integer}\n  deleted: {value: integer}\nentities:\n  item:\n    owns:\n      kind: {card: 1}\n      deleted: {card: 1}\n";
+    let generated = package(
+        source,
+        ProjectionConfig::c(CSymbolPrefix::new("acme").unwrap()),
+    )
+    .unwrap();
+    let header = std::str::from_utf8(generated.get("include/acme/models.h").unwrap()).unwrap();
+    assert!(header.contains("int64_t kindzk;") && header.contains("int64_t deletedzk;"));
+    let stage = Stage::new();
+    write_package(&generated, stage.path());
+    let consumer = stage.path().join("row-headers.c");
+    fs::write(&consumer, "#include <acme/models.h>\nvoid probe(void) { acme_item_values_t value; memset(&value, 0, sizeof(value)); value.kind = 1; value.deleted = 2; (void)&acme_item_kind; (void)&acme_item_deleted; (void)value; }\n").unwrap();
+    for (compiler, language, standard) in [("cc", "c", "c17"), ("c++", "c++", "c++17")] {
+        let output = Command::new(compiler)
+            .args([
+                "-x",
+                language,
+                &format!("-std={standard}"),
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-fsyntax-only",
+                "-I",
+            ])
+            .arg(runtime_include())
+            .arg("-I")
+            .arg(stage.path().join("include"))
+            .arg(&consumer)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn authoring_keyword_members_are_lossless_in_c_and_cpp() {
     let source = "format: typebridge.schema/v2\nattributes:\n  class: {value: integer}\n  int: {value: integer}\n  operator: {value: integer}\n  classz: {value: integer}\nentities:\n  item:\n    owns:\n      class: {card: 1}\n      int: {card: 1}\n      operator: {card: 1}\n      classz: {card: 1}\n";
     let generated = package(

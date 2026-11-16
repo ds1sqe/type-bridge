@@ -297,7 +297,7 @@ fn reserved_plan_handle_getter_names_escape_before_emission() {
         .unwrap();
     let plan = std::str::from_utf8(package.get("src/plan.rs").unwrap()).unwrap();
     assert!(plan.contains("pub fn where__"));
-    assert!(plan.contains("pub fn where_("));
+    assert!(plan.contains("pub fn where_<"));
 }
 
 #[test]
