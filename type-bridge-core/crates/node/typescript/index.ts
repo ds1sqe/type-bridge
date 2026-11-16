@@ -53,34 +53,6 @@ export type AttributeValue =
   | { value_type: "decimal"; value: string }
   | { value_type: "duration"; value: string };
 
-export type AttributeInput = Record<
-  string,
-  AttributeValue | AttributeValue[] | null | undefined
->;
-
-export interface FilterInput {
-  attr_name: string;
-  operator?: string;
-  value: AttributeValue;
-}
-
-export interface AggregateInput {
-  result_key: string;
-  function: string;
-  attr_name?: string | null;
-}
-
-export type RuntimeAttributeValue =
-  | { String: string }
-  | { Long: string }
-  | { Double: number }
-  | { Boolean: boolean }
-  | { Date: string }
-  | { DateTime: string }
-  | { DateTimeTZ: string }
-  | { Decimal: string }
-  | { Duration: string };
-
 export function string(value: string): AttributeValue {
   return { value_type: "string", value };
 }

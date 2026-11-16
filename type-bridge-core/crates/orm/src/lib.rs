@@ -4,6 +4,14 @@
 //! packages. This crate exposes connection, query, transaction, and verified
 //! runtime-projection execution; handwritten model traits, derives, registries,
 //! descriptors, managers, and schema authoring are not package-root APIs.
+//!
+//! Legacy dynamic expressions and entity queries are not SDK root exports:
+//! ```compile_fail
+//! use type_bridge_orm::Expr;
+//! ```
+//! ```compile_fail
+//! use type_bridge_orm::EntityQuery;
+//! ```
 
 #![deny(missing_docs)]
 
@@ -90,7 +98,7 @@ pub use execution_diagnostic::{
     lower_classified_commit_error, lower_execution_error, lower_match_error,
     lower_remote_query_diagnostic, query_resource_closed_diagnostic,
 };
-pub use expr::{Agg, AggResult, Expr, GroupByResult, SortDir};
+pub use expr::{Agg, AggResult, GroupByResult, SortDir};
 pub use filter::Filter;
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookRunner, LifecycleHook, PreHookResult, TypeKind,
@@ -138,7 +146,7 @@ pub use projected_query::{
     materialize_projected_query_result_with_cancellation,
 };
 pub use provider_runtime::ProviderRuntimeOwner;
-pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
+pub use query::{GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
 pub use query_connection::{OwnedQueryTarget, ProxyQueryConnection, QueryTarget, QueryTargetError};
 pub use query_execution_limits::{
     AnswerTransport, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES, DEFAULT_DIRECT_QUERY_BYTES,

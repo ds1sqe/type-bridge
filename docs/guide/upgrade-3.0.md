@@ -647,6 +647,14 @@ legacy limit fields to the current resource names, including `deadline_ms` to
 TypeScript.
 
 
+The native Python package no longer exports the legacy `ValidationEngine`,
+`ValueCoercer`, `coerce_value`, or `format_value` helpers. Its explicit
+`__all__` excludes private binding seams. Generated values and plan builders
+own validation and value conversion. Node removes the obsolete `FilterInput`,
+`AggregateInput`, `AttributeInput`, and `RuntimeAttributeValue` root types.
+The Rust ORM root no longer re-exports dynamic `Expr` or `EntityQuery`; use
+generated managers and typed plans.
+
 Legacy caller-owned query ASTs are removed. Build queries through generated
 models and typed plan builders; raw TypeQL goes through the explicit raw
 transaction API. Rust engine callers retain `QueryCompiler::compile_typed_*`
@@ -658,7 +666,7 @@ and `prepare_typed_*` for canonical typed operations.
 | Rust `QueryCompiler::{compile, compile_node, compile_clause, compile_pattern, compile_statement, compile_constraint, compile_value, try_compile, try_compile_node}` | `compile_typed_*` / `prepare_typed_*` |
 | Rust `query_parser::{parse_typeql_query, parse_typeql_query_checked, QueryParseError}` | Official TypeQL parsing for parser integrations; explicit raw transactions for execution |
 | Python `QueryCompiler` (including `compile`, `compile_dicts`, `compile_node`, `compile_clause_body`, `parse` and private `_compile_query`, `_compile_batch`, `_compile_fetch_items`, `_compile_node`, `_compile_clause_body`) and `parse_typeql_query` | Generated queries and typed plan builders |
-| Rust and Python `ValidationEngine::{validate_pattern, validate_statement, validate_query}`; Python `_ArchivedTypeSchema.validate_query` | Typed query/plan validation; identifier and custom entity-rule validation remain available |
+| Rust `ValidationEngine::{validate_pattern, validate_statement, validate_query}`; Python `ValidationEngine` and `_ArchivedTypeSchema.validate_query` | Typed query/plan validation; Rust identifier and custom entity-rule validation remain available |
 | Rust `_parser::parse_typeql`, `_schema::TypeSchema::from_typeql`; Python `_ArchivedTypeSchema.from_typeql` | Split-YAML schema authority and checked schema adapters |
 | Rust `AttributeValue::to_ast_value`, `Expr::to_patterns`, `Agg::to_reduce_assignment` | Pass values and expressions directly to native plan builders |
 

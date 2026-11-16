@@ -2,10 +2,8 @@
 //!
 //! PyO3 bindings that expose the **type-bridge** Rust core to Python.
 //!
-//! This crate provides native plan execution, projections and wrappers around
-//! [`type_bridge_core_lib::validation::ValidationEngine`],
-//! [`type_bridge_core_lib::_schema::TypeSchema`], and
-//! [`type_bridge_core_lib::value_coercion::ValueCoercer`].
+//! This crate provides native plan execution, generated projections and private
+//! archived-schema seams over the shared Rust engine.
 //!
 //! All complex types cross the Python ↔ Rust boundary via
 //! `pythonize` / `depythonize` using serde-tagged-enum dicts.
@@ -48,103 +46,8 @@ pub mod version;
 use type_bridge_core_lib as core;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyList};
-use pythonize::{depythonize, pythonize};
-
-/// Python-facing wrapper around the Rust [`type_bridge_core_lib::validation::ValidationEngine`].
-#[pyclass]
-pub struct ValidationEngine {
-    inner: core::validation::ValidationEngine,
-}
-
-#[pymethods]
-impl ValidationEngine {
-    #[new]
-    fn new() -> Self {
-        ValidationEngine {
-            inner: core::validation::ValidationEngine::new(),
-        }
-    }
-
-    fn validate_type_name(&self, name: String, context: String) -> PyResult<bool> {
-        let result = self.inner.validate_type_name(&name, &context);
-        if !result.is_valid {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                result.errors[0].message.clone(),
-            ));
-        }
-        Ok(true)
-    }
-
-    fn validate_variable_name(&self, name: String, context: String) -> PyResult<bool> {
-        let errors = self.inner.validate_variable_name(&name, &context, "");
-        if !errors.is_empty() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                errors[0].message.clone(),
-            ));
-        }
-        Ok(true)
-    }
-
-    /// Add a single rule from a Python dict.
-    fn add_rule(&mut self, rule_dict: Bound<'_, PyAny>) -> PyResult<()> {
-        let rule: core::validation::ValidationRule = depythonize(&rule_dict).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("Failed to deserialize rule: {}", e))
-        })?;
-        self.inner
-            .add_rule(rule)
-            .map_err(pyo3::exceptions::PyValueError::new_err)
-    }
-
-    /// Load rules from a JSON string. Returns list of warning strings.
-    fn load_rules(&mut self, json_str: &str) -> PyResult<Vec<String>> {
-        self.inner
-            .load_rules(json_str)
-            .map_err(pyo3::exceptions::PyValueError::new_err)
-    }
-
-    /// Export current rules as a JSON string.
-    fn export_rules(&self) -> PyResult<String> {
-        self.inner
-            .export_rules()
-            .map_err(pyo3::exceptions::PyValueError::new_err)
-    }
-
-    /// Remove all rules.
-    fn clear_rules(&mut self) {
-        self.inner.clear_rules();
-    }
-
-    /// Get the number of loaded rules.
-    fn rule_count(&self) -> usize {
-        self.inner.rule_count()
-    }
-
-    /// Validate entity data (as a Python dict) against loaded rules.
-    ///
-    /// Returns a dict with `is_valid` and `errors` keys.
-    #[pyo3(signature = (entity_data, schema=None))]
-    fn validate_entity(
-        &self,
-        py: Python<'_>,
-        entity_data: Bound<'_, PyAny>,
-        schema: Option<&TypeSchema>,
-    ) -> PyResult<Py<PyAny>> {
-        let json_data: serde_json::Value = depythonize(&entity_data).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "Failed to deserialize entity data: {}",
-                e
-            ))
-        })?;
-
-        let schema_ref = schema.map(|s| &s.inner);
-        let result = self.inner.validate_entity(&json_data, schema_ref);
-
-        pythonize(py, &result)
-            .map(|obj| obj.unbind())
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
-    }
-}
+use pyo3::types::{PyDict, PyList};
+use pythonize::pythonize;
 
 /// Python-facing wrapper around the Rust [`type_bridge_core_lib::_schema::TypeSchema`].
 #[pyclass(name = "_ArchivedTypeSchema", module = "type_bridge_core")]
@@ -239,70 +142,6 @@ impl TypeSchema {
     }
 }
 
-/// Python-facing wrapper around the Rust [`type_bridge_core_lib::value_coercion::ValueCoercer`].
-#[pyclass]
-pub struct ValueCoercer {
-    inner: core::value_coercion::ValueCoercer,
-}
-
-#[pymethods]
-impl ValueCoercer {
-    #[new]
-    fn new() -> Self {
-        ValueCoercer {
-            inner: core::value_coercion::ValueCoercer::new(),
-        }
-    }
-
-    /// Coerce a value to a target TypeDB type. Returns dict with "value" and "value_type".
-    fn coerce(
-        &self,
-        py: Python<'_>,
-        value: Bound<'_, PyAny>,
-        target_type: &str,
-    ) -> PyResult<Py<PyAny>> {
-        let json_val = py_to_json_value(&value)?;
-        let coerced = self
-            .inner
-            .coerce(&json_val, target_type)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        coerced_value_to_python(py, &coerced)
-    }
-
-    /// Batch coerce. Takes list of (value, type) tuples, returns list of dicts.
-    fn coerce_batch(
-        &self,
-        py: Python<'_>,
-        pairs: Vec<(Bound<'_, PyAny>, String)>,
-    ) -> PyResult<Py<PyAny>> {
-        let json_pairs: Vec<(serde_json::Value, String)> = pairs
-            .iter()
-            .map(|(v, t)| Ok((py_to_json_value(v)?, t.clone())))
-            .collect::<PyResult<Vec<_>>>()?;
-        let results = self.inner.coerce_batch(&json_pairs);
-        let py_results: Vec<Py<PyAny>> = results
-            .into_iter()
-            .map(|r| match r {
-                Ok(cv) => coerced_value_to_python(py, &cv),
-                Err(e) => Err(pyo3::exceptions::PyValueError::new_err(e.to_string())),
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        Ok(pyo3::types::PyList::new(py, &py_results)?
-            .into_any()
-            .unbind())
-    }
-
-    /// Format a value for TypeQL given its known type. Returns TypeQL literal string.
-    fn format_typeql(&self, value: Bound<'_, PyAny>, value_type: &str) -> PyResult<String> {
-        let json_val = py_to_json_value(&value)?;
-        let coerced = core::value_coercion::CoercedValue {
-            value: json_val,
-            value_type: value_type.to_string(),
-        };
-        Ok(self.inner.format_typeql(&coerced))
-    }
-}
-
 fn pythonize_serde_value<T>(py: Python<'_>, value: &T) -> PyResult<Py<PyAny>>
 where
     T: serde::Serialize + ?Sized,
@@ -365,190 +204,6 @@ fn json_value_to_python(py: Python<'_>, value: &serde_json::Value) -> PyResult<P
     }
 }
 
-fn coerced_value_to_python(
-    py: Python<'_>,
-    coerced: &core::value_coercion::CoercedValue,
-) -> PyResult<Py<PyAny>> {
-    let result = PyDict::new(py);
-    result.set_item("value", json_value_to_python(py, &coerced.value)?)?;
-    result.set_item("value_type", &coerced.value_type)?;
-    Ok(result.into_any().unbind())
-}
-
-/// Convert a Python object to a serde_json::Value for Rust processing.
-fn py_to_json_value(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
-    // Check bool before int (Python bool is subclass of int)
-    if value.is_instance_of::<PyBool>() {
-        return Ok(serde_json::Value::Bool(value.extract::<bool>()?));
-    }
-    if value.is_none() {
-        return Ok(serde_json::Value::Null);
-    }
-    if let Ok(s) = value.extract::<String>() {
-        return Ok(serde_json::Value::String(s));
-    }
-    if let Ok(i) = value.extract::<i64>() {
-        return Ok(serde_json::json!(i));
-    }
-    if let Ok(f) = value.extract::<f64>() {
-        return Ok(serde_json::json!(f));
-    }
-    // Fallback: convert to string
-    let s = value.str()?.to_string();
-    Ok(serde_json::Value::String(s))
-}
-
-/// Detect the TypeDB value type from a Python object and return (formatted_string, type_hint).
-/// This handles the Python type dispatch that cannot be done in pure Rust.
-fn render_python_literal(value: serde_json::Value, value_type: &str) -> PyResult<String> {
-    core::__internal::literal_from_json(&value, value_type)
-        .map(|value| core::__internal::render_expression(&value))
-        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
-}
-
-fn detect_type_and_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
-    let py = value.py();
-
-    // 1. Unwrap Attribute instances (extract .value)
-    let value = if value.hasattr("value")? {
-        let inner = value.getattr("value")?;
-        // Guard: don't unwrap if .value is a method or the object is a string/bool/int
-        // (strings have .value... no they don't in Python, but be safe)
-        if inner.is_none() {
-            return render_python_literal(serde_json::json!("None"), "string");
-        }
-        inner
-    } else {
-        value.clone()
-    };
-
-    // 2. Check bool BEFORE int (Python bool is subclass of int)
-    if value.is_instance_of::<PyBool>() {
-        let b: bool = value.extract()?;
-        return render_python_literal(serde_json::json!(b), "boolean");
-    }
-
-    // 3. Check for Decimal (from decimal module)
-    let decimal_mod = py.import("decimal")?;
-    let decimal_type = decimal_mod.getattr("Decimal")?;
-    if value.is_instance(&decimal_type)? {
-        let s = value.str()?.to_string();
-        return render_python_literal(serde_json::json!(s), "decimal");
-    }
-
-    // 4. Check float BEFORE int (0.0 must format as "0.0", not "0")
-    //    Python's str(0.0) returns "0.0" but Rust's f64::to_string() returns "0"
-    //    So we must match Python's behavior by calling Python's str() on the float.
-    if value.is_instance_of::<pyo3::types::PyFloat>() {
-        let s = value.str()?.to_string();
-        return render_python_literal(serde_json::json!(s), "double");
-    }
-
-    // 5. Check int
-    if let Ok(i) = value.extract::<i64>() {
-        return render_python_literal(serde_json::json!(i), "long");
-    }
-
-    // 6. Check datetime (before date, since datetime is subclass of date)
-    let datetime_mod = py.import("datetime")?;
-    let datetime_type = datetime_mod.getattr("datetime")?;
-    if value.is_instance(&datetime_type)? {
-        let iso: String = value.call_method0("isoformat")?.extract()?;
-        let kind = if value.getattr("tzinfo")?.is_none() {
-            "datetime"
-        } else {
-            "datetime-tz"
-        };
-        return render_python_literal(serde_json::json!(iso), kind);
-    }
-
-    // 7. Check date
-    let date_type = datetime_mod.getattr("date")?;
-    if value.is_instance(&date_type)? {
-        let iso: String = value.call_method0("isoformat")?.extract()?;
-        return render_python_literal(serde_json::json!(iso), "date");
-    }
-
-    // 8. Check timedelta / isodate.Duration
-    let timedelta_type = datetime_mod.getattr("timedelta")?;
-    if value.is_instance(&timedelta_type)? {
-        // Use isodate.duration_isoformat() for formatting
-        let isodate_mod = py.import("isodate")?;
-        let formatted: String = isodate_mod
-            .call_method1("duration_isoformat", (&value,))?
-            .extract()?;
-        return render_python_literal(serde_json::json!(formatted), "duration");
-    }
-
-    // 9. Check for isodate.Duration explicitly (it may not be a timedelta subclass)
-    if let Ok(isodate_mod) = py.import("isodate")
-        && let Ok(duration_type) = isodate_mod.getattr("Duration")
-        && value.is_instance(&duration_type)?
-    {
-        let formatted: String = isodate_mod
-            .call_method1("duration_isoformat", (&value,))?
-            .extract()?;
-        return render_python_literal(serde_json::json!(formatted), "duration");
-    }
-
-    // 10. String (check last among common types)
-    if let Ok(s) = value.extract::<String>() {
-        return render_python_literal(serde_json::json!(s), "string");
-    }
-
-    // 11. Fallback: convert to string, then quote+escape
-    let s = value.str()?.to_string();
-    render_python_literal(serde_json::json!(s), "string")
-}
-
-/// Standalone function: format a Python value for TypeQL (infers type).
-/// Direct replacement for Python's format_value().
-#[pyfunction]
-fn format_value(value: Bound<'_, PyAny>) -> PyResult<String> {
-    detect_type_and_format(&value)
-}
-
-#[pyfunction]
-fn _clear_attribute_query(
-    type_name: &str,
-    iid: &str,
-    variable: &str,
-    attributes: Vec<String>,
-) -> PyResult<String> {
-    use core::__internal as tql;
-    let build = || -> Result<String, tql::TqlError> {
-        let mut patterns = vec![tql::thing(
-            variable,
-            vec![tql::isa(type_name, false)?, tql::iid(iid)?],
-        )?];
-        let mut deletables = Vec::new();
-        for (index, name) in attributes.iter().enumerate() {
-            let old = format!("$old_attr_{index}");
-            patterns.push(tql::optional(vec![
-                tql::thing(variable, vec![tql::has(name, tql::var(&old)?)?])?,
-                tql::thing(&old, vec![tql::isa(name, false)?])?,
-            ]));
-            deletables.push(tql::delete_optional(vec![tql::delete_has(variable, &old)?]));
-        }
-        tql::render(&tql::pipeline(vec![
-            tql::match_stage(patterns),
-            tql::delete(deletables),
-        ]))
-    };
-    build().map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
-}
-
-/// Standalone coerce function.
-#[pyfunction]
-fn coerce_value(py: Python<'_>, value: Bound<'_, PyAny>, target_type: &str) -> PyResult<Py<PyAny>> {
-    let coercer = core::value_coercion::ValueCoercer::new();
-    let json_val = py_to_json_value(&value)?;
-    let coerced = coercer
-        .coerce(&json_val, target_type)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    coerced_value_to_python(py, &coerced)
-}
-
 /// Internal contract comparison without exposing upstream AST types.
 #[pyfunction]
 fn _typeql_queries_equivalent(left: &str, right: &str) -> PyResult<bool> {
@@ -573,13 +228,8 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(not(feature = "perf-stages"))]
     debug::install();
     m.add_class::<iid::PyIid>()?;
-    m.add_class::<ValidationEngine>()?;
     m.add_class::<TypeSchema>()?;
-    m.add_class::<ValueCoercer>()?;
     m.add_function(wrap_pyfunction!(_typeql_queries_equivalent, m)?)?;
-    m.add_function(wrap_pyfunction!(format_value, m)?)?;
-    m.add_function(wrap_pyfunction!(_clear_attribute_query, m)?)?;
-    m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
 
     // ORM CRUD query builder
@@ -599,5 +249,12 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     schema::register(m)?;
     version::register(m)?;
 
+    let public = m
+        .getattr("__all__")?
+        .extract::<Vec<String>>()?
+        .into_iter()
+        .filter(|name| !name.starts_with('_'))
+        .collect::<Vec<_>>();
+    m.setattr("__all__", public)?;
     Ok(())
 }

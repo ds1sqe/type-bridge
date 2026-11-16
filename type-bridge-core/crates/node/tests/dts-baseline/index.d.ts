@@ -36,36 +36,6 @@ export type AttributeValue = {
     value_type: "duration";
     value: string;
 };
-export type AttributeInput = Record<string, AttributeValue | AttributeValue[] | null | undefined>;
-export interface FilterInput {
-    attr_name: string;
-    operator?: string;
-    value: AttributeValue;
-}
-export interface AggregateInput {
-    result_key: string;
-    function: string;
-    attr_name?: string | null;
-}
-export type RuntimeAttributeValue = {
-    String: string;
-} | {
-    Long: string;
-} | {
-    Double: number;
-} | {
-    Boolean: boolean;
-} | {
-    Date: string;
-} | {
-    DateTime: string;
-} | {
-    DateTimeTZ: string;
-} | {
-    Decimal: string;
-} | {
-    Duration: string;
-};
 export declare function string(value: string): AttributeValue;
 export declare function long(value: bigint): AttributeValue;
 export declare function longFromNumberUnsafe(value: number): AttributeValue;

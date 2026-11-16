@@ -70,16 +70,12 @@ export {
 export type {
   WriteResult,
   ProviderFailure,
-  AggregateInput,
-  AttributeInput,
   AttributeValue,
   EnsureDatabaseOptions,
-  FilterInput,
   PlanErrorCategory,
   PlanErrorDetail,
   PlanErrorPathSegment,
   DatabaseConnectOptions,
-  RuntimeAttributeValue,
   TransactionType,
   ValueType,
 } from "./index.js";
