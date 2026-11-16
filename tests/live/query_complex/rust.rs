@@ -60,7 +60,8 @@ async fn main() -> Result<()> {
     let l = s.exact::<Located>()?;
     let z = s.exact::<CompanyOffice>()?;
     let abstract_binding = s.subtypes::<Party>()?;
-    let limit: u64 = std::env::var("TYPE_BRIDGE_COMPLEX_SIZE")?.parse::<u64>()? + 1;
+    let size: u64 = std::env::var("TYPE_BRIDGE_COMPLEX_SIZE")?.parse()?;
+    let limit = size + 1;
     let width: u32 = std::env::var("TYPE_BRIDGE_COMPLEX_WIDTH")
         .unwrap_or_else(|_| "12".into())
         .parse()?;
@@ -282,7 +283,7 @@ async fn main() -> Result<()> {
             .first()
             .await?
             .is_some(),
-        limit > 2
+        size >= 2
     );
     println!(
         "{}",

@@ -34,7 +34,8 @@ async function main(): Promise<void> {
       assert(answer.kind === "count");
       assert.equal(answer.value, Number(Party.manager(db).count()));
     } finally { abstractTransaction.close(); }
-    const limit = BigInt(process.env.TYPE_BRIDGE_COMPLEX_SIZE!) + 1n;
+    const size = BigInt(process.env.TYPE_BRIDGE_COMPLEX_SIZE!);
+    const limit = size + 1n;
     const s = new QuerySession(db);
     const p = s.subtypes(Person), c = s.exact(Company), d = s.exact(Department);
     const j = s.exact(Project), t = s.exact(Task), o = s.exact(Office);
@@ -83,7 +84,7 @@ async function main(): Promise<void> {
     assert.equal((await tagged.all()).length, Number(await tagged.count()));
     assert.equal(await tagged.exists(), (await tagged.count()) > 0n);
     const firstTagged = await tagged.where(Party.identifier, "eq", Identifier.create("P0002")).first();
-    assert.equal(firstTagged !== null, limit > 2n);
+    assert.equal(firstTagged !== null, size >= 2n);
     console.log(JSON.stringify({
       page_id: page.items[0]?.identifier.value ?? null,
       groups: grouped.map(([key, values]) => [key.value, Number(values[0])]).sort(),

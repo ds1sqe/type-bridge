@@ -224,7 +224,8 @@ static uint64_t abstract_subtypes_plan_count(void) {
 int main(void) {
   const char *width_env = getenv("TYPE_BRIDGE_COMPLEX_WIDTH");
   unsigned width = width_env ? (unsigned)strtoul(width_env, NULL, 10) : 12u;
-  uint64_t limit = strtoull(getenv("TYPE_BRIDGE_COMPLEX_SIZE"), NULL, 10) + 1;
+  uint64_t size = strtoull(getenv("TYPE_BRIDGE_COMPLEX_SIZE"), NULL, 10);
+  uint64_t limit = size + 1;
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_runtime_config_v1_t runtime_config = {0};
   runtime_config.struct_size = sizeof(runtime_config);
@@ -645,7 +646,7 @@ int main(void) {
   type_bridge_projected_thing_t *first_tagged = NULL;
   OK(type_bridge_database_manager_first(db, next_filter, NULL, NULL,
                                         &first_tagged, &diagnostics));
-  assert((first_tagged != NULL) == (limit > 2u));
+  assert((first_tagged != NULL) == (size >= 2u));
   OK(type_bridge_projected_thing_close(&first_tagged));
   OK(type_bridge_manager_filter_close(&next_filter));
   OK(tb_complex_identifier_close(&key));

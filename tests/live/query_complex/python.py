@@ -59,7 +59,8 @@ async def main() -> None:
         database=os.environ["TYPE_BRIDGE_COMPLEX_DATABASE"],
         http_port=int(os.environ["TYPEDB_HTTP_PORT"]),
     )
-    limit = int(os.environ["TYPE_BRIDGE_COMPLEX_SIZE"]) + 1
+    size = int(os.environ["TYPE_BRIDGE_COMPLEX_SIZE"])
+    limit = size + 1
     db.connect()
     try:
         if raw := os.environ.get("TYPE_BRIDGE_COMPLEX_RAW_QUERY"):
@@ -249,7 +250,7 @@ async def main() -> None:
         first_tagged = tagged.where(
             Party.identifier, ProjectedManagerComparison.EQ, Identifier("P0002")
         ).first()
-        assert (first_tagged is not None) == (limit > 2)
+        assert (first_tagged is not None) == (size >= 2)
         print(
             json.dumps(
                 {
