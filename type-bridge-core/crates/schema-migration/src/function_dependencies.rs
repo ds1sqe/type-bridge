@@ -137,6 +137,14 @@ pub(crate) fn diff_managed(
     context: &ManagedDeltaContext,
 ) -> Result<SchemaDelta, DeltaError> {
     for fact in source.facts().chain(target.facts()) {
+        if matches!(fact, SchemaFact::Struct(_))
+            && source.fact(&fact.id()) != target.fact(&fact.id())
+        {
+            return Err(failure("unsupported_struct_migration",
+                "canonical migrations do not support struct definitions or changes in TypeBridge 3.0").into());
+        }
+    }
+    for fact in source.facts().chain(target.facts()) {
         if let SchemaFact::Annotation(annotation) = fact
             && let type_bridge_contract::schema::AnnotationSubjectId::Function(id) =
                 annotation.id().subject()

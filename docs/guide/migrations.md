@@ -81,6 +81,13 @@ authority.
 
 ## State authority
 
+Canonical migrations in 3.0 support function add/remove and role specialization.
+Struct transitions and `@distinct` ordered interfaces are refused before
+publication. `schema check` reports struct declarations when any workspace
+environment enables migration. The Split-YAML reference fixture can be migrated;
+the complete SDK conformance model remains a projection fixture because it
+contains structs and distinct ordered interfaces.
+
 Tightening an ownership maximum is conditional: the generated migration
 checks existing ownership counts in the schema transaction before changing
 `card`. Raising a minimum can still require backfill. Removing an ownership

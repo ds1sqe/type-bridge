@@ -613,3 +613,31 @@ fn schema_generate_rejects_hostile_c_target_before_publishing_any_new_output() {
         "schema authority was published despite an earlier batch rejection",
     );
 }
+
+#[test]
+fn structs_refuse_migration_authoring_and_migration_enabled_schema_check() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    fs::write(root.join("schema/model.yaml"), "format: typebridge.schema/v2\nstructs:\n  stats:\n    fields: [{name: wins, type: integer}]\n").unwrap();
+    let manifest = "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: struct-check\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: structs\nenvironments:\n  dev:\n    database: unused\n    uri: localhost:1730\n    migrate: 'false'\n    credential:\n      username: env:UNRESOLVED_USERNAME\n      password: env:UNRESOLVED_PASSWORD\n";
+    fs::write(root.join("typebridge.yaml"), manifest).unwrap();
+    assert_success(
+        &run_cli(root, &["schema", "check"]),
+        "struct-only schema remains valid",
+    );
+    let output = run_cli(root, &["migration", "make", "--name", "initial"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported_struct_migration"));
+    fs::write(
+        root.join("typebridge.yaml"),
+        manifest.replace("migrate: 'false'", "migrate: 'true'"),
+    )
+    .unwrap();
+    assert!(!run_cli(root, &["schema", "check"]).status.success());
+}

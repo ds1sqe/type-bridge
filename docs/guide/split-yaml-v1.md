@@ -193,6 +193,14 @@ structs:
         optional: true
 ```
 
+Struct declarations can be checked and projected, but canonical migrations
+cannot define, remove or change structs in TypeBridge 3.0. A workspace with a
+`migrate: true` environment refuses structs during `schema check`. Use ordinary
+attributes for deployable data, or keep struct schemas outside migration-enabled
+workspaces. The full SDK conformance model also contains `@distinct` ordered
+interfaces, which are outside the supported migration grammar; it is a codegen
+fixture rather than an executable migration workspace.
+
 Function parameters and returns are structured, while `body.typeql` retains
 the provider function body as a typed literal:
 

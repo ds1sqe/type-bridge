@@ -263,6 +263,22 @@ impl TypeBridgeWorkspace {
             SchemaDiscoveryLimits::default(),
         )?;
         let declared = normalize_documents(discovery.documents())?;
+        if config
+            .environments()
+            .values()
+            .any(|environment| environment.migrate())
+        {
+            for fact in declared.facts() {
+                if let type_bridge_contract::schema::SchemaFact::Struct(structure) = fact {
+                    return Err(SchemaDiagnostics::one(type_bridge_contract::schema::SchemaDiagnostic::new(
+                        Diagnostic::new(type_bridge_contract::diagnostic::DiagnosticCategory::UnsupportedCapability,
+                            type_bridge_contract::diagnostic::DiagnosticCode::new("unsupported_struct_migration").expect("static diagnostic"),
+                            format!("struct {} cannot be deployed by canonical migrations in TypeBridge 3.0; remove it or disable migration environments", structure.id().label().as_str())),
+                        declared.source(&fact.id()).cloned(),
+                    )).into());
+                }
+            }
+        }
 
         let required_capabilities = declared
             .required_capabilities()
