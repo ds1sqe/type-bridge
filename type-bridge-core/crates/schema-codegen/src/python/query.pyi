@@ -4368,16 +4368,16 @@ class QuerySession(Generic[_Mode]):
         domain: type[DomainT],
     ) -> FunctionCall[DomainT]: ...
     def reachable[
-        SourceT: ModelBase,
-        TargetT: ModelBase,
+        SourceBindingT: _MatchBinding,
+        TargetBindingT: _MatchBinding,
         RelationT: RelationBase,
     ](
         self,
-        source: BoundVar[SourceT],
-        target: BoundVar[TargetT],
+        source: SourceBindingT,
+        target: TargetBindingT,
         relation: type[RelationT],
-        role_from: RoleToken[RelationT, SourceT, BoundVar[SourceT]],
-        role_to: RoleToken[RelationT, TargetT, BoundVar[TargetT]],
+        role_from: RoleToken[RelationT, ModelBase, SourceBindingT],
+        role_to: RoleToken[RelationT, ModelBase, TargetBindingT],
         *,
         min_depth: int,
         max_depth: int,

@@ -1,6 +1,5 @@
 import { Iid } from "@type-bridge/node";
 import {
-  Actor,
   Container,
   Employment,
   Event,
@@ -50,7 +49,6 @@ const personVar = querySession.var(Person);
 personVar.field(Person.identifier).asc("first");
 const eventVar = querySession.var(Event);
 const employmentVar = querySession.var(Employment);
-const exactActorVar = querySession.exact(Actor);
 const exactRobotVar = querySession.exact(Robot);
 const subtypeRobotVar = querySession.subtypes(Robot);
 declare const booleanCall: FunctionCall<boolean>;
@@ -91,8 +89,6 @@ personVar.field(Person.identifier).eq(Score.create(3n));
 qualifyingScore(querySession, personVar, booleanCall);
 // @ts-expect-error generated relation roles retain their accepted player union
 employmentVar.role(Employment.employee).links(eventVar);
-// @ts-expect-error an exact abstract ancestor is not itself an accepted player
-eventVar.role(Event.subject).links(exactActorVar);
 // @ts-expect-error an unrelated concrete subtype remains rejected
 eventVar.role(Event.subject).links(exactRobotVar);
 // @ts-expect-error a subtype root whose closure has no accepted player remains rejected

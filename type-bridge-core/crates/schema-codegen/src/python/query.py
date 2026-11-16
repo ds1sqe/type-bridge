@@ -76,9 +76,9 @@ from ._runtime import (
     ModelBase,
     RelationBase,
     RoleToken,
-    _model_is_abstract,
     attribute_model_for_query_label,
     function_identity_for_query,
+    model_is_abstract,
 )
 from ._schema import SEMANTIC_SCHEMA_FINGERPRINT_JSON
 
@@ -670,7 +670,7 @@ class BoundVar(_Frozen):
         return self.__projection
 
     def model_domain_labels(self) -> frozenset[str]:
-        if not self.__subtypes and not _model_is_abstract(self.__model):
+        if not self.__subtypes and not model_is_abstract(self.__model):
             return frozenset((_model_label(self.__model),))
         pending = [self.__model]
         labels: set[str] = set()

@@ -80,10 +80,13 @@ class EmploymentRow:
     employment: Employment
 
 
-type PersonRoleBinding = BoundVar[Person] | SubtypeBoundVar[Actor] | SubtypeBoundVar[Person]
+type PersonRoleBinding = (
+    BoundVar[Actor] | BoundVar[Person] | SubtypeBoundVar[Actor] | SubtypeBoundVar[Person]
+)
 type EventRoleBinding = BoundVar[Event] | SubtypeBoundVar[Event]
 type MembershipRoleBinding = (
-    BoundVar[Person]
+    BoundVar[Actor]
+    | BoundVar[Person]
     | BoundVar[Robot]
     | SubtypeBoundVar[Actor]
     | SubtypeBoundVar[Person]
@@ -228,6 +231,10 @@ async def check_direct() -> None:
     membership_var = query_session.exact(Membership)
     party_var = query_session.subtypes(Party)
     actor_var = query_session.subtypes(Actor)
+    assert_type(
+        query_session.exact(Event).role(Event.subject).links(query_session.exact(Actor)),
+        Predicate,
+    )
     interaction_var = query_session.exact(Interaction)
     assert_type(person_var, BoundVar[Person])
     assert_type(party_var, SubtypeBoundVar[Party])
@@ -283,6 +290,19 @@ async def check_direct() -> None:
         tuple[tuple[tuple[ValBool, Score], tuple[int]], ...],
     )
 
+    for abstract_actor in (query_session.exact(Actor), query_session.subtypes(Actor)):
+        assert_type(
+            query_session.reachable(
+                abstract_actor,
+                abstract_actor,
+                Event,
+                Event.subject,
+                Event.subject,
+                min_depth=0,
+                max_depth=3,
+            ),
+            Predicate,
+        )
     employee = employment_var.role(Employment.employee).links(person_var)
     membership_member = membership_var.role(Membership.member).links(person_var)
     interaction_actor = interaction_var.role(Interaction.actor).links(actor_var)

@@ -779,7 +779,7 @@ def _is_attribute_class(value: object) -> TypeGuard[type[AttributeBase]]:
     return isinstance(value, type) and issubclass(value, AttributeBase)
 
 
-def _model_is_abstract(model: type[ModelBase]) -> bool:
+def model_is_abstract(model: type[ModelBase]) -> bool:
     declaration = _mapping(model.__projection__["declaration"])
     return _boolean(declaration["is_abstract"])
 
@@ -851,7 +851,7 @@ def _owner_lookup(
         candidates = tuple(
             candidate
             for candidate in _package_models
-            if issubclass(candidate, expected_base) and not _model_is_abstract(candidate)
+            if issubclass(candidate, expected_base) and not model_is_abstract(candidate)
         )
     else:
         if not _is_model_class(model) or not issubclass(model, expected_base):
@@ -861,7 +861,7 @@ def _owner_lookup(
         candidates = tuple(
             candidate
             for candidate in _package_models
-            if issubclass(candidate, model) and not _model_is_abstract(candidate)
+            if issubclass(candidate, model) and not model_is_abstract(candidate)
         )
 
     attribute_label = _attribute_label(attribute)

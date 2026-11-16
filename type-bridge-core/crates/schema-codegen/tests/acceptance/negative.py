@@ -56,7 +56,9 @@ def person(identifier: Identifier) -> Person:
     )
 
 
-type PersonRoleBinding = BoundVar[Person] | SubtypeBoundVar[Actor] | SubtypeBoundVar[Person]
+type PersonRoleBinding = (
+    BoundVar[Actor] | BoundVar[Person] | SubtypeBoundVar[Actor] | SubtypeBoundVar[Person]
+)
 
 
 def accepts_employment_role(
@@ -111,16 +113,21 @@ query_session = Person.query(Database(address="localhost:1729", database="genera
 person_var = query_session.exact(Person)
 person_var.field(Person.score).asc(missing="first")  # E: removed_missing_order:reportCallIssue
 employment_var = query_session.exact(Employment)
-exact_actor_var = query_session.exact(Actor)
 exact_robot_var = query_session.exact(Robot)
 subtype_robot_var = query_session.subtypes(Robot)
+query_session.reachable(
+    exact_robot_var,
+    person_var,
+    Event,
+    Event.subject,  # E: unrelated_reachable_player:reportArgumentType
+    Event.subject,
+    min_depth=0,
+    max_depth=3,
+)
 person_var.field(Employment.employee)  # E: wrong_query_owner:reportArgumentType
 person_var.field(Person.score).ge(Identifier("wrong"))  # E: wrong_query_value:reportArgumentType
 employment_var.role(Employment.employee).links(
     query_session.exact(Event)  # E: wrong_query_player:reportArgumentType
-)
-query_session.exact(Event).role(Event.subject).links(
-    exact_actor_var  # E: exact_abstract_query_player:reportArgumentType
 )
 query_session.exact(Event).role(Event.subject).links(
     exact_robot_var  # E: unrelated_exact_query_player:reportArgumentType

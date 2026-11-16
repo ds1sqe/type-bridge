@@ -141,6 +141,7 @@ const eventVar = querySession.var(Event);
 const employmentVar = querySession.var(Employment);
 const partyVar = querySession.subtypes(Party);
 const actorVar = querySession.subtypes(Actor);
+void eventVar.role(Event.subject).links(querySession.exact(Actor));
 const interactionVar = querySession.exact(Interaction);
 const identifierPredicate = personVar.field(Person.identifier).eq(identifier);
 const presentPredicate: Predicate = personVar.field(Person.score).isPresent();
