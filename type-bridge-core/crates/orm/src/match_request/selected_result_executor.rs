@@ -286,37 +286,18 @@ impl ExecutionBudget {
     }
 }
 
-pub(crate) async fn dispatch_failed_execution_close(
+pub(crate) async fn finish_failed_execution_close(
     mut transaction: Transaction,
 ) -> Option<Result<(), OrmError>> {
-    let mut close = Box::pin(async move {
-        transaction
-            .close()
-            .await
-            .map_err(provider_transaction_close_error)
-    });
-    let immediate = std::future::poll_fn(|context| {
-        Poll::Ready(match close.as_mut().poll(context) {
-            Poll::Ready(result) => Some(result),
-            Poll::Pending => None,
-        })
-    })
-    .await;
-    if immediate.is_none() {
-        let _cleanup_task = tokio::spawn(async move {
-            match tokio::time::timeout(OWNED_TRANSACTION_CLOSE_GRACE, close).await {
-                Ok(Ok(())) => {}
-                Ok(Err(close_error)) => tracing::warn!(
-                    %close_error,
-                    "owned match transaction background cleanup failed"
-                ),
-                Err(_) => {
-                    tracing::warn!("owned match transaction background cleanup exceeded its grace")
-                }
-            }
-        });
+    // Release the owned provider before delivering a rejection, so callers
+    // can immediately close the database. Cleanup still has a bounded grace.
+    match tokio::time::timeout(OWNED_TRANSACTION_CLOSE_GRACE, transaction.close()).await {
+        Ok(result) => Some(result.map_err(provider_transaction_close_error)),
+        Err(_) => {
+            tracing::warn!("owned match transaction cleanup exceeded its grace");
+            None
+        }
     }
-    immediate
 }
 
 pub(crate) async fn catch_execution_unwind<F>(future: F) -> std::thread::Result<F::Output>
@@ -335,7 +316,7 @@ where
 }
 
 pub(crate) async fn close_after_execution_panic(transaction: Transaction) {
-    match catch_execution_unwind(dispatch_failed_execution_close(transaction)).await {
+    match catch_execution_unwind(finish_failed_execution_close(transaction)).await {
         Ok(Some(Err(error))) => {
             tracing::warn!(%error, "owned match transaction cleanup failed after panic")
         }
@@ -636,7 +617,7 @@ impl<'a> SelectedResultExecutor<'a> {
                 resume_unwind(payload);
             }
             Ok(Err(error)) => {
-                if let Some(Err(close_error)) = dispatch_failed_execution_close(transaction).await {
+                if let Some(Err(close_error)) = finish_failed_execution_close(transaction).await {
                     tracing::warn!(
                         %close_error,
                         execution_error = %error,
@@ -2008,6 +1989,27 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn failed_execution_releases_provider_before_delivering_rejection() {
+        let (database, state) = pending_provider_database(PendingProviderPhase::Close);
+        let transaction = database.read_transaction().await.unwrap();
+        let cleanup = tokio::spawn(finish_failed_execution_close(transaction));
+        state.entered.notified().await;
+        tokio::task::yield_now().await;
+        assert!(
+            !cleanup.is_finished(),
+            "rejection must wait for owned cleanup"
+        );
+        tokio::time::advance(OWNED_TRANSACTION_CLOSE_GRACE).await;
+        cleanup.await.unwrap();
+        assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(
+            Arc::strong_count(&state),
+            2,
+            "only test and backend retain state"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn owned_deadline_interrupts_pending_transaction_open() {
         let registry = person_registry();
         let validated = validate_match_request(
@@ -2177,7 +2179,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn timed_out_statement_dispatches_close_without_extending_the_deadline() {
+    async fn timed_out_statement_finishes_cleanup_before_delivering_the_deadline() {
         let registry = person_registry();
         let validated = validate_match_request(
             &registry,
@@ -2205,14 +2207,16 @@ mod tests {
         tokio::task::yield_now().await;
         state.entered.notified().await;
         tokio::task::yield_now().await;
+        assert!(!execution.is_finished());
+        tokio::time::advance(OWNED_TRANSACTION_CLOSE_GRACE).await;
+        tokio::task::yield_now().await;
         assert!(execution.is_finished());
         let error = execution.await.unwrap().unwrap_err();
         assert_eq!(match_code(&error), "transaction_deadline_exceeded");
         assert_eq!(state.statements.load(AtomicOrdering::SeqCst), 1);
         assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 1);
 
-        // The detached close retains a bounded lifetime after the public
-        // deadline; advancing its grace must not re-enter provider cleanup.
+        // Cleanup is already complete; advancing time cannot re-enter it.
         tokio::time::advance(OWNED_TRANSACTION_CLOSE_GRACE).await;
         tokio::task::yield_now().await;
         assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 1);

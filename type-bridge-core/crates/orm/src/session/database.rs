@@ -676,7 +676,7 @@ impl Database {
         async move {
             use crate::match_request::selected_result_executor::{
                 ExecutionBudget, catch_execution_unwind, close_after_execution_panic,
-                dispatch_failed_execution_close,
+                finish_failed_execution_close,
             };
             for plan in plans {
                 crate::query_plan_exec::check_provider(plan, self.server_version())
@@ -720,8 +720,7 @@ impl Database {
                     std::panic::resume_unwind(payload)
                 }
                 Ok(Err(error)) => {
-                    if let Some(Err(close_error)) =
-                        dispatch_failed_execution_close(transaction).await
+                    if let Some(Err(close_error)) = finish_failed_execution_close(transaction).await
                     {
                         tracing::warn!(%close_error, "plan execution transaction cleanup failed");
                     }

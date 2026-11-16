@@ -2284,6 +2284,19 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     database.resetDatabase();
     await defineSchema(database, await readFile(PROVIDER_SCHEMA, "utf8"));
 
+    // A rejected terminal must settle only after its owned provider is gone.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const probe = connectIntegration();
+      const session = new generated.QuerySession(probe);
+      const person = session.exact(Person);
+      try {
+        await assert.rejects(session.query(person).one(), (error: any) => error.code === "no_result");
+      } finally {
+        probe.close();
+        session.close();
+      }
+    }
+
     const personManager = Person.manager(database);
     const generatedPerson = (identifierValue: string, scoreValue: bigint) => Person.create({
       identifier: Identifier.create(identifierValue),

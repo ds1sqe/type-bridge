@@ -3411,6 +3411,37 @@ def test_named_zone_filters_match_raw_typeql_live(
     asyncio.run(check())
 
 
+def test_rejected_generated_query_releases_owned_transaction_before_close_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+
+    async def check() -> None:
+        for _ in range(20):
+            database = Database(
+                address=clean_db.address,
+                database=clean_db.database_name,
+                http_port=clean_db.http_port,
+            )
+            database.connect()
+            session = generated_package.Person.query(database)
+            person = session.exact(generated_package.Person)
+            try:
+                with pytest.raises(MatchRequestError) as refused:
+                    await session.query(person).one()
+                assert refused.value.code == "no_result"
+                # Exercise the native close as well: the facade logs and masks
+                # provider close failures for compatibility.
+                getattr(database, "_native_database").close()
+            finally:
+                session.close()
+                database.close()
+
+    asyncio.run(check())
+
+
 def test_generated_filter_reads_uncommitted_writes_live(
     clean_db: Database,
     generated_package: ModuleType,
