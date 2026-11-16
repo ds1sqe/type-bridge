@@ -1262,7 +1262,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 control.deadline,
             )
             .await?;
-        let roots = manager_roots(&request, &result).map_err(reply_error)?;
+        let roots = manager_roots(&registry, &request, &result).map_err(reply_error)?;
         self.materialize_roots(
             &registry,
             ProjectedQueryOrigin::for_manager_target(&target).map_err(reply_error)?,
@@ -1388,7 +1388,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 crate::QueryTargetError::Callback(_) => error,
                 error => reply_error(lower_target_error(error, Some(filter.model()))),
             })?;
-        let roots = manager_roots(&request, &result).map_err(reply_error)?;
+        let roots = manager_roots(&registry, &request, &result).map_err(reply_error)?;
         let mut projected = self
             .materialize_roots(
                 &registry,
@@ -1835,6 +1835,7 @@ fn collect_manager_roots<'result>(
 }
 
 fn manager_roots<'result>(
+    registry: &crate::_registry::DescriptorRegistry,
     request: &ValidatedMatchRequest,
     result: &'result ValidatedMatchResult,
 ) -> Result<Vec<&'result HydratedThing>, SdkExecutionDiagnostic> {
@@ -1842,7 +1843,7 @@ fn manager_roots<'result>(
     let [binding] = request.request().plan.bindings.as_slice() else {
         return Err(SdkExecutionDiagnostic::internal_failure());
     };
-    validate_manager_roots(request, binding.id, &roots)
+    validate_manager_roots(registry, request, binding.id, &roots)
         .map_err(|error| lower_execution_error(error.into(), SdkProviderOperation::Read))?;
     Ok(roots)
 }

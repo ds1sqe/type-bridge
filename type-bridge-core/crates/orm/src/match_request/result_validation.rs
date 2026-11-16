@@ -1257,6 +1257,7 @@ pub(crate) fn exactly_one_cardinality_error(actual: usize) -> Option<MatchError>
 /// Each predicate independently requires a matching member, just as separate
 /// TypeQL `has` patterns do; different predicates may use different members.
 pub(crate) fn validate_manager_roots(
+    registry: &DescriptorRegistry,
     validated: &ValidatedMatchRequest,
     root: BindingId,
     things: &[&HydratedThing],
@@ -1287,12 +1288,32 @@ pub(crate) fn validate_manager_roots(
         .at(MatchErrorPathSegment::Predicate));
     }
 
+    let grouped = grouped
+        .into_iter()
+        .map(|(field, predicates)| {
+            let provider_name =
+                registry
+                    .provider_attribute_name(&field.field)
+                    .ok_or_else(|| {
+                        result_error(
+                            "manager_filter_query_shape_invalid",
+                            "manager predicate field is no longer registered",
+                        )
+                        .at(MatchErrorPathSegment::Field(field.field.clone()))
+                    })?;
+            Ok((field, provider_name, predicates))
+        })
+        .collect::<Result<Vec<_>, MatchError>>()?;
+    let mut concrete_fields = BTreeMap::new();
     for (index, thing) in things.iter().enumerate() {
-        for (field, predicates) in &grouped {
+        for (field, provider_name, predicates) in &grouped {
+            let concrete_field = concrete_fields
+                .entry((thing.concrete_descriptor(), &field.field))
+                .or_insert_with(|| registry.field_id(thing.concrete_descriptor(), provider_name));
             let values = thing
                 .attributes()
                 .iter()
-                .find(|attribute| attribute.field() == &field.field)
+                .find(|attribute| Some(attribute.field()) == concrete_field.as_ref())
                 .map(HydratedAttribute::values)
                 .unwrap_or_default();
             let witnessed = predicates.iter().all(|(operator, literal)| {
@@ -2999,6 +3020,55 @@ mod tests {
     }
 
     #[test]
+    fn manager_subtype_evidence_resolves_inherited_provider_fields() {
+        let registry = registry();
+        let root = BindingId::new(0);
+        let parent = registry.descriptor_id("person").unwrap();
+        let child = registry.descriptor_id("employee").unwrap();
+        let request = validate_match_request(
+            &registry,
+            MatchRequest::v1(
+                MatchPlan {
+                    bindings: vec![binding(
+                        &registry,
+                        0,
+                        "person",
+                        ThingKind::Entity,
+                        MatchMode::Subtypes,
+                    )],
+                    predicate: Some(MatchExpr::FieldValue {
+                        field: BoundFieldId::new(root, field(&registry, "person", "name")),
+                        operator: ComparisonOp::Equal,
+                        value: AttributeValue::String("Ada".into()),
+                    }),
+                    allowed_cross_joins: BTreeSet::new(),
+                },
+                MatchOperation::CountBy { root },
+            ),
+        )
+        .unwrap();
+        for (name, accepted) in [("Ada", true), ("Mallory", false)] {
+            let thing = HydratedThing::new(
+                ConceptId::new("employee-1"),
+                parent.clone(),
+                child.clone(),
+                ThingKind::Entity,
+                vec![hydrated_attribute(
+                    &registry,
+                    "employee",
+                    "name",
+                    vec![AttributeValue::String(name.into())],
+                )],
+                vec![],
+            );
+            assert_eq!(
+                validate_manager_roots(&registry, &request, root, &[&thing]).is_ok(),
+                accepted
+            );
+        }
+    }
+
+    #[test]
     fn manager_multivalue_conjunction_allows_independent_witness_members() {
         let registry = registry();
         let root = BindingId::new(0);
@@ -3071,10 +3141,11 @@ mod tests {
         for mode in [MatchMode::Exact, MatchMode::Subtypes] {
             for upper in ["b", "d"] {
                 let witnessed = request(upper, mode);
-                validate_manager_roots(&witnessed, root, &[&hydrated]).unwrap();
+                validate_manager_roots(&registry, &witnessed, root, &[&hydrated]).unwrap();
             }
             let impossible = request("a", mode);
-            let error = validate_manager_roots(&impossible, root, &[&hydrated]).unwrap_err();
+            let error =
+                validate_manager_roots(&registry, &impossible, root, &[&hydrated]).unwrap_err();
             assert_eq!(error_code(&error), "predicate_evidence_mismatch");
         }
     }

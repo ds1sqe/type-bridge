@@ -4462,6 +4462,34 @@ async fn abstract_managers_and_exact_bindings_return_concrete_subtypes() {
             .await
             .unwrap();
         assert_eq!(values.len(), 2);
+        if name == "party" {
+            let owner = filter.model().clone();
+            let field = type_bridge_contract::projection::ProjectedTokenIdentity::Field {
+                owner: owner.clone(),
+                field: OwnsFactId::new(
+                    owner,
+                    type_bridge_contract::id::AttributeId::new("identifier").unwrap(),
+                )
+                .unwrap(),
+            };
+            let by_key = filter
+                .try_and(
+                    &installed,
+                    &field,
+                    type_bridge_orm::ProjectedManagerComparison::Eq,
+                    &party_text(&installed, "identifier", "P"),
+                )
+                .unwrap();
+            assert_eq!(
+                manager
+                    .all(&db, &by_key, Default::default(), Default::default())
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+
         assert_eq!(
             manager
                 .count(&db, &filter, Default::default(), Default::default())
