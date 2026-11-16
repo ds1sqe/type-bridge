@@ -197,3 +197,34 @@ async fn required_wide_replacements_are_atomic_direct_and_over_the_real_proxy() 
         drop(server); db.delete_database().await.unwrap(); db.close().unwrap();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires configured TypeDB"]
+async fn dynamic_split_and_batch_updates_refuse_changed_keys_on_the_real_provider() {
+    use crate::_manager::DynamicEntityManager;
+    let installed = wide_single_projection_for_target_and_minimum(false, BindingTarget::Python, 0);
+    let registry = installed.manager_registry().unwrap();
+    let name = format!("tb270_f2_dynamic_keys_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    let db = Database::connect_with_options(&std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap(), &name, "admin", "password", crate::ConnectOptions { tls: false, http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(), server_version: Some("3.13.6".parse().unwrap()) }).await.unwrap();
+    db.create_database().await.unwrap();
+    db.execute_raw("define attribute item-key, value string; attribute item-tag, value string; entity wide-item, owns item-key @key, owns item-tag @card(0..), plays wide-edge:member; relation wide-edge, owns item-key @key, owns item-tag @card(0..), relates member @card(0..4), plays wide-edge:member;", TxType::Schema).await.unwrap();
+    let kind = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let seed = crud.insert_entity(&db, &proxy_batch_input(&installed, &kind, 1, "original")).await.unwrap();
+    let iid = seed.item().unwrap().iid().to_owned();
+    let manager = DynamicEntityManager::from_registry(&db, Arc::clone(&registry), registry.entity("wide-item").unwrap());
+    for count in [254, 300, 1000] {
+        for batch in [false, true] {
+            for bad in [false, true] {
+                let mut attributes = vec![("item-key".into(), AttributeValue::String(if bad { "changed" } else { "original" }.into()))];
+                attributes.extend((0..count).map(|index| ("item-tag".into(), AttributeValue::String(format!("tag-{index}")))));
+                let result = if batch { manager.update_many_and_get_exact(&[(iid.clone(), attributes)]).await.map(|_| ()) } else { manager.update_exact(&iid, &attributes).await.map(|_| ()) };
+                if bad { assert!(matches!(result, Err(OrmError::Match(ref error)) if error.code().as_str() == "query_plan_key_update"), "{result:?}"); } else { result.unwrap(); }
+                let stored = crud.get_entity_by_iid(&db, &kind, &iid).await.unwrap().unwrap();
+                assert_eq!(stored.fields()[&OwnsFactId::new(kind.clone(), AttributeId::new("item-key").unwrap()).unwrap()][0].value(), &CanonicalValue::String(CanonicalString::new("original").unwrap()));
+                assert_eq!(stored.fields()[&OwnsFactId::new(kind.clone(), AttributeId::new("item-tag").unwrap()).unwrap()].len(), count);
+            }
+        }
+    }
+    db.delete_database().await.unwrap(); db.close().unwrap();
+}
