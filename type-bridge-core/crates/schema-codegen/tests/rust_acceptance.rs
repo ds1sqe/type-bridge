@@ -1531,6 +1531,11 @@ plays:
             "mismatched types",
         ),
         (
+            "query-abstract-exact-refused",
+            "use generated::{AppSchema, Party}; use type_bridge::Database; fn f(db: &Database<AppSchema>) { let mut session = db.query().unwrap(); let _ = session.exact::<Party>(); } fn main() {}",
+            "CompleteModel",
+        ),
+        (
             "query-missing-first-removed",
             "use generated::{AppSchema, Person, PersonType}; use type_bridge::Database; fn f(db: &Database<AppSchema>) { let mut session = db.query().unwrap(); let person = session.exact::<Person>().unwrap(); let _ = person.field(PersonType::name).asc().missing_first(); } fn main() {}",
             "no method named `missing_first`",

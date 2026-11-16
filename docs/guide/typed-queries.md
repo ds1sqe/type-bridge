@@ -26,9 +26,21 @@ terminal is a coroutine on every connection, so Python code awaits it.
 TypeScript is the same: `new QuerySession(connection)` takes a `Database`,
 a transaction, or a proxy connection, and every terminal returns a `Promise`.
 
-Abstract model managers and `exact(AbstractModel)` read all concrete descendants;
-abstract types cannot have exact instances. Concrete model managers and
-`exact(ConcreteModel)` retain exact matching.
+Abstract models have no direct instances. Use the SDK read form below to read
+concrete descendants. Concrete model managers and `exact(ConcreteModel)` retain
+exact matching.
+
+| SDK | Reading an abstract type |
+| --- | --- |
+| Python | `Party.manager(db)` or `session.exact(Party)` returns concrete descendants. |
+| Node | `Party.manager(db)` or `session.exact(Party)` returns concrete descendants. |
+| C | Abstract manager and exact binding reads return concrete descendants through the abstract result witness. |
+| Rust | `session.subtypes::<Party>()` returns the closed `PartyFamily`; `exact::<Party>()` is refused at compile time. |
+
+The generic PlanBuilder requires `subtypes(AbstractModel)` explicitly in every SDK.
+An exact abstract read fails at build with `query_plan_abstract_exact_read`, naming
+the type and the replacement; abstract inserts remain refused. Rust typed query
+sessions keep the compile-time exact-abstract refusal shown above.
 
 Use `exact(Model)` for exactly one concrete schema type and `subtypes(Model)` for a
 polymorphic binding. Concrete result evidence determines the generated class

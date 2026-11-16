@@ -2265,6 +2265,29 @@ impl<'a> SchemaIndex<'a> {
         }
         Ok(())
     }
+    fn read_type(&self, type_id: &TypeId, include_subtypes: bool) -> Result<(), Diagnostic> {
+        self.exists(type_id)?;
+        if !include_subtypes
+            && self.annotation(
+                AnnotationSubjectId::Type(type_id.clone()),
+                AnnotationKindId::Abstract,
+            )
+        {
+            return Err(Diagnostic::new(
+                DiagnosticCategory::InvalidContract,
+                DiagnosticCode::new("query_plan_abstract_exact_read")
+                    .expect("static diagnostic code"),
+                format!(
+                    "exact read of abstract type {} has no direct instances; use subtypes",
+                    type_id.label().as_str()
+                ),
+            )
+            .at(crate::diagnostic::DiagnosticPathSegment::Identifier(
+                type_id.label().as_str().to_owned(),
+            )));
+        }
+        Ok(())
+    }
     fn ownership_mode_label(
         &self,
         attribute: &AttributeId,
@@ -2287,6 +2310,13 @@ impl<'a> SchemaIndex<'a> {
     }
     fn scoped_ownership_labels(&self, pattern: &QueryPattern) -> Result<(), Diagnostic> {
         match pattern {
+            QueryPattern::Isa {
+                type_id,
+                include_subtypes,
+                ..
+            } => {
+                self.read_type(type_id, *include_subtypes)?;
+            }
             QueryPattern::HasType {
                 attribute_id, mode, ..
             } => {
@@ -2346,7 +2376,7 @@ impl<'a> SchemaIndex<'a> {
                 type_id,
                 include_subtypes,
             } => {
-                self.exists(type_id)?;
+                self.read_type(type_id, *include_subtypes)?;
                 let mut candidates = BTreeSet::from([type_id.clone()]);
                 if *include_subtypes {
                     for fact in self.schema.facts() {

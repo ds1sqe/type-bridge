@@ -1345,3 +1345,48 @@ fn numeric_comparisons_preserve_cross_domain_compatibility() {
         plan.build(&schema(), semantics()).unwrap();
     }
 }
+
+#[test]
+fn generic_exact_abstract_read_requires_explicit_subtypes() {
+    let mut exact = PlanBuilder::new();
+    exact.exact(entity("abstract_account"));
+    exact.count();
+    let error = exact.build(&schema(), semantics()).unwrap_err();
+    assert_eq!(error.code().as_str(), "query_plan_abstract_exact_read");
+    assert!(error.message().contains("abstract_account"));
+    assert!(error.message().contains("subtypes"));
+
+    let mut subtypes = PlanBuilder::new();
+    subtypes.subtypes(entity("abstract_account"));
+    subtypes.count();
+    subtypes.build(&schema(), semantics()).unwrap();
+}
+
+#[test]
+fn exact_abstract_reads_are_refused_in_nested_scopes() {
+    let abstract_read = QueryPattern::Isa {
+        binding: id(1),
+        type_id: entity("abstract_account"),
+        include_subtypes: false,
+    };
+    for nested in [
+        QueryPattern::Not {
+            patterns: vec![abstract_read.clone()],
+        },
+        QueryPattern::Try {
+            patterns: vec![abstract_read.clone()],
+        },
+        QueryPattern::Or {
+            branches: vec![vec![abstract_read.clone()], vec![abstract_read]],
+        },
+    ] {
+        let request = spec(
+            vec![Stage::Match {
+                patterns: vec![pat(0, entity("account")), nested.into()],
+            }],
+            vec![0],
+        );
+        let error = QueryPlan::new(request, &schema()).unwrap_err();
+        assert_eq!(error.code().as_str(), "query_plan_abstract_exact_read");
+    }
+}
