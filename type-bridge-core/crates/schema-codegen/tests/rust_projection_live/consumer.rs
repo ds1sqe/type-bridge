@@ -5602,9 +5602,36 @@ async fn generated_managers_share_direct_and_http_proxy_terminals() {
     assert_eq!(exchanges.load(Ordering::SeqCst), 40);
     let captured = requests.lock().unwrap();
     assert_eq!(captured.len(), 40);
-    for request in captured.iter() {
+    // Each model runs 20 terminals; single and batch updates are at indices 12 and 16.
+    for (index, request) in captured.iter().enumerate() {
         let value: Value = serde_json::from_slice(request).unwrap();
-        assert_eq!(value["plans"].as_array().unwrap().len(), 1);
+        let plans = value["plans"].as_array().unwrap();
+        let ordinal = index % 20;
+        assert_eq!(plans.len(), match ordinal { 12 => 2, 16 => 3, _ => 1 });
+        if matches!(ordinal, 12 | 16) {
+            let decoded = plans.iter().map(|plan| {
+                let encoded = plan["plan_bytes"].as_str().unwrap();
+                let bytes = (0..encoded.len()).step_by(2)
+                    .map(|offset| u8::from_str_radix(&encoded[offset..offset + 2], 16).unwrap())
+                    .collect::<Vec<_>>();
+                serde_json::from_slice::<Value>(&bytes).unwrap()
+            }).collect::<Vec<_>>();
+            let operations = decoded.iter().map(|plan| plan["operation"]["kind"].as_str().unwrap()).collect::<Vec<_>>();
+            if ordinal == 12 {
+                assert_eq!(operations, ["write", "exists"]);
+                assert!(decoded[1]["pipeline"][0]["patterns"].as_array().unwrap()
+                    .iter().any(|pattern| pattern["kind"] == "iid"));
+            } else {
+                assert_eq!(operations, ["rows", "rows", "write"]);
+                assert_eq!(decoded[0]["given_rows"].as_array().unwrap().len(), 3);
+                assert_eq!(decoded[0]["output"]["columns"], json!([0, 1, 2]));
+                assert!(decoded[1]["pipeline"].as_array().unwrap().iter().all(|stage| stage["kind"] == "match"));
+                assert_eq!(plans[1]["result_refs"][0]["source_plan"], 0);
+                assert_eq!(plans[1]["result_refs"][0]["source_column"], 2);
+                assert_eq!(plans[1]["result_refs"][0]["input"], 0);
+                assert_eq!(decoded[2]["given_rows"].as_array().unwrap().len(), 3);
+            }
+        }
     }
     drop(captured);
     if let Some((path, start)) = trace {
@@ -5620,15 +5647,25 @@ async fn generated_managers_share_direct_and_http_proxy_terminals() {
             .collect::<Vec<_>>();
         assert_eq!(requests.len(), 40);
         let mut writes = 0;
-        for request in requests {
+        for (index, request) in requests.into_iter().enumerate() {
             let id = &request["id"];
             let plans = events
                 .iter()
                 .filter(|event| event["event"] == "plan" && event["id"] == *id)
                 .collect::<Vec<_>>();
-            assert_eq!(plans.len(), 1);
-            assert_eq!(plans[0]["index"], 0);
-            assert_eq!(plans[0]["result_refs"], 0);
+            let ordinal = index % 20;
+            assert_eq!(plans.len(), match ordinal { 12 => 2, 16 => 3, _ => 1 });
+            for (index, plan) in plans.iter().enumerate() {
+                assert_eq!(plan["index"], index);
+                assert_eq!(plan["result_refs"], usize::from(ordinal == 16 && index == 1));
+            }
+            if matches!(ordinal, 12 | 16) {
+                let operations = plans.iter().map(|plan| plan["operation"]["kind"].as_str().unwrap()).collect::<Vec<_>>();
+                let expected: &[&str] = if ordinal == 12 { &["write", "exists"] } else { &["rows", "rows", "write"] };
+                assert_eq!(operations, expected);
+                let expected_writes: &[bool] = if ordinal == 12 { &[true, false] } else { &[false, false, true] };
+                assert_eq!(plans.iter().map(|plan| plan["writes"].as_bool().unwrap()).collect::<Vec<_>>(), expected_writes);
+            }
             let commits = events
                 .iter()
                 .filter(|event| event["event"] == "commit" && event["id"] == *id)
@@ -5636,7 +5673,7 @@ async fn generated_managers_share_direct_and_http_proxy_terminals() {
             assert_eq!(commits.len(), 1);
             assert_eq!(commits[0]["committed"], true);
             assert_eq!(commits[0]["code"], "ok");
-            if plans[0]["writes"] == true {
+            if plans.iter().any(|plan| plan["writes"] == true) {
                 writes += 1;
                 assert_eq!(commits[0]["kind"], "write");
             } else {

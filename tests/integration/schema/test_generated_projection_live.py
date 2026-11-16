@@ -24,7 +24,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib import request as urllib_request
 
 import pytest
@@ -3838,10 +3838,40 @@ def test_generated_package_preserves_application_operation_outcomes_live(
 
     key_mutation = _make_generated_person(generated, "parity-key-preserved", 32)
     person_manager.insert(key_mutation)
+
+    def snapshot_person(person: Any) -> tuple[Any, ...]:
+        fields = (
+            "identifier",
+            "nickname",
+            "score",
+            "foo__bar",
+            "score__gte",
+            "val_bool",
+            "val_constrained",
+            "val_date",
+            "val_datetime",
+            "val_datetime_tz",
+            "val_decimal",
+            "val_double",
+            "val_duration",
+        )
+        return (
+            person.iid,
+            tuple(
+                None if (value := getattr(person, field)) is None else value.value
+                for field in fields
+            ),
+            tuple(sorted(value.value for value in person.aliases)),
+        )
+
+    before_key_change = snapshot_person(person_manager.get_by_iid(key_mutation.iid))
     key_mutation.identifier = generated.Identifier("parity-key-mutated")
-    assert person_manager.update(key_mutation).item is key_mutation
-    assert key_mutation.identifier.value == "parity-key-preserved"
-    assert person_manager.get_by_iid(key_mutation.iid).identifier.value == "parity-key-preserved"
+    key_mutation.score = generated.Score(99)
+    key_mutation.nickname = generated.Nickname("refused")
+    with pytest.raises(MatchRequestError) as key_change:
+        person_manager.update(key_mutation)
+    assert key_change.value.code == "query_plan_key_update"
+    assert snapshot_person(person_manager.get_by_iid(key_mutation.iid)) == before_key_change
 
     stale_update = _make_generated_person(generated, "parity-stale-update", 33)
     person_manager.insert(stale_update)
@@ -4238,7 +4268,12 @@ def test_generated_managers_share_direct_and_http_proxy_terminals(
             manager = model.manager(connection)
             calls = 0
 
-            def terminal(call: Callable[[], Any], *, writes: bool = False) -> Any:
+            def terminal(
+                call: Callable[[], Any],
+                *,
+                writes: bool = False,
+                key_guard: Literal["single", "batch"] | None = None,
+            ) -> Any:
                 nonlocal calls
                 before = trace.read_text().splitlines() if remote else []
                 result = call()
@@ -4247,14 +4282,34 @@ def test_generated_managers_share_direct_and_http_proxy_terminals(
                     events = [
                         json.loads(line) for line in trace.read_text().splitlines()[len(before) :]
                     ]
-                    assert [event["event"] for event in events] == ["request", "plan", "commit"]
+                    expected_writes = (
+                        [False, False, True]
+                        if key_guard == "batch"
+                        else [True, False]
+                        if key_guard == "single"
+                        else [writes]
+                    )
+                    assert [event["event"] for event in events] == [
+                        "request",
+                        *["plan"] * len(expected_writes),
+                        "commit",
+                    ]
                     assert len({event["id"] for event in events}) == 1
-                    assert events[1]["index"] == 0
-                    assert events[1]["writes"] is writes
-                    assert events[1]["result_refs"] == 0
-                    assert events[2]["committed"] is True
-                    assert events[2]["kind"] == ("write" if writes else "read")
-                    assert events[2]["code"] == "ok"
+                    plans = [event for event in events if event["event"] == "plan"]
+                    assert [plan["index"] for plan in plans] == list(range(len(plans)))
+                    assert [plan["writes"] for plan in plans] == expected_writes
+                    assert [plan["result_refs"] for plan in plans] == (
+                        [0, 1, 0] if key_guard == "batch" else [0] * len(plans)
+                    )
+                    if key_guard is not None:
+                        assert [plan["operation"]["kind"] for plan in plans] == (
+                            ["rows", "rows", "write"]
+                            if key_guard == "batch"
+                            else ["write", "exists"]
+                        )
+                    assert events[-1]["committed"] is True
+                    assert events[-1]["kind"] == ("write" if writes else "read")
+                    assert events[-1]["code"] == "ok"
                 return result
 
             baseline = len(terminal(manager.all))
@@ -4295,7 +4350,9 @@ def test_generated_managers_share_direct_and_http_proxy_terminals(
             put = single(terminal(lambda: manager.put(make("a", "put")), writes=True), "put")
             assert put.iid == first_iid
             put.nickname = generated.Nickname("update")
-            updated = single(terminal(lambda: manager.update(put), writes=True), "update")
+            updated = single(
+                terminal(lambda: manager.update(put), writes=True, key_guard="single"), "update"
+            )
             assert updated.iid == first_iid
             assert terminal(lambda: manager.delete(updated), writes=True) is updated
 
@@ -4319,7 +4376,9 @@ def test_generated_managers_share_direct_and_http_proxy_terminals(
                 assert item.iid == iids[index]
                 assert item.nickname.value == "many-put"
                 item.nickname = generated.Nickname("many-update")
-            update_many = terminal(lambda: manager.update_many(put_many.items), writes=True)
+            update_many = terminal(
+                lambda: manager.update_many(put_many.items), writes=True, key_guard="batch"
+            )
             assert update_many.count == 3
             assert sorted(update_many.input_indexes) == [0, 1, 2]
             by_index = dict(zip(update_many.input_indexes, update_many.items, strict=True))
