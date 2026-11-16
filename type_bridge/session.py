@@ -6,7 +6,7 @@ import logging
 import os
 import threading
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
@@ -87,7 +87,7 @@ class _ConnectionIdentity:
     address: str
     database: str
     username: str
-    password: str
+    password: str = field(repr=False)
     http_port: int
     server_version: str | None
     tls_enabled: bool

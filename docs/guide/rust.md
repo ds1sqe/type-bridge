@@ -66,16 +66,20 @@ use models::{AppSchema, SCHEMA};
 use type_bridge::{ConnectionOptions, Database};
 
 async fn connect() -> type_bridge::Result<Database<AppSchema>> {
-    let options = ConnectionOptions::new("localhost:1729", "example-development")
-        .http_port(8000)
-        .credentials(
-            std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into()),
-            std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into()),
-        );
+    let mut options = ConnectionOptions::new("localhost:1729", "example-development")
+        .http_port(8000);
+    let username = std::env::var("TYPEDB_USERNAME").ok();
+    let password = std::env::var("TYPEDB_PASSWORD").ok();
+    if username.is_some() || password.is_some() {
+        options = options.credentials(username.unwrap_or_default(), password.unwrap_or_default());
+    }
 
     Database::connect(options).await?.with_schema(SCHEMA)
 }
 ```
+
+Omit both credential variables to use the default pair. A partial pair or an
+empty value is refused before connecting.
 
 `with_schema` verifies and installs the generated runtime projection before it
 changes `Database<Unbound>` into `Database<AppSchema>`. Models from another

@@ -66,6 +66,13 @@ class TestDatabaseConfiguration:
         with pytest.raises(ValueError, match="username and password"):
             PyDatabase.connect("127.0.0.1:1", "unused", username, password, server_version="3.13.6")
 
+    def test_connection_identity_repr_redacts_password(self):
+        secret = "PASSWORD_MUST_NOT_APPEAR_270"
+        identity = Database(username="alice", password=secret)._current_connection_identity()
+        assert secret not in repr(identity)
+        assert "alice" in repr(identity)
+        assert identity.password == secret
+
     def test_driver_none_before_connect(self):
         """Driver should be None before connection."""
         db = Database()
