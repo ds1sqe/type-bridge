@@ -35,13 +35,29 @@ from typedb.common.exception import *
 class Credentials:
     def __init__(self, username: str, password: str) -> None: ...
 
+class DriverTlsConfig:
+    def __init__(self, native_object: Any) -> None: ...
+    @staticmethod
+    def disabled() -> DriverTlsConfig: ...
+    @staticmethod
+    def enabled_with_native_root_ca() -> DriverTlsConfig: ...
+    @staticmethod
+    def enabled_with_root_ca(tls_root_ca_path: str) -> DriverTlsConfig: ...
+    @property
+    def is_enabled(self) -> bool: ...
+    @property
+    def root_ca_path(self) -> str | None: ...
+
 class DriverOptions:
+    tls_config: DriverTlsConfig
     request_timeout_millis: int
     primary_failover_retries: int
     def __init__(
         self,
-        is_tls_enabled: bool = False,
-        tls_root_ca_path: str | None = ...,
+        tls_config: DriverTlsConfig,
+        *,
+        primary_failover_retries: int | None = ...,
+        request_timeout_millis: int | None = ...,
     ) -> None: ...
 
 class Driver:

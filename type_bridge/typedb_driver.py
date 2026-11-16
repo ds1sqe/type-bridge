@@ -82,7 +82,7 @@ def _load_tls_config() -> Any:
     Isolated so tests can patch ``type_bridge.typedb_driver._load_tls_config``
     without needing a real driver installed.
     """
-    from typedb.driver import DriverTlsConfig  # type: ignore[attr-defined]
+    from typedb.driver import DriverTlsConfig
 
     return DriverTlsConfig
 
