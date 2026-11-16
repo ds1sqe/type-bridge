@@ -15,14 +15,14 @@
           "node": {
             "algorithm": "sha256",
             "canonicalization": "typebridge.binding-projection/v1",
-            "digest": "6172a7010f625f4416c4f3f7498a28059f0272d691d7291f29774f2413c8c335",
+            "digest": "cba55c013bce7a1646958b49a5cf58fd27361893beaeaff2494be4238aca5c5a",
             "domain": "typebridge.binding.projection",
             "semantic_profile": "typedb-3.12.1/v1"
           },
           "python": {
             "algorithm": "sha256",
             "canonicalization": "typebridge.binding-projection/v1",
-            "digest": "86c0d24ff9b091f142e49a01be3df8b14c685b5560c87d5f4f37bce8184c69cd",
+            "digest": "74f582aa59f5161a08b86fabeb88ad76bfe9faa99394362d0fee4c5718695aae",
             "domain": "typebridge.binding.projection",
             "semantic_profile": "typedb-3.12.1/v1"
           },
@@ -57,14 +57,14 @@
           "node": {
             "algorithm": "sha256",
             "canonicalization": "typebridge.binding-projection/v1",
-            "digest": "76631d4e7c4ac245c7bd1c4b33bf20eeb165d0a1ff1233fe4fe6d9027b422c29",
+            "digest": "cce56c6c446e4ee7d082c1217f2a455e52b55114c5feb9a222d92bdf208f57a9",
             "domain": "typebridge.binding.projection",
             "semantic_profile": "typedb-3.13.6/v1"
           },
           "python": {
             "algorithm": "sha256",
             "canonicalization": "typebridge.binding-projection/v1",
-            "digest": "a7dc6bdcba42b744a01d109c5a5e10899bb645c714102418050bbcd49d16786d",
+            "digest": "8b697125dddfc2730438fbb0fefa58518ef0ce53d558f250d84e8ceb7b3f02b3",
             "domain": "typebridge.binding.projection",
             "semantic_profile": "typedb-3.13.6/v1"
           },
