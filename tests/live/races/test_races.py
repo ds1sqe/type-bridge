@@ -78,6 +78,58 @@ def base(tmp_path_factory: pytest.TempPathFactory) -> Target:
     return Target(ADDRESS, int(HTTP_PORT), "", declared, PROFILE)
 
 
+@pytest.fixture(scope="module")
+def manager_stage(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    directory = tmp_path_factory.mktemp("race-models")
+    workspace = directory / "workspace"
+    shutil.copytree(driver.WORKSPACE, workspace)
+    manifest = workspace / "typebridge.yaml"
+    manifest.write_text(
+        manifest.read_text() + "\nbindings:\n  python:\n    output: generated/race_models\n"
+    )
+    cli = os.environ.get("TB_RACE_CLI")
+    command = (
+        [cli]
+        if cli
+        else [
+            "cargo",
+            "run",
+            "--quiet",
+            "--locked",
+            "--manifest-path",
+            str(ROOT / "type-bridge-core/Cargo.toml"),
+            "-p",
+            "type-bridge-cli",
+            "--",
+        ]
+    )
+    subprocess.run([*command, "schema", "generate"], cwd=workspace, check=True)
+    return workspace / "generated"
+
+
+@pytest.mark.parametrize("mode", ["raw-transaction", "manager-transaction", "manager-owned"])
+def test_ordinary_commit_conflicts_keep_the_commit_exception(
+    base: Target, manager_stage: Path, mode: str
+) -> None:
+    tallies = []
+    for number in range(driver.rounds(os.environ)):
+        target = driver.fresh_database(
+            base, mode, ['insert $i isa item, has item-id "I1", has stock 1, has price 40;']
+        )
+        try:
+            outcomes = driver.race(target, mode, manager_stage=manager_stage)
+            tally = driver.tally(outcomes)
+            print(f"{mode} round {number}: {dict(tally)} {outcomes}")
+            assert any(outcome.kind == "committed" for outcome in outcomes), outcomes
+            for outcome in outcomes:
+                if outcome.kind != "committed":
+                    _assert_conflict(outcome)
+            tallies.append(tally)
+        finally:
+            driver.drop_database(target)
+    _contended(tallies, "conflict:STC2")
+
+
 Check = Callable[[list[Outcome], dict[str, int]], None]
 
 

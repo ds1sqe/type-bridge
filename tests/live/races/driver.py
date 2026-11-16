@@ -14,10 +14,12 @@ query-only authority over the workspace's declared schema, which
 
 from __future__ import annotations
 
+import importlib
 import json
 import multiprocessing
 import os
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -322,7 +324,8 @@ def authority_for(db: PyDatabase, target: Target) -> PlanAuthority:
 
 def fresh_database(base: Target, label: str, seed: Iterable[str]) -> Target:
     """Create a database with the schema and seed; return its target."""
-    name = f"tb_race_{label.replace('-', '_')}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    prefix = os.environ.get("TB_RACE_DATABASE_PREFIX", "tb_race_")
+    name = f"{prefix}{label.replace('-', '_')}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
     target = Target(base.address, base.http_port, name, base.declared, base.profile)
     db = connect(target)
     try:
@@ -413,9 +416,65 @@ def _commit(tx: Any, pending: list[Any]) -> Outcome:
 # ------------------------------------------------------------------ racing
 
 
-def _racer(target: Target, scenario: str, index: int, barrier: Barrier, results: Any) -> None:
+def _ordinary_racer(
+    target: Target, mode: str, index: int, barrier: Barrier, stage: Path | None
+) -> Outcome:
+    """Race eager raw, borrowed-manager and owned-manager commit paths."""
+    from type_bridge import Database
+
+    db = Database(target.address, target.database, http_port=target.http_port)
+    try:
+        if mode == "raw-transaction":
+            native = connect(target)
+            tx = native.transaction("write")
+            try:
+                tx.execute_query(
+                    f'match $i isa item, has item-id "I1"; update $i has stock {index + 10};'
+                )
+                barrier.wait(BARRIER_SECONDS)
+                tx.commit()
+            finally:
+                tx.close()
+                native.close()
+        else:
+            assert stage is not None
+            sys.path.insert(0, str(stage))
+            generated = importlib.import_module("race_models")
+            if mode == "manager-owned":
+                manager = generated.Item.manager(db)
+                item = manager.filter(item_id=generated.ItemId("I1")).first()
+                item.stock = generated.Stock(index + 10)
+                barrier.wait(BARRIER_SECONDS)
+                manager.update(item)
+            else:
+                # Explicit commit must use the SDK diagnostic mapper once a
+                # manager has marked this eager transaction as a plan writer.
+                with db.transaction("write") as tx:
+                    manager = generated.Item.manager(tx)
+                    item = manager.filter(item_id=generated.ItemId("I1")).first()
+                    item.stock = generated.Stock(index + 10)
+                    manager.update(item)
+                    barrier.wait(BARRIER_SECONDS)
+        return Outcome("committed", matched=(1,))
+    except Exception as error:  # noqa: BLE001 - inspect the SDK's actual exception class
+        return classify(error)
+    finally:
+        db.close()
+
+
+def _racer(
+    target: Target,
+    scenario: str,
+    index: int,
+    barrier: Barrier,
+    results: Any,
+    manager_stage: Path | None = None,
+) -> None:
     outcome = Outcome("error", detail="racer did not finish")
     try:
+        if scenario in ("raw-transaction", "manager-transaction", "manager-owned"):
+            outcome = _ordinary_racer(target, scenario, index, barrier, manager_stage)
+            return
         db = connect(target)
         try:
             tx = db.staged_transaction("write")
@@ -435,13 +494,15 @@ def _racer(target: Target, scenario: str, index: int, barrier: Barrier, results:
         results.put((index, os.getpid(), outcome))
 
 
-def race(target: Target, scenario: str) -> list[Outcome]:
+def race(target: Target, scenario: str, *, manager_stage: Path | None = None) -> list[Outcome]:
     """Run one round: PROCESSES racers, one process and connection each."""
     context = multiprocessing.get_context("spawn")
     barrier = context.Barrier(PROCESSES)
     results = context.Queue()
     processes = [
-        context.Process(target=_racer, args=(target, scenario, index, barrier, results))
+        context.Process(
+            target=_racer, args=(target, scenario, index, barrier, results, manager_stage)
+        )
         for index in range(PROCESSES)
     ]
     for process in processes:

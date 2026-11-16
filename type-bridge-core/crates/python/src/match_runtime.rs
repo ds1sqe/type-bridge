@@ -2145,6 +2145,13 @@ pub(crate) fn py_match_error(error: MatchError) -> PyErr {
 }
 
 pub(crate) fn py_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
+    if diagnostic
+        .failure()
+        .and_then(crate::orm_runtime::commit_outcome_class)
+        .is_some()
+    {
+        return crate::orm_runtime::py_provider_diagnostic(diagnostic);
+    }
     if let Some(error_type) = value_error_type(&diagnostic) {
         return py_value_error_diagnostic(error_type, &diagnostic);
     }
