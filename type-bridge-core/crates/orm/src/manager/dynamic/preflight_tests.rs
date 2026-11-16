@@ -708,7 +708,11 @@ async fn changed_keys_are_diagnosed_for_empty_single_split_and_batch_updates() {
     }
     impl TransactionOps for Tx {
         fn query(&mut self, query: &str) -> BoxFuture<'_, Result<QueryResult>> {
-            let answer = if query.contains("limit 1;") {
+            let answer = if query.contains("unchanged") && query.contains("fetch") {
+                QueryResult::Documents(vec![
+                    serde_json::json!({"_iid":"0x11", "_type":"person", "attributes":{"name":"unchanged", "tag":["unchanged"]}}),
+                ])
+            } else if query.contains("limit 1;") {
                 QueryResult::Rows(vec![serde_json::json!({})])
             } else if query.contains("fetch") {
                 QueryResult::Documents(vec![])
@@ -775,5 +779,43 @@ async fn changed_keys_are_diagnosed_for_empty_single_split_and_batch_updates() {
             matches!(error, OrmError::Match(ref error) if error.code().as_str() == "query_plan_key_update"),
             "batch count={count}: {error:?}"
         );
+    }
+    for changed in [false, true] {
+        let tx = db
+            .transaction_context_with_answer_limits(
+                TxType::Write,
+                QueryExecutionResourceLimits {
+                    statements: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let manager = DynamicEntityManager::with_registry_transaction(
+            tx.clone(),
+            Arc::clone(&registry),
+            registry.entity("person").unwrap(),
+        )
+        .literal_values();
+        let attributes = vec![
+            (
+                "name".into(),
+                AttributeValue::String(if changed { "changed" } else { "unchanged" }.into()),
+            ),
+            (
+                "tag".into(),
+                AttributeValue::String(if changed { "changed" } else { "unchanged" }.into()),
+            ),
+        ];
+        let result = manager.update_exact("0x11", &attributes).await;
+        if changed {
+            assert!(
+                matches!(result, Err(OrmError::Match(ref error)) if error.code().as_str() == "projected_batch_statement_limit"),
+                "{result:?}"
+            );
+        } else {
+            assert_eq!(result.unwrap().count(), 1);
+        }
+        tx.rollback().await.unwrap();
     }
 }

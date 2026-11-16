@@ -2202,7 +2202,7 @@ impl DynamicExecutionTarget<'_> {
         program = program
             .prepare_static()
             .map_err(crate::plan_builders::manager::diagnostic)?;
-        let statement_count = program.statement_count().saturating_add(checks.len());
+        let statement_count = program.statement_count();
         let (tx, owned) = match self {
             Self::Database(db) => (db.transaction_context(TxType::Write).await?, true),
             Self::Transaction(tx) => (tx.clone(), false),
@@ -2210,7 +2210,7 @@ impl DynamicExecutionTarget<'_> {
         let policy = tx
             .answer_limits()
             .unwrap_or_default()
-            .for_adapter_statements(statement_count);
+            .for_adapter_statements(statement_count.saturating_add(checks.len()));
         let cancellation = AnswerCancellation::default();
         let deadline = QueryExecutionDeadline::for_limits(policy);
         let given = tx.supports_given_stage().await?;
@@ -2225,12 +2225,22 @@ impl DynamicExecutionTarget<'_> {
                 .into());
             }
             let mut remaining = policy;
+            let mut executed = 0_usize;
             let mut answers = Vec::with_capacity(statement_count);
             let mut completed = std::collections::BTreeSet::new();
             while let Some(step) = program
                 .next()
                 .map_err(crate::plan_builders::manager::diagnostic)?
             {
+                executed += 1;
+                if executed > policy.statement_limit() as usize {
+                    return Err(crate::match_request::MatchError::new(
+                        crate::match_request::MatchErrorCategory::ResourceLimit,
+                        "projected_batch_statement_limit",
+                        "Manager batch exceeds the provider statement ceiling",
+                    )
+                    .into());
+                }
                 let records_answers = program.records_answers();
                 let plan = &step.plan;
                 lease.check_plan_provider(plan.local())?;
@@ -2315,6 +2325,15 @@ impl DynamicExecutionTarget<'_> {
                 if completed.contains(ordinal) {
                     continue;
                 }
+                executed += 1;
+                if executed > policy.statement_limit() as usize {
+                    return Err(crate::match_request::MatchError::new(
+                        crate::match_request::MatchErrorCategory::ResourceLimit,
+                        "projected_batch_statement_limit",
+                        "Manager key diagnostic exceeds the provider statement ceiling",
+                    )
+                    .into());
+                }
                 lease.check_plan_provider(plan.local())?;
                 let query = if given {
                     crate::query_plan_exec::staged_query(plan.local(), true)
@@ -2332,10 +2351,12 @@ impl DynamicExecutionTarget<'_> {
                         .unwrap_or(0),
                 );
                 if bytes > remaining.bytes {
-                    return Err(crate::plan_builders::manager::invalid(
+                    return Err(crate::match_request::MatchError::new(
+                        crate::match_request::MatchErrorCategory::ResourceLimit,
                         "projected_batch_transport_byte_limit",
                         "Manager key diagnostic exceeds the captured byte ceiling",
-                    ));
+                    )
+                    .into());
                 }
                 remaining.bytes -= bytes;
                 let limits =
