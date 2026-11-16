@@ -73,7 +73,7 @@ use crate::match_runtime::{
     parse_enum, py_projected_cardinality, py_sdk_diagnostic, py_unknown_enum_value,
 };
 use crate::orm_runtime::{
-    PyDatabase, PyTransactionContext, provider_block_on, provider_block_on_with_gil,
+    PyDatabase, PyDynamicValue, PyTransactionContext, provider_block_on, provider_block_on_with_gil,
 };
 use crate::validated_result_runtime::PyValidatedMatchThingHandle;
 
@@ -1796,6 +1796,31 @@ impl PyRuntimeProjection {
         ProjectedAttributeValue::try_from_attribute_value(&self.package.projection, id, &value)
             .map(|_| ())
             .map_err(py_sdk_diagnostic)
+    }
+
+    /// Lower a generated query or function input through the attribute scalar codec.
+    fn attribute_dynamic_value(
+        &self,
+        py: Python<'_>,
+        model: Py<PyType>,
+        value: Bound<'_, PyAny>,
+    ) -> PyResult<PyDynamicValue> {
+        let id = self.package.model_id_for_class(py, &model)?;
+        let domain = self
+            .package
+            .projection
+            .projection()
+            .models()
+            .get(&id)
+            .and_then(|model| model.declaration().value_type())
+            .ok_or_else(|| py_type_error("query input requires an attribute class"))?;
+        canonical_attribute_value_from_py(
+            py,
+            &value,
+            ValueType::from(domain),
+            self.package.named_zone_marker.as_ref(),
+        )
+        .map(PyDynamicValue::from_attribute_value)
     }
 
     /// Convert stored temporal text only when the caller requests the native view.

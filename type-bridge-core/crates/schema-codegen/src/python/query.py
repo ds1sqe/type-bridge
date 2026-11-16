@@ -6,8 +6,6 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import fields, is_dataclass
-from datetime import date, datetime, timedelta
-from decimal import Decimal
 from os import PathLike
 from typing import (
     Generic,
@@ -1800,33 +1798,9 @@ def _declaration_names(
 
 
 def _dynamic_value(value: AttributeBase) -> DynamicValue:
-    declaration = value.__projection__["declaration"]
-    if not _is_object_dict(declaration):
-        raise TypeError("generated attribute declaration is invalid")
-    value_type = declaration.get("value_type")
-    if not isinstance(value_type, str):
-        raise TypeError("generated attribute value type is invalid")
-    kind = value_type
-    scalar = value.value
-    if kind == "string" and isinstance(scalar, str):
-        return DynamicValue.string(scalar)
-    if kind == "long" and type(scalar) is int:
-        return DynamicValue.long(scalar)
-    if kind == "double" and type(scalar) is float:
-        return DynamicValue.double(scalar)
-    if kind == "boolean" and type(scalar) is bool:
-        return DynamicValue.boolean(scalar)
-    if kind == "date" and type(scalar) is date:
-        return DynamicValue.date(scalar.isoformat())
-    if kind == "datetime" and type(scalar) is datetime and scalar.tzinfo is None:
-        return DynamicValue.datetime(scalar.isoformat())
-    if kind == "datetime_tz" and type(scalar) is datetime and scalar.tzinfo is not None:
-        return DynamicValue.datetime_tz(scalar.isoformat())
-    if kind == "decimal" and type(scalar) is Decimal:
-        return DynamicValue.decimal(str(scalar))
-    if kind == "duration" and type(scalar) is timedelta:
-        return DynamicValue.duration(_duration_isoformat(scalar))
-    raise TypeError("generated attribute value does not match its projected scalar type")
+    return type(value).__runtime_projection__.attribute_dynamic_value(
+        type(value), value.runtime_attribute_value()
+    )
 
 
 def _is_object_dict(value: object) -> TypeGuard[dict[str, object]]:
@@ -1881,22 +1855,6 @@ def _type_id_label(value: object) -> str:
 
 def _is_untyped_dict(value: object) -> TypeGuard[dict[object, object]]:
     return isinstance(value, dict)
-
-
-def _duration_isoformat(value: timedelta) -> str:
-    total_microseconds = (
-        value.days * 86_400_000_000 + value.seconds * 1_000_000 + value.microseconds
-    )
-    sign = "-" if total_microseconds < 0 else ""
-    remaining = abs(total_microseconds)
-    days, remaining = divmod(remaining, 86_400_000_000)
-    hours, remaining = divmod(remaining, 3_600_000_000)
-    minutes, remaining = divmod(remaining, 60_000_000)
-    seconds, microseconds = divmod(remaining, 1_000_000)
-    second_text = str(seconds)
-    if microseconds:
-        second_text += f".{microseconds:06d}".rstrip("0")
-    return f"{sign}P{days}DT{hours}H{minutes}M{second_text}S"
 
 
 def _prepare_aggregate_terms(

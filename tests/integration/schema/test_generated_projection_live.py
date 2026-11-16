@@ -3287,6 +3287,51 @@ def test_temporal_wrappers_work_across_manager_terminals_live(
     assert people.get_by_iid(person.iid) is None
 
 
+@pytest.mark.parametrize("form", ["authored", "hydrated"])
+@pytest.mark.parametrize(
+    "field", ["val_decimal", "val_datetime", "val_datetime_tz", "val_duration"]
+)
+@pytest.mark.parametrize("entry", ["query", "function"])
+def test_typed_inputs_retain_exact_scalars_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+    form: str,
+    field: str,
+    entry: str,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    person: Any = _make_generated_person(generated, "typed-exact-input", 1)
+    person.val_decimal = generated.ValDecimal(Decimal("1E-7"))
+    person.val_datetime = generated.ValDatetime("2024-01-01T00:00:00.123456789")
+    person.val_datetime_tz = generated.ValDatetimeTz("2024-01-01T00:00:00.123456789Z")
+    person.val_duration = generated.ValDuration("P1M")
+    people.insert(person)
+    source = people.get_by_iid(person.iid) if form == "hydrated" else person
+    attribute = getattr(source, field)
+
+    async def check() -> None:
+        session = generated.Person.query(clean_db)
+        try:
+            if entry == "function":
+                # Generated schema-function input factories delegate to this entry point.
+                assert session._function_input(attribute, object) is not None
+            else:
+                selected = session.exact(generated.Person)
+                result = (
+                    await session.query(selected)
+                    .where(selected.field(getattr(generated.Person, field)).eq(attribute))
+                    .one()
+                )
+                assert result is not None and result.iid == person.iid
+        finally:
+            session.close()
+
+    asyncio.run(check())
+
+
 def test_generated_filter_reads_uncommitted_writes_live(
     clean_db: Database,
     generated_package: ModuleType,

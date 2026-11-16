@@ -217,6 +217,10 @@ pub struct PyDynamicValue {
 }
 
 impl PyDynamicValue {
+    pub(crate) fn from_attribute_value(value: AttributeValue) -> Self {
+        Self { value }
+    }
+
     /// Clone the typed value without exposing it as an untyped Python DTO.
     pub(crate) fn attribute_value(&self) -> AttributeValue {
         self.value.clone()

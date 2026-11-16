@@ -4419,6 +4419,17 @@ test("generated temporal values and staged integers remain exact", { timeout: 36
     assert.equal(temporalStored.valDatetimeTz.canonical, "2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]");
     assert.throws(() => temporalStored.valDatetime.value, /canonical/);
     assert.throws(() => temporalStored.valDatetimeTz.value, /canonical/);
+    const exactSession = new generated.QuerySession(database);
+    try {
+      for (const name of ["valDatetime", "valDecimal", "valDuration"]) {
+        const bound = exactSession.exact(Person);
+        const selected = await exactSession.query(bound)
+          .where(bound.field(Person[name]).eq(temporalStored[name])).one();
+        assertIidsEqual(selected.iid, fidelity.iid);
+        assert.ok(exactSession.__functionInput(temporalStored[name]));
+      }
+      assert.ok(exactSession.__functionInput(temporalStored.valDatetimeTz));
+    } finally { exactSession.close(); }
     const temporalReplacement = Person.create({
       identifier: temporalStored.identifier, score: Score.create(9007199254740995n),
       valBool: ValBool.create(false), valConstrained: temporalStored.valConstrained,
