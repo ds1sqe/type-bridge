@@ -19,10 +19,11 @@ test("documents observes the same answer without invoking its typed decoder", ()
   assert.throws(() => pending.documents(), /not committed/);
   committed = true;
   const documents = pending.documents();
-  assert.deepEqual(documents, answer.documents);
+  const expected = [{ _iid: "0x01", attributes: { stock: 4n } }];
+  assert.deepEqual(documents, expected);
   assert.equal(hydrated, 0);
-  (documents[0]!["attributes"] as { stock: number }).stock = 99;
-  assert.deepEqual(pending.documents(), answer.documents);
+  (documents[0]!["attributes"] as { stock: bigint }).stock = 99n;
+  assert.deepEqual(pending.documents(), expected);
   assert.equal(pending.result(), "typed");
   assert.equal(hydrated, 1);
   answer = { kind: "count", documents: [] };
@@ -51,8 +52,32 @@ test("plan documents and rows retain unsafe integers without rounding", () => {
     const result = pending.result();
     assert.ok(result.kind === "rows" || result.kind === "documents");
     const values = result.kind === "rows" ? result.rows : result.documents;
-    const expected = { integer: 9007199254740995n, nested: [-9007199254740995n, 4, 1.25], text: "9007199254740995" };
+    const expected = { integer: 9007199254740995n, nested: [-9007199254740995n, 4n, 1.25], text: "9007199254740995" };
     assert.deepEqual(values, [expected]);
     if (kind === "documents") assert.deepEqual(pending.documents(), [expected]);
+  }
+});
+
+test("staged integer tokens are bigint while doubles and count envelopes stay number", () => {
+  for (const kind of ["rows", "documents"] as const) {
+    const native: NativePendingPlanAnswer = {
+      getJson: () => `{"kind":"${kind}","${kind}":[{"safe":5,"zero":0,"float":5.0,"negativeZero":-0.0,"largeFloat":1e21,"nested":{"integer":-4,"float":6.0,"kind":"count","value":6}}]}`,
+      getProjection: () => null,
+      getQueryResult: () => { throw new Error("unexpected query projection"); },
+    };
+    const pending = new Pending(native);
+    const answer = pending.result();
+    assert.ok(answer.kind === "rows" || answer.kind === "documents");
+    const values = answer.kind === "rows" ? answer.rows : answer.documents;
+    assert.deepEqual(values, [{ safe: 5n, zero: 0n, float: 5, negativeZero: -0, largeFloat: 1e21, nested: { integer: -4n, float: 6, kind: "count", value: 6n } }]);
+    if (kind === "documents") assert.deepEqual(pending.documents(), values);
+  }
+  for (const kind of ["count", "matched"] as const) {
+    const native: NativePendingPlanAnswer = {
+      getJson: () => `{"kind":"${kind}","value":5}`,
+      getProjection: () => null,
+      getQueryResult: () => { throw new Error("unexpected query projection"); },
+    };
+    assert.deepEqual(new Pending(native).result(), { kind, value: 5 });
   }
 });

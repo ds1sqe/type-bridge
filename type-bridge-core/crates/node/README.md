@@ -178,6 +178,18 @@ TypeDB `long` maps to Rust `i64`, so JavaScript `number` is not accepted by
 `longFromNumberUnsafe()` exists only for explicit caller-owned conversions when
 the value is known to fit safely enough for that call site.
 
+Staged-plan rows, fetched documents and `Pending.documents()` always return
+integer data as `bigint`, including nested fields and computed integers.
+Doubles remain `number`, including integral doubles; count/matched envelopes
+remain `number`, and decimal strings are unchanged. Raw `executeQuery` keeps
+safe integer tokens as `number` and uses `bigint` outside the safe range.
+`JSON.stringify` needs a bigint replacer, for example:
+
+```ts
+JSON.stringify(result, (_key, value) =>
+  typeof value === "bigint" ? value.toString() : value);
+```
+
 Runtime rows return `Long` values as decimal strings so no precision is lost
 while crossing JSON.
 

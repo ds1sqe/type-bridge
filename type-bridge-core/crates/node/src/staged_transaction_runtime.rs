@@ -118,12 +118,12 @@ pub(crate) fn parse_plan_answer_json(json: &str) -> napi::Result<PlanAnswer> {
     })
 }
 
-/// Decode a retained plan answer with the raw-query path's exact number marshaller.
+/// Decode staged data integers as bigint while preserving count envelope semantics.
 #[napi(js_name = "planAnswerValue", ts_return_type = "unknown")]
-pub fn plan_answer_value(json: String) -> napi::Result<crate::raw_runtime::RawJson> {
+pub fn plan_answer_value(json: String) -> napi::Result<crate::raw_runtime::StagedJson> {
     // The retained answer has already passed the core's answer limits.
     serde_json::from_str(&json)
-        .map(crate::raw_runtime::RawJson)
+        .map(crate::raw_runtime::StagedJson)
         .map_err(|error| napi::Error::from_reason(error.to_string()))
 }
 

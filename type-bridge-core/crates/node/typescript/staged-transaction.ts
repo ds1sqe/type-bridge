@@ -21,9 +21,9 @@ export interface StagedTransactionOptions {
 export type PlanAnswer =
   | { readonly kind: "rows"; readonly rows: readonly unknown[] }
   | { readonly kind: "documents"; readonly documents: readonly Record<string, unknown>[] }
-  | { readonly kind: "count"; readonly value: number | bigint }
+  | { readonly kind: "count"; readonly value: number }
   | { readonly kind: "exists"; readonly value: boolean }
-  | { readonly kind: "matched"; readonly value: number | bigint };
+  | { readonly kind: "matched"; readonly value: number };
 
 // Plans and declared schemas are canonical contract bytes, far below this.
 const MAX_STAGED_INPUT_BYTES = 16 * 1024 * 1024;

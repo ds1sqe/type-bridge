@@ -26,6 +26,12 @@ pub(crate) fn raw_error(error: RawQueryError) -> napi::Error {
 }
 
 pub(crate) struct RawJson(pub(crate) serde_json::Value);
+pub(crate) struct StagedJson(pub(crate) serde_json::Value);
+
+struct JsonWithIntegerMode {
+    value: serde_json::Value,
+    all_integers: bool,
+}
 
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 enum RawNumber {
@@ -75,27 +81,91 @@ impl ToNapiValue for RawJson {
         env: napi::sys::napi_env,
         value: Self,
     ) -> napi::Result<napi::sys::napi_value> {
+        unsafe {
+            JsonWithIntegerMode::to_napi_value(
+                env,
+                JsonWithIntegerMode {
+                    value: value.0,
+                    all_integers: false,
+                },
+            )
+        }
+    }
+}
+
+impl ToNapiValue for StagedJson {
+    unsafe fn to_napi_value(
+        env: napi::sys::napi_env,
+        value: Self,
+    ) -> napi::Result<napi::sys::napi_value> {
+        let all_integers = matches!(
+            value.0.get("kind").and_then(serde_json::Value::as_str),
+            Some("rows" | "documents")
+        );
+        unsafe {
+            JsonWithIntegerMode::to_napi_value(
+                env,
+                JsonWithIntegerMode {
+                    value: value.0,
+                    all_integers,
+                },
+            )
+        }
+    }
+}
+
+fn number_for_mode(value: serde_json::Number, all_integers: bool) -> RawNumber {
+    if all_integers {
+        if let Some(integer) = value.as_i64() {
+            return RawNumber::BigInt(BigInt::from(integer));
+        }
+        if let Some(integer) = value.as_u64() {
+            return RawNumber::BigInt(BigInt::from(integer));
+        }
+    }
+    raw_number(value)
+}
+
+impl ToNapiValue for JsonWithIntegerMode {
+    unsafe fn to_napi_value(
+        env: napi::sys::napi_env,
+        value: Self,
+    ) -> napi::Result<napi::sys::napi_value> {
         // Every value is built in the supplied live environment; no JS callbacks
         // or setters participate in converting provider JSON to native values.
         unsafe {
-            match value.0 {
+            let all_integers = value.all_integers;
+            match value.value {
                 serde_json::Value::Null => <Option<bool>>::to_napi_value(env, None),
                 serde_json::Value::Bool(value) => bool::to_napi_value(env, value),
                 serde_json::Value::String(value) => String::to_napi_value(env, value),
-                serde_json::Value::Number(value) => match raw_number(value) {
+                serde_json::Value::Number(value) => match number_for_mode(value, all_integers) {
                     RawNumber::Number(value) => f64::to_napi_value(env, value),
                     RawNumber::BigInt(value) => BigInt::to_napi_value(env, value),
                 },
-                serde_json::Value::Array(values) => {
-                    Vec::<RawJson>::to_napi_value(env, values.into_iter().map(RawJson).collect())
-                }
+                serde_json::Value::Array(values) => Vec::<JsonWithIntegerMode>::to_napi_value(
+                    env,
+                    values
+                        .into_iter()
+                        .map(|value| JsonWithIntegerMode {
+                            value,
+                            all_integers,
+                        })
+                        .collect(),
+                ),
                 serde_json::Value::Object(values) => {
                     let environment = Env::from_raw(env);
                     let mut object = Object::new(&environment)?;
                     for (name, value) in values {
                         let value = Unknown::from_raw_unchecked(
                             env,
-                            RawJson::to_napi_value(env, RawJson(value))?,
+                            JsonWithIntegerMode::to_napi_value(
+                                env,
+                                JsonWithIntegerMode {
+                                    value,
+                                    all_integers,
+                                },
+                            )?,
                         );
                         object.define_properties(&[Property::new()
                             .with_name(&environment, name)?

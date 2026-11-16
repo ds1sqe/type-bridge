@@ -119,6 +119,12 @@ const people = Person.manager(db).filter({ age__gte: Age.create(18n) }).all();
 See the [TypeScript/Node guide](https://ds1sqe.github.io/type-bridge/guide/typescript/)
 for generated managers, transactions, and direct/remote queries.
 
+Staged-plan integer data is always `bigint`, including nested fetches and
+computed integers; doubles and count envelopes remain `number`. Raw queries
+keep safe integers as `number` and use `bigint` outside the safe range.
+For JSON, use a bigint replacer such as
+`(_key, value) => typeof value === "bigint" ? value.toString() : value`.
+
 ## Rust
 
 The same workspace emits a schema-bound Rust crate. The generated SDK uses

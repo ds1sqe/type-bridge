@@ -79,13 +79,25 @@ names and runtime resources; semantic schema fingerprints remain unchanged.
 
 | Schema value | Node output and exact range |
 | --- | --- |
-| `integer` | `bigint`, −2⁶³ through 2⁶³−1; raw plan documents use `bigint` for integers outside the safe `number` range |
+| `integer` | `bigint`, −2⁶³ through 2⁶³−1 |
 | `double` | Finite binary64 `number` |
 | `decimal` | Canonical string, −9223372036854775808 through 9223372036854775807.9999999999999999999, at most 19 fractional digits |
 | `boolean`, `string` | `boolean`, Unicode `string` (default maximum 1 MiB of UTF-8) |
 | `date` | UTC-midnight `Date` in the native view; canonical years −262143 through 262142 |
 | `datetime`, `datetime-tz` | `Date` at millisecond precision in the native view; canonical text retains nanoseconds, fixed offsets, and IANA zones |
 | `duration` | Canonical string with month/day components and nanosecond precision; provider bounds are `u32` months/days and `u64` total time nanoseconds, nonnegative |
+
+Staged-plan rows, fetched documents and `Pending.documents()` return every
+integer token as `bigint`, including computed integers and nested fetch fields.
+Float tokens remain `number`, even for integral doubles such as `5.0`;
+count and matched-count envelopes remain `number`. Decimal strings are unchanged.
+Raw `executeQuery` results keep safe integers as `number` and use `bigint`
+outside the JavaScript safe range. Use a replacer when serializing bigint:
+
+```ts
+JSON.stringify(result, (_key, value) =>
+  typeof value === "bigint" ? value.toString() : value);
+```
 
 Temporal constructors accept canonical strings as well as `Date` inputs.
 Temporal attributes expose read-only `.canonical`, preserving their exact text

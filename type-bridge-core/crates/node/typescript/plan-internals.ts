@@ -221,7 +221,7 @@ export async function planNativePromise<Result>(
   }
 }
 
-/** Decode data answers through the same lossless integer marshaller as raw queries. */
+/** Decode staged data integer tokens as bigint; count envelopes remain number. */
 export function decodePlanAnswer(json: string): unknown {
   return loadNative().planAnswerValue(json);
 }

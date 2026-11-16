@@ -4506,6 +4506,76 @@ test("generated temporal values and staged integers remain exact", { timeout: 36
       assert.equal(personManager.getByIid(inserted.iid), null);
     }
 
+    const publicRuntime = await import(pathToFileURL(resolve(NODE_RUNTIME_PACKAGE, "dist/public.js")).href);
+    const numericLeaves = (value: unknown): (number | bigint)[] => {
+      if (typeof value === "number" || typeof value === "bigint") return [value];
+      if (value === null || typeof value !== "object") return [];
+      return Object.values(value).flatMap(numericLeaves);
+    };
+    const namedLeaves = (value: unknown, key: string): unknown[] => {
+      if (value === null || typeof value !== "object") return [];
+      return Object.entries(value).flatMap(([name, child]) => name === key ? [child] : namedLeaves(child, key));
+    };
+    for (const storedDouble of [5.0, -0.0, 1e21]) {
+      const person = oneWritten(personManager.insert(Person.create({
+        identifier: Identifier.create(`double-${storedDouble}`), score: Score.create(5n),
+        valBool: ValBool.create(true), valConstrained: ValConstrained.create(20n),
+        valDate: ValDate.create("2024-01-02"), valDatetime: ValDatetime.create("2024-01-02T03:04:05"),
+        valDatetimeTz: ValDatetimeTz.create("2024-01-02T03:04:05Z"),
+        valDecimal: ValDecimal.create("0.0000001"), valDouble: ValDouble.create(storedDouble),
+        valDuration: ValDuration.create("PT123S"),
+      })));
+      const relationManager = generated.Membership.manager(database);
+      const relation = oneWritten(relationManager.insert(generated.Membership.create({ member: person })));
+      const rowsPlan = publicRuntime.Plan.builder();
+      const rowPerson = rowsPlan.exact(Person);
+      rowsPlan.where(rowsPlan.field(rowPerson, Person.identifier).eq(person.identifier.value));
+      const score = rowsPlan.field(rowPerson, Person.score);
+      const double = rowsPlan.field(rowPerson, Person.valDouble);
+      rowsPlan.returning([score, double,
+        rowsPlan.let("computed_double", double.add(publicRuntime.double(0))),
+        rowsPlan.let("computed_integer", score.add(1n))]);
+      const fetchPlan = publicRuntime.Plan.builder();
+      const fetched = fetchPlan.exact(Person);
+      fetchPlan.where(fetchPlan.field(fetched, Person.identifier).eq(person.identifier.value)).fetch(fetched);
+      const nestedPlan = publicRuntime.Plan.builder();
+      const nested = nestedPlan.exact(generated.Membership);
+      const player = nestedPlan.exact(Person);
+      nestedPlan.links(nested, generated.Membership.member, player);
+      nestedPlan.where(nestedPlan.field(player, Person.identifier).eq(person.identifier.value));
+      nestedPlan.fetch(nested, [generated.Membership.member]);
+      const transaction = database.stagedTransaction();
+      try {
+        const rows = transaction.stage(rowsPlan.build(generated.schemaAuthority()));
+        const direct = transaction.stage(fetchPlan.build(generated.schemaAuthority()));
+        const nestedAnswer = transaction.stage(nestedPlan.build(generated.schemaAuthority()));
+        await transaction.commit();
+        const numbers = numericLeaves(rows.result());
+        assert.equal(numbers.filter((value) => typeof value === "bigint").length, 2);
+        assert.equal(numbers.filter((value) => typeof value === "number").length, 2,
+          `stored/computed double token lost for ${storedDouble}`);
+        for (const answer of [direct, nestedAnswer]) {
+          const documents = answer.documents();
+          const result = answer.result();
+          assert.ok(result !== null && typeof result === "object" && "documents" in result);
+          assert.deepEqual(result.documents, documents);
+          const doubles = namedLeaves(documents, "val_double");
+          assert.equal(doubles.length, 1);
+          assert.equal(typeof doubles[0], "number", `double fetch token lost for ${storedDouble}`);
+          assert.ok(doubles[0] === storedDouble);
+          assert.deepEqual(namedLeaves(documents, "score"), [5n]);
+          assert.deepEqual(namedLeaves(documents, "val_decimal"), ["0.0000001"]);
+        }
+      } finally { transaction.close(); }
+      const raw: any = await database.executeQuery('match $p isa person; limit 1; fetch {"integer": 5, "float": 5.0, "unsafe": 9007199254740995};', "read");
+      assert.equal(raw.answers.length, 1);
+      assert.equal(typeof raw.answers[0].integer, "number");
+      assert.equal(typeof raw.answers[0].float, "number");
+      assert.equal(typeof raw.answers[0].unsafe, "bigint");
+      relationManager.delete(relation.iid);
+      personManager.delete(person.iid);
+    }
+
   } finally {
     try { database?.deleteDatabase(); } finally { database?.close(); }
     if (suppliedStage === undefined) await rm(stage, { recursive: true, force: true });
