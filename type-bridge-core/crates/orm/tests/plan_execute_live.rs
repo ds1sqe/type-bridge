@@ -4540,3 +4540,160 @@ async fn abstract_managers_and_exact_bindings_return_concrete_subtypes() {
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multivalue_predicates_use_independent_members_in_every_terminal() {
+    use std::sync::Arc;
+    use type_bridge_contract::projection::ProjectedTokenIdentity;
+    use type_bridge_orm::match_request::{
+        ComparisonOp, MatchResult, RowCardinality, SessionHandle, Window,
+    };
+    use type_bridge_orm::{
+        AttributeValue, ProjectedManagerComparison as C, ProjectedManagerFilter,
+        ProjectedManagerFilterExecutor,
+    };
+    let Some(db) = live_database("multivalue_predicates").await else {
+        return;
+    };
+    let typeql = PARTY_SCHEMA_TYPEQL.replace(
+        "entity person sub party;",
+        "attribute tag, value string; entity person sub party, owns tag @card(0..3);",
+    );
+    db.execute_raw(&typeql, TxType::Schema).await.unwrap();
+    db.execute_raw("insert $p isa person, has identifier \"P\", has tag \"a\", has tag \"z\"; $q isa person, has identifier \"Q\", has tag \"n\";", TxType::Write).await.unwrap();
+    let yaml = PARTY_SCHEMA_YAML
+        .replace(
+            "  note: { value: string }",
+            "  note: { value: string }\n  tag: { value: string }",
+        )
+        .replace(
+            "  person:\n    sub: party",
+            "  person:\n    sub: party\n    owns:\n      tag: { card: { min: 0, max: 3 } }",
+        );
+    let profile = if std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")
+        .unwrap()
+        .starts_with("3.12")
+    {
+        "typedb-3.12.1/v1"
+    } else {
+        "typedb-3.13.6/v1"
+    };
+    let installed = party_projection_for_profile(&yaml, profile);
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let session = SessionHandle::new(Arc::clone(&registry));
+    let person = session.exact("person").unwrap();
+    let tag = person.field("tag").unwrap();
+    let model = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let token = |name| ProjectedTokenIdentity::Field {
+        owner: model.clone(),
+        field: OwnsFactId::new(
+            model.clone(),
+            type_bridge_contract::id::AttributeId::new(name).unwrap(),
+        )
+        .unwrap(),
+    };
+    let value = |name, text: &str| {
+        ProjectedAttributeValue::try_new(
+            &installed,
+            TypeId::new(TypeKind::Attribute, name).unwrap(),
+            CanonicalValue::String(CanonicalString::new(text).unwrap()),
+        )
+        .unwrap()
+    };
+    let manager = ProjectedManagerFilterExecutor::new(&installed);
+    for (left, a, right, b, raw) in [
+        (C::Eq, "a", C::Eq, "z", "$a == \"a\"; $b == \"z\";"),
+        (C::Gt, "m", C::Lt, "c", "$a > \"m\"; $b < \"c\";"),
+        (C::Eq, "a", C::Eq, "x", "$a == \"a\"; $b == \"x\";"),
+    ] {
+        let filter = ProjectedManagerFilter::try_new(&installed, model.clone())
+            .unwrap()
+            .try_and(
+                &installed,
+                &token("identifier"),
+                C::Eq,
+                &value("identifier", "P"),
+            )
+            .unwrap()
+            .try_and(&installed, &token("tag"), left, &value("tag", a))
+            .unwrap()
+            .try_and(&installed, &token("tag"), right, &value("tag", b))
+            .unwrap();
+        let raw = format!(
+            "match $p isa person, has identifier \"P\", has tag $a, has tag $b; {raw} select $p; distinct;"
+        );
+        let expected = rows(&db.execute_raw(&raw, TxType::Read).await.unwrap());
+        let all = manager
+            .all(&db, &filter, Default::default(), Default::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), expected);
+        assert_eq!(
+            manager
+                .count(&db, &filter, Default::default(), Default::default())
+                .await
+                .unwrap(),
+            expected as u64
+        );
+        assert_eq!(
+            manager
+                .exists(&db, &filter, Default::default(), Default::default())
+                .await
+                .unwrap(),
+            expected != 0
+        );
+        assert_eq!(
+            manager
+                .first(&db, &filter, Default::default(), Default::default())
+                .await
+                .unwrap()
+                .is_some(),
+            expected != 0
+        );
+        let comparison = |op| match op {
+            C::Eq => ComparisonOp::Equal,
+            C::Gt => ComparisonOp::GreaterThan,
+            C::Lt => ComparisonOp::LessThan,
+            _ => unreachable!(),
+        };
+        let query = session
+            .query(session.positional([person.one()]).unwrap())
+            .unwrap()
+            .where_predicate(
+                person
+                    .field("identifier")
+                    .unwrap()
+                    .compare_value(ComparisonOp::Equal, AttributeValue::String("P".into())),
+            )
+            .unwrap()
+            .where_predicate(tag.compare_value(comparison(left), AttributeValue::String(a.into())))
+            .unwrap()
+            .where_predicate(tag.compare_value(comparison(right), AttributeValue::String(b.into())))
+            .unwrap();
+        for limit in [1, 10] {
+            let request = query
+                .validate_fetch_rows(
+                    &[],
+                    Window { offset: 0, limit },
+                    RowCardinality::BoundedMany,
+                )
+                .unwrap();
+            let result = db.execute_match(&registry, &request).await.unwrap();
+            assert!(
+                matches!(result.result(), MatchResult::Rows { rows } if rows.len() == expected)
+            );
+        }
+        let request = query.validate_count_by(&person).unwrap();
+        let result = db.execute_match(&registry, &request).await.unwrap();
+        assert!(
+            matches!(result.result(), MatchResult::Count { value, .. } if *value == expected as u64)
+        );
+        let request = query.validate_exists_by(&person).unwrap();
+        let result = db.execute_match(&registry, &request).await.unwrap();
+        assert!(
+            matches!(result.result(), MatchResult::Exists { value, .. } if *value == (expected != 0))
+        );
+    }
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}

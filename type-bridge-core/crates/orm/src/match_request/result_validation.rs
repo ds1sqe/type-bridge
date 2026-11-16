@@ -1253,11 +1253,9 @@ pub(crate) fn exactly_one_cardinality_error(actual: usize) -> Option<MatchError>
 
 /// Check the roots of a generated-manager result against its filter.
 ///
-/// A manager filter is a conjunction of literal comparisons on fields of one
-/// exact or subtype-inclusive root. The compiler binds one variable per
-/// [`BoundFieldId`], so every comparison on a multivalue field must hold for one shared member. Row
-/// validation accepts each comparison independently; this is the stricter
-/// rule a manager result has to meet.
+/// A manager filter is a conjunction of literal comparisons on one root.
+/// Each predicate independently requires a matching member, just as separate
+/// TypeQL `has` patterns do; different predicates may use different members.
 pub(crate) fn validate_manager_roots(
     validated: &ValidatedMatchRequest,
     root: BindingId,
@@ -1297,15 +1295,15 @@ pub(crate) fn validate_manager_roots(
                 .find(|attribute| attribute.field() == &field.field)
                 .map(HydratedAttribute::values)
                 .unwrap_or_default();
-            let witnessed = values.iter().any(|candidate| {
-                predicates.iter().all(|(operator, literal)| {
-                    compare_values(*operator, candidate, literal).unwrap_or(false)
-                })
+            let witnessed = predicates.iter().all(|(operator, literal)| {
+                values
+                    .iter()
+                    .any(|candidate| compare_values(*operator, candidate, literal).unwrap_or(false))
             });
             if !witnessed {
                 return Err(result_error(
                     "predicate_evidence_mismatch",
-                    "provider hydration does not contain one field member satisfying every authored comparison",
+                    "provider hydration does not contain a witness for each authored comparison",
                 )
                 .at(MatchErrorPathSegment::ProviderEvidence)
                 .at(MatchErrorPathSegment::Index(index))
@@ -1347,7 +1345,7 @@ fn collect_manager_field_predicates<'a>(
             .iter()
             .all(|expression| collect_manager_field_predicates(expression, root, grouped)),
         // Native result validation already checks IID evidence. These predicates
-        // cannot affect the shared-member rule for multivalued fields.
+        // do not require attribute member evidence.
         MatchExpr::BindingIid { binding, .. } if *binding == root => true,
         MatchExpr::Or { expressions } => expressions.iter().all(|expression| {
             matches!(expression, MatchExpr::BindingIid { binding, .. } if *binding == root)
@@ -2984,7 +2982,24 @@ mod tests {
     }
 
     #[test]
-    fn manager_multivalue_conjunction_requires_one_shared_member() {
+    fn string_containment_folds_case_but_prefix_and_suffix_preserve_it() {
+        let value = AttributeValue::String("AlphaBeta".into());
+        for (operator, literal, expected) in [
+            (ComparisonOp::Contains, "beta", true),
+            (ComparisonOp::StartsWith, "alpha", false),
+            (ComparisonOp::StartsWith, "Alpha", true),
+            (ComparisonOp::EndsWith, "beta", false),
+            (ComparisonOp::EndsWith, "Beta", true),
+        ] {
+            assert_eq!(
+                compare_values(operator, &value, &AttributeValue::String(literal.into())).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn manager_multivalue_conjunction_allows_independent_witness_members() {
         let registry = registry();
         let root = BindingId::new(0);
         let notes = BoundFieldId::new(root, field(&registry, "employee", "notes"));
@@ -3054,12 +3069,13 @@ mod tests {
         );
 
         for mode in [MatchMode::Exact, MatchMode::Subtypes] {
-            let impossible = request("b", mode);
+            for upper in ["b", "d"] {
+                let witnessed = request(upper, mode);
+                validate_manager_roots(&witnessed, root, &[&hydrated]).unwrap();
+            }
+            let impossible = request("a", mode);
             let error = validate_manager_roots(&impossible, root, &[&hydrated]).unwrap_err();
             assert_eq!(error_code(&error), "predicate_evidence_mismatch");
-
-            let witnessed = request("d", mode);
-            validate_manager_roots(&witnessed, root, &[&hydrated]).unwrap();
         }
     }
 

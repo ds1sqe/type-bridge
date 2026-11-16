@@ -101,6 +101,15 @@ not supported. `one`, `first`, `rows`, `page_by`, `count_by`, and
 direct or a proxy connection alike (see
 [Typed queries](typed-queries.md#start-a-session)).
 
+For a multi-valued field, each comparison needs a matching value independently.
+A row with tags `"a"` and `"z"` satisfies both `tag == "a"` and `tag == "z"`.
+It also satisfies `tag > "m"` and `tag < "c"` through two different values.
+Managers and typed queries use this same rule for rows, first, count, and
+existence. Requiring one attribute member to satisfy both conditions needs raw
+TypeQL with a shared attribute variable.
+
+String `contains` ignores case. `starts_with` and `ends_with` are case-sensitive.
+
 ## Raw TypeQL execution
 
 Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
