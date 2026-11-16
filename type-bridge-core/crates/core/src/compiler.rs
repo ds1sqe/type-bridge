@@ -16,12 +16,10 @@ impl From<tql::TqlError> for TypedCompileError {
     }
 }
 
-use crate::reserved_words::is_reserved_word;
 use std::sync::OnceLock;
 use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_contract::limits::{MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES};
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
-use unicode_ident::{is_xid_continue, is_xid_start};
 
 /// Return whether a string is one safe, non-reserved TypeQL label.
 ///
@@ -29,14 +27,7 @@ use unicode_ident::{is_xid_continue, is_xid_start};
 /// and descriptor registries. TypeQL labels start with an XID-start character
 /// or underscore and continue with XID-continue characters or hyphens.
 pub fn is_valid_typeql_label(value: &str) -> bool {
-    if value.is_empty() || is_reserved_word(value) {
-        return false;
-    }
-    let mut chars = value.chars();
-    chars
-        .next()
-        .is_some_and(|first| is_xid_start(first) || first == '_')
-        && chars.all(|character| is_xid_continue(character) || character == '-')
+    type_bridge_contract::id::Label::new(value).is_ok()
 }
 
 /// A typed selected-row AST cannot be rendered without losing or inventing
@@ -1337,7 +1328,12 @@ fn validate_typed_predicate_semantics(
                 let expected = u16::try_from(index).map_err(|_| {
                     TypedCompileError::new("typed function call ordinal exceeds u16")
                 })?;
-                if call.result != expected || !is_valid_typeql_label(&call.function) {
+                if call.result != expected
+                    || !is_valid_typeql_label(&call.function)
+                    || type_bridge_contract::id::is_typeql_3_12_builtin_function_name(
+                        &call.function,
+                    )
+                {
                     return Err(TypedCompileError::new(
                         "typed function calls require dense results and valid schema labels",
                     ));
@@ -1719,7 +1715,20 @@ mod tests {
 
     #[test]
     fn typed_typeql_labels_reject_injection_and_reserved_words() {
-        for valid in ["person", "first-name", "employee_name", "Ångström"] {
+        for valid in [
+            "person",
+            "first-name",
+            "employee_name",
+            "Ångström",
+            "count",
+            "type",
+            "value",
+            "where",
+            "default",
+            "self",
+            "kind",
+            "ENTITY",
+        ] {
             assert!(
                 is_valid_typeql_label(valid),
                 "expected valid label: {valid}"
@@ -1733,7 +1742,6 @@ mod tests {
             "person\"",
             "person.role",
             "match",
-            "ENTITY",
         ] {
             assert!(
                 !is_valid_typeql_label(invalid),
@@ -1818,6 +1826,14 @@ mod tests {
         assert!(prepared.typeql.contains(
             "let $c0 = qualifying-score($b0, $g0); let $c1 = identity-score($c0); $c1 == $f0"
         ));
+        let mut builtin = query.clone();
+        let Some(TypedMatchPredicate::FunctionComparison { calls, .. }) =
+            builtin.predicate.as_mut()
+        else {
+            unreachable!()
+        };
+        calls[0].function = "min".into();
+        assert!(compiler().prepare_typed_fetch_rows(&builtin).is_err());
     }
 
     #[test]

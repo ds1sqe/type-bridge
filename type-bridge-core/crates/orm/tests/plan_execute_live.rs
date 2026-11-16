@@ -4185,3 +4185,48 @@ entities:
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn count_attribute_runs_through_projected_manager_authority() {
+    use std::sync::Arc;
+    use type_bridge_orm::_manager::DynamicEntityManager;
+    let Some(db) = live_database("count_attribute").await else {
+        return;
+    };
+    db.execute_raw(
+        "define attribute count, value integer; entity record, owns count;",
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let profile = if std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")
+        .unwrap()
+        .starts_with("3.12.")
+    {
+        "typedb-3.12.1/v1"
+    } else {
+        "typedb-3.13.6/v1"
+    };
+    let installed = party_projection_for_profile(
+        "format: typebridge.schema/v2\nattributes:\n  count: {value: integer}\nentities:\n  record:\n    owns: [count]\n",
+        profile,
+    );
+    let registry = installed.manager_registry().unwrap();
+    let descriptor = registry.entity("record").unwrap();
+    let manager = DynamicEntityManager::from_registry(&db, Arc::clone(&registry), descriptor);
+    manager
+        .insert(&vec![(
+            "count".into(),
+            type_bridge_orm::AttributeValue::Long(7),
+        )])
+        .await
+        .unwrap();
+    assert_eq!(manager.count().await.unwrap(), 1);
+    assert_eq!(manager.all().await.unwrap().len(), 1);
+    let raw = db
+        .execute_raw("match $x isa record, has count 7; select $x;", TxType::Read)
+        .await
+        .unwrap();
+    assert_eq!(rows(&raw), 1);
+    db.delete_database().await.unwrap();
+}

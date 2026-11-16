@@ -1024,3 +1024,50 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod canonical_label_tests {
+    use super::*;
+    use type_bridge_contract::projection::{
+        BindingTarget, CSymbolPrefix, ProjectionConfig, ProjectionHandler,
+    };
+    use type_bridge_contract::schema::DocumentId;
+    use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+
+    #[test]
+    fn count_attribute_forms_manager_authority_for_every_target() {
+        let documents = SchemaDocumentSet::parse([(DocumentId::new("count.yaml").unwrap(),
+            "format: typebridge.schema/v2\nattributes:\n  count: {value: integer}\nentities:\n  record:\n    owns: [count]\n")]).unwrap();
+        let declared = normalize_documents(&documents).unwrap();
+        let profile =
+            type_bridge_contract::fingerprint::SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
+        let resolved = resolve(&declared, &profile).unwrap();
+        for (target, config, handler) in [
+            (
+                BindingTarget::Python,
+                ProjectionConfig::python(),
+                ProjectionHandler::python_v1(),
+            ),
+            (
+                BindingTarget::TypeScript,
+                ProjectionConfig::typescript(),
+                ProjectionHandler::typescript_v1(),
+            ),
+            (
+                BindingTarget::Rust,
+                ProjectionConfig::rust(),
+                ProjectionHandler::rust_v1(),
+            ),
+            (
+                BindingTarget::C,
+                ProjectionConfig::c(CSymbolPrefix::new("count_test").unwrap()),
+                ProjectionHandler::c_v1(),
+            ),
+        ] {
+            let projection = project(&resolved, target, &config, &[handler], &[]).unwrap();
+            let installed = InstalledRuntimeProjection::try_new(projection).unwrap();
+            let registry = installed.manager_registry().unwrap();
+            assert!(registry.entity("record").is_ok());
+        }
+    }
+}
