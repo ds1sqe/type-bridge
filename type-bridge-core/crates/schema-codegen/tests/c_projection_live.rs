@@ -1780,7 +1780,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
         if sdk_serialization_evidence.is_some() {
             1
         } else {
-            62
+            63
         },
         "live C marker inventory drifted"
     );
