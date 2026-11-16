@@ -2594,10 +2594,10 @@ async fn native_batches_keep_key_identity_replace_players_and_collect_without_ca
     assert_eq!(put[0].roles()[&left][0].iid(), people[5].iid());
     assert_eq!(put[0].roles()[&right][0].iid(), people[0].iid());
     assert_eq!(put[1].roles()[&left][0].iid(), people[1].iid());
-    // Clearing two multi-valued fields must keep one root between deletes and permit key replacement.
+    // Clearing two multi-valued fields must keep one root between deletes and preserve immutable key ownership.
     let mut replacement = vec![(
         id_field(&person),
-        vec![party_text(&installed, "identifier", "changed")],
+        vec![party_text(&installed, "identifier", "p0")],
     )];
     for (attribute, values) in [
         ("tag", vec!["a", "b", "c"]),
@@ -2659,7 +2659,7 @@ async fn native_batches_keep_key_identity_replace_players_and_collect_without_ca
         executor
             .execute(
                 &db,
-                &update(create_person("changed-again")),
+                &update(create_person("p0")),
                 type_bridge_orm::ProjectedBatchInvocationControl::capture(
                     Default::default(),
                     Default::default(),
@@ -2680,7 +2680,7 @@ async fn native_batches_keep_key_identity_replace_players_and_collect_without_ca
             "cleared {attribute}"
         );
     }
-    assert_eq!(rows(&db.execute_raw("match $p isa person, has identifier \"changed-again\"; { $p has tag $v; } or { $p has score $v; }; select $p;", TxType::Read).await.unwrap()), 0);
+    assert_eq!(rows(&db.execute_raw("match $p isa person, has identifier \"p0\"; { $p has tag $v; } or { $p has score $v; }; select $p;", TxType::Read).await.unwrap()), 0);
     assert_schema_less_typed_read_refuses(&db, &installed).await;
     db.delete_database().await.unwrap();
     db.close().unwrap();
