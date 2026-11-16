@@ -537,6 +537,23 @@ fn successful_responses(kind: BatchKind) -> Vec<Response> {
     vec![Response::Documents(hydration_documents(kind))]
 }
 
+fn assert_native_fixture(source: &str, relative: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join(relative);
+    if std::env::var("TYPE_BRIDGE_UPDATE_PLAN_FIXTURES").as_deref() == Ok("1") {
+        std::fs::write(&path, source).unwrap();
+    }
+    assert_eq!(source, std::fs::read_to_string(path).unwrap());
+}
+
+fn assert_abandoned_atomic_failure(state: &Arc<Mutex<State>>) {
+    let state = state.lock().unwrap();
+    assert_eq!(state.calls.len(), 1);
+    assert_eq!((state.rollbacks, state.commits), (0, 0));
+    assert!(state.responses.is_empty());
+}
+
 fn assert_owned_atomic_failure(state: &Arc<Mutex<State>>, expected_calls: usize) {
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), expected_calls);
@@ -1150,11 +1167,9 @@ async fn entity_insert_is_one_call_and_correlates_shuffled_documents_by_ordinal(
             ["0x10", "0x11"]
         );
         let state = state.lock().unwrap();
-        assert_eq!(
-            state.calls[0].0,
-            include_str!(
-                "fixtures/native_batch/entity_insert_is_one_call_and_correlates_shuffled_documents_by_ordinal.tql"
-            )
+        assert_native_fixture(
+            &state.calls[0].0,
+            "fixtures/native_batch/entity_insert_is_one_call_and_correlates_shuffled_documents_by_ordinal.tql",
         );
         assert_eq!(state.calls.len(), 1);
         assert_eq!(state.calls[0].1.rows.len(), 2);
@@ -1213,11 +1228,9 @@ async fn put_uses_one_multirow_key_pattern_and_preserves_hit_identity() {
         ["0x10", "0x11"]
     );
     let state = state.lock().unwrap();
-    assert_eq!(
-        state.calls[0].0,
-        include_str!(
-            "fixtures/native_batch/put_uses_one_multirow_key_pattern_and_preserves_hit_identity.tql"
-        )
+    assert_native_fixture(
+        &state.calls[0].0,
+        "fixtures/native_batch/put_uses_one_multirow_key_pattern_and_preserves_hit_identity.tql",
     );
     assert_eq!(state.calls.len(), 1);
     assert_eq!(state.calls[0].1.rows.len(), 2);
@@ -1350,21 +1363,17 @@ async fn relation_insert_resolves_players_and_creates_exact_type_before_links() 
             .await
             .unwrap();
         let state = state.lock().unwrap();
-        assert_eq!(
-            state.calls[0].0,
+        assert_native_fixture(
+            &state.calls[0].0,
             [
-                include_str!(
-                    "fixtures/native_batch/relation_insert_resolves_players_and_creates_exact_type_before_links.tql"
-                ),
-                include_str!(
-                    "fixtures/native_batch/relation_insert_resolves_players_and_creates_exact_type_before_links_ordered_role.tql"
-                )
-            ][variant]
+                "fixtures/native_batch/relation_insert_resolves_players_and_creates_exact_type_before_links.tql",
+                "fixtures/native_batch/relation_insert_resolves_players_and_creates_exact_type_before_links_ordered_role.tql",
+            ][variant],
         );
         assert_eq!(state.calls.len(), 1);
         let (source, rows) = &state.calls[0];
         assert!(rows.rows.iter().flatten().any(|value| matches!(value, type_bridge_orm::session::backend::GivenValue::String(iid) if iid == "0xab")));
-        assert!(source.contains("isa! person;") && source.contains("iid("));
+        assert!(source.contains("isa! person;") && source.contains("iid 0xab"));
         assert!(
             source.find("insert $root0 isa membership;").unwrap()
                 < source.find("$root0 links (member:").unwrap()
@@ -1406,11 +1415,9 @@ async fn key_reference_uses_its_selected_key_and_scoped_roles_are_validated() {
         .unwrap();
     {
         let state = state.lock().unwrap();
-        assert_eq!(
-            state.calls[0].0,
-            include_str!(
-                "fixtures/native_batch/key_reference_uses_its_selected_key_and_scoped_roles_are_validated.tql"
-            )
+        assert_native_fixture(
+            &state.calls[0].0,
+            "fixtures/native_batch/key_reference_uses_its_selected_key_and_scoped_roles_are_validated.tql",
         );
         let key_column = state.calls[0]
             .1
@@ -1481,11 +1488,9 @@ async fn mixed_iid_and_key_reference_arms_bind_shared_iid_evidence() {
         .unwrap();
 
     let state = state.lock().unwrap();
-    assert_eq!(
-        state.calls[0].0,
-        include_str!(
-            "fixtures/native_batch/mixed_iid_and_key_reference_arms_bind_shared_iid_evidence.tql"
-        )
+    assert_native_fixture(
+        &state.calls[0].0,
+        "fixtures/native_batch/mixed_iid_and_key_reference_arms_bind_shared_iid_evidence.tql",
     );
     assert_eq!(state.calls.len(), 1);
     let source = &state.calls[0].0;
@@ -1538,11 +1543,9 @@ async fn mixed_relation_put_is_one_call_and_keeps_key_hit_identity() {
         ["0x30", "0x31"]
     );
     let state = state.lock().unwrap();
-    assert_eq!(
-        state.calls[0].0,
-        include_str!(
-            "fixtures/native_batch/mixed_relation_put_is_one_call_and_keeps_key_hit_identity.tql"
-        )
+    assert_native_fixture(
+        &state.calls[0].0,
+        "fixtures/native_batch/mixed_relation_put_is_one_call_and_keeps_key_hit_identity.tql",
     );
     assert_eq!(state.calls.len(), 1);
     assert_eq!(state.calls[0].1.rows.len(), 2);
@@ -1556,7 +1559,7 @@ async fn mixed_relation_put_is_one_call_and_keeps_key_hit_identity() {
 }
 
 #[tokio::test]
-async fn relation_update_is_one_call_and_clears_keys_and_roles() {
+async fn relation_update_is_one_call_preserves_keys_and_replaces_roles() {
     let installed = installed();
     let membership = type_id(TypeKind::Relation, "membership");
     let batch = ProjectedBatch::try_new(
@@ -1582,15 +1585,14 @@ async fn relation_update_is_one_call_and_clears_keys_and_roles() {
         .await
         .unwrap();
     let state = state.lock().unwrap();
-    assert_eq!(
-        state.calls[0].0,
-        include_str!(
-            "fixtures/native_batch/relation_update_is_one_call_and_clears_keys_and_roles.tql"
-        )
+    assert_native_fixture(
+        &state.calls[0].0,
+        "fixtures/native_batch/relation_update_is_one_call_preserves_keys_and_replaces_roles.tql",
     );
     assert_eq!(state.calls.len(), 1);
     let source = &state.calls[0].0;
-    assert!(source.contains("has $PlanHas") && source.contains("of $root0;"));
+    assert!(!source.contains("has $PlanHas"));
+    assert!(source.contains("key_guard"));
     assert_eq!(source.matches("links (member: $PlanPlayers").count(), 2);
     assert!(source.contains("$root0 links (member:"));
     assert!(state.responses.is_empty());
@@ -1781,7 +1783,7 @@ async fn owned_commit_failure_is_not_followed_by_rollback() {
 }
 
 #[tokio::test]
-async fn update_is_one_call_clears_keys_and_rejects_a_changed_target_iid() {
+async fn update_is_one_call_preserves_keys_and_rejects_a_changed_target_iid() {
     let installed = installed();
     let person = type_id(TypeKind::Entity, "person");
     let batch = ProjectedBatch::try_new(
@@ -1808,11 +1810,9 @@ async fn update_is_one_call_clears_keys_and_rejects_a_changed_target_iid() {
         .unwrap();
     {
         let state = state.lock().unwrap();
-        assert_eq!(
-            state.calls[0].0,
-            include_str!(
-                "fixtures/native_batch/update_is_one_call_clears_keys_and_rejects_a_changed_target_iid.tql"
-            )
+        assert_native_fixture(
+            &state.calls[0].0,
+            "fixtures/native_batch/update_is_one_call_preserves_keys_and_rejects_a_changed_target_iid.tql",
         );
         assert_eq!(state.calls.len(), 1);
         assert!(matches!(
@@ -2176,7 +2176,7 @@ async fn first_middle_last_inflight_cancellation_rolls_back_both_batch_kinds() {
                 .await
                 .unwrap_err();
             assert_eq!(diagnostic.code().as_str(), "provider_cancelled");
-            assert_owned_atomic_failure(&state, 1);
+            assert_abandoned_atomic_failure(&state);
         }
     }
 }
@@ -2210,7 +2210,7 @@ async fn first_middle_last_inflight_timeout_rolls_back_both_batch_kinds() {
                 .await
                 .unwrap_err();
             assert_eq!(diagnostic.code().as_str(), "transaction_deadline_exceeded");
-            assert_owned_atomic_failure(&state, 1);
+            assert_abandoned_atomic_failure(&state);
         }
     }
 }
@@ -2984,7 +2984,7 @@ async fn returning_capture_keeps_the_first_malformed_item_over_a_later_provider_
 }
 
 #[tokio::test]
-async fn key_changing_self_updates_verify_source_iids_without_an_extra_statement() {
+async fn self_updates_verify_source_iids_with_immutable_keys_in_one_statement() {
     let installed = installed_with_schema(
         "format: typebridge.schema/v2\nattributes:\n  identifier: { value: string }\nrelations:\n  membership:\n    owns:\n      identifier: { key: true }\n    relates:\n      member: { card: { min: 0, max: 1 } }\nplays:\n  membership:\n    membership: [member]\n",
         ProjectionHandler::python_v1(),
@@ -3013,7 +3013,7 @@ async fn key_changing_self_updates_verify_source_iids_without_an_extra_statement
                 membership.clone(),
                 vec![(
                     key.clone(),
-                    vec![string_value(&installed, "identifier", "new")],
+                    vec![string_value(&installed, "identifier", "old")],
                 )],
                 vec![(member.clone(), vec![reference])],
             )
@@ -3028,9 +3028,9 @@ async fn key_changing_self_updates_verify_source_iids_without_an_extra_statement
                 }],
             )
             .unwrap();
-            let mut document = json!({"ordinal":0,"_iid":"0x20","_type":"membership","attributes":{"identifier":[{"value":"new"}]},"role_players":[{"role":"member","iid":returned_iid,"type_name":"membership","attributes":{"identifier":[{"value":"new"}]}}],"reference_0_2":source_iid});
+            let mut document = json!({"ordinal":0,"_iid":"0x20","_type":"membership","attributes":{"identifier":[{"value":"old"}]},"role_players":[{"role":"member","iid":returned_iid,"type_name":"membership","attributes":{"identifier":[{"value":"old"}]}}],"reference_0_3":source_iid});
             if by_iid {
-                document.as_object_mut().unwrap().remove("reference_0_2");
+                document.as_object_mut().unwrap().remove("reference_0_3");
             }
             let (database, state) = fixture(
                 vec![Response::Documents(vec![document])],
@@ -3054,7 +3054,7 @@ async fn key_changing_self_updates_verify_source_iids_without_an_extra_statement
             assert_eq!(
                 state.calls[0]
                     .0
-                    .contains("\"reference_0_2\": iid($player2)"),
+                    .contains("\"reference_0_3\": iid($player3)"),
                 !by_iid
             );
             assert_eq!(

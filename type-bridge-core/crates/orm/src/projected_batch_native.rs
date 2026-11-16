@@ -347,7 +347,7 @@ impl ProjectedBatchExecutor<'_> {
             .write_program
             .take()
             .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-        let entries = program
+        let mut entries = program
             .staged_entries(&plan.authority)
             .map_err(diagnostic)?
             .ok_or_else(|| {
@@ -360,6 +360,42 @@ impl ProjectedBatchExecutor<'_> {
                     .expect("static message"),
                 )
             })?;
+        let key_guard = if batch.operation() == ProjectedBatchOperation::Update {
+            super::key_guard::build(&plan.authority, plan.model, &plan.rows)?
+        } else {
+            None
+        };
+        let prefix = if key_guard.is_some() && !batch.is_single_write() {
+            2
+        } else {
+            0
+        };
+        let postflight = key_guard.is_some() && batch.is_single_write();
+        if let Some(key_guard) = &key_guard {
+            if postflight {
+                entries.push(key_guard.entries[0].clone());
+            } else {
+                let mut guarded = key_guard.entries.clone();
+                for entry in entries {
+                    let mut refs = entry.result_refs().to_vec();
+                    for reference in &mut refs {
+                        reference.source_plan += prefix as u32;
+                    }
+                    guarded.push(
+                        type_bridge_contract::query_remote::StagedPlan::new_with_result_refs(
+                            entry.plan(),
+                            entry.rows().to_vec(),
+                            refs,
+                            plan.authority.declared(),
+                        )
+                        .map_err(diagnostic)?,
+                    );
+                }
+                entries = guarded;
+            }
+            ledger.limits = prepared.limits().for_adapter_statements(entries.len());
+            ledger.charge_preflight(0, entries.len() as u32)?;
+        }
         let guard_contexts = program.guard_contexts();
         prepared.check_control()?;
         proxy
@@ -368,14 +404,15 @@ impl ProjectedBatchExecutor<'_> {
                 prepared.limits(),
                 prepared.cancellation(),
                 prepared.deadline(),
-                |answers| {
+                |mut answers| {
+                    let proof = if postflight { answers.pop() } else { None };
                     let mut consumer = HydrationConsumer::new(self, &plan, identity)?;
                     for (_, row) in &plan.rows {
                         consumer
                             .targets
                             .push(row_iid(row).unwrap_or_default().to_owned());
                     }
-                    for answer in answers {
+                    for answer in answers.into_iter().skip(prefix) {
                         let step = program
                             .next()
                             .map_err(diagnostic)?
@@ -401,12 +438,23 @@ impl ProjectedBatchExecutor<'_> {
                                             && reference.role == *role
                                     })
                                     .nth(reference_ordinal)
-                                    .map(|reference| (reference.reference_ordinal, reference.reference.type_id().clone()))
+                                    .map(|reference| {
+                                        (
+                                            reference.reference_ordinal,
+                                            reference.reference.type_id().clone(),
+                                        )
+                                    })
                             })?;
                         }
-                        if step.reference_resolution.as_ref().is_some_and(|resolution| resolution.guard.is_none()) {
+                        if step
+                            .reference_resolution
+                            .as_ref()
+                            .is_some_and(|resolution| resolution.guard.is_none())
+                        {
                             let iids = step.reference_iids(&answer).map_err(diagnostic)?;
-                            program.accept_reference_iids(&step, iids).map_err(diagnostic)?;
+                            program
+                                .accept_reference_iids(&step, iids)
+                                .map_err(diagnostic)?;
                         }
                         if step.complete {
                             accept_hydration_answer(step.plan.local(), answer, &mut consumer)?;
@@ -420,6 +468,30 @@ impl ProjectedBatchExecutor<'_> {
                     }
                     let snapshots = consumer.resolved_references.take();
                     let things = consumer.finish()?;
+                    if things.items().is_empty()
+                        && let Some(proof) = proof
+                    {
+                        let guard = key_guard.as_ref().expect("postflight has a proof");
+                        let proof = proof
+                            .to_staged(guard.entries[0].plan())
+                            .map_err(diagnostic)?;
+                        if let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } =
+                            proof
+                        {
+                            if rows.iter().any(|row| {
+                                matches!(row.get(1), Some(RemoteValue::Thing { .. }))
+                                    && matches!(row.get(2), Some(RemoteValue::Absent))
+                            }) {
+                                let (row, iid) = &guard.rows[0];
+                                return Ok(Err(crate::projected_crud::key_update_refused_at_row(
+                                    batch.model(),
+                                    *row,
+                                    iid,
+                                    false,
+                                )));
+                            }
+                        }
+                    }
                     ledger.charge_projected(things.items())?;
                     for (thing, &index) in things.items().iter().zip(things.input_indexes()) {
                         validate_written_role_identities(
@@ -433,43 +505,87 @@ impl ProjectedBatchExecutor<'_> {
                         )?;
                     }
                     prepared.check_control()?;
-                    mapper(ProjectedBatchResult::Things(things))
+                    mapper(ProjectedBatchResult::Things(things)).map(Ok)
                 },
             )
             .await
             .map_err(|error| {
-                crate::QueryTargetError::Commit(Box::new(error.map_remote_diagnostic(
-                    |diagnostic| {
-                        use type_bridge_contract::sdk_diagnostic::{
-                            SdkDiagnosticDetailValue, SdkDiagnosticName,
-                        };
-                        if diagnostic.code().as_str() != "query_stage_result_ref_missing" {
-                            return None;
+                let error = error.map_remote_diagnostic(|diagnostic| {
+                    use type_bridge_contract::sdk_diagnostic::{
+                        SdkDiagnosticDetailValue, SdkDiagnosticName,
+                    };
+                    if diagnostic.code().as_str() != "query_stage_result_ref_missing" {
+                        return None;
+                    }
+                    let coordinate = |name| match diagnostic
+                        .details()
+                        .get(&SdkDiagnosticName::new(name).ok()?)?
+                    {
+                        SdkDiagnosticDetailValue::Signed(value) => usize::try_from(*value).ok(),
+                        SdkDiagnosticDetailValue::Count(value) => usize::try_from(*value).ok(),
+                        _ => None,
+                    };
+                    if prefix > 0
+                        && coordinate("source_plan")? == 0
+                        && coordinate("source_column")? == 2
+                    {
+                        let guard = key_guard.as_ref()?;
+                        let (row, iid) = guard.rows.get(coordinate("source_row").unwrap_or(0))?;
+                        return Some(crate::projected_crud::key_update_refused_at_row(
+                            batch.model(),
+                            *row,
+                            iid,
+                            true,
+                        ));
+                    }
+                    let context = guard_contexts.get(&(
+                        coordinate("source_plan")?.checked_sub(prefix)?,
+                        u16::try_from(coordinate("source_column")?).ok()?,
+                    ))?;
+                    match context {
+                        crate::plan_builders::bulk_write::ReferenceContext::Guard(context) => {
+                            context
+                                .validate(&[], |role, reference_ordinal| {
+                                    plan.role_references
+                                        .iter()
+                                        .filter(|reference| {
+                                            reference.owner_ordinal == context.row()
+                                                && reference.role == *role
+                                        })
+                                        .nth(reference_ordinal)
+                                        .map(|reference| {
+                                            (
+                                                reference.reference_ordinal,
+                                                reference.reference.type_id().clone(),
+                                            )
+                                        })
+                                })
+                                .err()
                         }
-                        let coordinate = |name| match diagnostic
-                            .details()
-                            .get(&SdkDiagnosticName::new(name).ok()?)?
-                        {
-                            SdkDiagnosticDetailValue::Signed(value) => usize::try_from(*value).ok(),
-                            SdkDiagnosticDetailValue::Count(value) => usize::try_from(*value).ok(),
-                            _ => None,
-                        };
-                        let context = guard_contexts.get(&(
-                            coordinate("source_plan")?,
-                            u16::try_from(coordinate("source_column")?).ok()?,
-                        ))?;
-                        match context {
-                            crate::plan_builders::bulk_write::ReferenceContext::Guard(context) => context.validate(&[], |role, reference_ordinal| plan.role_references.iter().filter(|reference| reference.owner_ordinal == context.row() && reference.role == *role).nth(reference_ordinal).map(|reference| (reference.reference_ordinal, reference.reference.type_id().clone()))).err(),
-                            crate::plan_builders::bulk_write::ReferenceContext::Snapshot(ordinal) => {
-                                let mut references = plan.role_references.iter().collect::<Vec<_>>();
-                                references.sort_by_key(|reference| reference.owner_ordinal);
-                                let reference = references.get(*ordinal)?;
-                                Some(integrity_at_reference("projected_batch_reference_missing", "A projected role-player reference did not resolve exactly once", plan.model.id(), &reference.role, reference.owner_ordinal, reference.reference_ordinal, reference.reference.type_id()))
-                            },
+                        crate::plan_builders::bulk_write::ReferenceContext::Snapshot(ordinal) => {
+                            let mut references = plan.role_references.iter().collect::<Vec<_>>();
+                            references.sort_by_key(|reference| reference.owner_ordinal);
+                            let reference = references.get(*ordinal)?;
+                            Some(integrity_at_reference(
+                                "projected_batch_reference_missing",
+                                "A projected role-player reference did not resolve exactly once",
+                                plan.model.id(),
+                                &reference.role,
+                                reference.owner_ordinal,
+                                reference.reference_ordinal,
+                                reference.reference.type_id(),
+                            ))
                         }
-                    },
-                )))
-            })
+                    }
+                });
+                let diagnostic = error.diagnostic();
+                if diagnostic.code().as_str() == "query_plan_key_update" {
+                    crate::QueryTargetError::from(diagnostic)
+                } else {
+                    crate::QueryTargetError::Commit(Box::new(error))
+                }
+            })?
+            .map_err(Into::into)
     }
 
     async fn execute_proxy_delete<T, F>(

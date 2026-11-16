@@ -385,7 +385,10 @@ pub(crate) fn build_many(
             )?;
             if matches!(
                 kind,
-                WriteKind::PartialUpdate | WriteKind::Delete | WriteKind::DeleteReturning
+                WriteKind::Update
+                    | WriteKind::PartialUpdate
+                    | WriteKind::Delete
+                    | WriteKind::DeleteReturning
             ) && key
             {
                 if slot == 0 {
@@ -533,6 +536,33 @@ pub(crate) fn build_many(
             }
             patterns.push(QueryPattern::Try { patterns: alias }.into());
             deleted_fields.push(DeleteItem::Has { owner, field });
+        }
+    }
+    if kind == WriteKind::Update {
+        for (field, input) in &identity_keys {
+            let value = draft.bind("key_guard")?;
+            patterns.push(
+                QueryPattern::Or {
+                    branches: vec![
+                        vec![QueryPattern::Not {
+                            patterns: vec![present(input)],
+                        }],
+                        vec![
+                            QueryPattern::Has {
+                                owner: root,
+                                attribute: value,
+                                attribute_id: field.attribute().clone(),
+                            },
+                            QueryPattern::Value {
+                                comparator: ValueComparator::Equal,
+                                left: QueryOperand::Binding { binding: value },
+                                right: input.clone(),
+                            },
+                        ],
+                    ],
+                }
+                .into(),
+            );
         }
     }
     // Key-changing updates can alter a referenced player's hydrated key.
@@ -731,7 +761,9 @@ pub(crate) fn build_many(
         let items = shape
             .cleared_fields
             .iter()
-            .filter(|field| kind != WriteKind::Put || !shape.keys.contains(field))
+            .filter(|field| {
+                !matches!(kind, WriteKind::Put | WriteKind::Update) || !shape.keys.contains(field)
+            })
             .map(|field| DeleteItem::Has {
                 owner: root,
                 field: field.clone(),

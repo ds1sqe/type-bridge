@@ -1810,6 +1810,183 @@ async fn expired_staged_write_does_not_wait_for_busy_provider_rollback() {
     db.close().unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn projected_update_refuses_changed_keys_and_keeps_absent_iids_distinct() {
+    let Some(db) = live_database("immutable_keys").await else {
+        return;
+    };
+    db.execute_raw(
+        &PARTY_SCHEMA_TYPEQL.replace(
+            "entity person sub party;",
+            "entity person sub party, owns note @card(0..1);",
+        ),
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let installed = party_projection_for_schema(&PARTY_SCHEMA_YAML.replace(
+        "  person:\n    sub: party",
+        "  person:\n    sub: party\n    owns:\n      note: { card: { min: 0, max: 1 } }",
+    ));
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let kind = party_type(TypeKind::Entity, "person");
+    let field = |name| {
+        OwnsFactId::new(
+            kind.clone(),
+            type_bridge_contract::id::AttributeId::new(name).unwrap(),
+        )
+        .unwrap()
+    };
+    let input = |key, note| {
+        ProjectedCreate::try_new(
+            &installed,
+            kind.clone(),
+            vec![
+                (
+                    field("identifier"),
+                    vec![party_text(&installed, "identifier", key)],
+                ),
+                (field("note"), vec![party_text(&installed, "note", note)]),
+            ],
+            vec![],
+        )
+        .unwrap()
+    };
+    let inserted = crud
+        .insert_entity(&db, &input("original", "before"))
+        .await
+        .unwrap();
+    let iid = inserted.item().unwrap().iid();
+    for controlled in [false, true] {
+        let replacement = input("original", "unchanged-key");
+        let updated = if controlled {
+            crud.update_entity_controlled(
+                &db,
+                iid,
+                &replacement,
+                Default::default(),
+                Default::default(),
+            )
+            .await
+        } else {
+            crud.update_entity(&db, iid, &replacement).await
+        }
+        .unwrap();
+        assert_eq!(updated.count(), 1);
+        let replacement = input("changed", "must-not-write");
+        let error = if controlled {
+            crud.update_entity_controlled(
+                &db,
+                iid,
+                &replacement,
+                Default::default(),
+                Default::default(),
+            )
+            .await
+        } else {
+            crud.update_entity(&db, iid, &replacement).await
+        }
+        .unwrap_err();
+        assert_eq!(error.code().as_str(), "query_plan_key_update");
+        let stored = crud
+            .get_entity_by_iid(&db, &kind, iid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.fields()[&field("identifier")][0],
+            party_text(&installed, "identifier", "original")
+        );
+        assert_eq!(
+            stored.fields()[&field("note")][0],
+            party_text(&installed, "note", "unchanged-key")
+        );
+        let absent = if controlled {
+            crud.update_entity_controlled(
+                &db,
+                "0x00",
+                &replacement,
+                Default::default(),
+                Default::default(),
+            )
+            .await
+        } else {
+            crud.update_entity(&db, "0x00", &replacement).await
+        }
+        .unwrap();
+        assert_eq!(absent.count(), 0);
+    }
+    let second = crud
+        .insert_entity(&db, &input("second", "before"))
+        .await
+        .unwrap();
+    let second_iid = second.item().unwrap().iid();
+    let batch = type_bridge_orm::ProjectedBatch::try_new(
+        &installed,
+        kind.clone(),
+        type_bridge_orm::ProjectedBatchOperation::Update,
+        vec![
+            type_bridge_orm::ProjectedBatchRow::Update {
+                iid: iid.into(),
+                replacement: input("original", "must-roll-back"),
+            },
+            type_bridge_orm::ProjectedBatchRow::Update {
+                iid: second_iid.into(),
+                replacement: input("wrong-second", "must-not-write"),
+            },
+        ],
+    )
+    .unwrap();
+    let error = type_bridge_orm::ProjectedBatchExecutor::new(&installed)
+        .execute(
+            &db,
+            &batch,
+            type_bridge_orm::ProjectedBatchInvocationControl::capture(
+                Default::default(),
+                Default::default(),
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "query_plan_key_update");
+    assert!(
+        error
+            .path()
+            .contains(&type_bridge_contract::sdk_diagnostic::SdkDiagnosticPathSegment::Index(1))
+    );
+    assert_eq!(
+        crud.get_entity_by_iid(&db, &kind, iid)
+            .await
+            .unwrap()
+            .unwrap()
+            .fields()[&field("note")][0],
+        party_text(&installed, "note", "unchanged-key")
+    );
+    let filter =
+        type_bridge_orm::ProjectedManagerFilter::try_new(&installed, kind.clone()).unwrap();
+    let error = type_bridge_orm::ProjectedManagerFilterExecutor::new(&installed)
+        .update_on_target(
+            type_bridge_orm::QueryTarget::Database(&db),
+            &filter,
+            input("changed", "must-not-write"),
+            type_bridge_orm::ProjectedManagerFilterInvocationControl::capture(
+                Default::default(),
+                Default::default(),
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+            .code()
+            .as_str(),
+        "query_plan_key_update"
+    );
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
 /// Relation updates with several players stay one document set; an update
 /// with no players runs the released path, which refuses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

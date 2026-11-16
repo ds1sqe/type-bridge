@@ -233,3 +233,17 @@ When a generated API changes, update the generated acceptance evidence,
 declaration baselines, user guide, capability manifest, and applicable
 sdk contracts together. Keep the old operation inventory as retained
 cutover evidence.
+
+### Native manager statement fixtures
+
+Regenerate the ORM's native manager TypeQL captures from its deterministic
+mock-provider suite after changing shared lowering:
+
+```bash
+TYPE_BRIDGE_UPDATE_PLAN_FIXTURES=1 cargo test \
+  --manifest-path type-bridge-core/Cargo.toml \
+  -p type-bridge-orm --test projected_batch_executor
+```
+
+Run the command again without the environment variable to check the recorded
+statements. The helper writes only the fixture selected by each test.

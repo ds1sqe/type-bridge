@@ -808,7 +808,7 @@ impl<'db> DynamicEntityManager<'db> {
         let program =
             plans.single_write_program(&self.descriptor.type_name, kind, iid, attributes, &[])?;
         let hydrate = |plan: &BuiltPlan, answer| {
-            hydrate_write_rows(
+            let written = hydrate_write_rows(
                 plans,
                 plan,
                 &self.descriptor.type_name,
@@ -816,7 +816,17 @@ impl<'db> DynamicEntityManager<'db> {
                 self.target.answer_limits(),
                 iid,
                 plan_entity_row,
-            )
+            )?;
+            if matches!(kind, WriteKind::Update | WriteKind::PartialUpdate) {
+                for row in written.items() {
+                    validate_returned_update_keys(
+                        &self.descriptor.owned_attributes,
+                        attributes,
+                        &row.attributes,
+                    )?;
+                }
+            }
+            Ok(written)
         };
         match program {
             ManagerWrite::One(plan) => {
@@ -1739,7 +1749,7 @@ impl<'db> DynamicRelationManager<'db> {
             role_players,
         )?;
         let hydrate = |plan: &BuiltPlan, answer| {
-            hydrate_write_rows(
+            let written = hydrate_write_rows(
                 plans,
                 plan,
                 &self.descriptor.type_name,
@@ -1747,7 +1757,17 @@ impl<'db> DynamicRelationManager<'db> {
                 self.target.answer_limits(),
                 iid,
                 plan_relation_row,
-            )
+            )?;
+            if matches!(kind, WriteKind::Update | WriteKind::PartialUpdate) {
+                for row in written.items() {
+                    validate_returned_update_keys(
+                        &self.descriptor.owned_attributes,
+                        attributes,
+                        &row.attributes,
+                    )?;
+                }
+            }
+            Ok(written)
         };
         match program {
             ManagerWrite::One(plan) => {
@@ -2327,6 +2347,40 @@ fn hydrate_write_rows<T>(
         })
         .collect::<Result<Vec<_>>>()
         .map(WriteResult::new)
+}
+
+fn validate_returned_update_keys(
+    fields: &[crate::_descriptor::OwnedAttributeDescriptor],
+    requested: &DynamicAttributeMap,
+    stored: &DynamicAttributeMap,
+) -> Result<()> {
+    for field in fields.iter().filter(|field| field.is_key()) {
+        if let Some((_, requested)) = requested
+            .iter()
+            .find(|(name, _)| name == &field.attr_name || name == &field.field_name)
+        {
+            let expected = crate::plan_builders::manager::canonical(requested)?;
+            let same = stored
+                .iter()
+                .find(|(name, _)| name == &field.attr_name || name == &field.field_name)
+                .map(|(_, value)| crate::plan_builders::manager::canonical(value))
+                .transpose()?
+                .is_some_and(|actual| {
+                    actual == expected
+                        || actual.semantic_cmp_same_domain(&expected)
+                            == Some(std::cmp::Ordering::Equal)
+                });
+            if !same {
+                return Err(crate::match_request::MatchError::new(
+                    crate::match_request::MatchErrorCategory::InvalidPlan,
+                    "query_plan_key_update",
+                    "Key ownerships cannot be updated",
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn dispatch_manager_plan<T>(

@@ -58,6 +58,7 @@ pub(crate) fn entity_insert(
     )
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum UpdateSelection<'a> {
     Iid(&'a str),
     Filter(&'a crate::ProjectedManagerFilter),
@@ -69,6 +70,7 @@ pub(crate) enum UpdateSelection<'a> {
 pub(crate) struct ThingUpdate<'a> {
     pub(crate) type_id: &'a TypeId,
     pub(crate) selection: UpdateSelection<'a>,
+    pub(crate) keys: &'a [(OwnsFactId, CanonicalValue)],
     pub(crate) cleared_fields: &'a [OwnsFactId],
     pub(crate) fields: &'a [(OwnsFactId, CanonicalValue)],
     pub(crate) cleared_roles: &'a [RoleId],
@@ -93,6 +95,72 @@ pub(crate) fn update(
         }
         .into(),
     ];
+    if !update.keys.is_empty() {
+        match update.selection {
+            UpdateSelection::Iid(_) => {
+                for (field, expected) in update.keys {
+                    let value = draft.bind("key_guard")?;
+                    patterns.push(
+                        QueryPattern::Has {
+                            owner: thing,
+                            attribute: value,
+                            attribute_id: field.attribute().clone(),
+                        }
+                        .into(),
+                    );
+                    patterns.push(
+                        QueryPattern::Value {
+                            comparator:
+                                type_bridge_contract::migration_assertion::ValueComparator::Equal,
+                            left: type_bridge_contract::query_plan::QueryOperand::Binding {
+                                binding: value,
+                            },
+                            right: draft.value(expected.clone())?,
+                        }
+                        .into(),
+                    );
+                }
+            }
+            UpdateSelection::Filter(filter) => {
+                let candidate = draft.bind("key_guard")?;
+                let mut mismatched = vec![
+                    QueryPattern::Isa {
+                        binding: candidate,
+                        include_subtypes: false,
+                        type_id: update.type_id.clone(),
+                    }
+                    .into(),
+                ];
+                filter.append_write_predicates(&mut draft, candidate, &mut mismatched)?;
+                mismatched.push(mismatch_pattern(&mut draft, candidate, update.keys)?.into());
+                let mismatched = mismatched
+                    .into_iter()
+                    .map(|pattern| {
+                        Ok(match pattern {
+                            Pattern::Read(pattern) => pattern,
+                            Pattern::Iid { binding, iid } => QueryPattern::Iid {
+                                binding,
+                                iid: type_bridge_contract::query_plan::QueryOperand::Literal {
+                                    value: CanonicalValue::String(
+                                        type_bridge_contract::value::CanonicalString::new(iid)?,
+                                    ),
+                                },
+                            },
+                            Pattern::Let { .. } => {
+                                unreachable!("filter predicates do not assign values")
+                            }
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                patterns.push(
+                    QueryPattern::Not {
+                        patterns: mismatched,
+                    }
+                    .into(),
+                );
+            }
+        }
+    }
     let mut links = Vec::new();
     for (role, reference) in update.players {
         let player = reference_binding(&mut draft, reference, &mut patterns)?;
@@ -160,6 +228,66 @@ pub(crate) fn update(
         update.document_roles,
     )));
     draft.finish(authority, pipeline, operation, no_columns())
+}
+
+fn mismatch_pattern(
+    draft: &mut super::PlanDraft,
+    thing: type_bridge_contract::migration_assertion::BindingId,
+    keys: &[(OwnsFactId, CanonicalValue)],
+) -> Result<QueryPattern, Diagnostic> {
+    let mut branches = Vec::new();
+    for (field, expected) in keys {
+        let value = draft.bind("key_value")?;
+        branches.push(vec![
+            QueryPattern::Has {
+                owner: thing,
+                attribute: value,
+                attribute_id: field.attribute().clone(),
+            },
+            QueryPattern::Value {
+                comparator: type_bridge_contract::migration_assertion::ValueComparator::NotEqual,
+                left: type_bridge_contract::query_plan::QueryOperand::Binding { binding: value },
+                right: draft.value(expected.clone())?,
+            },
+        ]);
+    }
+    Ok(QueryPattern::Or { branches })
+}
+
+/// A diagnostic read after a guarded miss, or alongside a proxy update.
+pub(crate) fn mismatched_keys(
+    authority: &PlanAuthority,
+    transport: ValueTransport,
+    type_id: &TypeId,
+    selection: UpdateSelection<'_>,
+    keys: &[(OwnsFactId, CanonicalValue)],
+) -> Result<BuiltPlan, Diagnostic> {
+    let mut draft = authority.draft(transport);
+    let thing = draft.bind("thing")?;
+    let mut patterns = vec![
+        QueryPattern::Isa {
+            binding: thing,
+            include_subtypes: false,
+            type_id: type_id.clone(),
+        }
+        .into(),
+    ];
+    match selection {
+        UpdateSelection::Iid(iid) => patterns.push(Pattern::Iid {
+            binding: thing,
+            iid: iid.to_owned(),
+        }),
+        UpdateSelection::Filter(filter) => {
+            filter.append_write_predicates(&mut draft, thing, &mut patterns)?
+        }
+    }
+    patterns.push(mismatch_pattern(&mut draft, thing, keys)?.into());
+    draft.finish(
+        authority,
+        vec![Stage::Match { patterns }],
+        Operation::Exists,
+        no_columns(),
+    )
 }
 
 /// Delete the thing of exactly `type_id` at `iid`; absent is not an error.

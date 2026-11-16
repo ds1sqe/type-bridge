@@ -1833,10 +1833,18 @@ fn produced_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<BindingId>)
             bindings.insert(*assigned);
         }
         QueryPattern::Or { branches } => {
-            for branch in branches {
+            let mut branches = branches.iter().map(|branch| {
+                let mut produced = BTreeSet::new();
                 for pattern in branch {
-                    produced_bindings(pattern, bindings);
+                    produced_bindings(pattern, &mut produced);
                 }
+                produced
+            });
+            if let Some(mut common) = branches.next() {
+                for branch in branches {
+                    common.retain(|binding| branch.contains(binding));
+                }
+                bindings.extend(common);
             }
         }
         QueryPattern::Try { patterns } => {
@@ -2817,6 +2825,7 @@ mod tests {
                 write::ThingUpdate {
                     type_id: &owner,
                     selection: write::UpdateSelection::Iid("0x01"),
+                    keys: &[],
                     cleared_fields: &fields,
                     fields: &values,
                     cleared_roles: &[],

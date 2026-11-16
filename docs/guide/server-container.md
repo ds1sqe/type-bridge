@@ -199,6 +199,12 @@ singleton. Use `query_only` only for a database with neither canonical nor
 archived migration controls. Scope and semantic profile come from the verified
 artifact and are intentionally not repeated in server configuration.
 
+Generated manager updates keep key ownerships immutable. A proxy
+`update_many` supplying key values validates every target before writing;
+a missing IID or a changed key refuses the whole batch with
+`query_plan_key_update` ("IID not found or key differs") and input-row/IID
+details. Direct batches omit missing IIDs. See [CRUD](crud.md).
+
 ## Health and version identity
 
 Probe health from outside the container:

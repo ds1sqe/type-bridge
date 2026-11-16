@@ -57,7 +57,7 @@ pub(crate) fn diagnostic(error: Diagnostic) -> OrmError {
     .into()
 }
 
-fn canonical(value: &crate::AttributeValue) -> Result<CanonicalValue> {
+pub(crate) fn canonical(value: &crate::AttributeValue) -> Result<CanonicalValue> {
     // Dynamic callers may spell a duration in any valid ISO-8601 form; fold it
     // losslessly (months, days and time stay separate) as native match inputs do.
     if let crate::AttributeValue::Duration(spelling) = value {

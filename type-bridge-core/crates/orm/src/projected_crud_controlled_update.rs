@@ -25,6 +25,15 @@ pub(crate) struct SingleWrite {
     pub(crate) plan: BuiltPlan,
 }
 
+impl SingleWrite {
+    pub(crate) fn keys(&self) -> &[(OwnsFactId, CanonicalValue)] {
+        match &self.model {
+            WriteModel::Entity(model) => &model.plan_write.keys,
+            WriteModel::Relation(model) => &model.plan_write.keys,
+        }
+    }
+}
+
 impl ProjectedCrudExecutor<'_> {
     /// Validate and retain the one input of a controlled write before dispatch.
     #[doc(hidden)]
@@ -136,21 +145,55 @@ impl ProjectedCrudExecutor<'_> {
             authority.declared(),
         )
         .map_err(|error| plan_build_failure(&error, batch.model()))?;
+        let diagnostic = if let Some((_, ProjectedBatchRow::Update { iid, .. })) = batch.row_at(0) {
+            if single.keys().is_empty() {
+                None
+            } else {
+                Some(
+                    crate::plan_builders::write::mismatched_keys(
+                        &authority,
+                        ValueTransport::Given,
+                        batch.model(),
+                        UpdateSelection::Iid(iid),
+                        single.keys(),
+                    )
+                    .map_err(|error| plan_build_failure(&error, batch.model()))?,
+                )
+            }
+        } else {
+            None
+        };
+        let mut entries = vec![entry];
+        if let Some(diagnostic) = &diagnostic {
+            entries.push(
+                type_bridge_contract::query_remote::StagedPlan::new(
+                    diagnostic.local(),
+                    diagnostic.local().given_rows().unwrap_or_default().to_vec(),
+                    authority.declared(),
+                )
+                .map_err(|error| plan_build_failure(&error, batch.model()))?,
+            );
+        }
+        let statement_count = entries.len();
         let mut ledger = ExecutionLedger::new(prepared.limits(), batch.resource_measure().bytes());
-        ledger.charge_preflight(0, 1)?;
+        ledger.charge_preflight(0, statement_count as u32)?;
         proxy
             .execute_write_stack_mapped(
-                vec![entry],
+                entries,
                 prepared.limits(),
                 prepared.cancellation(),
                 prepared.deadline(),
                 |mut answers| {
-                    if answers.len() != 1 {
+                    if answers.len() != statement_count {
                         return Err(write_plan_invalid(batch.model()));
                     }
+                    let mismatch = diagnostic.as_ref().map(|_| answers.pop().unwrap());
                     let Some(PlanAnswer::Documents(documents)) = answers.pop() else {
                         return Err(write_plan_invalid(batch.model()));
                     };
+                    if documents.is_empty() && matches!(mismatch, Some(PlanAnswer::Exists(true))) {
+                        return Ok(Err(key_update_refused(batch.model())));
+                    }
                     let things = self.hydrate_controlled_documents(
                         identity,
                         batch,
@@ -160,11 +203,12 @@ impl ProjectedCrudExecutor<'_> {
                     )?;
                     ledger.charge_projected(things.items())?;
                     prepared.check_control()?;
-                    mapper(things)
+                    mapper(things).map(Ok)
                 },
             )
             .await
-            .map_err(|error| crate::QueryTargetError::Commit(Box::new(error)))
+            .map_err(|error| crate::QueryTargetError::Commit(Box::new(error)))?
+            .map_err(Into::into)
     }
 
     /// Execute one direct write and map its complete answer before committing.
@@ -452,6 +496,7 @@ impl ProjectedCrudExecutor<'_> {
             ThingUpdate {
                 type_id: filter.model(),
                 selection: UpdateSelection::Filter(filter),
+                keys: &write.keys,
                 cleared_fields: &write.cleared_fields,
                 fields: &write.fields,
                 cleared_roles: &write.cleared_roles,
@@ -503,6 +548,7 @@ impl ProjectedCrudExecutor<'_> {
                 ThingUpdate {
                     type_id: batch.model(),
                     selection: UpdateSelection::Iid(iid),
+                    keys: &write.keys,
                     cleared_fields: &write.cleared_fields,
                     fields: &write.fields,
                     cleared_roles: &write.cleared_roles,
@@ -663,7 +709,7 @@ impl ProjectedCrudExecutor<'_> {
             )
             .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, type_id))?;
             let (answer, stats) = await_crud_controlled(
-                lease.dispatch_plan_counted(query, limits, Some(single.plan.local())),
+                lease.dispatch_plan_counted(query, limits.clone(), Some(single.plan.local())),
                 prepared.deadline(),
                 prepared.cancellation(),
             )
@@ -679,6 +725,42 @@ impl ProjectedCrudExecutor<'_> {
                 return Err(write_plan_invalid(type_id));
             };
 
+            if documents.is_empty()
+                && !single.keys().is_empty()
+                && let Some((_, ProjectedBatchRow::Update { iid, .. })) = prepared.batch().row_at(0)
+            {
+                let authority = self
+                    .installed
+                    .plan_authority_with_query_limits(transaction.shared_query_limits())
+                    .map_err(|error| plan_build_failure(&error, type_id))?;
+                let diagnostic = crate::plan_builders::write::mismatched_keys(
+                    &authority,
+                    ValueTransport::Given,
+                    type_id,
+                    UpdateSelection::Iid(iid),
+                    single.keys(),
+                )
+                .map_err(|error| plan_build_failure(&error, type_id))?;
+                let query = lease.prepare_plan(diagnostic.local()).map_err(|error| {
+                    mode.orm_at_type(error, SdkProviderOperation::Read, type_id)
+                })?;
+                ledger.charge_preflight(query.typeql.len() as u64, 1)?;
+                let (answer, stats) = lease
+                    .dispatch_plan_counted(query, limits, Some(diagnostic.local()))
+                    .await
+                    .map_err(|error| {
+                        mode.orm_at_type(error, SdkProviderOperation::Read, type_id)
+                    })?;
+                ledger.record_reply(stats)?;
+                if matches!(
+                    TransactionContext::resolve_plan(diagnostic.local(), answer).map_err(
+                        |error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id)
+                    )?,
+                    PlanAnswer::Exists(true)
+                ) {
+                    return Err(key_update_refused(type_id));
+                }
+            }
             let thing = self.hydrate_controlled_documents(
                 transaction.execution_identity(),
                 prepared.batch(),
@@ -940,6 +1022,8 @@ mod tests {
         input_indexes: std::sync::Mutex<Option<Vec<usize>>>,
         mutation_columns: std::sync::atomic::AtomicUsize,
         missing_guard_ordinal: std::sync::atomic::AtomicUsize,
+        mismatched_key: std::sync::atomic::AtomicBool,
+        mismatched_key_row: std::sync::atomic::AtomicUsize,
         dispatched_writes: std::sync::atomic::AtomicUsize,
         seen: std::sync::Mutex<Vec<type_bridge_contract::query_remote::StagedRequest>>,
     }
@@ -971,7 +1055,11 @@ mod tests {
                     !entry.plan().writes()
                         && match entry.plan().output() {
                             type_bridge_contract::query_plan::QueryOutput::Rows { columns }
-                                if columns.len() >= 2 =>
+                                if columns.len() >= 2
+                                    && !entry.plan().bindings()[usize::from(columns[1].get())]
+                                        .variable()
+                                        .as_str()
+                                        .starts_with("actual") =>
                             {
                                 entry
                                     .plan()
@@ -1055,6 +1143,55 @@ mod tests {
                             );
                         }
                         answers.push(StagedAnswer::Rows { rows: vec![cells] });
+                        continue;
+                    }
+                    if let type_bridge_contract::query_plan::QueryOutput::Rows { columns } =
+                        plan.output()
+                    {
+                        if columns.len() == 3
+                            && plan.bindings()[usize::from(columns[1].get())]
+                                .variable()
+                                .as_str()
+                                .starts_with("actual")
+                        {
+                            let rows = plan.given_rows().unwrap().iter().enumerate().map(|(position, row)| {
+                                let ordinal = row.values()[0].as_ref().unwrap().clone();
+                                let CanonicalValue::String(iid) = row.values()[1].as_ref().unwrap() else { panic!("IID"); };
+                                let actual = if input_indexes.as_ref().map_or(position < self.roots, |indexes| matches!(&ordinal, CanonicalValue::Long(ordinal) if indexes.contains(&(*ordinal as usize)))) { RemoteValue::Thing { iid: iid.as_str().to_owned(), type_id: self.model.clone() } } else { RemoteValue::Absent };
+                                let matched = if self.mismatched_key.load(std::sync::atomic::Ordering::Relaxed)
+                                    || position == self.mismatched_key_row.load(std::sync::atomic::Ordering::Relaxed) { RemoteValue::Absent } else { actual.clone() };
+                                vec![RemoteValue::Value { value: ordinal }, actual, matched]
+                            }).collect();
+                            answers.push(StagedAnswer::Rows { rows });
+                            continue;
+                        }
+                        if columns.len() == 1
+                            && plan.bindings()[usize::from(columns[0].get())]
+                                .variable()
+                                .as_str()
+                                .starts_with("guard")
+                        {
+                            answers.push(StagedAnswer::Rows {
+                                rows: plan
+                                    .given_rows()
+                                    .unwrap()
+                                    .iter()
+                                    .map(|row| {
+                                        vec![RemoteValue::Value {
+                                            value: row.values()[0].as_ref().unwrap().clone(),
+                                        }]
+                                    })
+                                    .collect(),
+                            });
+                            continue;
+                        }
+                    }
+                    if plan.operation() == type_bridge_contract::query_plan::Operation::Exists {
+                        answers.push(StagedAnswer::Exists {
+                            value: self
+                                .mismatched_key
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                        });
                         continue;
                     }
                     let answer = if let Some(fetch) =
@@ -1253,6 +1390,8 @@ mod tests {
             input_indexes: std::sync::Mutex::new(None),
             mutation_columns: std::sync::atomic::AtomicUsize::new(2),
             missing_guard_ordinal: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            mismatched_key: std::sync::atomic::AtomicBool::new(false),
+            mismatched_key_row: std::sync::atomic::AtomicUsize::new(usize::MAX),
             dispatched_writes: std::sync::atomic::AtomicUsize::new(0),
             seen: std::sync::Mutex::new(vec![]),
         });
@@ -1344,7 +1483,7 @@ mod tests {
                     ProjectedAttributeValue::try_new(
                         &installed,
                         TypeId::new(TypeKind::Attribute, "item-key").unwrap(),
-                        CanonicalValue::String(CanonicalString::new("old-key").unwrap()),
+                        CanonicalValue::String(CanonicalString::new("key").unwrap()),
                     )
                     .unwrap(),
                 )],
@@ -1423,13 +1562,13 @@ mod tests {
             }
             let seen = transport.seen.lock().unwrap();
             assert_eq!(seen.len(), 1);
-            assert_eq!(seen[0].plans().len(), 3);
+            assert_eq!(seen[0].plans().len(), 5);
             assert!(!seen[0].plans()[0].plan().writes());
             assert!(
-                seen[0].plans()[1..]
+                seen[0].plans()[2..]
                     .iter()
                     .flat_map(|entry| entry.result_refs())
-                    .all(|reference| reference.source_plan == 0)
+                    .all(|reference| reference.source_plan == 0 || reference.source_plan == 2)
             );
         }
     }
@@ -1460,7 +1599,7 @@ mod tests {
                     ProjectedAttributeValue::try_new(
                         &installed,
                         TypeId::new(TypeKind::Attribute, "item-key").unwrap(),
-                        CanonicalValue::String(CanonicalString::new("old-key").unwrap()),
+                        CanonicalValue::String(CanonicalString::new("key").unwrap()),
                     )
                     .unwrap(),
                 )],
@@ -1896,8 +2035,22 @@ mod tests {
                             Ok(Some(result))
                         },
                     )
-                    .await
-                    .unwrap();
+                    .await;
+                if update {
+                    let error = result
+                        .unwrap_err()
+                        .into_diagnostic(SdkProviderOperation::Write);
+                    assert_eq!(error.code().as_str(), "query_plan_key_update");
+                    assert!(error.path().contains(&SdkDiagnosticPathSegment::Index(1)));
+                    assert_eq!(
+                        transport
+                            .dispatched_writes
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                        0
+                    );
+                    continue;
+                }
+                let result = result.unwrap();
                 let Some(ProjectedBatchResult::Things(things)) = result else {
                     panic!("expected mapped batch");
                 };
@@ -2000,7 +2153,7 @@ mod tests {
                 assert_eq!(result.count(), roots);
                 let seen = transport.seen.lock().unwrap();
                 assert_eq!(seen.len(), 1);
-                assert_eq!(seen[0].plans().len(), 1);
+                assert_eq!(seen[0].plans().len(), 2);
                 assert_eq!(
                     transport
                         .dispatched_writes
@@ -2257,7 +2410,7 @@ mod tests {
                         type_bridge_contract::codec::to_canonical_json(&filtered_wire["plans"])
                             .unwrap()
                     );
-                    assert_eq!(seen[0].plans().len() == 1, tags == 1);
+                    assert_eq!(seen[0].plans().len() == 2, tags == 1);
                 }
             }
         }
@@ -2579,7 +2732,10 @@ mod tests {
                         let seen = transport.seen.lock().unwrap();
                         assert_eq!(seen.len(), 1);
                         if let Some(bytes) = inline {
-                            assert_eq!(seen[0].plans().len(), 1);
+                            assert_eq!(
+                                seen[0].plans().len(),
+                                1 + usize::from(operation == ProjectedBatchOperation::Update)
+                            );
                             assert_eq!(
                                 seen[0].plans()[0]
                                     .bound_plan(&transport.schema)
@@ -2600,6 +2756,116 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_batch_key_gate_aborts_before_writes_and_names_the_input_row() {
+        for missing in [false, true] {
+            let model = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
+            let (installed, proxy, transport) =
+                single_proxy_fixture(model.clone(), if missing { 1 } else { 2 }, 1);
+            if !missing {
+                transport
+                    .mismatched_key_row
+                    .store(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            let batch = ProjectedBatch::try_new(
+                &installed,
+                model.clone(),
+                ProjectedBatchOperation::Update,
+                vec![
+                    ProjectedBatchRow::Update {
+                        iid: "0x20".into(),
+                        replacement: proxy_batch_input(&installed, &model, 1, "first"),
+                    },
+                    ProjectedBatchRow::Update {
+                        iid: "0x22".into(),
+                        replacement: proxy_batch_input(&installed, &model, 1, "second"),
+                    },
+                ],
+            )
+            .unwrap();
+            let error = ProjectedBatchExecutor::new(&installed)
+                .execute_on_target_mapped(
+                    crate::QueryTarget::Proxy(&proxy),
+                    &batch,
+                    ProjectedBatchInvocationControl::capture(
+                        Default::default(),
+                        Default::default(),
+                    ),
+                    (),
+                    |_| Ok(()),
+                )
+                .await
+                .unwrap_err()
+                .into_diagnostic(SdkProviderOperation::Write);
+            assert_eq!(error.code().as_str(), "query_plan_key_update");
+            assert_eq!(error.message().as_str(), "IID not found or key differs");
+            assert!(error.path().contains(&SdkDiagnosticPathSegment::Index(1)));
+            assert_eq!(
+                transport
+                    .dispatched_writes
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                0
+            );
+            let seen = transport.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert!(!seen[0].plans()[0].plan().writes());
+            assert!(!seen[0].plans()[1].plan().writes());
+            assert_eq!(seen[0].plans()[1].result_refs()[0].source_column, 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_key_update_classifies_only_zero_row_writes_in_the_same_stack() {
+        for (roots, mismatch) in [(0, false), (0, true), (1, true)] {
+            let model = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
+            let (installed, proxy, transport) = single_proxy_fixture(model.clone(), roots, 1);
+            transport
+                .mismatched_key
+                .store(mismatch, std::sync::atomic::Ordering::Relaxed);
+            let control =
+                ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+            let executor = ProjectedCrudExecutor::new(&installed);
+            let batch = executor
+                .single_controlled_write_batch(
+                    &model,
+                    ProjectedBatchOperation::Update,
+                    ProjectedBatchRow::Update {
+                        iid: "0x20".into(),
+                        replacement: proxy_single_input(&installed, &model, 1),
+                    },
+                    &control,
+                )
+                .unwrap();
+            let result = executor
+                .execute_single_write_on_target(
+                    crate::QueryTarget::Proxy(&proxy),
+                    &batch,
+                    control,
+                    Ok,
+                )
+                .await;
+            if roots == 0 && mismatch {
+                assert_eq!(
+                    result
+                        .unwrap_err()
+                        .into_diagnostic(SdkProviderOperation::Write)
+                        .code()
+                        .as_str(),
+                    "query_plan_key_update"
+                );
+            } else {
+                assert_eq!(result.unwrap().count(), roots);
+            }
+            let seen = transport.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].plans().len(), 2);
+            assert_eq!(
+                seen[0].plans()[1].plan().operation(),
+                type_bridge_contract::query_plan::Operation::Exists
+            );
         }
     }
 
@@ -3025,6 +3291,7 @@ mod tests {
                 ThingUpdate {
                     type_id: &model,
                     selection: UpdateSelection::Iid("0x10"),
+                    keys: &write.keys,
                     cleared_fields: &write.cleared_fields,
                     fields: &write.fields,
                     cleared_roles: &write.cleared_roles,
@@ -3115,4 +3382,6 @@ mod tests {
             );
         }
     }
+    #[cfg(feature = "typedb")]
+    include!("projected_crud_key_proxy_live.rs");
 }

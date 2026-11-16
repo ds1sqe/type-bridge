@@ -45,6 +45,18 @@ borrowed write makes that transaction rollback-only.
 | `all()` / `first()` | Materialize all or the first match. |
 | `count()` / `exists()` | Execute database-side terminals. |
 
+Key fields are immutable on update. A replacement with a changed key raises
+`query_plan_key_update` and writes nothing. Keep the original key when
+replacing non-key fields. Direct `update_many` omits missing IIDs without
+raising; the remaining rows retain their input order.
+
+A proxy `update_many` whose replacements supply keys checks the whole batch
+before writing. A missing IID or a different stored key refuses every row with
+`query_plan_key_update` and the message "IID not found or key differs". The
+error identifies the input row and IID. Proxy batches without supplied key
+values retain missing-IID omission.
+
+
 ```python
 manager = Person.manager(db)
 

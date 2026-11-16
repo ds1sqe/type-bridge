@@ -130,6 +130,11 @@ pub fn result(source: &str, result: QueryResult) -> QueryResult {
 }
 
 pub fn item(source: &str, mut document: Value) -> AnswerItem {
+    if source.contains("$actual1") && source.contains("$matched2") {
+        return AnswerItem::Row(
+            json!({"ordinal0":scalar(&document["ordinal"]), "actual1":{"kind":"absent"}, "matched2":{"kind":"absent"}}),
+        );
+    }
     let snapshot = source.contains("$root0")
         && !source.contains("$ordinal1")
         && !source.contains("\"ordinal\"")

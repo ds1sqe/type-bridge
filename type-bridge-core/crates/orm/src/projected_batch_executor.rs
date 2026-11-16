@@ -42,6 +42,8 @@ use crate::session::database::DatabaseExecutionIdentity;
 use crate::session::{Database, TransactionContext, TxType};
 use crate::value::AttributeValue;
 
+#[path = "projected_batch_key_guard.rs"]
+mod key_guard;
 #[path = "projected_batch_native.rs"]
 mod native;
 
@@ -367,6 +369,82 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         }
     }
 
+    async fn refuse_changed_update_keys(
+        &self,
+        lease: &mut TransactionContextMutationLease,
+        prepared: &PreparedProjectedBatchInvocation<'_>,
+        plan: &BatchPlan<'_>,
+        result: &ProjectedBatchResult,
+    ) -> std::result::Result<(), SdkExecutionDiagnostic> {
+        if prepared.batch().operation() != ProjectedBatchOperation::Update {
+            return Ok(());
+        }
+        let ProjectedBatchResult::Things(things) = result else {
+            return Ok(());
+        };
+        if things.input_indexes().len() == plan.rows.len() {
+            return Ok(());
+        }
+        let returned = things
+            .input_indexes()
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let missed = plan
+            .rows
+            .iter()
+            .filter(|(ordinal, _)| !returned.contains(ordinal))
+            .copied()
+            .collect::<Vec<_>>();
+        let Some(guard) = key_guard::build(&plan.authority, plan.model, &missed)? else {
+            return Ok(());
+        };
+        let proof = guard.entries[0]
+            .bound_plan(plan.authority.declared())
+            .map_err(crate::execution_diagnostic::lower_remote_query_diagnostic)?;
+        let query = lease
+            .prepare_plan(&proof)
+            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+        let limits = crate::query_plan_exec::plan_answer_limits(
+            prepared.limits(),
+            prepared.cancellation(),
+            prepared.deadline(),
+        )
+        .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+        let (answer, _) = lease
+            .dispatch_plan_counted(query, limits, Some(&proof))
+            .await
+            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+        let answer = TransactionContext::resolve_plan(&proof, answer)
+            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+        let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } = answer
+            .to_staged(&proof)
+            .map_err(crate::execution_diagnostic::lower_remote_query_diagnostic)?
+        else {
+            return Err(SdkExecutionDiagnostic::internal_failure());
+        };
+        if rows.len() != guard.rows.len() {
+            return Err(SdkExecutionDiagnostic::internal_failure());
+        }
+        for (values, (ordinal, iid)) in rows.iter().zip(&guard.rows) {
+            if matches!(
+                values.get(1),
+                Some(type_bridge_contract::query_remote::RemoteValue::Thing { .. })
+            ) && matches!(
+                values.get(2),
+                Some(type_bridge_contract::query_remote::RemoteValue::Absent)
+            ) {
+                return Err(crate::projected_crud::key_update_refused_at_row(
+                    plan.model.id(),
+                    *ordinal,
+                    iid,
+                    false,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     async fn execute_prepared_in_transaction<T, F>(
         &self,
         transaction: &TransactionContext,
@@ -390,14 +468,23 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             .await
         {
             Err(diagnostic) => Err(MappedExecutionFailure::Diagnostic(diagnostic)),
-            Ok(batch_result) => match catch_unwind(AssertUnwindSafe(|| mapper(batch_result))) {
-                Ok(Err(diagnostic)) => Err(MappedExecutionFailure::Diagnostic(diagnostic)),
-                Ok(Ok(value)) => prepared
-                    .check_control()
-                    .map(|()| value)
-                    .map_err(MappedExecutionFailure::Diagnostic),
-                Err(payload) => Err(MappedExecutionFailure::Panic(payload)),
-            },
+            Ok(batch_result) => {
+                if let Err(diagnostic) = self
+                    .refuse_changed_update_keys(&mut lease, prepared, &plan, &batch_result)
+                    .await
+                {
+                    lease.record_failure(&diagnostic);
+                    return Err(MappedExecutionFailure::Diagnostic(diagnostic));
+                }
+                match catch_unwind(AssertUnwindSafe(|| mapper(batch_result))) {
+                    Ok(Err(diagnostic)) => Err(MappedExecutionFailure::Diagnostic(diagnostic)),
+                    Ok(Ok(value)) => prepared
+                        .check_control()
+                        .map(|()| value)
+                        .map_err(MappedExecutionFailure::Diagnostic),
+                    Err(payload) => Err(MappedExecutionFailure::Panic(payload)),
+                }
+            }
         };
         match result {
             Ok(value) => {
@@ -3546,7 +3633,7 @@ plays:
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn single_write_native_execution_commits_empty_answers_without_diagnosis() {
+    async fn single_write_native_execution_classifies_guarded_empty_updates() {
         let installed = allocation_installed();
         for kind in [TypeKind::Entity, TypeKind::Relation] {
             for operation in [
@@ -3571,7 +3658,11 @@ plays:
                     .single_controlled_write_batch(&model, operation, row, &control)
                     .unwrap();
                 let state = Arc::new(Mutex::new(AllocationState {
-                    answers: VecDeque::from([vec![]]),
+                    answers: if operation == ProjectedBatchOperation::Update {
+                        VecDeque::from([vec![], vec![json!({"ordinal":0})]])
+                    } else {
+                        VecDeque::from([vec![]])
+                    },
                     ..AllocationState::default()
                 }));
                 let database = Database::with_backend(
@@ -3590,7 +3681,14 @@ plays:
                 assert_eq!(things.count(), 0);
                 assert!(things.input_indexes().is_empty());
                 let state = state.lock().unwrap();
-                assert_eq!(state.calls, 1);
+                assert_eq!(
+                    state.calls,
+                    if operation == ProjectedBatchOperation::Update {
+                        2
+                    } else {
+                        1
+                    }
+                );
                 assert_eq!((state.commits, state.rollbacks), (1, 0));
                 assert!(state.answers.is_empty());
             }

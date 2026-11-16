@@ -3750,6 +3750,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let model = self.model_integrity(input.type_id())?;
         let tokens = model.query_tokens();
         let mut created = Vec::new();
+        let mut keys = Vec::new();
         let mut fields = Vec::new();
         for (field_id, values) in input.fields() {
             let token = tokens.fields().get(field_id).ok_or_else(|| {
@@ -3764,6 +3765,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 .iter()
                 .map(|value| (token.declaring_id().clone(), value.value().clone()));
             if token.is_key() {
+                keys.extend(values.clone());
                 created.extend(values);
             } else {
                 created.extend(values.clone());
@@ -3782,6 +3784,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         cleared_fields.dedup();
         Ok(PreparedPlanWrite {
             created,
+            keys,
             fields,
             cleared_fields,
             cleared_roles: tokens
@@ -4174,6 +4177,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             ThingUpdate {
                 type_id,
                 selection: UpdateSelection::Iid(iid),
+                keys: &write.keys,
                 cleared_fields: &write.cleared_fields,
                 fields: &write.fields,
                 cleared_roles: &[],
@@ -4183,6 +4187,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         )
         .map_err(|error| plan_build_failure(&error, type_id))?;
         let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
+        if documents.is_empty() {
+            let classified = self
+                .refuse_changed_keys(
+                    transaction,
+                    type_id,
+                    UpdateSelection::Iid(iid),
+                    &write.keys,
+                    mode,
+                )
+                .await;
+            after_write(transaction, classified).await?;
+        }
         let hydrated = self
             .hydrate_entity_documents(
                 transaction.execution_identity(),
@@ -4501,6 +4517,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             ThingUpdate {
                 type_id,
                 selection: UpdateSelection::Iid(iid),
+                keys: &write.keys,
                 cleared_fields: &write.cleared_fields,
                 fields: &write.fields,
                 cleared_roles: &write.cleared_roles,
@@ -4510,6 +4527,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         );
         let plan = plan.map_err(|error| plan_build_failure(&error, type_id))?;
         let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
+        if documents.is_empty() {
+            let classified = self
+                .refuse_changed_keys(
+                    transaction,
+                    type_id,
+                    UpdateSelection::Iid(iid),
+                    &write.keys,
+                    mode,
+                )
+                .await;
+            after_write(transaction, classified).await?;
+        }
         let hydrated = self
             .hydrate_relation_documents(
                 transaction.execution_identity(),
@@ -5604,6 +5633,7 @@ struct PreparedKeyedPut {
 struct PreparedPlanWrite {
     /// Every given value, keys included, for an insert.
     created: Vec<(OwnsFactId, CanonicalValue)>,
+    keys: Vec<(OwnsFactId, CanonicalValue)>,
     /// The given non-key values, for an update.
     fields: Vec<(OwnsFactId, CanonicalValue)>,
     cleared_fields: Vec<OwnsFactId>,
@@ -5966,6 +5996,86 @@ async fn plan_transport(
 /// Execute a write plan and return its rows. Lowering failures reach no
 /// provider and leave the transaction as it was; a failure after dispatch
 /// may follow writes, so it poisons a borrowed transaction.
+pub(crate) fn key_update_refused(type_id: &TypeId) -> SdkExecutionDiagnostic {
+    invalid_input_at_type(
+        "query_plan_key_update",
+        "Key ownerships cannot be updated",
+        type_id,
+    )
+}
+
+pub(crate) fn key_update_refused_at_row(
+    type_id: &TypeId,
+    row: usize,
+    iid: &str,
+    proxy: bool,
+) -> SdkExecutionDiagnostic {
+    invalid_input_at_type(
+        "query_plan_key_update",
+        if proxy {
+            "IID not found or key differs"
+        } else {
+            "Key ownerships cannot be updated"
+        },
+        type_id,
+    )
+    .try_at(SdkDiagnosticPathSegment::Argument(
+        SdkDiagnosticName::new("rows").expect("static name"),
+    ))
+    .and_then(|diagnostic| diagnostic.try_at(SdkDiagnosticPathSegment::Index(row as u64)))
+    .and_then(|diagnostic| {
+        diagnostic.try_with_detail(
+            SdkDiagnosticName::new("iid").expect("static name"),
+            SdkDiagnosticDetailValue::QueryIdentity(
+                type_bridge_contract::sdk_diagnostic::SdkQueryDiagnosticIdentity::new(iid)
+                    .expect("canonical IID"),
+            ),
+        )
+    })
+    .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
+}
+
+impl ProjectedCrudExecutor<'_> {
+    async fn refuse_changed_keys(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        selection: UpdateSelection<'_>,
+        keys: &[(OwnsFactId, CanonicalValue)],
+        mode: ExecutionMode<'_>,
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let authority = self
+            .installed
+            .plan_authority_with_query_limits(transaction.shared_query_limits())
+            .map_err(|error| plan_build_failure(&error, type_id))?;
+        let plan = crate::plan_builders::write::mismatched_keys(
+            &authority,
+            plan_transport(transaction, type_id, mode).await?,
+            type_id,
+            selection,
+            keys,
+        )
+        .map_err(|error| plan_build_failure(&error, type_id))?;
+        let query = transaction
+            .prepare_plan(plan.local())
+            .await
+            .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let answer = transaction
+            .dispatch_plan(query)
+            .await
+            .and_then(|answer| TransactionContext::resolve_plan(plan.local(), answer))
+            .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        if matches!(answer, PlanAnswer::Exists(true)) {
+            Err(key_update_refused(type_id))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 async fn execute_write_rows(
     transaction: &TransactionContext,
     plan: &type_bridge_contract::query_plan::QueryPlan,

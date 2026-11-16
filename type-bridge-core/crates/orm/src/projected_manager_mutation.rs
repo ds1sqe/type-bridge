@@ -210,6 +210,7 @@ impl ProjectedManagerFilterExecutor<'_> {
             target,
             filter,
             &plan,
+            None,
             &control,
             filter.resource_measure().bytes() as u64,
             |answer, _ledger| match answer {
@@ -334,11 +335,26 @@ impl ProjectedManagerFilterExecutor<'_> {
             .plan_authority_with_query_limits(query_limits.as_ref())
             .map_err(crate::plan_builders::manager::diagnostic)?;
         let prepared = executor.prepare_filtered_update(filter, model, &authority)?;
+        let diagnostic = if prepared.keys().is_empty() {
+            None
+        } else {
+            Some(
+                crate::plan_builders::write::mismatched_keys(
+                    &authority,
+                    crate::plan_builders::ValueTransport::Given,
+                    filter.model(),
+                    crate::plan_builders::write::UpdateSelection::Filter(filter),
+                    prepared.keys(),
+                )
+                .map_err(crate::plan_builders::manager::diagnostic)?,
+            )
+        };
         let state = before_execute().await?;
         self.execute_mutation(
             target,
             filter,
             &prepared.plan,
+            diagnostic.as_ref(),
             &control,
             input_bytes,
             |answer, ledger| {
@@ -376,11 +392,16 @@ impl ProjectedManagerFilterExecutor<'_> {
         .map(|output| (output, state))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The optional diagnostic shares the mutation transaction and limits"
+    )]
     async fn execute_mutation<T, F>(
         &self,
         target: QueryTarget<'_>,
         filter: &ProjectedManagerFilter,
         plan: &crate::plan_builders::BuiltPlan,
+        diagnostic: Option<&crate::plan_builders::BuiltPlan>,
         control: &ProjectedManagerFilterInvocationControl,
         input_bytes: u64,
         mapper: F,
@@ -392,7 +413,7 @@ impl ProjectedManagerFilterExecutor<'_> {
         match target {
             QueryTarget::Proxy(proxy) => {
                 let mut ledger = ExecutionLedger::new(control.limits, input_bytes);
-                ledger.charge_preflight(0, 1)?;
+                ledger.charge_preflight(0, 1 + u32::from(diagnostic.is_some()))?;
                 let authority = self
                     .installed
                     .plan_authority()
@@ -403,25 +424,41 @@ impl ProjectedManagerFilterExecutor<'_> {
                     authority.declared(),
                 )
                 .map_err(crate::plan_builders::manager::diagnostic)?;
+                let mut entries = vec![entry];
+                if let Some(diagnostic) = diagnostic {
+                    entries.push(
+                        type_bridge_contract::query_remote::StagedPlan::new(
+                            diagnostic.local(),
+                            diagnostic.local().given_rows().unwrap_or_default().to_vec(),
+                            authority.declared(),
+                        )
+                        .map_err(crate::plan_builders::manager::diagnostic)?,
+                    );
+                }
+                let statement_count = entries.len();
                 proxy
                     .execute_write_stack_mapped(
-                        vec![entry],
+                        entries,
                         control.limits,
                         &control.cancellation,
                         control.deadline,
                         |mut answers| {
                             control.checkpoint(filter.model())?;
-                            if answers.len() != 1 {
+                            if answers.len() != statement_count {
                                 return Err(SdkExecutionDiagnostic::internal_failure());
                             }
-                            mapper(
-                                answers.pop().expect("one checked mutation answer"),
-                                &mut ledger,
-                            )
+                            let mismatch = diagnostic.map(|_| answers.pop().unwrap());
+                            let answer = answers.pop().expect("one checked mutation answer");
+                            if matches!(&answer, PlanAnswer::Documents(documents) if documents.is_empty())
+                                && matches!(mismatch, Some(PlanAnswer::Exists(true))) {
+                                return Ok(Err(crate::projected_crud::key_update_refused(filter.model())));
+                            }
+                            mapper(answer, &mut ledger).map(Ok)
                         },
                     )
                     .await
-                    .map_err(|error| QueryTargetError::Commit(Box::new(error)))
+                    .map_err(|error| QueryTargetError::Commit(Box::new(error)))?
+                    .map_err(Into::into)
             }
             QueryTarget::Database(database) => {
                 let limits = crate::query_plan_exec::plan_answer_limits(
@@ -431,9 +468,16 @@ impl ProjectedManagerFilterExecutor<'_> {
                 )?;
                 let transaction =
                     bounded(&limits.answer, database.transaction_context(TxType::Write)).await?;
-                let result =
-                    Self::run_mutation(&transaction, filter, plan, control, input_bytes, mapper)
-                        .await;
+                let result = Self::run_mutation(
+                    &transaction,
+                    filter,
+                    plan,
+                    diagnostic,
+                    control,
+                    input_bytes,
+                    mapper,
+                )
+                .await;
                 match result {
                     Ok(value) => {
                         transaction.commit_sdk().await?;
@@ -446,7 +490,16 @@ impl ProjectedManagerFilterExecutor<'_> {
                 }
             }
             QueryTarget::Transaction(transaction) => {
-                Self::run_mutation(transaction, filter, plan, control, input_bytes, mapper).await
+                Self::run_mutation(
+                    transaction,
+                    filter,
+                    plan,
+                    diagnostic,
+                    control,
+                    input_bytes,
+                    mapper,
+                )
+                .await
             }
         }
     }
@@ -455,6 +508,7 @@ impl ProjectedManagerFilterExecutor<'_> {
         transaction: &TransactionContext,
         filter: &ProjectedManagerFilter,
         plan: &crate::plan_builders::BuiltPlan,
+        diagnostic: Option<&crate::plan_builders::BuiltPlan>,
         control: &ProjectedManagerFilterInvocationControl,
         input_bytes: u64,
         mapper: F,
@@ -489,12 +543,32 @@ impl ProjectedManagerFilterExecutor<'_> {
         let result = async {
             control.checkpoint(filter.model())?;
             let (answer, stats) = lease
-                .dispatch_plan_counted(query, limits, Some(plan.local()))
+                .dispatch_plan_counted(query, limits.clone(), Some(plan.local()))
                 .await
                 .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?;
             ledger.record_reply(stats)?;
             let answer = TransactionContext::resolve_plan(plan.local(), answer)
                 .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?;
+            if matches!(&answer, PlanAnswer::Documents(documents) if documents.is_empty())
+                && let Some(diagnostic) = diagnostic
+            {
+                let query = lease
+                    .prepare_plan(diagnostic.local())
+                    .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+                ledger.charge_preflight(query.typeql.len() as u64, 1)?;
+                let (checked, stats) = lease
+                    .dispatch_plan_counted(query, limits, Some(diagnostic.local()))
+                    .await
+                    .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+                ledger.record_reply(stats)?;
+                if matches!(
+                    TransactionContext::resolve_plan(diagnostic.local(), checked)
+                        .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?,
+                    PlanAnswer::Exists(true)
+                ) {
+                    return Err(crate::projected_crud::key_update_refused(filter.model()));
+                }
+            }
             let value = mapper(answer, &mut ledger)?;
             control.checkpoint(filter.model())?;
             Ok::<_, SdkExecutionDiagnostic>(value)
