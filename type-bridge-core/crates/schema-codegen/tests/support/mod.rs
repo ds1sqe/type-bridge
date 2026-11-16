@@ -924,3 +924,36 @@ pub fn compile_c_consumer(
     );
     output
 }
+
+pub fn assert_abstract_attribute_ownership_refused(target: BindingTarget) {
+    let source = include_str!("../fixtures/abstract-owned-attribute.yaml");
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("abstract-owned-attribute.yaml").unwrap(),
+        source,
+    )])
+    .unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let resolved = resolve(&declared, &SemanticProfileId::new(TEST_PROFILE).unwrap()).unwrap();
+    let config = match target {
+        BindingTarget::Python => ProjectionConfig::python(),
+        BindingTarget::TypeScript => ProjectionConfig::typescript(),
+        BindingTarget::Rust => ProjectionConfig::rust(),
+        BindingTarget::C => ProjectionConfig::c(
+            type_bridge_contract::projection::CSymbolPrefix::new("abstract_test").unwrap(),
+        ),
+        _ => panic!("shipped target"),
+    };
+    let diagnostics = project(&resolved, target, &config, &[], &[]).unwrap_err();
+    let diagnostic = diagnostics.iter().next().unwrap();
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "projection_abstract_attribute_ownership"
+    );
+    assert!(diagnostic.diagnostic().message().contains("thing"));
+    assert!(diagnostic.diagnostic().message().contains("tag"));
+    assert_eq!(
+        diagnostic.primary().unwrap().document().as_str(),
+        "abstract-owned-attribute.yaml"
+    );
+    assert_eq!(diagnostic.primary().unwrap().line(), 10);
+}

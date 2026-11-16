@@ -11,7 +11,8 @@ use type_bridge_contract::schema::{
     AnnotationKindId, AnnotationSubjectId, CollectionMode, DeclaredIdentityFingerprint,
     DeclaredSchema, FunctionFact, InterfaceKind, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
     RelatesFact, SchemaAnnotationValue, SchemaDiagnostics, SchemaFact, SchemaFactId,
-    SemanticProfile, SemanticSchemaFingerprint, StructFact, StructField, SubFactId, ValueFactId,
+    SemanticProfile, SemanticSchemaFingerprint, SourceSpan, StructFact, StructField, SubFactId,
+    ValueFactId,
 };
 use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 
@@ -558,9 +559,14 @@ pub struct ResolvedSchema {
     structs: BTreeMap<StructId, ResolvedStruct>,
     descriptor_index: DescriptorIndex,
     dependency_graph: SchemaDependencyGraph,
+    ownership_sources: BTreeMap<OwnsFactId, SourceSpan>,
 }
 
 impl ResolvedSchema {
+    pub(crate) fn ownership_source(&self, id: &OwnsFactId) -> Option<&SourceSpan> {
+        self.ownership_sources.get(id)
+    }
+
     /// Return the unchanged direct-declaration identity.
     #[must_use]
     pub const fn declared_identity_fingerprint(&self) -> &DeclaredIdentityFingerprint {
@@ -890,6 +896,16 @@ pub fn resolve_schema_with_capabilities(
         structs,
         descriptor_index,
         dependency_graph,
+        ownership_sources: declared
+            .facts()
+            .filter_map(|fact| match fact {
+                SchemaFact::Owns(owns) => declared
+                    .source(&fact.id())
+                    .cloned()
+                    .map(|span| (owns.id().clone(), span)),
+                _ => None,
+            })
+            .collect(),
     })
 }
 

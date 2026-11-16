@@ -641,3 +641,47 @@ fn structs_refuse_migration_authoring_and_migration_enabled_schema_check() {
     .unwrap();
     assert!(!run_cli(root, &["schema", "check"]).status.success());
 }
+
+#[test]
+fn abstract_attribute_ownership_refusal_is_scoped_to_configured_codegen() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("schema/model.yaml"),
+        include_str!("../../schema-codegen/tests/fixtures/abstract-owned-attribute.yaml"),
+    )
+    .unwrap();
+    let manifest = "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: abstract-check\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: abstractcheck\n";
+    fs::write(root.join("typebridge.yaml"), manifest).unwrap();
+    assert_success(
+        &run_cli(root, &["schema", "check"]),
+        "schema-only abstract ownership",
+    );
+    fs::write(
+        root.join("typebridge.yaml"),
+        format!("{manifest}bindings:\n  python:\n    output: generated/python\n"),
+    )
+    .unwrap();
+    let output = run_cli(root, &["schema", "check"]);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("projection_abstract_attribute_ownership"),
+        "{error}"
+    );
+    assert!(error.contains("model.yaml:10:"), "{error}");
+    assert!(error.contains("thing") && error.contains("tag"), "{error}");
+    assert!(!root.join("generated").exists());
+    assert_success(
+        &run_cli(root, &["migration", "make", "--name", "initial"]),
+        "valid abstract ownership remains migratable",
+    );
+    assert!(!run_cli(root, &["schema", "generate"]).status.success());
+    assert!(!root.join("generated").exists());
+}

@@ -277,3 +277,10 @@ fn emits_type_name_overrides_without_changing_database_tokens() {
     assert!(models.contains("powertrain_ref"));
     assert_eq!(emitter.emit(&projection, &authority).unwrap(), package);
 }
+
+#[test]
+fn refuses_abstract_attribute_ownership_with_a_source_diagnostic() {
+    support::assert_abstract_attribute_ownership_refused(
+        type_bridge_contract::projection::BindingTarget::TypeScript,
+    );
+}

@@ -177,3 +177,12 @@ dependencies on handwritten authoring modules.
 Programmatic TypeQL/TOML-to-model functions and target-language model factories
 are removed. Use Split-YAML generation. Convert historical TOML with TypeBridge
 2.3.x before upgrading to 3.0.
+
+## Abstract attributes
+
+Abstract attribute types can describe a family of concrete attribute subtypes.
+Generated models in 3.0 must own the concrete subtypes rather than the abstract
+attribute itself. All four generators refuse abstract-attribute ownership with
+the owner, attribute and source location. `schema check` applies this rule when
+bindings are configured; schema-only checking and canonical migrations still
+accept the valid TypeDB schema.

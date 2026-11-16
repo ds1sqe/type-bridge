@@ -749,3 +749,10 @@ fn scalar_authoring_factories_omit_many_valued_ownerships() {
         .unwrap();
     assert!(inherited.contains("insert: None = None"));
 }
+
+#[test]
+fn refuses_abstract_attribute_ownership_with_a_source_diagnostic() {
+    support::assert_abstract_attribute_ownership_refused(
+        type_bridge_contract::projection::BindingTarget::Python,
+    );
+}

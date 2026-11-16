@@ -213,6 +213,23 @@ fn run(cli: &Cli) -> Result<(), String> {
         Command::Schema {
             command: SchemaCommand::Check,
         } => {
+            if !workspace.config().outputs().is_empty() {
+                let authority = type_bridge_schema::build_schema_authority(
+                    workspace.declared_schema(),
+                    workspace.required_capabilities(),
+                    workspace.delta_context(),
+                )
+                .map_err(display)?;
+                for target in workspace.config().outputs().keys() {
+                    generate_binding_package(
+                        *target,
+                        workspace.resolved_schema(),
+                        &authority,
+                        workspace.config().app_label(),
+                        workspace.config().type_name_overrides(*target),
+                    )?;
+                }
+            }
             println!(
                 "schema sources are valid\n  declared identity: {}\n  managed semantics: {}",
                 workspace
@@ -521,6 +538,27 @@ fn load_workspace(manifest: &PathBuf) -> Result<TypeBridgeWorkspace, String> {
     TypeBridgeWorkspace::from_located_config(located, &services).map_err(display)
 }
 
+fn display_schema_diagnostics(
+    diagnostics: type_bridge_contract::schema::SchemaDiagnostics,
+) -> String {
+    diagnostics
+        .iter()
+        .map(|entry| {
+            let message = entry.diagnostic().to_string();
+            match entry.primary() {
+                Some(span) => format!(
+                    "{}:{}:{}: {message}",
+                    span.document().as_str(),
+                    span.line(),
+                    span.column()
+                ),
+                None => message,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn display(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -702,7 +740,7 @@ fn generate_binding_package(
                 &handlers,
                 &resources,
             )
-            .map_err(display)?;
+            .map_err(display_schema_diagnostics)?;
             emitter.emit(&projection, authority)
         }
         BindingTarget::TypeScript => {
@@ -716,7 +754,7 @@ fn generate_binding_package(
                 &handlers,
                 &resources,
             )
-            .map_err(display)?;
+            .map_err(display_schema_diagnostics)?;
             emitter.emit(&projection, authority)
         }
         BindingTarget::Rust => {
@@ -730,7 +768,7 @@ fn generate_binding_package(
                 &handlers,
                 &resources,
             )
-            .map_err(display)?;
+            .map_err(display_schema_diagnostics)?;
             emitter.emit(&projection, authority)
         }
         BindingTarget::C => {
@@ -741,7 +779,7 @@ fn generate_binding_package(
                 app_label,
             )))?;
             let projection = project(resolved, BindingTarget::C, &config, &handlers, &resources)
-                .map_err(display)?;
+                .map_err(display_schema_diagnostics)?;
             emitter.emit(&projection, authority)
         }
         _ => {

@@ -638,6 +638,29 @@ pub fn project(
             "projection configuration belongs to a different target",
         ));
     }
+    for (owner, model) in resolved.types() {
+        for (attribute, owns) in model.owns() {
+            let attribute_type =
+                TypeId::new(TypeKind::Attribute, attribute.label().as_str()).map_err(no_source)?;
+            if owns.origin().is_direct()
+                && resolved
+                    .types()
+                    .get(&attribute_type)
+                    .is_some_and(ResolvedType::is_abstract)
+            {
+                return Err(crate::diagnostic::diagnostic(
+                    DiagnosticCategory::UnsupportedCapability,
+                    "projection_abstract_attribute_ownership",
+                    format!(
+                        "{} owns abstract attribute {}; generated models must own its concrete subtypes instead",
+                        owner.label().as_str(),
+                        attribute.label().as_str()
+                    ),
+                    resolved.ownership_source(owns.id()).cloned(),
+                ));
+            }
+        }
+    }
     config.validate_type_name_overrides().map_err(no_source)?;
     for item in config.type_name_overrides() {
         if !resolved.types().contains_key(item.type_id()) {

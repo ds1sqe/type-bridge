@@ -4444,3 +4444,10 @@ fn generated_rust_projected_parity_producer() {
         String::from_utf8_lossy(&payload),
     );
 }
+
+#[test]
+fn refuses_abstract_attribute_ownership_with_a_source_diagnostic() {
+    support::assert_abstract_attribute_ownership_refused(
+        type_bridge_contract::projection::BindingTarget::Rust,
+    );
+}

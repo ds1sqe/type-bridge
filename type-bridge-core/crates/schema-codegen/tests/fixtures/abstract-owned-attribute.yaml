@@ -1,0 +1,13 @@
+format: typebridge.schema/v2
+attributes:
+  tag:
+    abstract: true
+    value: string
+  color-tag: {sub: tag}
+entities:
+  thing:
+    abstract: true
+    owns: [tag]
+  item:
+    sub: thing
+    owns: [color-tag]

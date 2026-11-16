@@ -5970,3 +5970,10 @@ fn generated_c_live_setup_dependency_graph_is_frozen() {
     assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
     assert!(!lock.contains("name = \"tinyvec\"\nversion = \"1.13.0\""));
 }
+
+#[test]
+fn refuses_abstract_attribute_ownership_with_a_source_diagnostic() {
+    support::assert_abstract_attribute_ownership_refused(
+        type_bridge_contract::projection::BindingTarget::C,
+    );
+}
