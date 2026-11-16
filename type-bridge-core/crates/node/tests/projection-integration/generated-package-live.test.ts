@@ -4430,6 +4430,22 @@ test("generated temporal values and staged integers remain exact", { timeout: 36
       }
       assert.ok(exactSession.__functionInput(temporalStored.valDatetimeTz));
     } finally { exactSession.close(); }
+    const filterSession = new generated.QuerySession(database);
+    try {
+      for (const [name, label] of [["valDate", "val_date"], ["valDatetimeTz", "val_datetime_tz"]]) {
+        const attribute = temporalStored[name];
+        const literal = name === "valDatetimeTz"
+          ? "2024-01-01T00:00:00.123456789 Asia/Seoul" : attribute.canonical;
+        const raw = `match $p isa person, has ${label} ${literal}; fetch {"iid": iid($p)};`;
+        const expected: any = await database.executeQuery(raw, "read");
+        const selected = personManager.filter({ [name]: attribute }).all();
+        const bound = filterSession.exact(Person);
+        const typed = await filterSession.query(bound).where(bound.field(Person[name]).eq(attribute)).first();
+        assert.equal(selected.length, expected.answers.length, raw);
+        assert.equal(typed === null ? 0 : 1, expected.answers.length, raw);
+      }
+      assert.equal(personManager.filter({ valDate: ValDate.create("+10000-01-02") }).count(), 0n);
+    } finally { filterSession.close(); }
     const temporalReplacement = Person.create({
       identifier: temporalStored.identifier, score: Score.create(9007199254740995n),
       valBool: ValBool.create(false), valConstrained: temporalStored.valConstrained,

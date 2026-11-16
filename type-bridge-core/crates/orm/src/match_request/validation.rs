@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{FunctionReturnProjection, ProjectedTypeRef};
-use type_bridge_contract::value::ValueTypeTag;
+use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz};
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_core_lib::decimal::parse_decimal;
 
 use crate::_attribute::ValueType;
@@ -1768,6 +1769,13 @@ fn validate_safe_value(value: &AttributeValue) -> Result<(), MatchError> {
 }
 
 fn valid_date(value: &str) -> bool {
+    value
+        .parse::<CanonicalDate>()
+        .is_ok_and(|parsed| parsed.to_string() == value)
+        || released_valid_date(value)
+}
+
+fn released_valid_date(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
         return false;
@@ -1803,10 +1811,36 @@ fn valid_date(value: &str) -> bool {
 }
 
 fn valid_datetime(value: &str, timezone_required: bool) -> bool {
+    if timezone_required && value.ends_with(']') {
+        return type_bridge_schema::parse_provider_datetime_tz_evidence(value).is_ok_and(
+            |parsed| {
+                matches!(
+                    crate::runtime_projection::attribute_value_from_canonical(
+                        &CanonicalValue::DateTimeTz(parsed)
+                    ),
+                    AttributeValue::DateTimeTZ(canonical) if canonical == value
+                )
+            },
+        );
+    }
+    let canonical = if timezone_required {
+        value
+            .parse::<CanonicalDateTimeTz>()
+            .is_ok_and(|parsed| parsed.to_string() == value)
+    } else {
+        value
+            .parse::<CanonicalDateTime>()
+            .is_ok_and(|parsed| parsed.to_string() == value)
+    };
+    canonical || released_valid_datetime(value, timezone_required)
+}
+
+// Preserve the released four-digit lexical path; new forms must be canonical above.
+fn released_valid_datetime(value: &str, timezone_required: bool) -> bool {
     let Some((date, time)) = value.split_once('T') else {
         return false;
     };
-    if !valid_date(date) {
+    if !released_valid_date(date) {
         return false;
     }
     let (clock, has_timezone) = if let Some(clock) = time.strip_suffix('Z') {
@@ -2411,6 +2445,57 @@ mod tests {
         } else {
             value.parse::<CanonicalDateTime>().is_ok()
                 || ModelValue::released_datetime(value).is_ok()
+        }
+    }
+
+    #[test]
+    fn emitted_canonical_temporal_literals_are_safe_filter_values() {
+        for value in ["-0001-01-02", "+10000-01-02", "0000-02-29"] {
+            assert!(
+                validate_safe_value(&AttributeValue::Date(value.into())).is_ok(),
+                "{value}"
+            );
+        }
+        for value in ["-9999-01-02T03:04:05", "+10000-01-02T03:04:05.123456789"] {
+            assert!(
+                validate_safe_value(&AttributeValue::DateTime(value.into())).is_ok(),
+                "{value}"
+            );
+        }
+        for value in [
+            "2026-11-01T01:30:00-05:00[America/New_York]",
+            "2026-11-01T01:30:00-04:00[America/New_York]",
+            "1900-01-01T00:00:00+08:27:52[Asia/Seoul]",
+        ] {
+            assert!(
+                validate_safe_value(&AttributeValue::DateTimeTZ(value.into())).is_ok(),
+                "{value}"
+            );
+        }
+        for value in [
+            "+010000-01-02",
+            "-000001-01-02",
+            "-0001-01-02; match $x isa person;",
+        ] {
+            assert!(
+                validate_safe_value(&AttributeValue::Date(value.into())).is_err(),
+                "{value}"
+            );
+        }
+        for value in [
+            "2026-11-01T01:30:00-03:00[America/New_York]",
+            "2024-01-01T00:00:00Z[Not/AZone]",
+            "2024-01-01T00:00:00+09:00[Asia/Seoul]; match $x isa person;",
+            "2024-01-01T00:00:00+09:00[Asia/Seoul][UTC]",
+            "2024-01-01T00:00:00+09:00[Asia/Seoul\"]",
+            "2024-01-01T00:00:00+09:00[Asia/[Seoul]]",
+            "2024-01-01T00:00:00+09:00[Asia/Seoul\n]",
+            "2024-01-01T00:00:00 Asia/Seoul",
+        ] {
+            assert!(
+                validate_safe_value(&AttributeValue::DateTimeTZ(value.into())).is_err(),
+                "{value}"
+            );
         }
     }
 

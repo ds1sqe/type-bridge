@@ -1496,35 +1496,8 @@ fn safe_value(value: &AttributeValue) -> bool {
 }
 
 fn parse_date(value: &str) -> Option<i64> {
-    let bytes = value.as_bytes();
-    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
-        return None;
-    }
-    let year = value[0..4].parse::<i32>().ok()?;
-    let month = value[5..7].parse::<u32>().ok()?;
-    let day = value[8..10].parse::<u32>().ok()?;
-    if year <= 0 || !(1..=12).contains(&month) {
-        return None;
-    }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    if day == 0 || day > days[(month - 1) as usize] {
-        return None;
-    }
-    Some(days_from_civil(year, month, day))
+    let (year, month, day) = value.parse::<CanonicalDate>().ok()?.components();
+    Some(days_from_civil(year, u32::from(month), u32::from(day)))
 }
 
 fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
@@ -1980,6 +1953,16 @@ fn validated_witness_reduction(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn canonical_years_compare_as_filter_evidence() {
+        for text in ["-0001-01-02", "0000-02-29", "+10000-01-02"] {
+            let value = super::AttributeValue::Date(text.into());
+            assert_eq!(super::semantic_equal(&value, &value), Some(true));
+            let value = super::AttributeValue::DateTime(format!("{text}T03:04:05.123456789"));
+            assert_eq!(super::semantic_equal(&value, &value), Some(true));
+        }
+    }
+
     #[test]
     fn provider_named_timezones_hydrate_and_compare_without_precision_loss() {
         for spelling in [

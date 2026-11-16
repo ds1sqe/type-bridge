@@ -3332,6 +3332,85 @@ def test_typed_inputs_retain_exact_scalars_live(
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("text", ["-0001-01-02", "+10000-01-02"])
+def test_canonical_year_filters_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+    text: str,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    person: Any = _make_generated_person(generated, "canonical-year", 1)
+    person.val_date = generated.ValDate(text)
+    people.insert(person)
+    stored = people.get_by_iid(person.iid)
+    assert people.filter(val_date=stored.val_date).first().iid == person.iid
+
+    async def check() -> None:
+        session = generated.Person.query(clean_db)
+        bound = session.exact(generated.Person)
+        try:
+            found = (
+                await session.query(bound)
+                .where(bound.field(generated.Person.val_date).eq(stored.val_date))
+                .one()
+            )
+            assert found is not None and found.iid == person.iid
+        finally:
+            session.close()
+
+    asyncio.run(check())
+
+
+def test_named_zone_filters_match_raw_typeql_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    person: Any = _make_generated_person(generated, "named-filter", 1)
+    person.val_datetime_tz = generated.ValDatetimeTz("2024-01-01T00:00:00+09:00[Asia/Seoul]")
+    people.insert(person)
+    stored = people.get_by_iid(person.iid)
+
+    async def check() -> None:
+        for attribute in (
+            stored.val_datetime_tz,
+            generated.ValDatetimeTz(datetime.fromisoformat("2024-01-01T00:00:00+09:00")),
+        ):
+            text = attribute.canonical
+            literal = "2024-01-01T00:00:00 Asia/Seoul" if text.endswith("]") else text
+            raw = f'match $p isa person, has val_datetime_tz $a; $a == {literal}; fetch {{"iid": iid($p)}};'
+            expected = clean_db.execute_query(raw)["answers"]
+            actual = people.filter(val_datetime_tz=attribute).all()
+            session = generated.Person.query(clean_db)
+            bound = session.exact(generated.Person)
+            try:
+                typed = (
+                    await session.query(bound)
+                    .where(bound.field(generated.Person.val_datetime_tz).eq(attribute))
+                    .first()
+                )
+                typed_count = int(typed is not None)
+                print(
+                    f"named-zone equality: {raw} => raw={expected!r}, manager={len(actual)}, typed={typed_count}"
+                )
+                if text.endswith("]"):
+                    assert len(actual) == typed_count == len(expected) == 1
+                # Record the fixed-offset case without asserting instant equality:
+                # TypeDB's answer can depend on the query plan (orm-read finding 7).
+                assert typed is None or typed.iid == person.iid
+                assert all(value.iid == person.iid for value in actual)
+            finally:
+                session.close()
+
+    asyncio.run(check())
+
+
 def test_generated_filter_reads_uncommitted_writes_live(
     clean_db: Database,
     generated_package: ModuleType,
