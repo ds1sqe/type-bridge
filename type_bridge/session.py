@@ -86,8 +86,8 @@ def _resolve_transport_options(
 class _ConnectionIdentity:
     address: str
     database: str
-    username: str | None
-    password: str | None
+    username: str
+    password: str
     http_port: int
     server_version: str | None
     tls_enabled: bool
@@ -147,8 +147,8 @@ class Database:
         Args:
             address: TypeDB server address
             database: Database name
-            username: Optional username for authentication
-            password: Optional password for authentication
+            username: Authentication username; supply both credentials or neither
+            password: Authentication password; omitted credentials use admin/password
             driver: Optional pre-existing Driver instance to use. If provided,
                 the Database will use this driver instead of creating a new one.
                 The caller retains ownership and is responsible for closing it.
@@ -204,11 +204,17 @@ class Database:
                 "mixed-case HTTPS scheme does not enable TLS; use lowercase https:// "
                 "or pass tls=True explicitly"
             )
+        if self.username is None and self.password is None:
+            username, password = "admin", "password"
+        elif not self.username or not self.password:
+            raise ValueError("username and password must both be nonempty when supplied")
+        else:
+            username, password = self.username, self.password
         return _ConnectionIdentity(
             address=address,
             database=self.database_name,
-            username=self.username,
-            password=self.password,
+            username=username,
+            password=password,
             http_port=self.http_port,
             server_version=self.server_version,
             tls_enabled=tls_enabled,
@@ -338,22 +344,8 @@ class Database:
                         is_tls_enabled=identity.tls_enabled,
                         tls_root_ca=tls_root_ca,
                     )
-                credentials = (
-                    Credentials(identity.username, identity.password)
-                    if identity.username and identity.password
-                    else None
-                )
-
-                if credentials:
-                    logger.debug("Using provided credentials for authentication")
-                    created_driver = TypeDB.driver(identity.address, credentials, driver_options)
-                else:
-                    logger.debug("Using default credentials for local connection")
-                    created_driver = TypeDB.driver(
-                        identity.address,
-                        Credentials("admin", "password"),
-                        driver_options,
-                    )
+                credentials = Credentials(identity.username, identity.password)
+                created_driver = TypeDB.driver(identity.address, credentials, driver_options)
                 self._driver = created_driver
                 self._owns_driver = True
                 self._transport_committed = True

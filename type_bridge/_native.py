@@ -71,8 +71,8 @@ def core_database_for(connection: Any) -> PyDatabase:
             native_db = core_module().PyDatabase.connect(
                 identity.address,
                 identity.database,
-                identity.username or "admin",
-                identity.password or "password",
+                identity.username,
+                identity.password,
                 **connect_kwargs,
             )
         except BaseException:

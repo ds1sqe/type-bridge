@@ -39,6 +39,23 @@ class TestDatabaseConfiguration:
         assert db.username == "admin"
         assert db.password == "secret"
 
+    @pytest.mark.parametrize(
+        ("username", "password"),
+        [("alice", ""), ("", "secret"), ("alice", None), (None, "secret"), ("", "")],
+    )
+    @pytest.mark.parametrize("path", ["native", "driver"])
+    def test_partial_credentials_never_reach_a_driver(self, monkeypatch, username, password, path):
+        factory = MagicMock()
+        monkeypatch.setattr("type_bridge._native.core_module", lambda: factory)
+        monkeypatch.setattr("type_bridge.session.TypeDB.driver", factory)
+        database = Database(username=username, password=password)
+        with pytest.raises(ValueError, match="username and password"):
+            if path == "native":
+                database.connect()
+            else:
+                _ = database.driver
+        assert factory.mock_calls == []
+
     def test_driver_none_before_connect(self):
         """Driver should be None before connection."""
         db = Database()
