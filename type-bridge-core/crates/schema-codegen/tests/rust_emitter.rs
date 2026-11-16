@@ -279,7 +279,6 @@ fn plan_helper_names_follow_existing_collision_refusal() {
         "format: typebridge.schema/v2\nattributes:\n  matching: { value: string }\nentities:\n  item:\n    owns: { matching: {} }\n",
         "format: typebridge.schema/v2\nattributes:\n  handle: { value: string }\nentities:\n  item:\n    owns: { handle: {} }\n",
         "format: typebridge.schema/v2\nentities:\n  item: {}\n  item-handle: {}\n",
-        "format: typebridge.schema/v2\nattributes:\n  where_: { value: string }\nentities:\n  item:\n    owns: { where_: {} }\n",
     ] {
         let projection = support::rust_projection(source, "plan-name.yaml");
         let error = RustEmitter::new()
@@ -287,6 +286,18 @@ fn plan_helper_names_follow_existing_collision_refusal() {
             .unwrap_err();
         assert!(error.to_string().contains("rust_emitter_name_collision"));
     }
+}
+
+#[test]
+fn reserved_plan_handle_getter_names_escape_before_emission() {
+    let source = "format: typebridge.schema/v2\nattributes:\n  where_: { value: string }\nentities:\n  item:\n    owns: { where_: {} }\n";
+    let projection = support::rust_projection(source, "plan-name.yaml");
+    let package = RustEmitter::new()
+        .emit(&projection, &support::authority(source))
+        .unwrap();
+    let plan = std::str::from_utf8(package.get("src/plan.rs").unwrap()).unwrap();
+    assert!(plan.contains("pub fn where__"));
+    assert!(plan.contains("pub fn where_("));
 }
 
 #[test]

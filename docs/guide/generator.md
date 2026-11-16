@@ -67,11 +67,26 @@ calling `project`. Pass canonical `TypeId` values, including their type kind.
 Generated member names escape target language keywords and runtime helpers
 without changing the database label. Python and TypeScript append `_`; Rust
 appends `_` until the name also avoids plan-handle helpers (`where` becomes
-`where__`). C appends `zk` after its reversible label encoding to avoid C/C++
-keywords and generated helper symbols. For example, `type` becomes `type_` in
-TypeScript and Rust, `typezk` in C, and remains `type` in Python. If escaping
-collides with another declared member, generation reports the collision; rename
-or alias that member explicitly. Ordinary member names keep their existing bytes.
+`where__`). For example, `type` becomes `type_` in TypeScript and Rust and
+remains `type` in Python. If escaping collides with another declared member,
+generation reports the collision; rename or alias that member explicitly.
+Ordinary member names keep their existing bytes.
+
+C retains its reversible C-v1 label encoding. A bare struct member that is a
+C/C++ keyword gets the literal suffix `zk`, as before: `class` becomes
+`classzk`. Prefixed getters and helpers remain unchanged when their complete
+identifier is valid and unique (`item_plan_class`). A field or role whose
+suffix collides with a generated identifier gets `zk` in its projection name:
+`type` becomes `typezk`, avoiding the model's `_type` token; `where` becomes
+`wherezk`, avoiding its `_where` helper. Tokens and getters use that escaped
+projection name in these collision cases. Inside a row view, payload members
+named `kind` or `deleted` get `zk` only there, to avoid the view's header;
+unique prefixed getters and authoring members retain their names.
+
+The marker is not a hash: C-v1 encodes every physical `z` as `zz`, `-` as `zh`,
+and `_` as `zu`, so physical `classzk` becomes `classzzk` and cannot collide
+with the bare keyword member `classzk`. Valid existing prefixed names keep
+their previous spelling.
 
 ## Generate
 

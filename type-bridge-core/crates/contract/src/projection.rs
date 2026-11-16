@@ -124,17 +124,13 @@ pub const PYTHON_MODEL_RESERVED_NAMES: &[&str] = &[
     "__plan_roles__",
 ];
 
-/// C/C++ authoring keywords and generated view header members.
+/// Generated C identifiers that collide with field/role getter suffixes.
 #[doc(hidden)]
-pub const C_MODEL_MEMBER_RESERVED_NAMES: &[&str] = &[
-    "iid",
-    "where",
-    "set",
-    "unset",
-    "ref",
-    "type",
-    "kind",
-    "deleted",
+pub const C_MODEL_MEMBER_RESERVED_NAMES: &[&str] = &["iid", "where", "set", "unset", "ref", "type"];
+
+/// Keywords requiring escapes in bare C/C++ authoring struct members.
+#[doc(hidden)]
+pub const C_AUTHORING_MEMBER_RESERVED_NAMES: &[&str] = &[
     "_Alignas",
     "_Alignof",
     "_Atomic",

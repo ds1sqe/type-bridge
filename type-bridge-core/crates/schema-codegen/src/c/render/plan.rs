@@ -14,7 +14,7 @@ fn models(projection: &RuntimeProjection) -> impl Iterator<Item = &ModelProjecti
 fn name(model: &ModelProjection, suffix: &str) -> Result<String, Diagnostic> {
     generated_symbol(model.target_name().as_str(), suffix)
 }
-use type_bridge_contract::projection::C_MODEL_MEMBER_RESERVED_NAMES as AUTHORING_KEYWORDS;
+use type_bridge_contract::projection::C_AUTHORING_MEMBER_RESERVED_NAMES as AUTHORING_KEYWORDS;
 fn raw_member<'a>(prefix: &str, field: &'a FieldTokenProjection) -> Result<&'a str, Diagnostic> {
     projected_member_suffix(prefix, field.target_name())
 }

@@ -104,7 +104,7 @@ fn member_name(
         CViewKey::Exact { model, .. } => Some(&projection.models()[model]),
         _ => None,
     };
-    Ok(match kind {
+    let mut name = match kind {
         CViewMemberKind::Iid => "iid".to_owned(),
         CViewMemberKind::Kind => "kind".to_owned(),
         CViewMemberKind::Deleted => "deleted".to_owned(),
@@ -137,8 +137,19 @@ fn member_name(
                 model.expect("exact role layout").query_tokens().roles()[role].target_name()
             )?
         ),
-    })
+    };
+    if matches!(
+        kind,
+        CViewMemberKind::Field { .. } | CViewMemberKind::Role { .. }
+    ) && matches!(name.as_str(), "iid" | "kind" | "deleted")
+    {
+        // Preserve unique prefixed getters and authoring members. Only this
+        // view's bare payload member shares its namespace with row headers.
+        name.push_str("zk");
+    }
+    Ok(name)
 }
+
 fn scalar_type(domain: ValueTypeTag) -> &'static str {
     match domain {
         ValueTypeTag::Long => "int64_t",
