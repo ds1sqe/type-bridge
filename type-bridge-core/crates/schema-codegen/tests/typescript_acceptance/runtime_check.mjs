@@ -1519,6 +1519,11 @@ for (const [token, text, native] of [
   else assert.equal(attribute.value.toISOString(), native);
   const decoded = token.decodeAttribute(token.encodeAttribute(attribute));
   assert.equal(decoded.canonical, text);
+  assert.equal(JSON.stringify(attribute), JSON.stringify(text));
+  assert.equal(Object.getOwnPropertyDescriptor(attribute, "value").enumerable, false);
+  assert.equal({ ...attribute }.canonical, text);
+  assert.equal(structuredClone(attribute).canonical, text);
+  assert.deepEqual(attribute, token.create(text));
 }
 const precisionPerson = Person.create({ ...personValues,
   valDatetime: ValDatetime.create("2024-01-01T00:00:00.123456789"),
@@ -1527,6 +1532,11 @@ const precisionPerson = Person.create({ ...personValues,
 const precisionDecoded = Person.decodeCreate(Person.encodeCreate(precisionPerson));
 assert.equal(precisionDecoded.valDatetime.canonical, precisionPerson.valDatetime.canonical);
 assert.equal(precisionDecoded.valDatetimeTz.canonical, precisionPerson.valDatetimeTz.canonical);
+assert.equal(structuredClone(precisionPerson).valDatetime.canonical, precisionPerson.valDatetime.canonical);
+assert.equal(
+  JSON.parse(JSON.stringify(precisionPerson, (_key, value) => typeof value === "bigint" ? value.toString() : value)).valDatetime,
+  precisionPerson.valDatetime.canonical,
+);
 
 for (const text of ["PT0S", "P1M", "P2M3DT4.123456789S", "-PT1S"]) {
   assert.equal(ValDuration.create(text).canonical, text);

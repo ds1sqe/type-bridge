@@ -62,8 +62,9 @@ function installAttributeScalar(result: Record<string | symbol, unknown>, wire: 
   attributeScalars.set(result, Object.freeze({ ...wire }));
   if (isTemporal(wire.valueType)) {
     Object.defineProperties(result, {
-      value: { enumerable: true, get: () => scalarFromWire(wire, (JSON.parse(String(result["__typebridgeModel"])) as { label: string }).label) },
+      value: { get: () => scalarFromWire(wire, (JSON.parse(String(result["__typebridgeModel"])) as { label: string }).label) },
       canonical: { enumerable: true, value: wire.value },
+      toJSON: { value: () => wire.value },
     });
   } else {
     result["value"] = scalarFromWire(wire);

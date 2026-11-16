@@ -95,6 +95,10 @@ or millisecond precision raises `RangeError` pointing to `.canonical`. The model
 still hydrates and its other fields remain accessible. A datetime-tz native
 view carries the instant; `.canonical` retains the stored offset and zone.
 
+Temporal attributes serialize to their canonical text through `toJSON()`.
+The native `.value` getter is non-enumerable, so object spread and
+`structuredClone` do not request a potentially unrepresentable native view.
+
 Scalar-only query results carry the instant and refuse precision/range loss
 with the scalar domain and zero-based column ordinal;
 select the attribute or model to access `.canonical`. Canonical duration strings

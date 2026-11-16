@@ -171,7 +171,7 @@ fn render_model_shell(
                 | ValueTypeTag::Duration
         );
         let canonical = if temporal {
-            "  readonly canonical: string;\n"
+            "  readonly canonical: string;\n  toJSON(): string;\n"
         } else {
             ""
         };
