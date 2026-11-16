@@ -1858,6 +1858,27 @@ function managerPersonInput(g: any, identifier: string, nickname: string): any {
   });
 }
 
+function assertManagerTrace(events: any[], writes: boolean, keyGuard?: "single" | "batch"): void {
+  const expectedWrites = keyGuard === "batch" ? [false, false, true]
+    : keyGuard === "single" ? [true, false] : [writes];
+  assert.deepEqual(events.map((event) => event.event),
+    ["request", ...expectedWrites.map(() => "plan"), "commit"]);
+  assert.equal(new Set(events.map((event) => event.id)).size, 1);
+  const plans = events.filter((event) => event.event === "plan");
+  plans.forEach((plan, index) => assert.equal(plan.index, index));
+  assert.deepEqual(plans.map((plan) => plan.writes), expectedWrites);
+  assert.deepEqual(plans.map((plan) => plan.result_refs),
+    keyGuard === "batch" ? [0, 1, 0] : expectedWrites.map(() => 0));
+  if (keyGuard !== undefined) {
+    assert.deepEqual(plans.map((plan) => plan.operation.kind),
+      keyGuard === "batch" ? ["rows", "rows", "write"] : ["write", "exists"]);
+  }
+  const commit = events.at(-1);
+  assert.equal(commit.committed, true);
+  assert.equal(commit.kind, writes ? "write" : "read");
+  assert.equal(commit.code, "ok");
+}
+
 function managerHttpProgram(
   g: any,
   connection: any,
@@ -1870,21 +1891,14 @@ function managerHttpProgram(
   function exercise(model: any, make: (key: string, version: string) => any): unknown {
     const manager = model.manager(connection);
     let calls = 0;
-    function terminal<T>(call: () => T, writes = false): T {
+    function terminal<T>(call: () => T, writes = false, keyGuard?: "single" | "batch"): T {
       const before = trace === undefined ? [] : readFileSync(trace, "utf8").trim().split("\n").filter(Boolean);
       const result = call();
       calls += 1;
       if (trace !== undefined) {
         const events = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).slice(before.length)
           .map((line) => JSON.parse(line));
-        assert.deepEqual(events.map((event) => event.event), ["request", "plan", "commit"]);
-        assert.equal(new Set(events.map((event) => event.id)).size, 1);
-        assert.equal(events[1].index, 0);
-        assert.equal(events[1].writes, writes);
-        assert.equal(events[1].result_refs, 0);
-        assert.equal(events[2].committed, true);
-        assert.equal(events[2].kind, writes ? "write" : "read");
-        assert.equal(events[2].code, "ok");
+        assertManagerTrace(events, writes, keyGuard);
       }
       return result;
     }
@@ -1911,8 +1925,8 @@ function managerHttpProgram(
     const inserted = single(terminal(() => manager.insert(make("a", "insert")), true), "insert");
     const iid = inserted.iid;
     assertIidsEqual(single(terminal(() => manager.put(make("a", "put")), true), "put").iid, iid);
-    assertIidsEqual(single(terminal(() => manager.update(iid, make("a", "update")), true), "update").iid, iid);
-    assertIidsEqual(single(terminal(() => manager.filter({ identifier: inserted.identifier }).update(make("a", "filter-update")), true), "filter-update").iid, iid);
+    assertIidsEqual(single(terminal(() => manager.update(iid, make("a", "update")), true, "single"), "update").iid, iid);
+    assertIidsEqual(single(terminal(() => manager.filter({ identifier: inserted.identifier }).update(make("a", "filter-update")), true, "single"), "filter-update").iid, iid);
 
     terminal(() => manager.delete(iid), true);
     const fieldDelete = single(terminal(() => manager.insert(make("filter-delete", "filter-delete")), true), "filter-delete");
@@ -1934,7 +1948,7 @@ function managerHttpProgram(
       assertIidsEqual(item.iid, iids.get(putMany.inputIndexes[index]));
       assert.equal(item.nickname.value, "many-put");
     });
-    const updated = terminal(() => manager.updateMany(keys.map((key, index) => [iids.get(index), make(key, "many-update")])), true);
+    const updated = terminal(() => manager.updateMany(keys.map((key, index) => [iids.get(index), make(key, "many-update")])), true, "batch");
     assert.equal(updated.count, 3);
     assert.deepEqual([...updated.inputIndexes].sort(), [0, 1, 2]);
     updated.items.forEach((item: any, index: number) => {
@@ -2132,9 +2146,23 @@ test("generated managers share direct and HTTP proxy terminals", { timeout: 360_
     await waitForPort(port, server, 300_000);
     const proxy = await generated.connectProxy(`http://127.0.0.1:${port}`);
     assert.deepEqual(managerHttpProgram(generated, proxy, players, trace), direct);
+    const counters = generated.Counter.manager(proxy);
+    const counterInput = (value: bigint) => generated.Counter.create({ counterValue: generated.CounterValue.create(value) });
+    const values = counters.insertMany([1n, 2n, 3n].map(counterInput)).items;
+    const keyless = <T>(call: () => T): T => {
+      const before = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).length;
+      const result = call();
+      const events = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean)
+        .slice(before).map((line) => JSON.parse(line));
+      assertManagerTrace(events, true);
+      return result;
+    };
+    oneWritten(keyless(() => counters.update(values[0].iid, counterInput(8n))));
+    assert.equal(keyless(() => counters.updateMany(values.map((value: any) => [value.iid, counterInput(9n)]))).count, 3);
+    counters.deleteMany(values.map((value: any) => value.iid));
     const events = readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    assert.equal(events.filter((event) => event.event === "request").length, 50);
-    assert.equal(events.filter((event) => event.event === "commit" && event.kind === "write").length, 26);
+    assert.equal(events.filter((event) => event.event === "request").length, 54);
+    assert.equal(events.filter((event) => event.event === "commit" && event.kind === "write").length, 30);
   } catch (error) {
     process.stderr.write(serverStderr);
     throw error;
@@ -2524,12 +2552,19 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       insertedPerson.iid,
       generatedPersonWithOwnerships("person-1", 3n, "ada", ["alpha", "beta"]),
     ));
-    const keyPreserved = oneWritten(personManager.update(
+    const snapshotPerson = (person: any): unknown => [
+      person.iid.toString(),
+      ...["identifier", "nickname", "score", "fooBar", "scoreGte", "valBool", "valConstrained",
+        "valDate", "valDatetime", "valDatetimeTz", "valDecimal", "valDouble", "valDuration"]
+        .map((field) => person[field]?.value),
+      person.aliases.map((alias: any) => alias.value).sort(),
+    ];
+    const beforeKeyChange = snapshotPerson(personManager.getByIid(insertedPerson.iid));
+    assert.throws(() => personManager.update(
       insertedPerson.iid,
-      generatedPersonWithOwnerships("person-key-mutated", 3n, "ada", ["alpha", "beta"]),
-    ));
-    assert.equal(keyPreserved.identifier.value, "person-1");
-    assertIidsEqual(personManager.getByIid(insertedPerson.iid)?.identifier.value, "person-1");
+      generatedPersonWithOwnerships("person-key-mutated", 99n, "refused", ["refused"]),
+    ), (error: any) => error.code === "query_plan_key_update");
+    assert.deepEqual(snapshotPerson(personManager.getByIid(insertedPerson.iid)), beforeKeyChange);
 
     const stalePerson = oneWritten(personManager.insert(generatedPerson("person-stale-update", 4n)));
     assertIid(stalePerson.iid);

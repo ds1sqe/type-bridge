@@ -95,7 +95,7 @@ impl Interceptor for SmokeTrace {
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async move {
             self.record(serde_json::json!({"event":"plan", "id":ctx.request_id,
-                "index":index, "writes":plan.writes(), "result_refs":plan.result_refs().len()}))
+                "index":index, "operation":plan.operation(), "writes":plan.writes(), "result_refs":plan.result_refs().len()}))
         })
     }
 
