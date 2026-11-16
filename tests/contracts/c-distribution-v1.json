@@ -1,13 +1,13 @@
 {
   "format": "typebridge.c-distribution/v1",
   "authority_state": "frozen",
-  "publication_disposition": "artifact-only-unpublished-unsupported",
+  "publication_disposition": "signed-github-release",
   "release_gate": {
     "issue": 189,
-    "state": "awaiting-release-authorization",
-    "landing_authorized": false,
-    "publication_authorized": false,
-    "public_support_authorized": false
+    "state": "closed",
+    "landing_authorized": true,
+    "publication_authorized": true,
+    "public_support_authorized": true
   },
   "abi": {
     "decision": "breaking-2.0",
@@ -455,7 +455,9 @@
       "x86_64-apple-darwin",
       "x86_64-pc-windows-msvc"
     ],
-    "public_supported": []
+    "public_supported": [
+      "x86_64-unknown-linux-gnu"
+    ]
   },
   "artifact": {
     "identity": "source-commit-and-tree-plus-target-and-artifact-digest",

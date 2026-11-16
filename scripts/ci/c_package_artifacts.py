@@ -37,7 +37,7 @@ PACKAGE_NAME = "tb_sdk"
 PACKAGE_VERSION = "1.0.0"
 # Installed package metadata matches the native runtime ABI.
 ABI_VERSION = "2.0.0"
-PUBLICATION_DISPOSITION = "artifact-only-unpublished-unsupported"
+PUBLICATION_DISPOSITION = "signed-github-release"
 RUNTIME_FORMAT = "typebridge.c-runtime-artifact/v1"
 PACKAGE_FORMAT = "typebridge.generated-c-package-artifact/v1"
 MAX_ARCHIVE_BYTES = 192 * 1024 * 1024

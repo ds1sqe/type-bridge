@@ -33,14 +33,14 @@ def test_distribution_contract_matches_every_live_source_authority() -> None:
     assert contract["abi"]["decision"] == "breaking-2.0"
     assert contract["abi"]["version"] == "2.0.0"
     assert contract["abi"]["package_metadata_version"] == "2.0.0"
-    assert contract["matrix"]["public_supported"] == []
-    assert contract["publication_disposition"] == "artifact-only-unpublished-unsupported"
+    assert contract["matrix"]["public_supported"] == ["x86_64-unknown-linux-gnu"]
+    assert contract["publication_disposition"] == "signed-github-release"
 
 
 @pytest.mark.parametrize(
     ("path", "value"),
     [
-        (("release_gate", "publication_authorized"), True),
+        (("release_gate", "publication_authorized"), False),
         (("abi", "decision"), "no-change"),
         (("abi", "version"), "1.6.0"),
         (("abi", "package_metadata_version"), "1.7.0"),
@@ -53,7 +53,7 @@ def test_distribution_contract_matches_every_live_source_authority() -> None:
         (("artifact_policy", "symlinks"), True),
         (("artifact_policy", "debug_symbols"), "retained"),
         (("security_policy", "vulnerabilities"), "allow-high"),
-        (("matrix", "public_supported"), ["x86_64-unknown-linux-gnu"]),
+        (("matrix", "public_supported"), []),
     ],
 )
 def test_distribution_contract_rejects_authority_widening(

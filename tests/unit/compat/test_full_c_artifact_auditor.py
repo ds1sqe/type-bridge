@@ -50,7 +50,7 @@ def test_gap_or_planned_c_cell_fails_closed() -> None:
     assert raised.value.code == "gap_or_planned_cell"
 
 
-def test_documentation_fences_remain_artifact_only() -> None:
+def test_documentation_fences_require_public_support_boundary() -> None:
     rows = AUDITOR.validate_documentation()
     assert [row["path"] for row in rows] == list(AUDITOR.DOCUMENTATION_FENCES)
 

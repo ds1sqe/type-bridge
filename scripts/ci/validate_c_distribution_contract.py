@@ -81,15 +81,15 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     _require(contract.get("format") == "typebridge.c-distribution/v1", "format drifted")
     _require(contract.get("authority_state") == "frozen", "authority is not frozen")
     _require(
-        contract.get("publication_disposition") == "artifact-only-unpublished-unsupported",
-        "publication disposition widened",
+        contract.get("publication_disposition") == "signed-github-release",
+        "signed release disposition is missing",
     )
 
     gate = contract.get("release_gate")
     _require(isinstance(gate, dict) and gate.get("issue") == 189, "#189 gate is missing")
-    _require(gate.get("state") == "awaiting-release-authorization", "#189 state drifted")
+    _require(gate.get("state") == "closed", "#189 state drifted")
     for field in ("landing_authorized", "publication_authorized", "public_support_authorized"):
-        _require(gate.get(field) is False, f"{field} must remain false")
+        _require(gate.get(field) is True, f"{field} must remain true")
 
     abi = contract.get("abi")
     _require(
@@ -136,7 +136,11 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     _require(
         supported[0].get("target") == "x86_64-unknown-linux-gnu", "native prototype target drifted"
     )
-    _require(matrix.get("public_supported") == [], "public platform support was claimed")
+    _require(
+        matrix.get("public_supported") == ["x86_64-unknown-linux-gnu"],
+        "public support must match the selected Ubuntu 24.04 x86_64 matrix",
+    )
+    _require(supported[0].get("runner") == "ubuntu-24.04", "supported OS drifted")
     _require(
         matrix.get("configured_unverified")
         == ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"],
@@ -307,6 +311,15 @@ def regenerate(root: Path = ROOT) -> None:
     abi_path.write_text(json.dumps(abi, indent=2) + "\n", encoding="utf-8")
     path = root / "tests/contracts/c-distribution-v1.json"
     contract = _load(path)
+    contract["publication_disposition"] = "signed-github-release"
+    contract["release_gate"] = {
+        "issue": 189,
+        "state": "closed",
+        "landing_authorized": True,
+        "publication_authorized": True,
+        "public_support_authorized": True,
+    }
+    contract["matrix"]["public_supported"] = ["x86_64-unknown-linux-gnu"]
     contract["abi"].update(
         decision="breaking-2.0",
         version="2.0.0",

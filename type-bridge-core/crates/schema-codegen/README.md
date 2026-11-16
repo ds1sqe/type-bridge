@@ -1,6 +1,6 @@
 # type-bridge-schema-codegen
 
-Deterministic Python, TypeScript, Rust, and internal C package emitters over
+Deterministic Python, TypeScript, Rust, and C package emitters over
 validated, binding-neutral TypeBridge model projections. It is a supporting
 generator crate; application code should run `type-bridge schema generate` and
 consume the generated package rather than constructing emitters itself.
@@ -23,8 +23,8 @@ runtime dependencies. Schema features select the projection format. Ordered
 packages provide nominal CRUD, typed mutation batches, and field-token
 manager filters with database and borrowed read-transaction terminals.
 Generated handles retain their native owners and share the C boundary's
-close, recovery, and alias checks. The package remains unpublished until
-its release acceptance checks pass.
+close, recovery, and alias checks. Public C support covers the signed
+Ubuntu 24.04 x86_64 shared-runtime release archives.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
 3.0.0 and requires Rust 1.88+. Generated runtime packages follow the TypeBridge

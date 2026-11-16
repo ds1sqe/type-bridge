@@ -39,14 +39,10 @@ COMPARATORS: dict[str, Callable[[list[Path]], dict[str, Any]]] = {
     "artifacts": artifacts.compare_reports,
 }
 DOCUMENTATION_FENCES = {
-    "tests/contracts/c-distribution-v1.json": (
-        "artifact-only-unpublished-unsupported",
-        '"public_supported": []',
-    ),
-    "docs/development/testing.md": ("not a public C support or distribution",),
-    "type-bridge-core/crates/schema-codegen/README.md": (
-        "remains unpublished until",
-        "its release acceptance checks pass.",
+    "tests/contracts/c-distribution-v1.json": ("signed-github-release",),
+    "docs/development/c-release.md": (
+        "Ubuntu 24.04.",
+        "Public C support for this matrix was established with",
     ),
 }
 MAX_INPUT_BYTES = 256 * 1024 * 1024
@@ -278,7 +274,7 @@ def audit(
         f"- Capabilities: {len(capabilities)}/44 accepted for C\n"
         f"- Sdk reports: V1–Artifacts independently validated\n"
         f"- Publication authority: no\n"
-        f"- Remaining gate: #189 (`{distribution_contract['release_gate']['state']}`)\n"
+        f"- Supported platform: Ubuntu 24.04 x86_64 (shared runtime)\n"
     )
     return result, summary
 

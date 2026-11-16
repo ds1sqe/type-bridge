@@ -39,7 +39,7 @@ FORMAT2_HISTORY_PINS = (
 CONNECTED_PROFILE = "typedb-3.12.1/v1"
 FORMAT = "typebridge.standalone-cli-artifact/v1"
 TARGET = "x86_64-unknown-linux-gnu"
-PUBLICATION_DISPOSITION = "artifact-only-unpublished-unsupported"
+PUBLICATION_DISPOSITION = "signed-github-release"
 SEMANTIC_PROFILES = ["typedb-3.12.1/v1", "typedb-3.13.6/v1"]
 SDK_MIGRATIONS = (
     "administration/0001_initial",
