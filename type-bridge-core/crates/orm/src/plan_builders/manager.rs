@@ -667,7 +667,7 @@ impl ManagerPlans {
         patterns: &mut Vec<Pattern>,
     ) -> Result<Vec<(RoleId, BindingId)>> {
         let mut links = Vec::new();
-        for player in players {
+        for (index, player) in players.iter().enumerate() {
             let candidate = self.type_id(&player.player_type_name)?;
             let installed = self
                 .registry
@@ -714,7 +714,10 @@ impl ManagerPlans {
                 patterns,
             )
             .map_err(diagnostic)?;
-            links.push((self.role(type_id, &player.role_name)?, binding));
+            let role = self.role(type_id, &player.role_name)?;
+            if !players[..index].contains(player) {
+                links.push((role, binding));
+            }
         }
         Ok(links)
     }

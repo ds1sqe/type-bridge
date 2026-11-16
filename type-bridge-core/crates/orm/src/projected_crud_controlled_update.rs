@@ -1590,21 +1590,32 @@ mod tests {
                     .store(3, std::sync::atomic::Ordering::Relaxed);
             }
             let base = proxy_single_input(&installed, &model, 300);
-            let reference = ProjectedReference::try_new(
-                &installed,
-                model.clone(),
-                None,
-                vec![(
-                    key.clone(),
-                    ProjectedAttributeValue::try_new(
+            let references = (0..4)
+                .map(|index| {
+                    ProjectedReference::try_new(
                         &installed,
-                        TypeId::new(TypeKind::Attribute, "item-key").unwrap(),
-                        CanonicalValue::String(CanonicalString::new("key").unwrap()),
+                        model.clone(),
+                        None,
+                        vec![(
+                            key.clone(),
+                            ProjectedAttributeValue::try_new(
+                                &installed,
+                                TypeId::new(TypeKind::Attribute, "item-key").unwrap(),
+                                CanonicalValue::String(
+                                    CanonicalString::new(if index == 0 {
+                                        "key".to_owned()
+                                    } else {
+                                        format!("key-{index}")
+                                    })
+                                    .unwrap(),
+                                ),
+                            )
+                            .unwrap(),
+                        )],
                     )
-                    .unwrap(),
-                )],
-            )
-            .unwrap();
+                    .unwrap()
+                })
+                .collect();
             let create = ProjectedCreate::try_new(
                 &installed,
                 model.clone(),
@@ -1612,7 +1623,7 @@ mod tests {
                     .iter()
                     .map(|(field, values)| (field.clone(), values.clone()))
                     .collect(),
-                vec![(role.clone(), vec![reference; 4])],
+                vec![(role.clone(), references)],
             )
             .unwrap();
             let control =

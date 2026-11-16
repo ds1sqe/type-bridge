@@ -1049,13 +1049,16 @@ impl ProjectedCreateBudget {
             )
         })?;
         let total = start_index.saturating_add(references.len());
-        enforce_incremental_max_cardinality(
-            role_path(&self.type_id, role_id),
-            role.multiplicity(),
-            total,
-            "role_cardinality_violation",
-            "The projected role violates its exact cardinality",
-        )?;
+        // Unordered cardinality is checked after set normalization at completion.
+        if !token.multiplicity().collection_mode().is_unordered() {
+            enforce_incremental_max_cardinality(
+                role_path(&self.type_id, role_id),
+                role.multiplicity(),
+                total,
+                "role_cardinality_violation",
+                "The projected role violates its exact cardinality",
+            )?;
+        }
         let mut candidate = self.budget;
         for (offset, reference) in references.enumerate() {
             let index = start_index.saturating_add(offset);
@@ -1904,14 +1907,7 @@ fn validate_create_roles(
                 role_path(type_id, role_id),
             )?;
         }
-        let references = present.unwrap_or_default();
-        enforce_role_cardinality(
-            type_id,
-            role_id,
-            role.multiplicity(),
-            references.len(),
-            ValidationOrigin::Input,
-        )?;
+        let mut references = present.unwrap_or_default();
         let token = model.query_tokens().roles().get(role_id).ok_or_else(|| {
             integrity(
                 "projected_role_token_missing",
@@ -1943,6 +1939,34 @@ fn validate_create_roles(
                 ));
             }
         }
+        if token.multiplicity().collection_mode().is_unordered() {
+            // Validate and charge every supplied reference before set normalization.
+            let mut unique = Vec::with_capacity(references.len());
+            for reference in references {
+                if !unique.iter().any(|previous: &ProjectedReference| {
+                    previous.type_id == reference.type_id
+                        && previous.iid == reference.iid
+                        && previous.keys.len() == reference.keys.len()
+                        && previous.keys.iter().all(|(field, value)| {
+                            reference.keys.get(field).is_some_and(|other| {
+                                canonical_scalar_equal(value.value(), other.value())
+                            })
+                        })
+                        && previous.database_origin.as_ref().map(|origin| &origin.0)
+                            == reference.database_origin.as_ref().map(|origin| &origin.0)
+                }) {
+                    unique.push(reference);
+                }
+            }
+            references = unique;
+        }
+        enforce_role_cardinality(
+            type_id,
+            role_id,
+            role.multiplicity(),
+            references.len(),
+            ValidationOrigin::Input,
+        )?;
         if token
             .annotations()
             .keys()
@@ -2963,6 +2987,25 @@ plays:
     }
 
     #[test]
+    fn unordered_role_repeated_reference_counts_as_one_player() {
+        let installed = origin_projection();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let friendship = TypeId::new(TypeKind::Relation, "friendship").unwrap();
+        let friend = RoleId::new("friendship", "friend").unwrap();
+        let reference =
+            ProjectedReference::try_new(&installed, person, Some("0x1234".to_owned()), vec![])
+                .unwrap();
+        let create = ProjectedCreate::try_new(
+            &installed,
+            friendship,
+            vec![],
+            vec![(friend.clone(), vec![reference.clone(), reference])],
+        )
+        .unwrap();
+        assert_eq!(create.roles()[&friend].len(), 1);
+    }
+
+    #[test]
     fn canonical_distinct_identity_uses_scalar_semantics_not_representation_bits() {
         let negative_zero = CanonicalValue::Double(CanonicalDouble::new(-0.0).unwrap());
         let positive_zero = CanonicalValue::Double(CanonicalDouble::new(0.0).unwrap());
@@ -3128,11 +3171,14 @@ plays:
                 .unwrap();
         let mut role_budget = ProjectedCreateBudget::try_new(&installed, &friendship).unwrap();
         let before = role_budget.budget.finish();
-        let diagnostic = role_budget
+        role_budget
             .try_add_role_references(&installed, &friend, 0, [&reference, &reference].into_iter())
-            .unwrap_err();
-        assert_eq!(diagnostic.code().as_str(), "role_cardinality_violation");
-        assert_eq!(role_budget.budget.finish(), before);
+            .unwrap();
+        assert_eq!(
+            role_budget.budget.finish().members,
+            before.members + 2 * reference.size.members
+        );
+        let mut role_budget = ProjectedCreateBudget::try_new(&installed, &friendship).unwrap();
 
         let mut wrong_player = reference.clone();
         wrong_player.type_id = friendship.clone();

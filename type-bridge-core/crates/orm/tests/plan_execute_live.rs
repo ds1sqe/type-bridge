@@ -3945,9 +3945,23 @@ async fn keyless_put_is_typeql_put_on_the_exact_type_live() {
         &installed,
         tagging.clone(),
         vec![],
+        vec![(
+            RoleId::new("tagging", "tagged").unwrap(),
+            vec![member.clone(), member.clone()],
+        )],
+    )
+    .unwrap();
+    let single_player = ProjectedCreate::try_new(
+        &installed,
+        tagging.clone(),
+        vec![],
         vec![(RoleId::new("tagging", "tagged").unwrap(), vec![member])],
     )
     .unwrap();
+    assert_eq!(
+        tagged.roles()[&RoleId::new("tagging", "tagged").unwrap()].len(),
+        1
+    );
     let one = crud.put_relation(&db, &tagged).await.unwrap();
     let two = crud.put_relation(&db, &tagged).await.unwrap();
     assert_eq!(one.item().unwrap().iid(), two.item().unwrap().iid());
@@ -3956,7 +3970,7 @@ async fn keyless_put_is_typeql_put_on_the_exact_type_live() {
         &installed,
         tagging.clone(),
         Op::Put,
-        vec![Row::Create(tagged.clone()), Row::Create(tagged)],
+        vec![Row::Create(tagged.clone()), Row::Create(single_player)],
     )
     .unwrap();
     let relations = iids(
