@@ -220,16 +220,15 @@ async fn main() -> Result<()> {
         },
         &declared,
     )?;
+    let mut options = ConnectOptions::default();
+    options.http_port = env::var("TYPEDB_HTTP_PORT")?.parse()?;
+    options.server_version = Some(env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")?.parse()?);
     let db = Database::connect_with_options(
         &env::var("TYPEDB_ADDRESS")?,
         &env::var("TYPE_BRIDGE_COMPLEX_DATABASE")?,
         "admin",
         "password",
-        ConnectOptions {
-            http_port: env::var("TYPEDB_HTTP_PORT")?.parse()?,
-            tls: false,
-            server_version: Some(env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")?.parse()?),
-        },
+        options,
     )
     .await?;
     let mut tx = db.transaction(TransactionOptions::default());
