@@ -50,7 +50,7 @@ mod expression;
 mod seed;
 pub use document::FetchDocumentShape;
 pub use expression::{ArithOp, Builtin, Expr};
-use expression::{ExprWire, operand_type};
+use expression::{ExprWire, numeric, operand_type};
 
 #[path = "query_plan_builder.rs"]
 mod builder;
@@ -2056,10 +2056,9 @@ fn validate_read_tail(
     Ok((mandatory, optional))
 }
 
-/// TypeDB 3.14 refuses range comparisons of durations (3.13 accepted them);
-/// refuse them at build time on every profile so a plan fails the same way
-/// before reaching any server. Operands whose domain is unknown here
-/// (branch-local bindings) are left to the server.
+/// Validate known comparison domains before provider execution, including
+/// branch-local ownerships. Numeric scalar domains may compare with each other.
+/// Duration ranges remain refused consistently across measured profiles.
 fn validate_comparisons(
     patterns: &[QueryPattern],
     scalar_types: &BTreeMap<BindingId, ValueTypeTag>,
@@ -2118,6 +2117,19 @@ fn validate_comparisons(
                     ));
                 }
             }
+        }
+        if let QueryPattern::Value { left, right, .. } = pattern
+            && let (Ok(left), Ok(right)) = (
+                operand_type(left, &scalar_types, inputs),
+                operand_type(right, &scalar_types, inputs),
+            )
+            && left != right
+            && !(numeric(left) && numeric(right))
+        {
+            return Err(invalid(
+                "query_plan_value_type_mismatch",
+                "comparison operands belong to incompatible scalar domains",
+            ));
         }
         match pattern {
             QueryPattern::Value {

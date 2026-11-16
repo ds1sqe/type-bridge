@@ -124,6 +124,12 @@ or function-return domains. Input operands must reference required columns.
 Write assignments require the exact target attribute domain: arithmetic
 promotion does not implicitly cast its result back to that domain.
 
+Comparison operands must have the same scalar domain, except that long,
+decimal, and double values may compare across numeric domains. The builder
+refuses incompatible literal, input, and known field domains with
+`query_plan_value_type_mismatch`. A naive datetime and a datetime-tz are
+different domains; no implicit timezone conversion is applied.
+
 ## Match patterns
 
 A match is `{"kind":"match","patterns":[...]}`. Patterns form a conjunction.

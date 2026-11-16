@@ -1254,3 +1254,94 @@ fn configured_binding_policy_owns_wide_authoring_and_wire_revalidation() {
         "query_plan_builder_binding_limit"
     );
 }
+
+#[test]
+fn comparisons_reject_incompatible_literal_and_input_domains_at_build() {
+    use type_bridge_contract::value::CanonicalString;
+    let naive = CanonicalValue::DateTime("2024-01-01T00:00:00".parse().unwrap());
+    let zoned = CanonicalValue::DateTimeTz("2024-01-01T00:00:00Z".parse().unwrap());
+    for (left, right) in [
+        (CanonicalValue::Long(1), CanonicalValue::Boolean(true)),
+        (
+            CanonicalValue::String(CanonicalString::new("x").unwrap()),
+            CanonicalValue::Long(1),
+        ),
+        (naive.clone(), zoned.clone()),
+        (zoned, naive),
+        (
+            CanonicalValue::Date("2024-01-01".parse().unwrap()),
+            CanonicalValue::DateTime("2024-01-01T00:00:00".parse().unwrap()),
+        ),
+    ] {
+        for use_input in [false, true] {
+            let mut plan = PlanBuilder::new();
+            let account = plan.exact(entity("account"));
+            let right = if use_input {
+                plan.bind_value(Site::new(account, "comparison"), right.clone())
+            } else {
+                QueryOperand::Literal {
+                    value: right.clone(),
+                }
+            };
+            plan.compare(
+                QueryOperand::Literal {
+                    value: left.clone(),
+                },
+                ValueComparator::Equal,
+                right,
+            );
+            plan.count();
+            assert_eq!(
+                plan.build(&schema(), semantics())
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "query_plan_value_type_mismatch"
+            );
+        }
+    }
+    for value in [
+        CanonicalValue::Boolean(true),
+        CanonicalValue::String(CanonicalString::new("1").unwrap()),
+    ] {
+        let mut plan = PlanBuilder::new();
+        let account = plan.exact(entity("account"));
+        let balance = plan.field(account, attribute("balance"));
+        let right = plan.bind_value(Site::new(account, "comparison"), value);
+        plan.compare(
+            QueryOperand::Binding { binding: balance },
+            ValueComparator::Greater,
+            right,
+        );
+        plan.count();
+        assert_eq!(
+            plan.build(&schema(), semantics())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_value_type_mismatch"
+        );
+    }
+}
+
+#[test]
+fn numeric_comparisons_preserve_cross_domain_compatibility() {
+    use type_bridge_contract::value::{CanonicalDouble, DecimalValue};
+    for value in [
+        CanonicalValue::Long(1),
+        CanonicalValue::Double(CanonicalDouble::new(1.5).unwrap()),
+        CanonicalValue::Decimal(DecimalValue::new("1.5").unwrap()),
+    ] {
+        let mut plan = PlanBuilder::new();
+        let account = plan.exact(entity("account"));
+        let balance = plan.field(account, attribute("balance"));
+        let right = plan.bind_value(Site::new(account, "comparison"), value);
+        plan.compare(
+            QueryOperand::Binding { binding: balance },
+            ValueComparator::Greater,
+            right,
+        );
+        plan.count();
+        plan.build(&schema(), semantics()).unwrap();
+    }
+}

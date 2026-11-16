@@ -2523,3 +2523,44 @@ fn rows_refuses_flat_document_output_before_execution() {
         type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract
     );
 }
+
+#[test]
+fn incompatible_comparisons_are_checked_in_each_nested_scope() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
+    let inner = vec![
+        QueryPattern::Has {
+            owner: id(0),
+            attribute: id(1),
+            attribute_id: AttributeId::new("balance").unwrap(),
+        },
+        QueryPattern::Value {
+            comparator: ValueComparator::Greater,
+            left: QueryOperand::Binding { binding: id(1) },
+            right: string("wrong"),
+        },
+    ];
+    for nested in [
+        QueryPattern::Not {
+            patterns: inner.clone(),
+        },
+        QueryPattern::Try {
+            patterns: inner.clone(),
+        },
+        QueryPattern::Or {
+            branches: vec![inner.clone(), inner],
+        },
+    ] {
+        let spec = spec(
+            vec![Stage::Match {
+                patterns: vec![isa(0, entity("account")).into(), nested.into()],
+            }],
+            vec![0],
+        );
+        assert_eq!(
+            QueryPlan::new(spec, &schema()).unwrap_err().code().as_str(),
+            "query_plan_value_type_mismatch"
+        );
+    }
+}
