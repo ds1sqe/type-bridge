@@ -1624,8 +1624,20 @@ fn reserved_model_members_escape_only_in_the_target_that_reserves_them() {
             ProjectionConfig::python(),
             ProjectionHandler::python_v1(),
             [
-                "count", "type", "value_", "where_", "default", "self_", "kind", "number", "ref",
+                "count",
+                "type",
+                "value_",
+                "where_",
+                "default",
+                "self_",
+                "kind",
+                "number",
+                "ref",
                 "crate",
+                "deleted_",
+                "subtypes_",
+                "none",
+                "query_",
             ],
         ),
         (
@@ -1633,8 +1645,20 @@ fn reserved_model_members_escape_only_in_the_target_that_reserves_them() {
             ProjectionConfig::typescript(),
             ProjectionHandler::typescript_v1(),
             [
-                "count", "type_", "value", "where_", "default_", "self", "kind", "number_", "ref",
+                "count",
+                "type_",
+                "value",
+                "where_",
+                "default_",
+                "self",
+                "kind",
+                "number_",
+                "ref",
                 "crate",
+                "deleted_",
+                "subtypes_",
+                "none",
+                "query",
             ],
         ),
         (
@@ -1642,8 +1666,20 @@ fn reserved_model_members_escape_only_in_the_target_that_reserves_them() {
             ProjectionConfig::rust(),
             ProjectionHandler::rust_v1(),
             [
-                "count", "type_", "value", "where__", "default", "self_", "kind", "number", "ref_",
+                "count",
+                "type_",
+                "value",
+                "where__",
+                "default",
+                "self_",
+                "kind",
+                "number",
+                "ref_",
                 "crate_",
+                "deleted_",
+                "subtypes_",
+                "none",
+                "query",
             ],
         ),
         (
@@ -1661,12 +1697,28 @@ fn reserved_model_members_escape_only_in_the_target_that_reserves_them() {
                 "reserved_test_number",
                 "reserved_test_refzk",
                 "reserved_test_crate",
+                "reserved_test_deleted",
+                "reserved_test_subtypeszk",
+                "reserved_test_none",
+                "reserved_test_query",
             ],
         ),
     ] {
         let projected = projection_for(source, target, config, handler);
+        let type_names = match target {
+            BindingTarget::Python => ["None_", "Query_"],
+            BindingTarget::TypeScript => ["None", "Query_"],
+            BindingTarget::Rust => ["None_", "Query"],
+            BindingTarget::C => ["reserved_test_none", "reserved_test_queryzk"],
+            _ => unreachable!(),
+        };
+        for (label, name) in ["none", "query"].into_iter().zip(type_names) {
+            let id = TypeId::new(TypeKind::Attribute, label).unwrap();
+            assert_eq!(projected.models()[&id].target_name().as_str(), name);
+        }
         for (label, expected) in [
             "count", "type", "value", "where", "default", "self", "kind", "number", "ref", "crate",
+            "deleted", "subtypes", "none", "query",
         ]
         .into_iter()
         .zip(expected)

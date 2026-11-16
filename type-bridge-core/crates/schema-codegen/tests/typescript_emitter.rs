@@ -189,7 +189,7 @@ fn rejects_projection_without_exact_resource_evidence() {
 }
 
 #[test]
-fn rejects_schema_name_colliding_with_runtime_export() {
+fn escapes_schema_name_colliding_with_runtime_export() {
     let emitter = TypeScriptEmitter::new();
     let resources = emitter.code_resources().unwrap();
     for (label, name) in [
@@ -200,13 +200,13 @@ fn rejects_schema_name_colliding_with_runtime_export() {
             &format!("format: typebridge.schema/v2\nentities:\n  {label}: {{}}\n"),
             &resources,
         );
-        let error = emitter.emit(&projection, &authority).unwrap_err();
         assert!(
-            error
-                .to_string()
-                .contains("typescript_emitter_name_collision")
+            projection
+                .models()
+                .values()
+                .any(|model| model.target_name().as_str() == format!("{name}_"))
         );
-        assert!(error.to_string().contains(name));
+        emitter.emit(&projection, &authority).unwrap();
     }
 }
 

@@ -864,3 +864,34 @@ fn base_cli_workspace_previews_regenerate_without_manifest_or_plan_changes() {
         );
     }
 }
+
+#[test]
+fn names_that_collide_after_target_conversion_or_escaping_refuse_at_schema_check() {
+    for (target, left, right) in [
+        ("rust", "where", "where_"),
+        ("python", "value", "value_"),
+        ("rust", "self", "self_"),
+        ("python", "class", "class_"),
+        ("python", "my-name", "my_name"),
+        ("python", "Person", "person"),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("schema")).unwrap();
+        fs::write(
+            root.join("schema/schema.yaml"),
+            "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+        )
+        .unwrap();
+        fs::write(root.join("schema/model.yaml"), format!("format: typebridge.schema/v2\nattributes:\n  {left}: {{value: string}}\n  {right}: {{value: string}}\nentities:\n  item: {{owns: [{left}, {right}]}}\n")).unwrap();
+        fs::write(root.join("typebridge.yaml"), format!("format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: collisions\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: collisions\nbindings:\n  {target}: {{output: generated}}\n")).unwrap();
+        let output = run_cli(root, &["schema", "check"]);
+        assert!(!output.status.success(), "{target}: {left}/{right}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("projection_name_collision"),
+            "{left}/{right}: {error}"
+        );
+        assert!(!root.join("generated").exists());
+    }
+}

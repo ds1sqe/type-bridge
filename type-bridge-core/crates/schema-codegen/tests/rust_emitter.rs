@@ -228,29 +228,29 @@ fn rejects_projection_without_exact_resource_evidence() {
 }
 
 #[test]
-fn rejects_schema_name_colliding_with_runtime_export() {
+fn escapes_schema_name_colliding_with_runtime_export() {
     let emitter = RustEmitter::new();
     let resources = emitter.code_resources().unwrap();
     let (projection, authority) = projected(
         "format: typebridge.schema/v2\nentities:\n  cardinality: {}\n",
         &resources,
     );
-    let error = emitter.emit(&projection, &authority).unwrap_err();
-    assert!(error.to_string().contains("rust_emitter_name_collision"));
-    assert!(error.to_string().contains("Cardinality"));
+    let package = emitter.emit(&projection, &authority).unwrap();
+    let read = std::str::from_utf8(package.get("src/read.rs").unwrap()).unwrap();
+    assert!(read.contains("pub struct Cardinality_"));
 }
 
 #[test]
-fn rejects_schema_name_colliding_with_injected_schema_export() {
+fn escapes_schema_name_colliding_with_injected_schema_export() {
     let emitter = RustEmitter::new();
     let resources = emitter.code_resources().unwrap();
     let (projection, authority) = projected(
         "format: typebridge.schema/v2\nentities:\n  app_schema: {}\n",
         &resources,
     );
-    let error = emitter.emit(&projection, &authority).unwrap_err();
-    assert!(error.to_string().contains("rust_emitter_name_collision"));
-    assert!(error.to_string().contains("AppSchema"));
+    let package = emitter.emit(&projection, &authority).unwrap();
+    let read = std::str::from_utf8(package.get("src/read.rs").unwrap()).unwrap();
+    assert!(read.contains("pub struct AppSchema_"));
 }
 
 #[test]

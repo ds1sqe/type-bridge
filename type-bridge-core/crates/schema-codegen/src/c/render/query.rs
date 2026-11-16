@@ -200,21 +200,7 @@ fn has_reachable_endpoint(relation: &ModelProjection) -> bool {
 }
 
 fn package_opaque_suffixes() -> [&'static str; 13] {
-    [
-        "query_session",
-        "query_predicate",
-        "query_order",
-        "query",
-        "query_rows_terminal",
-        "query_first_terminal",
-        "query_page_terminal",
-        "query_count_terminal",
-        "query_exists_terminal",
-        "query_rows_result",
-        "query_page_result",
-        "query_count_result",
-        "query_exists_result",
-    ]
+    type_bridge_contract::projection::C_PUBLIC_QUERY_TYPE_SUFFIXES
 }
 
 fn remote_nominal_suffixes() -> impl Iterator<Item = String> {

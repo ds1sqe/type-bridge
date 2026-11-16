@@ -19,58 +19,12 @@ use crate::{
 #[path = "plan.rs"]
 mod plan;
 
-const PUBLIC_RUNTIME_NAMES: &[&str] = &[
-    "CrudEvent",
-    "CrudHook",
-    "DirectConnectionPolicy",
-    "DirectTlsMode",
-    "FieldToken",
-    "FunctionRef",
-    "HookCancelled",
-    "ProjectedManagerComparison",
-    "ProjectedModelFilter",
-    "ProjectedModelManager",
-    "ProjectedModelNotFoundError",
-    "RoleToken",
-    "BatchWriteResult",
-    "WriteResult",
-    "connect",
-];
-const PUBLIC_QUERY_NAMES: &[&str] = &[
-    "Aggregate",
-    "BoundField",
-    "BoundRole",
-    "BoundVar",
-    "Collected",
-    "ExchangeConnection",
-    "FunctionCall",
-    "FunctionInput",
-    "GroupedQuery",
-    "Page",
-    "Predicate",
-    "ProxyConnection",
-    "Query",
-    "QueryCancellation",
-    "QueryConnection",
-    "QueryExecutionResourceLimits",
-    "QueryLimits",
-    "QueryOrder",
-    "QuerySession",
-    "SubtypeBoundVar",
-    "aggregate",
-    "connect_proxy",
-];
-const PUBLIC_SCHEMA_NAMES: &[&str] = &[
-    "MIGRATION_HISTORY_RESOURCE",
-    "MigrationCatalog",
-    "PLAYING_FACTS",
-    "PROJECTION_FINGERPRINT_JSON",
-    "RUNTIME_PROJECTION_JSON",
-    "SEMANTIC_SCHEMA_FINGERPRINT_JSON",
-    "open_migration_catalog",
-    "schema_authority",
-];
 use type_bridge_contract::projection::PYTHON_MODEL_RESERVED_NAMES as MODEL_RESERVED_NAMES;
+use type_bridge_contract::projection::{
+    PYTHON_PUBLIC_QUERY_NAMES as PUBLIC_QUERY_NAMES,
+    PYTHON_PUBLIC_RUNTIME_NAMES as PUBLIC_RUNTIME_NAMES,
+    PYTHON_PUBLIC_SCHEMA_NAMES as PUBLIC_SCHEMA_NAMES,
+};
 
 macro_rules! canonical_text {
     ($value:expr) => {{ String::from_utf8(to_canonical_json($value)?).expect("canonical JSON output is UTF-8") }};

@@ -10,6 +10,10 @@ attributes:
   number: {value: string}
   ref: {value: string}
   crate: {value: string}
+  deleted: {value: string}
+  subtypes: {value: string}
+  none: {value: string}
+  query: {value: string}
 entities:
   sample:
-    owns: [count, type, value, where, default, self, kind, number, ref, crate]
+    owns: [count, type, value, where, default, self, kind, number, ref, crate, deleted, subtypes, none, query]

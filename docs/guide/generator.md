@@ -69,8 +69,18 @@ without changing the database label. Python and TypeScript append `_`; Rust
 appends `_` until the name also avoids plan-handle helpers (`where` becomes
 `where__`). For example, `type` becomes `type_` in TypeScript and Rust and
 remains `type` in Python. If escaping collides with another declared member,
-generation reports the collision; rename or alias that member explicitly.
-Ordinary member names keep their existing bytes.
+generation reports the collision during `schema check`; rename the field.
+Model names that collide with runtime exports also append `_` (`Query_` in
+Python/TypeScript, `None_` in Rust, and `queryzk` after a C package prefix). Existing valid names keep their bytes.
+
+Collision checks still refuse names when target conversion or escaping makes
+them identical. These include keyword/helper escape pairs (`where`/`where_`,
+`value`/`value_`, `self`/`self_`, `class`/`class_`), punctuation normalization
+(`my-name`/`my_name`), case conversion (`Person`/`person`), and model names
+that overlap derived reference, family, or handle names. The exact collisions
+depend on the target: C-v1's reversible label encoding distinguishes punctuation
+and case. Use `type-names` for model-name conflicts; member conflicts require
+renaming the field.
 
 C retains its reversible C-v1 label encoding. A bare struct member that is a
 C/C++ keyword gets the literal suffix `zk`, as before: `class` becomes

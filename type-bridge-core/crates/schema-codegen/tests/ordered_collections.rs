@@ -657,35 +657,44 @@ fn native_typescript_runtime_names_are_reserved_for_every_package() {
         ("projected-manager-comparison", "ProjectedManagerComparison"),
         ("projected-model-filter", "ProjectedModelFilter"),
     ] {
-        let ordered_source = ORDERED_SOURCE.replace("  person:", &format!("  {label}:"));
-        let (ordered_schema, ordered_authority) = resolved(&ordered_source);
-        let ordered_projection = projection(
-            &ordered_schema,
-            BindingTarget::TypeScript,
-            &ProjectionConfig::typescript(),
-            &emitter.generator_handlers_for(&ordered_schema),
-            &emitter.code_resources_for(&ordered_schema).unwrap(),
-        );
-        let error = emitter
-            .emit(&ordered_projection, &ordered_authority)
-            .unwrap_err();
-        assert_eq!(error.code().as_str(), "typescript_emitter_name_collision");
-        assert!(error.to_string().contains(target_name));
+        for source in [
+            ORDERED_SOURCE.replace("  person:", &format!("  {label}:")),
+            UNORDERED_SOURCE.replace("  person:", &format!("  {label}:")),
+        ] {
+            let (schema, authority) = resolved(&source);
+            let projected = projection(
+                &schema,
+                BindingTarget::TypeScript,
+                &ProjectionConfig::typescript(),
+                &emitter.generator_handlers_for(&schema),
+                &emitter.code_resources_for(&schema).unwrap(),
+            );
+            let id = type_bridge_contract::id::TypeId::new(
+                type_bridge_contract::id::TypeKind::Entity,
+                label,
+            )
+            .unwrap();
+            assert_eq!(
+                projected.models()[&id].target_name().as_str(),
+                format!("{target_name}_")
+            );
+            emitter.emit(&projected, &authority).unwrap();
 
-        let unordered_source = UNORDERED_SOURCE.replace("  person:", &format!("  {label}:"));
-        let (unordered_schema, unordered_authority) = resolved(&unordered_source);
-        let unordered_projection = projection(
-            &unordered_schema,
-            BindingTarget::TypeScript,
-            &ProjectionConfig::typescript(),
-            &emitter.generator_handlers_for(&unordered_schema),
-            &emitter.code_resources_for(&unordered_schema).unwrap(),
-        );
-        let error = emitter
-            .emit(&unordered_projection, &unordered_authority)
-            .unwrap_err();
-        assert_eq!(error.code().as_str(), "typescript_emitter_name_collision");
-        assert!(error.to_string().contains(target_name));
+            // Explicit overrides still cannot shadow the runtime namespace.
+            let forced = ProjectionConfig::typescript()
+                .with_type_name_override(id, target_name)
+                .unwrap();
+            let projected = projection(
+                &schema,
+                BindingTarget::TypeScript,
+                &forced,
+                &emitter.generator_handlers_for(&schema),
+                &emitter.code_resources_for(&schema).unwrap(),
+            );
+            let error = emitter.emit(&projected, &authority).unwrap_err();
+            assert_eq!(error.code().as_str(), "typescript_emitter_name_collision");
+            assert!(error.to_string().contains(target_name));
+        }
     }
 
     const COLLIDING_FUNCTION: &str = r#"

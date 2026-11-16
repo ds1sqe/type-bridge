@@ -9,12 +9,14 @@ use type_bridge_contract::projection::{
     DeclarationProjection, DeclaredRoleProjection, DirectSubProjection, EmissionPlan,
     FieldTokenProjection, FunctionParameterProjection, FunctionProjection,
     FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
-    PYTHON_MODEL_RESERVED_NAMES, PlayingProjection, ProjectedAnnotation, ProjectedModelForm,
+    PYTHON_MODEL_RESERVED_NAMES, PYTHON_PUBLIC_QUERY_NAMES, PYTHON_PUBLIC_RUNTIME_NAMES,
+    PYTHON_PUBLIC_SCHEMA_NAMES, PlayingProjection, ProjectedAnnotation, ProjectedModelForm,
     ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig,
-    ProjectionHandler, QueryTokenProjection, RUST_MODEL_RESERVED_NAMES, ReadFieldProjection,
-    ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection, RuntimeProjection,
-    RustCreatePolicy, StructFieldProjection, StructProjection, TYPESCRIPT_MODEL_RESERVED_NAMES,
-    TargetIdentifier,
+    ProjectionHandler, QueryTokenProjection, RUST_MODEL_RESERVED_NAMES, RUST_TYPE_RESERVED_NAMES,
+    ReadFieldProjection, ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection,
+    RuntimeProjection, RustCreatePolicy, StructFieldProjection, StructProjection,
+    TYPESCRIPT_MODEL_RESERVED_NAMES, TYPESCRIPT_ORDERED_PUBLIC_RUNTIME_NAMES,
+    TYPESCRIPT_PUBLIC_RUNTIME_NAMES, TYPESCRIPT_PUBLIC_SCHEMA_NAMES, TargetIdentifier,
 };
 use type_bridge_contract::schema::{
     AnnotationFactId, AnnotationKindId, AnnotationSubjectId, FunctionReturnMode, OwnsFactId,
@@ -200,7 +202,11 @@ impl<'a> ProjectionNamer<'a> {
     }
 
     fn c_label_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
-        c_identifier(format!("{}_{}", self.c_symbol_prefix(), c_v1_escape(label)))
+        let mut name = c_v1_escape(label);
+        if type_bridge_contract::projection::C_PUBLIC_QUERY_TYPE_SUFFIXES.contains(&name.as_str()) {
+            name.push_str("zk");
+        }
+        c_identifier(format!("{}_{}", self.c_symbol_prefix(), name))
     }
 
     fn c_member_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
@@ -212,12 +218,31 @@ impl<'a> ProjectionNamer<'a> {
     }
 
     fn class_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
-        let value = python_class_name(label);
+        let mut value = python_class_name(label);
         if self.target == BindingTarget::Python {
+            if PYTHON_PUBLIC_RUNTIME_NAMES
+                .iter()
+                .chain(PYTHON_PUBLIC_QUERY_NAMES)
+                .chain(PYTHON_PUBLIC_SCHEMA_NAMES)
+                .any(|name| *name == value)
+            {
+                value.push('_');
+            }
             python_identifier(value)
         } else if self.target == BindingTarget::TypeScript {
+            if TYPESCRIPT_PUBLIC_RUNTIME_NAMES
+                .iter()
+                .chain(TYPESCRIPT_ORDERED_PUBLIC_RUNTIME_NAMES)
+                .chain(TYPESCRIPT_PUBLIC_SCHEMA_NAMES)
+                .any(|name| *name == value)
+            {
+                value.push('_');
+            }
             typescript_identifier(value)
         } else if self.target == BindingTarget::Rust {
+            if RUST_TYPE_RESERVED_NAMES.contains(&value.as_str()) {
+                value.push('_');
+            }
             rust_identifier(value)
         } else if self.target == BindingTarget::C {
             self.c_label_identifier(label)

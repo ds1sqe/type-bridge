@@ -175,6 +175,20 @@ fn pristine_generated_rust_passes_strict_clippy_as_consumer_test_modules() {
 }
 
 #[test]
+fn runtime_type_names_escape_before_strict_consumer_clippy() {
+    assert_pristine_consumer_clippy(&emit_from_source(
+        r"format: typebridge.schema/v2
+attributes:
+  none: {value: string}
+entities:
+  hydrated-player: {owns: [none]}
+  into-encoded-scalar: {}
+  option: {}
+",
+    ));
+}
+
+#[test]
 fn explicit_rust_type_names_pass_strict_consumer_clippy() {
     use type_bridge_contract::id::{TypeId, TypeKind};
     let source = include_str!("acceptance/schema.yaml");
@@ -3224,27 +3238,6 @@ entities:
       into-encoded-create: { card: 1 }
 "#,
             ["create codec", "create member `into_encoded_create`"],
-        ),
-        (
-            "runtime DTO versus model",
-            "format: typebridge.schema/v2\nentities:\n  hydrated-player: {}\n",
-            [
-                "generated Rust runtime export `HydratedPlayer`",
-                "complete model",
-            ],
-        ),
-        (
-            "runtime trait versus model",
-            "format: typebridge.schema/v2\nentities:\n  into-encoded-scalar: {}\n",
-            [
-                "generated Rust runtime export `IntoEncodedScalar`",
-                "complete model",
-            ],
-        ),
-        (
-            "prelude type versus model",
-            "format: typebridge.schema/v2\nentities:\n  option: {}\n",
-            ["generated Rust runtime export `Option`", "complete model"],
         ),
         (
             "feature-gated helper versus function",
