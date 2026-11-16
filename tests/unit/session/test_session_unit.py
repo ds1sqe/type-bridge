@@ -61,6 +61,40 @@ class TestDatabaseConfiguration:
         assert not hasattr(database, "_native_database")
         assert database._transport_committed is False
 
+    def test_generated_wrapper_retains_port_and_credentials_without_disclosing_them(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        native = MagicMock()
+        username, password = "PRIVATE_USER_270", "PRIVATE_PASSWORD_270"
+        database = database_from_core(
+            "localhost:1729",
+            "generated",
+            native,
+            http_port=43129,
+            username=username,
+            password=password,
+        )
+        assert database.http_port == 43129
+        assert database.username == username and database.password == password
+        probe = MagicMock(return_value="3.13.6")
+        factory = MagicMock(side_effect=RuntimeError("transport refused"))
+        credentials_factory = MagicMock(return_value=object())
+        monkeypatch.setattr("type_bridge.session.Credentials", credentials_factory)
+        monkeypatch.setattr("type_bridge.session.typedb_driver.server_version", probe)
+        monkeypatch.setattr("type_bridge.session.TypeDB.driver", factory)
+        with (
+            caplog.at_level("DEBUG"),
+            pytest.raises(RuntimeError, match="transport refused") as error,
+        ):
+            _ = database.driver
+        probe.assert_called_once_with("localhost:1729", http_port=43129, tls=False)
+        credentials_factory.assert_called_once_with(username, password)
+        assert factory.call_args.args[1] is credentials_factory.return_value
+        visible = repr(database) + caplog.text + str(error.value)
+        assert username not in visible and password not in visible
+        missing = database_from_core("localhost:1729", "generated", native)
+        assert missing.username is None and missing.password is None
+
     def test_package_owned_rust_database_exposes_pair_administration(self):
         """The generated facade preserves native pair-safe administration."""
         native = MagicMock()

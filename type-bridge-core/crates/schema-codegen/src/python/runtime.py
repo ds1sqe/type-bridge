@@ -1398,5 +1398,11 @@ def connect(
     from type_bridge._native import database_from_core
 
     return database_from_core(
-        policy.endpoint, policy.database, native, query_limits=policy.query_limits
+        policy.endpoint,
+        policy.database,
+        native,
+        query_limits=policy.query_limits,
+        http_port=policy.http_port,
+        username=policy.username,
+        password=policy.password,
     )

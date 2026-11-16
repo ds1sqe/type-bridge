@@ -88,11 +88,22 @@ def database_from_core(
     database_name: str,
     native_database: PyDatabase,
     query_limits: QueryLimits | None = None,
+    *,
+    http_port: int = 8000,
+    username: str | None = None,
+    password: str | None = None,
 ) -> Any:
     """Wrap one package-owned native database without reconnecting."""
     from type_bridge.session import Database
 
-    database = Database(address=endpoint, database=database_name, query_limits=query_limits)
+    database = Database(
+        address=endpoint,
+        database=database_name,
+        query_limits=query_limits,
+        http_port=http_port,
+        username=username,
+        password=password,
+    )
     setattr(database, "_native_database", native_database)
     database._transport_committed = True
     return database
