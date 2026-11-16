@@ -433,6 +433,11 @@ types need no unique key. Generated manager `all` and `first` run as complete
 fetches; no query-builder terminal exposes it yet. A plan that uses it requires
 the `query.operation.complete-rows` capability.
 
+Bounded rows and pages use concept IIDs as stable identity tie breakers when
+a selected type has no required unique scalar field. Keyless entities and
+relations support `rows`, `first`, and `page_by` without a schema key. IID
+order is stable within a database; it does not define insertion order.
+
 The Python page contract is a frozen envelope with tuple `items`, `offset`,
 `limit`, and `total: int | None`. The TypeScript page is readonly and uses
 `total: bigint | undefined`. `include_total`/`includeTotal` defaults to false,

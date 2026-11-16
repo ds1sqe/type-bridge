@@ -4228,3 +4228,107 @@ async fn count_attribute_runs_through_projected_manager_authority() {
     assert_eq!(rows(&raw), 1);
     db.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyless_relation_windows_and_pages_follow_iid_order() {
+    use std::sync::Arc;
+    use type_bridge_orm::match_request::{
+        MatchResult, RowCardinality, SessionHandle, SlotValue, Window,
+    };
+    let Some(db) = live_database("keyless_windows").await else {
+        return;
+    };
+    db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    db.execute_raw(
+        "insert $p isa person, has identifier \"A\"; $a isa membership, links (member: $p); $b isa membership, links (member: $p); $c isa membership, links (member: $p);",
+        TxType::Write,
+    ).await.unwrap();
+    let profile = if std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")
+        .unwrap()
+        .starts_with("3.12")
+    {
+        "typedb-3.12.1/v1"
+    } else {
+        "typedb-3.13.6/v1"
+    };
+    let installed = party_projection_for_profile(PARTY_SCHEMA_YAML, profile);
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let session = SessionHandle::new(Arc::clone(&registry));
+    let relation = session.exact("membership").unwrap();
+    let person = session.exact("person").unwrap();
+    let query = session
+        .query(session.positional([relation.one()]).unwrap())
+        .unwrap();
+    let QueryResult::Documents(raw) = db
+        .execute_raw(
+            "match $r isa membership; let $id = iid($r); sort $id; fetch { \"iid\": $id };",
+            TxType::Read,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("expected documents")
+    };
+    let expected: Vec<_> = raw
+        .iter()
+        .map(|row| row["iid"].as_str().unwrap().to_owned())
+        .collect();
+    let ids = |rows: &[type_bridge_orm::match_request::MatchRow]| -> Vec<String> {
+        rows.iter()
+            .map(|row| match &row.slots()[0] {
+                SlotValue::One(thing) => thing.concept_id().as_str().to_owned(),
+                other => panic!("expected singular relation: {other:?}"),
+            })
+            .collect()
+    };
+    for (offset, limit) in [(0, 3), (0, 1), (1, 1), (2, 2)] {
+        let window = Window { offset, limit };
+        let request = query
+            .validate_fetch_rows(&[], window, RowCardinality::BoundedMany)
+            .unwrap();
+        let result = db.execute_match(&registry, &request).await.unwrap();
+        let MatchResult::Rows { rows } = result.result() else {
+            panic!("expected rows")
+        };
+        let wanted: Vec<_> = expected
+            .iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        assert_eq!(ids(rows), wanted);
+        let request = query
+            .validate_page_by(&relation, &[], window, true)
+            .unwrap();
+        let result = db.execute_match(&registry, &request).await.unwrap();
+        let MatchResult::Page { entries, total, .. } = result.result() else {
+            panic!("expected page")
+        };
+        assert_eq!(ids(entries), wanted);
+        assert_eq!(*total, Some(3));
+    }
+    let joined = session
+        .query(session.positional([relation.one(), person.one()]).unwrap())
+        .unwrap()
+        .where_predicate(relation.role("member").unwrap().connects(&person).unwrap())
+        .unwrap();
+    let request = joined
+        .validate_fetch_rows(
+            &[],
+            Window {
+                offset: 0,
+                limit: 10,
+            },
+            RowCardinality::BoundedMany,
+        )
+        .unwrap();
+    let result = db.execute_match(&registry, &request).await.unwrap();
+    let MatchResult::Rows { rows } = result.result() else {
+        panic!("expected joined rows")
+    };
+    assert_eq!(ids(rows), expected);
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}

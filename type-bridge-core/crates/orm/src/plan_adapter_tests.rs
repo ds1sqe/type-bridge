@@ -1382,3 +1382,44 @@ fn wide_relation_single_role_refuses_after_root_and_prefix_fit() {
     .unwrap_err();
     assert_eq!(error.code().as_str(), "query_plan_write_term_limit");
 }
+
+#[test]
+fn keyless_windows_use_iid_tie_breakers() {
+    use crate::match_request::SessionHandle;
+    let registry = registry();
+    let session = SessionHandle::new(Arc::clone(&registry));
+    let relation = session.exact("employment").unwrap();
+    let query = session
+        .query(session.positional([relation.one()]).unwrap())
+        .unwrap();
+    let window = Window {
+        offset: 0,
+        limit: 1,
+    };
+    for request in [
+        query
+            .validate_fetch_rows(&[], window, RowCardinality::BoundedMany)
+            .unwrap(),
+        query
+            .validate_page_by(&relation, &[], window, true)
+            .unwrap(),
+    ] {
+        assert!(request.stable_order().terms().is_empty());
+        let stack =
+            crate::match_request::plan_adapter::adapt_match_request(&registry, &request).unwrap();
+        let statements: Vec<_> = stack
+            .plans
+            .iter()
+            .map(|plan| {
+                let lowered = crate::query_plan_exec::lower(plan).unwrap();
+                type_bridge_core_lib::__internal::render(&lowered.query).unwrap()
+            })
+            .collect();
+        assert!(
+            statements
+                .iter()
+                .any(|typeql| typeql.contains("iid(") && typeql.contains("sort ")),
+            "{statements:?}"
+        );
+    }
+}

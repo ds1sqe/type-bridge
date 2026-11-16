@@ -1568,13 +1568,10 @@ fn derive_stable_order(
             .filter(|attribute| is_stable_unique_scalar(attribute))
             .collect();
         candidates.sort_by(|left, right| left.field_name.cmp(&right.field_name));
-        let candidate = candidates.first().ok_or_else(|| {
-            invalid(
-                "missing_stable_unique_key",
-                "bounded result identity requires a present unique scalar descriptor field",
-            )
-            .at(MatchErrorPathSegment::Binding(binding))
-        })?;
+        // The plan adapter always appends the selected concept IIDs.
+        let Some(candidate) = candidates.first() else {
+            continue;
+        };
         let descriptor_id = registry
             .descriptor_id(descriptor.type_name())
             .expect("resolved descriptor remains registered");
