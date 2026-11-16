@@ -37,18 +37,22 @@ struct LiveTlsContext {
 
 impl LiveTlsContext {
     fn custom_root_options(&self) -> SecureConnectOptions {
-        SecureConnectOptions {
-            http_port: self.http_port,
-            tls_mode: TlsMode::CustomRootCa(self.root_ca.clone()),
-            server_version: None,
+        {
+            let mut options = SecureConnectOptions::default();
+            options.http_port = self.http_port;
+            options.tls_mode = TlsMode::CustomRootCa(self.root_ca.clone());
+            options.server_version = None;
+            options
         }
     }
 
     fn native_root_options(&self) -> SecureConnectOptions {
-        SecureConnectOptions {
-            http_port: self.http_port,
-            tls_mode: TlsMode::NativeRoots,
-            server_version: None,
+        {
+            let mut options = SecureConnectOptions::default();
+            options.http_port = self.http_port;
+            options.tls_mode = TlsMode::NativeRoots;
+            options.server_version = None;
+            options
         }
     }
 
@@ -742,15 +746,17 @@ async fn tls_only_grpc_endpoint_rejects_plaintext_live() {
         eprintln!("skipping plaintext rejection test: expected live topology is not set");
         return;
     };
-    let options = SecureConnectOptions {
-        http_port: context.http_port,
-        tls_mode: TlsMode::Disabled,
-        server_version: Some(
+    let options = {
+        let mut options = SecureConnectOptions::default();
+        options.http_port = context.http_port;
+        options.tls_mode = TlsMode::Disabled;
+        options.server_version = Some(
             expected
                 .server_version
                 .parse()
                 .expect("expected server version must parse"),
-        ),
+        );
+        options
     };
     let database = unique_database("tb_plaintext_must_fail");
 
@@ -813,16 +819,13 @@ async fn closed_port_reports_unavailable_live() {
     let address = listener.local_addr().unwrap().to_string();
     drop(listener);
     let version = "3.13.6";
-    let error = TypeDBRuntime::connect_secure(
-        &address,
-        "admin",
-        "SECRET_SENTINEL",
-        SecureConnectOptions {
-            http_port: 1,
-            tls_mode: TlsMode::Disabled,
-            server_version: Some(version.parse().unwrap()),
-        },
-    )
+    let error = TypeDBRuntime::connect_secure(&address, "admin", "SECRET_SENTINEL", {
+        let mut options = SecureConnectOptions::default();
+        options.http_port = 1;
+        options.tls_mode = TlsMode::Disabled;
+        options.server_version = Some(version.parse().unwrap());
+        options
+    })
     .await
     .err()
     .expect("a closed port must reject connection");
@@ -845,19 +848,17 @@ async fn wrong_tls_trust_reports_tls_kind_live() {
     };
     // This existing CA fixture is distinct from tests/fixtures/tls/root-ca.pem.
     let wrong_ca = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/root-ca.pem");
-    let error = TypeDBRuntime::connect_secure(
-        &context.address,
-        &context.username,
-        "SECRET_SENTINEL",
-        SecureConnectOptions {
-            http_port: context.http_port,
-            tls_mode: TlsMode::CustomRootCa(wrong_ca.clone()),
-            server_version: None,
-        },
-    )
-    .await
-    .err()
-    .expect("the unrelated CA must fail TLS admission");
+    let error =
+        TypeDBRuntime::connect_secure(&context.address, &context.username, "SECRET_SENTINEL", {
+            let mut options = SecureConnectOptions::default();
+            options.http_port = context.http_port;
+            options.tls_mode = TlsMode::CustomRootCa(wrong_ca.clone());
+            options.server_version = None;
+            options
+        })
+        .await
+        .err()
+        .expect("the unrelated CA must fail TLS admission");
     let message = error.to_string();
     assert!(
         message.contains(
@@ -875,19 +876,17 @@ async fn wrong_tls_trust_reports_tls_kind_live() {
     let Some(expected) = &context.expected else {
         return;
     };
-    let error = TypeDBRuntime::connect_secure(
-        &context.address,
-        &context.username,
-        &context.password,
-        SecureConnectOptions {
-            http_port: context.http_port,
-            tls_mode: TlsMode::CustomRootCa(wrong_ca),
-            server_version: Some(expected.server_version.parse().unwrap()),
-        },
-    )
-    .await
-    .err()
-    .expect("the unrelated CA must also fail direct gRPC admission");
+    let error =
+        TypeDBRuntime::connect_secure(&context.address, &context.username, &context.password, {
+            let mut options = SecureConnectOptions::default();
+            options.http_port = context.http_port;
+            options.tls_mode = TlsMode::CustomRootCa(wrong_ca);
+            options.server_version = Some(expected.server_version.parse().unwrap());
+            options
+        })
+        .await
+        .err()
+        .expect("the unrelated CA must also fail direct gRPC admission");
     let message = error.to_string();
     assert!(
         message.contains("TypeDB transport failed: TLS/certificate failure"),

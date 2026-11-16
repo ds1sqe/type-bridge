@@ -654,6 +654,9 @@ own validation and value conversion. Node removes the obsolete `FilterInput`,
 `AggregateInput`, `AttributeInput`, and `RuntimeAttributeValue` root types.
 The Rust ORM root no longer re-exports dynamic `Expr` or `EntityQuery`; use
 generated managers and typed plans.
+Runtime `ConnectOptions` and `SecureConnectOptions` are non-exhaustive. Create
+them with `Default::default()` and assign public fields instead of constructing
+struct literals, so later connection options can be added compatibly.
 
 Legacy caller-owned query ASTs are removed. Build queries through generated
 models and typed plan builders; raw TypeQL goes through the explicit raw

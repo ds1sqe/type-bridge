@@ -803,11 +803,12 @@ async fn run_database(
             &config.database,
             USERNAME,
             PASSWORD,
-            ConnectOptions {
-                http_port: config.http_port,
-                tls: false,
-                ..ConnectOptions::default()
-            },
+            {
+let mut options = ConnectOptions::default();
+options.http_port = config.http_port;
+options.tls = false;
+options
+},
         )
         .await,
         "connect administrative handle",

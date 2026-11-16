@@ -9,13 +9,14 @@ async fn fixture_runtime() -> TypeDBRuntime {
         &env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "127.0.0.1:1729".to_owned()),
         &env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned()),
         &env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned()),
-        ConnectOptions {
-            http_port: env::var("TYPEDB_HTTP_PORT")
+        {
+let mut options = ConnectOptions::default();
+options.http_port = env::var("TYPEDB_HTTP_PORT")
                 .unwrap_or_else(|_| "8000".to_owned())
                 .parse()
-                .expect("HTTP port is valid"),
-            ..ConnectOptions::default()
-        },
+                .expect("HTTP port is valid");
+options
+},
     )
     .await
     .expect("fixture runtime connects")

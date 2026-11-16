@@ -27,10 +27,12 @@ fn secure_connect_options(
         OutboundTlsMode::CustomRootCa(path) => runtime::TlsMode::CustomRootCa(path.clone()),
     };
 
-    Ok(runtime::SecureConnectOptions {
-        http_port: connection.http_port,
-        tls_mode,
-        server_version,
+    Ok({
+        let mut options = runtime::SecureConnectOptions::default();
+        options.http_port = connection.http_port;
+        options.tls_mode = tls_mode;
+        options.server_version = server_version;
+        options
     })
 }
 

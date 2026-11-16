@@ -223,10 +223,11 @@ impl Database<Unbound> {
         let opts = options.into();
         let username = opts.username.as_deref().unwrap_or("admin");
         let password = opts.password.as_deref().unwrap_or("password");
-        let orm_opts = type_bridge_orm::ConnectOptions {
-            http_port: opts.http_port,
-            tls: opts.tls,
-            ..type_bridge_orm::ConnectOptions::default()
+        let orm_opts = {
+            let mut options = type_bridge_orm::ConnectOptions::default();
+            options.http_port = opts.http_port;
+            options.tls = opts.tls;
+            options
         };
 
         let inner = type_bridge_orm::Database::connect_with_options(

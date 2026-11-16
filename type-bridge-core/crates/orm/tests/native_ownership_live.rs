@@ -108,9 +108,10 @@ async fn database(suffix: &str) -> Arc<Database> {
             &name,
             "admin",
             "password",
-            ConnectOptions {
-                http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-                ..ConnectOptions::default()
+            {
+                let mut options = ConnectOptions::default();
+                options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+                options
             },
         )
         .await

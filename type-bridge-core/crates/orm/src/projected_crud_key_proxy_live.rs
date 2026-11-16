@@ -15,9 +15,13 @@ async fn live_proxy_key_guards_refuse_atomically_and_measure_added_reads() {
     let version = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION").unwrap();
     assert_eq!(version, "3.13.6");
     let name = format!("tb270_f2_proxy_keys_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
-    let db = Database::connect_with_options(&address, &name, "admin", "password", ConnectOptions {
-        http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(), tls: false, server_version: Some(version.parse().unwrap()),
-    }).await.unwrap();
+    let db = Database::connect_with_options(&address, &name, "admin", "password", {
+let mut options = ConnectOptions::default();
+options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+options.tls = false;
+options.server_version = Some(version.parse().unwrap());
+options
+}).await.unwrap();
     db.create_database().await.unwrap();
     db.execute_raw("define attribute item-key, value string; attribute item-tag, value string; entity wide-item, owns item-key @key, owns item-tag @card(0..), plays wide-edge:member; relation wide-edge, owns item-key @key, owns item-tag @card(0..), relates member @card(0..4), plays wide-edge:member;", TxType::Schema).await.unwrap();
     let kind = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
@@ -162,7 +166,13 @@ async fn required_wide_replacements_are_atomic_direct_and_over_the_real_proxy() 
         let authority = type_bridge_schema::build_schema_authority(&fixture.schema, fixture.schema.required_capabilities(), &context).unwrap();
         let name = format!("tb270_f2_required_{kind:?}_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
         let address = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap();
-        let db = Database::connect_with_options(&address, &name, "admin", "password", ConnectOptions { tls: false, http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(), server_version: Some("3.13.6".parse().unwrap()) }).await.unwrap();
+        let db = Database::connect_with_options(&address, &name, "admin", "password", {
+let mut options = ConnectOptions::default();
+options.tls = false;
+options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+options.server_version = Some("3.13.6".parse().unwrap());
+options
+}).await.unwrap();
         db.create_database().await.unwrap();
         // A conflicting value in the final piece must abort the whole replacement.
         db.execute_raw("define attribute item-key, value string; attribute item-tag, value string; entity wide-item, owns item-key @key, owns item-tag @card(1..) @unique, plays wide-edge:member; relation wide-edge, owns item-key @key, owns item-tag @card(1..) @unique, relates member @card(0..4), plays wide-edge:member;", TxType::Schema).await.unwrap();
@@ -228,7 +238,13 @@ async fn dynamic_split_and_batch_updates_refuse_changed_keys_on_the_real_provide
     let installed = wide_single_projection_for_target_and_minimum(false, BindingTarget::Python, 0);
     let registry = installed.manager_registry().unwrap();
     let name = format!("tb270_f2_dynamic_keys_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
-    let db = Database::connect_with_options(&std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap(), &name, "admin", "password", crate::ConnectOptions { tls: false, http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(), server_version: Some("3.13.6".parse().unwrap()) }).await.unwrap();
+    let db = Database::connect_with_options(&std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap(), &name, "admin", "password", {
+let mut options = crate::ConnectOptions::default();
+options.tls = false;
+options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+options.server_version = Some("3.13.6".parse().unwrap());
+options
+}).await.unwrap();
     db.create_database().await.unwrap();
     db.execute_raw("define attribute item-key, value string; attribute item-tag, value string; entity wide-item, owns item-key @key, owns item-tag @card(0..), plays wide-edge:member; relation wide-edge, owns item-key @key, owns item-tag @card(0..), relates member @card(0..4), plays wide-edge:member;", TxType::Schema).await.unwrap();
     let kind = TypeId::new(TypeKind::Entity, "wide-item").unwrap();

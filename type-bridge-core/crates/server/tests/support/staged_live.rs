@@ -146,12 +146,13 @@ impl Interceptor for LivePolicy {
 }
 
 pub fn connect_options() -> ConnectOptions {
-    ConnectOptions {
-        http_port: std::env::var("TYPEDB_HTTP_PORT")
+    {
+        let mut options = ConnectOptions::default();
+        options.http_port = std::env::var("TYPEDB_HTTP_PORT")
             .unwrap_or_else(|_| "8000".into())
             .parse()
-            .expect("TYPEDB_HTTP_PORT is a u16"),
-        ..ConnectOptions::default()
+            .expect("TYPEDB_HTTP_PORT is a u16");
+        options
     }
 }
 

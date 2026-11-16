@@ -1238,10 +1238,12 @@ mod tests {
     #[tokio::test]
     async fn controlled_prepared_connect_forwards_common_pre_dispatch_cancellation() {
         const SENTINEL: &str = "TB_ORM_CONTROLLED_CONNECT_SECRET";
-        let options = super::super::real_driver::SecureConnectOptions {
-            http_port: 8123,
-            tls_mode: super::super::real_driver::TlsMode::Disabled,
-            server_version: Some(type_bridge_core_lib::version::Version::new(3, 12, 1)),
+        let options = {
+            let mut options = super::super::real_driver::SecureConnectOptions::default();
+            options.http_port = 8123;
+            options.tls_mode = super::super::real_driver::TlsMode::Disabled;
+            options.server_version = Some(type_bridge_core_lib::version::Version::new(3, 12, 1));
+            options
         }
         .prepare_transport()
         .expect("prepare credential-free transport before controlled connect");
@@ -1281,10 +1283,12 @@ mod tests {
     #[tokio::test]
     async fn controlled_prepared_connect_forwards_zero_statement_ceiling_before_credentials() {
         const SENTINEL: &str = "TB_ORM_CONNECTION_CREDENTIAL_SECRET";
-        let options = super::super::real_driver::SecureConnectOptions {
-            http_port: 8123,
-            tls_mode: super::super::real_driver::TlsMode::Disabled,
-            server_version: Some(type_bridge_core_lib::version::Version::new(3, 12, 1)),
+        let options = {
+            let mut options = super::super::real_driver::SecureConnectOptions::default();
+            options.http_port = 8123;
+            options.tls_mode = super::super::real_driver::TlsMode::Disabled;
+            options.server_version = Some(type_bridge_core_lib::version::Version::new(3, 12, 1));
+            options
         }
         .prepare_transport()
         .expect("prepare transport before supplying credentials");

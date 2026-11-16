@@ -510,9 +510,10 @@ async fn native_typed_read_stacks_match_live_rows_pages_counts_and_subtype_roles
     use crate::session::real_driver::ConnectOptions;
     println!("NATIVE_READ_RUNNER pid={}", std::process::id());
     let database_name = crate::live_database::name("native");
-    let options = ConnectOptions {
-        http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-        ..Default::default()
+    let options = {
+        let mut options = ConnectOptions::default();
+        options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+        options
     };
     let db = Database::connect_with_options(
         &std::env::var("TYPEDB_ADDRESS").unwrap(),

@@ -6898,10 +6898,12 @@ int main(void) {
         .enable_all()
         .build()
         .expect("the live database administration runtime opens");
-    let options = type_bridge_orm::ConnectOptions {
-        http_port,
-        tls: false,
-        server_version: None,
+    let options = {
+        let mut options = type_bridge_orm::ConnectOptions::default();
+        options.http_port = http_port;
+        options.tls = false;
+        options.server_version = None;
+        options
     };
     let administrator = administration_runtime
         .block_on(type_bridge_orm::Database::connect_with_options(
@@ -7330,10 +7332,12 @@ int main(void) {
         .enable_all()
         .build()
         .expect("the live database administration runtime opens");
-    let options = type_bridge_orm::ConnectOptions {
-        http_port,
-        tls: false,
-        server_version: None,
+    let options = {
+        let mut options = type_bridge_orm::ConnectOptions::default();
+        options.http_port = http_port;
+        options.tls = false;
+        options.server_version = None;
+        options
     };
     let administrator = administration_runtime
         .block_on(type_bridge_orm::Database::connect_with_options(
@@ -7760,10 +7764,12 @@ int main(void) {{
         .enable_all()
         .build()
         .expect("the live database administration runtime opens");
-    let options = type_bridge_orm::ConnectOptions {
-        http_port,
-        tls: false,
-        server_version: None,
+    let options = {
+        let mut options = type_bridge_orm::ConnectOptions::default();
+        options.http_port = http_port;
+        options.tls = false;
+        options.server_version = None;
+        options
     };
     let administrator = administration_runtime
         .block_on(type_bridge_orm::Database::connect_with_options(

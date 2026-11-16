@@ -1127,10 +1127,12 @@ unsafe fn prepare_database_config(
             preflight.config.tls_mode,
         )
     }?;
-    let options = SecureConnectOptions {
-        http_port,
-        tls_mode,
-        server_version: None,
+    let options = {
+        let mut options = SecureConnectOptions::default();
+        options.http_port = http_port;
+        options.tls_mode = tls_mode;
+        options.server_version = None;
+        options
     };
     let transport = match custom_root {
         Some(bytes) => options.prepare_transport_from_captured_custom_root(bytes),

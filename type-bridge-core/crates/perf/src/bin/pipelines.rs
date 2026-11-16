@@ -318,9 +318,10 @@ async fn drop_databases(config: &Config, database: &str) -> Result<()> {
             &name,
             &config.username,
             &config.password,
-            type_bridge_orm::ConnectOptions {
-                http_port: config.http_port,
-                ..type_bridge_orm::ConnectOptions::default()
+            {
+                let mut options = type_bridge_orm::ConnectOptions::default();
+                options.http_port = config.http_port;
+                options
             },
         )
         .await?;

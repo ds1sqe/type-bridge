@@ -12,18 +12,20 @@ async fn fixture() -> Option<(TypeDBRuntime, String)> {
         &address,
         &std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into()),
         &std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into()),
-        ConnectOptions {
-            http_port: std::env::var("TYPEDB_HTTP_PORT")
+        {
+            let mut options = ConnectOptions::default();
+            options.http_port = std::env::var("TYPEDB_HTTP_PORT")
                 .unwrap_or_else(|_| "8000".into())
                 .parse()
-                .expect("valid TypeDB HTTP port"),
-            tls: false,
-            server_version: Some(
+                .expect("valid TypeDB HTTP port");
+            options.tls = false;
+            options.server_version = Some(
                 std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")
                     .unwrap_or_else(|_| "3.13.6".into())
                     .parse()
                     .unwrap(),
-            ),
+            );
+            options
         },
     )
     .await

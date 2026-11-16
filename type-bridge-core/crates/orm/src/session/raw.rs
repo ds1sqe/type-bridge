@@ -823,9 +823,10 @@ mod live_tests {
             &database,
             "admin",
             "password",
-            crate::ConnectOptions {
-                http_port,
-                ..Default::default()
+            {
+                let mut options = crate::ConnectOptions::default();
+                options.http_port = http_port;
+                options
             },
         )
         .await

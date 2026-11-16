@@ -178,17 +178,13 @@ async fn wide_manager_proxy_preserves_plural_roots_and_rolls_back_last_piece() {
     let address = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap();
     let version = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION").unwrap();
     let name = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_DATABASE").unwrap();
-    let db = Database::connect_with_options(
-        &address,
-        &name,
-        "admin",
-        "password",
-        ConnectOptions {
-            http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-            tls: false,
-            server_version: Some(version.parse().unwrap()),
-        },
-    )
+    let db = Database::connect_with_options(&address, &name, "admin", "password", {
+        let mut options = ConnectOptions::default();
+        options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+        options.tls = false;
+        options.server_version = Some(version.parse().unwrap());
+        options
+    })
     .await
     .unwrap();
     db.create_database().await.unwrap();
@@ -480,17 +476,13 @@ async fn partial_relation_update_by_player_keeps_all_roots_when_pieced() {
     let address = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap();
     let version = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION").unwrap();
     let name = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_DATABASE").unwrap();
-    let db = Database::connect_with_options(
-        &address,
-        &name,
-        "admin",
-        "password",
-        ConnectOptions {
-            http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-            tls: false,
-            server_version: Some(version.parse().unwrap()),
-        },
-    )
+    let db = Database::connect_with_options(&address, &name, "admin", "password", {
+        let mut options = ConnectOptions::default();
+        options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+        options.tls = false;
+        options.server_version = Some(version.parse().unwrap());
+        options
+    })
     .await
     .unwrap();
     db.create_database().await.unwrap();

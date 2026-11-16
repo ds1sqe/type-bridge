@@ -87,9 +87,10 @@ async fn runtime() -> TypeDBRuntime {
         &std::env::var("TYPEDB_ADDRESS").unwrap(),
         &std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into()),
         &std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into()),
-        ConnectOptions {
-            http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-            ..Default::default()
+        {
+            let mut options = ConnectOptions::default();
+            options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+            options
         },
     )
     .await

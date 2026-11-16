@@ -795,7 +795,13 @@ pub fn embedded_driver_versions() -> &'static [(u8, &'static str)] {
 /// Connection-time options for the version-gated TypeDB runtime.
 ///
 /// Callers that accept the defaults can pass `ConnectOptions::default()`.
+/// Configure fields after creating [`ConnectOptions::default()`].
+/// ```compile_fail
+/// use type_bridge_typedb_runtime::ConnectOptions;
+/// let _ = ConnectOptions { http_port: 8000, tls: false, server_version: None };
+/// ```
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct ConnectOptions {
     /// Port of the TypeDB HTTP API used for the connect-time version probe.
     pub http_port: u16,
@@ -844,7 +850,13 @@ impl TlsMode {
 }
 
 /// Connection options for the typed TLS transport surface.
+/// Configure fields after creating [`SecureConnectOptions::default()`].
+/// ```compile_fail
+/// use type_bridge_typedb_runtime::{SecureConnectOptions, TlsMode};
+/// let _ = SecureConnectOptions { http_port: 8000, tls_mode: TlsMode::Disabled, server_version: None };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SecureConnectOptions {
     /// Port of the TypeDB HTTP API used for the connect-time version probe.
     pub http_port: u16,

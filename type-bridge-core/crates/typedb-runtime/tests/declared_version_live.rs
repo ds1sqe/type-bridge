@@ -21,10 +21,12 @@ async fn grpc_only_requires_an_exact_version_declaration_live() {
     let http_port = unavailable_http.local_addr().unwrap().port();
     let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
     let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
-    let options = ConnectOptions {
-        http_port,
-        tls: false,
-        server_version: None,
+    let options = {
+        let mut options = ConnectOptions::default();
+        options.http_port = http_port;
+        options.tls = false;
+        options.server_version = None;
+        options
     };
     let error = tokio::time::timeout(
         Duration::from_secs(30),
@@ -41,16 +43,13 @@ async fn grpc_only_requires_an_exact_version_declaration_live() {
     );
     let runtime = tokio::time::timeout(
         Duration::from_secs(30),
-        TypeDBRuntime::connect(
-            &address,
-            &username,
-            &password,
-            ConnectOptions {
-                http_port,
-                tls: false,
-                server_version: Some(expected_version),
-            },
-        ),
+        TypeDBRuntime::connect(&address, &username, &password, {
+            let mut options = ConnectOptions::default();
+            options.http_port = http_port;
+            options.tls = false;
+            options.server_version = Some(expected_version);
+            options
+        }),
     )
     .await
     .expect("declared gRPC connection must finish within 30 seconds")

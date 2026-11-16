@@ -36,18 +36,20 @@ async fn live_database(stem: &str) -> Option<Database> {
         &name,
         &std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into()),
         &std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into()),
-        ConnectOptions {
-            http_port: std::env::var("TYPEDB_HTTP_PORT")
+        {
+            let mut options = ConnectOptions::default();
+            options.http_port = std::env::var("TYPEDB_HTTP_PORT")
                 .unwrap_or_else(|_| "8000".into())
                 .parse()
-                .expect("valid TypeDB HTTP port"),
-            tls: false,
-            server_version: Some(
+                .expect("valid TypeDB HTTP port");
+            options.tls = false;
+            options.server_version = Some(
                 std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION")
                     .unwrap_or_else(|_| "3.13.6".into())
                     .parse()
                     .unwrap(),
-            ),
+            );
+            options
         },
     )
     .await
@@ -851,17 +853,13 @@ async fn registry_exact_updates_clear_optional_entity_and_relation_fields() {
     };
     let name = live_database::name("clear");
     let version = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION").unwrap();
-    let db = Database::connect_with_options(
-        &address,
-        &name,
-        "admin",
-        "password",
-        ConnectOptions {
-            http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-            tls: false,
-            server_version: Some(version.parse().unwrap()),
-        },
-    )
+    let db = Database::connect_with_options(&address, &name, "admin", "password", {
+        let mut options = ConnectOptions::default();
+        options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+        options.tls = false;
+        options.server_version = Some(version.parse().unwrap());
+        options
+    })
     .await
     .unwrap();
     db.create_database().await.unwrap();

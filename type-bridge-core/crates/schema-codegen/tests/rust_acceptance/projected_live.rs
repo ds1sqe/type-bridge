@@ -1079,11 +1079,12 @@ async fn execute_live(
     server_version: &str,
     provider_typeql: &str,
 ) -> ProducerResult<Value> {
-    let admin_options = ConnectOptions {
-        http_port: config.http_port,
-        tls: false,
-        ..ConnectOptions::default()
-    };
+    let admin_options = {
+let mut options = ConnectOptions::default();
+options.http_port = config.http_port;
+options.tls = false;
+options
+};
     let admin = live(
         AdminDatabase::connect_with_options(
             &config.address,

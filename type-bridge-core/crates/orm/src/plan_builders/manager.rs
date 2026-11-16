@@ -2423,9 +2423,10 @@ plays:
             &crate::live_database::name("manager_trace"),
             "admin",
             "password",
-            ConnectOptions {
-                http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-                ..Default::default()
+            {
+                let mut options = ConnectOptions::default();
+                options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+                options
             },
         )
         .await
@@ -2467,16 +2468,11 @@ plays:
         use crate::{AttributeValue, ConnectOptions, Database, TxType};
         let address = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap();
         let name = crate::live_database::name("manager_roles");
-        let db = Database::connect_with_options(
-            &address,
-            &name,
-            "admin",
-            "password",
-            ConnectOptions {
-                http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-                ..Default::default()
-            },
-        )
+        let db = Database::connect_with_options(&address, &name, "admin", "password", {
+            let mut options = ConnectOptions::default();
+            options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+            options
+        })
         .await
         .unwrap();
         db.create_database().await.unwrap();

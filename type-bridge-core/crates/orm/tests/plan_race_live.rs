@@ -516,12 +516,13 @@ async fn staged_plans_race_like_the_concurrency_guide_on_3_13_6() {
         &address,
         &std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into()),
         &std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into()),
-        ConnectOptions {
-            http_port: std::env::var("TYPEDB_HTTP_PORT")
+        {
+            let mut options = ConnectOptions::default();
+            options.http_port = std::env::var("TYPEDB_HTTP_PORT")
                 .expect("TYPEDB_HTTP_PORT")
                 .parse()
-                .expect("valid TypeDB HTTP port"),
-            ..ConnectOptions::default()
+                .expect("valid TypeDB HTTP port");
+            options
         },
     )
     .await

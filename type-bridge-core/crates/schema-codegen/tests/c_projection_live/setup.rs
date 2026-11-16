@@ -13,15 +13,17 @@ fn required(name: &str) -> String {
 }
 
 fn connect_options() -> ConnectOptions {
-    ConnectOptions {
-        http_port: required("TYPEDB_HTTP_PORT")
+    {
+let mut options = ConnectOptions::default();
+options.http_port = required("TYPEDB_HTTP_PORT")
             .parse::<u16>()
             .ok()
             .filter(|port| *port != 0)
-            .expect("TYPEDB_HTTP_PORT must be an integer from 1 through 65535"),
-        tls: false,
-        server_version: None,
-    }
+            .expect("TYPEDB_HTTP_PORT must be an integer from 1 through 65535");
+options.tls = false;
+options.server_version = None;
+options
+}
 }
 
 #[tokio::main]

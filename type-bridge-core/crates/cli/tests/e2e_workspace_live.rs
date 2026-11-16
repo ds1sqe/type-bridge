@@ -63,9 +63,10 @@ fn connect_options(http_port: &str) -> ConnectOptions {
         http_port, 0,
         "TYPEDB_HTTP_PORT must be an integer from 1 through 65535, got \"0\""
     );
-    ConnectOptions {
-        http_port,
-        ..ConnectOptions::default()
+    {
+        let mut options = ConnectOptions::default();
+        options.http_port = http_port;
+        options
     }
 }
 
@@ -732,10 +733,12 @@ async fn tls_workspace_apply_and_verify_live() {
         "TLS migration verify",
     );
 
-    let options = SecureConnectOptions {
-        http_port,
-        tls_mode: TlsMode::CustomRootCa(root.join("certs/root-ca.pem")),
-        server_version: None,
+    let options = {
+        let mut options = SecureConnectOptions::default();
+        options.http_port = http_port;
+        options.tls_mode = TlsMode::CustomRootCa(root.join("certs/root-ca.pem"));
+        options.server_version = None;
+        options
     };
     let journal = type_bridge_schema_migration_typedb::derived_journal_database_name(&database);
     type_bridge_orm::delete_database_secure(

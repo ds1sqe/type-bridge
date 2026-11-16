@@ -9,18 +9,17 @@ fn accepts_secure_error(result: SecureResult<()>) -> Option<SecureConnectError> 
 }
 
 #[test]
-fn released_boolean_options_adapt_without_changing_the_public_struct() {
-    let released = ConnectOptions {
-        http_port: 8443,
-        tls: true,
-        server_version: None,
-    };
+fn boolean_options_adapt_with_extensible_public_struct() {
+    let mut released = ConnectOptions::default();
+    released.http_port = 8443;
+    released.tls = true;
     let copied = released;
     let secure = SecureConnectOptions::from(released);
     let ConnectOptions {
         http_port,
         tls,
         server_version,
+        ..
     } = copied;
 
     assert_eq!(http_port, 8443);

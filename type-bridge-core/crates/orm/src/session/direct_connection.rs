@@ -179,10 +179,12 @@ pub(super) fn prepare_direct_connection(
         TlsPolicyKind::NativeRoots => TlsMode::NativeRoots,
         TlsPolicyKind::CustomRoot(path) => TlsMode::CustomRootCa(path.clone()),
     };
-    let transport = SecureConnectOptions {
-        http_port: policy.http_port,
-        tls_mode,
-        server_version: None,
+    let transport = {
+        let mut options = SecureConnectOptions::default();
+        options.http_port = policy.http_port;
+        options.tls_mode = tls_mode;
+        options.server_version = None;
+        options
     }
     .prepare_transport()
     .map_err(lower_tls_configuration)?

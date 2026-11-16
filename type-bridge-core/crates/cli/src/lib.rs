@@ -1291,9 +1291,10 @@ fn secure_connect_options(
             type_bridge_orm::TlsMode::CustomRootCa(root_ca.as_path().to_path_buf())
         }
     };
-    let mut options = type_bridge_orm::SecureConnectOptions {
-        tls_mode,
-        ..type_bridge_orm::SecureConnectOptions::default()
+    let mut options = {
+        let mut options = type_bridge_orm::SecureConnectOptions::default();
+        options.tls_mode = tls_mode;
+        options
     };
     if let Some(port) = environment.http_port() {
         options.http_port = port;

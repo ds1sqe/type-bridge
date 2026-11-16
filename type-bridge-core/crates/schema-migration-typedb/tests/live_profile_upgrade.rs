@@ -113,9 +113,10 @@ fn connect_options(address: &str) -> ConnectOptions {
         .unwrap_or_else(|| {
             panic!("{port_env} must be an integer from 1 through 65535, got {port:?}")
         });
-    ConnectOptions {
-        http_port,
-        ..ConnectOptions::default()
+    {
+        let mut options = ConnectOptions::default();
+        options.http_port = http_port;
+        options
     }
 }
 

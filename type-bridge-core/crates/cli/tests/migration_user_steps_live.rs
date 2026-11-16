@@ -168,9 +168,10 @@ fn four_generated_sdks_share_atomic_user_callback_transactions() {
             &env::var("TYPEDB_ADDRESS").unwrap(),
             &env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into()),
             &env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into()),
-            ConnectOptions {
-                http_port: env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-                ..Default::default()
+            {
+                let mut options = ConnectOptions::default();
+                options.http_port = env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+                options
             },
         )
         .await
@@ -252,9 +253,10 @@ fn moved_conformance_history_uses_the_default_directory() {
             &env::var("TYPEDB_ADDRESS").unwrap(),
             &username,
             &password,
-            ConnectOptions {
-                http_port: env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-                ..Default::default()
+            {
+                let mut options = ConnectOptions::default();
+                options.http_port = env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+                options
             },
         ))
         .unwrap();

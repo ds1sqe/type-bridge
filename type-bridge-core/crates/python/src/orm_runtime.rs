@@ -693,10 +693,12 @@ impl PyDatabase {
             server_version.map(str::parse).transpose().map_err(
                 |error: core_version::VersionError| VersionError::new_err(error.to_string()),
             )?;
-        let options = type_bridge_orm::SecureConnectOptions {
-            http_port,
-            tls_mode,
-            server_version,
+        let options = {
+            let mut options = type_bridge_orm::SecureConnectOptions::default();
+            options.http_port = http_port;
+            options.tls_mode = tls_mode;
+            options.server_version = server_version;
+            options
         };
         let prepared = py
             .detach(move || options.prepare_transport())

@@ -857,9 +857,10 @@ fn napi_secure_connect_options(
             ));
         }
     };
-    let mut options = type_bridge_orm::SecureConnectOptions {
-        tls_mode,
-        ..type_bridge_orm::SecureConnectOptions::default()
+    let mut options = {
+        let mut options = type_bridge_orm::SecureConnectOptions::default();
+        options.tls_mode = tls_mode;
+        options
     };
     if let Some(port) = http_port {
         options.http_port = u16::try_from(port).map_err(|_| {

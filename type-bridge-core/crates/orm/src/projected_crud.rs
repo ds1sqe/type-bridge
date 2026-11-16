@@ -6806,9 +6806,10 @@ mod tests {
                 &name,
                 "admin",
                 "password",
-                crate::ConnectOptions {
-                    http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
-                    ..Default::default()
+                {
+                    let mut options = crate::ConnectOptions::default();
+                    options.http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
+                    options
                 },
             )
             .await
