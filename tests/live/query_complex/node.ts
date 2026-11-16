@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Database, Plan } from "@type-bridge/node";
+import { Database, Plan, PlanError } from "@type-bridge/node";
 import {
   Association, Friendship, Relay,
   Assignment, Blocked, Company, CompanyOffice, Department, Done, Employment,
@@ -12,7 +12,8 @@ async function main(): Promise<void> {
     const unsafe = Plan.builder(), owner = unsafe.subtypes(Party);
     const value = unsafe.field(owner, Party.score);
     unsafe.where(value[comparison](value)).count();
-    assert.throws(() => unsafe.build(schemaAuthority()), /query_plan_attribute_self_comparison/);
+    assert.throws(() => unsafe.build(schemaAuthority()),
+      (error: unknown) => error instanceof PlanError && error.code === "query_plan_attribute_self_comparison");
   }
   const db = Database.connect(process.env.TYPEDB_ADDRESS!, process.env.TYPE_BRIDGE_COMPLEX_DATABASE!, {
     username: "admin", password: "password", httpPort: Number(process.env.TYPEDB_HTTP_PORT),

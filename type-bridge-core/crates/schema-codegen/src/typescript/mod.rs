@@ -157,14 +157,14 @@ mod tests {
                 .unwrap();
             return;
         }
-        assert_eq!(RUNTIME_SOURCE.len(), 162_945);
+        assert_eq!(RUNTIME_SOURCE.len(), 163_334);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "0179ed4a607835e93b5c8826989a41a1ff183d0130a379ac5bca04c37abb68c8"
+            "dce102b38b34808b0f95f34f6d80b4c00641796f4981f7dd0844959c53bbaeb8"
         );
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "0574babbff8abe3c0079fbe47d7c23e7c59e5348f55ad33ab5dfbf2af7707ea1"
+            "6e3f14cecb42ecd831e38999535a5757d5d8d4e511b81a79c401ab673b069a78"
         );
     }
 
