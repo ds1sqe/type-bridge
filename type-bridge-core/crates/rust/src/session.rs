@@ -131,12 +131,35 @@ impl ConnectionOptions {
         }
     }
 
-    /// Set authentication credentials.
+    /// Set authentication credentials; both must be nonempty when connecting.
     #[must_use]
     pub fn credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
         self.username = Some(username.into());
         self.password = Some(password.into());
         self
+    }
+
+    #[cfg(feature = "typedb")]
+    fn resolved_credentials(&self) -> Result<(&str, &str)> {
+        match (self.username.as_deref(), self.password.as_deref()) {
+            (None, None) => Ok(("admin", "password")),
+            (Some(username), Some(password)) if !username.is_empty() && !password.is_empty() => {
+                Ok((username, password))
+            }
+            _ => Err(Error::from_sdk_execution(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::invalid_input(
+                    type_bridge_contract::sdk_diagnostic::SdkDiagnosticCode::new(
+                        "connection_credentials_invalid",
+                    )
+                    .expect("credential diagnostic code is canonical"),
+                    type_bridge_contract::sdk_diagnostic::SdkDiagnosticMessage::new(
+                        "The username and password must both be nonempty when supplied",
+                    )
+                    .expect("credential diagnostic message is bounded"),
+                ),
+                crate::error::ModelValidationPhase::Input,
+            )),
+        }
     }
 
     /// Set the HTTP probe port.
@@ -221,8 +244,7 @@ impl Database<Unbound> {
     #[cfg(feature = "typedb")]
     pub async fn connect(options: impl Into<ConnectionOptions>) -> Result<Database<Unbound>> {
         let opts = options.into();
-        let username = opts.username.as_deref().unwrap_or("admin");
-        let password = opts.password.as_deref().unwrap_or("password");
+        let (username, password) = opts.resolved_credentials()?;
         let orm_opts = {
             let mut options = type_bridge_orm::ConnectOptions::default();
             options.http_port = opts.http_port;
@@ -685,6 +707,29 @@ mod tests {
 
     use super::Database;
     use crate::schema::Unbound;
+
+    #[test]
+    #[cfg(feature = "typedb")]
+    fn connection_credentials_only_default_when_both_omitted() {
+        let mut options = super::ConnectionOptions::new("localhost:1729", "sdk");
+        assert_eq!(
+            options.resolved_credentials().unwrap(),
+            ("admin", "password")
+        );
+        for (username, password) in [
+            (Some("alice"), None),
+            (None, Some("secret")),
+            (Some("alice"), Some("")),
+            (Some(""), Some("secret")),
+            (Some(""), Some("")),
+        ] {
+            options.username = username.map(str::to_owned);
+            options.password = password.map(str::to_owned);
+            assert!(options.resolved_credentials().is_err());
+        }
+        options = options.credentials("alice", "secret");
+        assert_eq!(options.resolved_credentials().unwrap(), ("alice", "secret"));
+    }
 
     struct CloseBackend {
         closed: Arc<AtomicBool>,
