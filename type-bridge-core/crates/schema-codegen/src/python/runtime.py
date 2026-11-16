@@ -1382,27 +1382,38 @@ def connect(
     projection = _package_runtime_projection
     if projection is None:
         raise RuntimeError("generated package runtime projection is not installed")
-    native = projection.connect_direct(
-        policy.endpoint,
-        policy.database,
-        policy.username,
-        policy.password,
-        policy.http_port,
-        policy.tls.value,
-        policy.tls_root_ca,
-        policy.connection_limits,
-        policy.answer_limits,
-        cancellation,
-        policy.query_limits,
-    )
-    from type_bridge._native import database_from_core
+    from type_bridge.session import Database
 
-    return database_from_core(
-        policy.endpoint,
-        policy.database,
-        native,
-        query_limits=policy.query_limits,
-        http_port=policy.http_port,
+    database = Database(
+        address=policy.endpoint,
+        database=policy.database,
         username=policy.username,
         password=policy.password,
+        http_port=policy.http_port,
+        tls=policy.tls != DirectTlsMode.DISABLED,
+        tls_root_ca=policy.tls_root_ca,
+        query_limits=policy.query_limits,
     )
+    try:
+        # Both transports consume the same retained root bytes, even if the
+        # caller replaces the configured file after the native connection.
+        prepared = database._prepared_connection_options()
+        native = projection.connect_direct(
+            policy.endpoint,
+            policy.database,
+            prepared.identity.username,
+            prepared.identity.password,
+            policy.http_port,
+            policy.tls.value,
+            prepared.tls_root_ca_snapshot,
+            policy.connection_limits,
+            policy.answer_limits,
+            cancellation,
+            policy.query_limits,
+        )
+    except BaseException:
+        database._discard_uncommitted_transport()
+        raise
+    setattr(database, "_native_database", native)
+    database._transport_committed = True
+    return database

@@ -849,3 +849,56 @@ def test_pristine_database_pickle_preserves_independent_query_policy() -> None:
     assert restored.query_limits.get("bindings") == 1024
     assert restored.query_limits.get("boolean_terms") == 512
     assert restored.query_limits.get("selected_slots") == limits.get("selected_slots")
+
+
+@pytest.mark.parametrize("mode", ["disabled", "native_roots", "custom_root"])
+def test_generated_connection_retains_tls_identity_and_root_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    import runpy
+
+    source = (
+        Path(__file__).parents[3] / "type-bridge-core/crates/schema-codegen/src/python/runtime.py"
+    )
+    runtime = runpy.run_path(str(source))
+    connect = runtime["connect"]
+    native = _CurrentRustDatabaseHandle()
+    root = tmp_path / "configured.pem"
+    root.write_bytes(VALID_ROOT_CA)
+    native_paths: list[str | None] = []
+
+    def connect_direct(*args: object) -> object:
+        native_paths.append(str(args[6]) if args[6] is not None else None)
+        if mode == "custom_root":
+            assert Path(str(args[6])).read_bytes() == VALID_ROOT_CA
+            root.write_bytes(b"replaced after native connect")
+        return native
+
+    connect.__globals__["_package_runtime_projection"] = SimpleNamespace(
+        connect_direct=connect_direct
+    )
+    policy = runtime["DirectConnectionPolicy"](
+        "localhost:1729",
+        "generated",
+        tls=runtime["DirectTlsMode"](mode),
+        tls_root_ca=str(root) if mode == "custom_root" else None,
+    )
+    database = connect(policy)
+    observed: list[tuple[bool, bytes | None]] = []
+
+    def driver_options(*, is_tls_enabled: bool, tls_root_ca: str | None = None) -> object:
+        observed.append((is_tls_enabled, Path(tls_root_ca).read_bytes() if tls_root_ca else None))
+        return object()
+
+    monkeypatch.setattr("type_bridge.session.create_driver_options", driver_options)
+    monkeypatch.setattr(
+        "type_bridge.session.typedb_driver.server_version", lambda *a, **kw: "3.13.6"
+    )
+    monkeypatch.setattr("type_bridge.session.TypeDB.driver", MagicMock())
+    try:
+        _ = database.driver
+        assert observed == [(mode != "disabled", VALID_ROOT_CA if mode == "custom_root" else None)]
+        assert getattr(database, "_native_database") is native
+        assert (native_paths[0] is not None) == (mode == "custom_root")
+    finally:
+        database.close()
