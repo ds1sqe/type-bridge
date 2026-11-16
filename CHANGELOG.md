@@ -1649,6 +1649,20 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   canonical inputs before commit. Inconsistent replies roll back direct and
   proxy writes; the same check applies to explicit core-builder plans.
 
+- Node staged-plan rows, fetched documents and `Pending.documents()` return
+  every integer as `bigint`, including small and computed integers. Doubles
+  stay `number`, `Count` and `Matched` stay `number`, and raw queries keep
+  returning `number` for safe integers. `JSON.stringify` of such results
+  needs a replacer for `bigint`.
+
+- Node temporal attributes serialize as their canonical text through
+  `toJSON()`; `value` is no longer enumerable, so object spread and
+  `structuredClone` do not invoke the native conversion, and `value` returns
+  a fresh `Date` on each read.
+
+- Each SDK documents its exact scalar ranges; scalar-only results refuse a
+  value the native type would truncate instead of rounding it.
+
 ### Fixed
 
 - A proxy request that exceeds the advertised budgets, such as more staged
@@ -1732,6 +1746,31 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
 
 - The Rust SDK applies the server's advertised admission window to raw proxy
   requests made before a schema is bound.
+
+- IANA-zone `datetime-tz` values now hydrate through the shared pinned
+  timezone parser in all SDKs, including Python packages without ordered
+  roles.
+
+- Python and Node keep the stored canonical temporal value through
+  hydration, `put` and `update`, so reading a row and updating another field
+  no longer truncates sub-microsecond or sub-millisecond digits or rewrites a
+  UTC offset. Temporal attribute wrappers expose a read-only `canonical`;
+  constructors accept canonical strings; a native view that cannot hold the
+  value reports the range or precision error for that field only.
+
+- Values read from the database can be used as filters, in typed-query
+  comparisons and as schema-function inputs, including named-zone and
+  extended-year temporals and decimals that print in exponent form.
+
+- Node staged-plan rows, fetched documents and `Pending.documents()` no
+  longer round integers above 2^53.
+
+- Python accepts exponent-form `Decimal` inputs through one bounded
+  conversion in managers, plans and typed queries.
+
+- Provider duration spellings are normalized, and Python and Node accept
+  the same canonical duration strings; Python reads exact negative day-time
+  durations natively.
 
 ## [2.3.3] - 2026-10-27
 
