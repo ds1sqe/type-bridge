@@ -342,6 +342,10 @@ impl RealTransaction {
 }
 
 impl TransactionOps for RealTransaction {
+    fn raw_is_open(&self) -> bool {
+        self.inner.is_open()
+    }
+
     fn query_raw<'a>(
         &'a mut self,
         query: &'a str,

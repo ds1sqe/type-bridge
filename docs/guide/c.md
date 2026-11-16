@@ -618,3 +618,13 @@ for examples and record fields.
 Temporal values stay canonical through hydration, codecs, and writes. Scalar
 results retain their exact components without conversion through a narrower
 native date type.
+
+
+## Direct raw transaction errors
+
+Direct raw transactions retain provider state after query errors. A caught error
+allows continuation and normal commit while the provider still reports the
+transaction open. If it has closed, further queries and commit report
+`raw_transaction_failed` with a definite abort outcome and earlier writes cannot
+commit. On TypeDB 3.12.3, 3.13.6 and 3.14.0, failed matches leave read and write
+transactions open; failed inserts and defines close their transactions.

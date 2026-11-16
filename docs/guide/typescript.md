@@ -336,10 +336,12 @@ Direct raw transactions allow multiple statements and atomic rollback. Always
 await `commit()`, `rollback()`, or `close()` to release the transaction; a direct
 schema transaction holds its schema lock until then. Use `try/finally` with
 `close()` as above so failed queries also release it. Closing without committing
-discards pending writes. A provider query error also aborts a direct transaction,
-discarding earlier writes even when the caller catches the error. Further queries
-and commit reject with `raw_transaction_failed` and `commitOutcome` set to
-`definitely_aborted`; open a new transaction to continue.
+discards pending writes. After a caught query error, the direct transaction can
+continue and commit if the provider still reports it open. If the provider closed
+it, further queries and commit reject with `raw_transaction_failed` and
+`commitOutcome` set to `definitely_aborted`; earlier writes cannot commit.
+Measured on TypeDB 3.12.3, 3.13.6 and 3.14.0: failed matches leave read and write
+transactions open, while failed inserts and defines close their transactions.
 
 On a proxy connection a raw
 transaction holds one query, because `/v3/raw` runs each request as its own

@@ -573,6 +573,13 @@ pub(crate) async fn execute_typed_provider_statement<T: TransactionOps + ?Sized>
 /// The `RealBackend` (behind the `typedb` feature) provides the real
 /// TypeDB implementation; tests use mock implementations.
 pub trait TransactionOps: Send {
+    /// Observe provider transaction state after an unchecked query error.
+    /// Custom backends retain catch-and-continue unless they prove closure.
+    #[doc(hidden)]
+    fn raw_is_open(&self) -> bool {
+        true
+    }
+
     /// Execute unchecked TypeQL and retain the provider's HTTP-answer bytes.
     fn query_raw<'a>(
         &'a mut self,

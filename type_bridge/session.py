@@ -744,9 +744,9 @@ class Database:
     ) -> RawTransaction:
         """Open an eager raw context; clean context-manager exit commits by default.
 
-        A provider query error aborts the direct transaction, including earlier
-        writes. Catching it inside ``with`` does not permit commit; clean exit
-        raises ``raw_transaction_failed`` with a definite abort outcome. Call
+        A caught query error permits continuation while the provider transaction
+        remains open. If the provider closes it, later queries and clean exit
+        raise ``raw_transaction_failed`` with a definite abort outcome. Call
         ``rollback()`` or use ``commit_on_exit=False`` to discard pending writes.
         An exception escaping the block closes the context without committing.
         """

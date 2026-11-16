@@ -193,6 +193,19 @@ impl TypeDBRuntime {
 }
 
 impl RuntimeTransaction {
+    /// Observe the driver transaction, independently of the connection state.
+    #[doc(hidden)]
+    pub fn is_open(&self) -> bool {
+        if Self::driver_shutdown_started(&self.driver_lease) {
+            return false;
+        }
+        match &self.inner {
+            RuntimeTransactionInner::B9(transaction) => {
+                transaction.as_ref().is_some_and(|tx| tx.is_open())
+            }
+        }
+    }
+
     /// Raw, unchecked TypeQL in this transaction, returning TypeDB HTTP
     /// query-answer JSON bytes. No parsing, validation, rewriting, limits,
     /// hydration or hooks run. The caller owns correctness and transaction

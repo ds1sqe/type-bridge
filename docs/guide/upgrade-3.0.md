@@ -452,9 +452,11 @@ without the old annotation gate. For multiple direct raw statements use
 `with db.raw_transaction("write") as tx: ...` and `tx.execute_query(text)`;
 clean exit commits, exceptions close without committing, and explicit rollback
 prevents an automatic commit. `commit_on_exit=False` leaves completion explicit.
-A provider query error aborts a direct transaction and discards earlier writes,
-even if caught inside the block. Later queries and commit raise
-`raw_transaction_failed` with a definite abort outcome.
+A caught direct query error allows continuation while the provider transaction
+remains open. When the provider has closed it, later queries and commit raise
+`raw_transaction_failed` with a definite abort outcome; earlier writes cannot
+commit. Failed matches remain usable, while failed inserts and defines close
+their transactions on TypeDB 3.12.3, 3.13.6 and 3.14.0.
 Proxy raw contexts accept one query and cannot roll back a committed write.
 
 Node raw TypeQL uses `await db.executeQuery(text, kind)` or

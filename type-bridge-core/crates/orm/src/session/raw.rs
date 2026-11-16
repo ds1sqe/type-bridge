@@ -157,9 +157,14 @@ impl RawTransaction {
                     .expect("open raw transaction retains its provider")
                     .query_raw(query)
                     .await;
-                if result.is_err() {
-                    // No commit was sent. Drop all earlier writes and refuse
-                    // further work even when the caller catches this error.
+                if result.is_err()
+                    && !transaction
+                        .as_ref()
+                        .expect("raw provider retained")
+                        .raw_is_open()
+                {
+                    // A query error alone does not abort a TypeDB transaction.
+                    // Only observed provider closure proves earlier writes cannot commit.
                     self.state = State::QueryFailed;
                     if let Some(mut provider) = transaction.take()
                         && let Err(error) = provider.close_raw().await
@@ -243,6 +248,19 @@ impl RawTransaction {
             || (self.kind == TxType::Read && self.state == State::Closed)
         {
             return Ok(());
+        }
+        if self.state == State::Open
+            && let Route::Direct(transaction) = &mut self.route
+            && transaction
+                .as_ref()
+                .is_some_and(|provider| !provider.raw_is_open())
+        {
+            self.state = State::QueryFailed;
+            if let Some(mut provider) = transaction.take()
+                && let Err(error) = provider.close_raw().await
+            {
+                tracing::warn!(code = %error.code, "closed raw transaction cleanup failed");
+            }
         }
         self.require_open()?;
         match &mut self.route {
@@ -428,6 +446,7 @@ mod tests {
         events: Arc<Mutex<Vec<String>>>,
         unknown_commit: bool,
         pending_close: bool,
+        closed: bool,
     }
     impl Drop for Direct {
         fn drop(&mut self) {
@@ -435,6 +454,10 @@ mod tests {
         }
     }
     impl TransactionOps for Direct {
+        fn raw_is_open(&self) -> bool {
+            !self.closed
+        }
+
         fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             panic!("typed query path used")
         }
@@ -452,8 +475,11 @@ mod tests {
             query: &'a str,
         ) -> BoxFuture<'a, Result<Vec<u8>, RawQueryError>> {
             self.events.lock().unwrap().push(query.to_owned());
+            if query == "fail" || query == "close_fail" {
+                self.closed = true;
+            }
             Box::pin(async move {
-                if query == "fail" {
+                if query.ends_with("fail") {
                     Err(RawQueryError::refusal("INF2", "provider rejected query"))
                 } else {
                     Ok(query.as_bytes().to_vec())
@@ -482,6 +508,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_open_after_query_error_can_continue_and_commit() {
+        for kind in [TxType::Read, TxType::Write, TxType::Schema] {
+            let events = Arc::new(Mutex::new(vec![]));
+            let mut transaction = RawTransaction::direct(
+                Box::new(Direct {
+                    events: events.clone(),
+                    unknown_commit: false,
+                    pending_close: false,
+                    closed: false,
+                }),
+                kind,
+            );
+            assert_eq!(
+                transaction
+                    .execute_query("survive_fail")
+                    .await
+                    .unwrap_err()
+                    .code,
+                "INF2"
+            );
+            transaction.execute_query("again").await.unwrap();
+            transaction.commit().await.unwrap();
+            assert_eq!(events.lock().unwrap()[..2], ["survive_fail", "again"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_provider_is_observed_on_next_query_or_commit() {
+        let events = Arc::new(Mutex::new(vec![]));
+        let mut transaction = RawTransaction::direct(
+            Box::new(Direct {
+                events: events.clone(),
+                unknown_commit: false,
+                pending_close: false,
+                closed: false,
+            }),
+            TxType::Write,
+        );
+        transaction.execute_query("survive_fail").await.unwrap_err();
+        assert_eq!(
+            transaction
+                .execute_query("close_fail")
+                .await
+                .unwrap_err()
+                .code,
+            "INF2"
+        );
+        assert_eq!(
+            transaction.commit().await.unwrap_err().commit_outcome,
+            Some(CommitFailureCertainty::DefinitelyAborted)
+        );
+        assert!(!events.lock().unwrap().iter().any(|event| event == "commit"));
+
+        let mut transaction = RawTransaction::direct(
+            Box::new(Direct {
+                events: events.clone(),
+                unknown_commit: false,
+                pending_close: false,
+                closed: true,
+            }),
+            TxType::Write,
+        );
+        let error = transaction.commit().await.unwrap_err();
+        assert_eq!(error.code, "raw_transaction_failed");
+        assert_eq!(
+            error.commit_outcome,
+            Some(CommitFailureCertainty::DefinitelyAborted)
+        );
+        assert!(!events.lock().unwrap().iter().any(|event| event == "commit"));
+    }
+
+    #[tokio::test]
     async fn failed_direct_query_cannot_commit_earlier_writes() {
         let events = Arc::new(Mutex::new(vec![]));
         let mut transaction = RawTransaction::direct(
@@ -489,6 +587,7 @@ mod tests {
                 events: events.clone(),
                 unknown_commit: false,
                 pending_close: false,
+                closed: false,
             }),
             TxType::Write,
         );
@@ -522,6 +621,7 @@ mod tests {
                 events: events.clone(),
                 unknown_commit: false,
                 pending_close: true,
+                closed: false,
             }),
             TxType::Write,
         );
@@ -547,6 +647,7 @@ mod tests {
                     events: events.clone(),
                     unknown_commit: false,
                     pending_close: false,
+                    closed: false,
                 }),
                 kind,
             );
@@ -583,6 +684,7 @@ mod tests {
                     events: events.clone(),
                     unknown_commit: true,
                     pending_close: false,
+                    closed: false,
                 }),
                 kind,
             );
@@ -700,6 +802,7 @@ mod tests {
                     events: Arc::new(Mutex::new(vec![])),
                     unknown_commit: false,
                     pending_close: false,
+                    closed: false,
                 }),
                 kind,
             );
@@ -914,6 +1017,54 @@ mod live_tests {
                     .len(),
                 1
             );
+            let invalid_match = "match $x isa no-such-type; fetch { 'iid': iid($x) };";
+            let valid_match = "match $x isa raw-test; fetch { 'iid': iid($x) };";
+            let mut read = db.raw_transaction(TxType::Read).await?;
+            assert!(read.execute_query(invalid_match).await.is_err());
+            assert!(read.execute_query(valid_match).await.is_ok());
+            read.commit().await?;
+            println!("read + failed match: remains open; valid query and completion succeed");
+
+            let mut write = db.raw_transaction(TxType::Write).await?;
+            assert!(write.execute_query(invalid_match).await.is_err());
+            write.execute_query("insert $x isa raw-test;").await?;
+            write.commit().await?;
+            let outside = db.execute_query(valid_match, TxType::Read).await?;
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&outside).unwrap()["answers"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            println!("write + failed match: remains open; later write commits");
+            println!(
+                "write + failed insert: provider closed; definite abort; earlier writes absent"
+            );
+
+            let mut schema = db.raw_transaction(TxType::Schema).await?;
+            assert!(
+                schema
+                    .execute_query("define entity broken, owns no-such-attribute;")
+                    .await
+                    .is_err()
+            );
+            if schema.state == State::QueryFailed {
+                let error = schema.commit().await.unwrap_err();
+                assert_eq!(error.code, "raw_transaction_failed");
+                assert_eq!(
+                    error.commit_outcome,
+                    Some(CommitFailureCertainty::DefinitelyAborted)
+                );
+                println!("schema + failed define: provider closed; definite abort");
+            } else {
+                schema
+                    .execute_query("define entity continued-schema;")
+                    .await?;
+                schema.commit().await?;
+                println!("schema + failed define: remains open; later define commits");
+            }
+            schema.close().await?;
             Ok(())
         }
         .await;

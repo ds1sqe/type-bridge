@@ -76,3 +76,14 @@ fn secure_connect_diagnostic_mapping_is_hidden_and_redacts_private_causes() {
     assert!(root.contains("#[doc(hidden)]\npub use session::lower_secure_connect_error;"));
     assert!(!include_str!("../../rust/src/lib.rs").contains("lower_secure_connect_error"));
 }
+
+#[test]
+fn raw_provider_state_seams_remain_hidden() {
+    assert!(
+        include_str!("../src/session/backend.rs").contains("#[doc(hidden)]\n    fn raw_is_open")
+    );
+    assert!(
+        include_str!("../../typedb-runtime/src/raw.rs")
+            .contains("#[doc(hidden)]\n    pub fn is_open")
+    );
+}

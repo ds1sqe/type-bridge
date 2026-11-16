@@ -137,11 +137,18 @@ with db.raw_transaction("write") as tx:
 
 Clean exit commits unless `commit_on_exit=False` or the caller already completed
 the context. An exception escaping the `with` block closes without committing.
-A provider query error aborts a direct context and discards its earlier writes.
-Catching that error inside the block does not make the transaction usable:
-further queries and a clean exit's commit raise `raw_transaction_failed`, with
-a definite abort outcome. Open a new transaction to continue. Call `rollback()`
-or set `commit_on_exit=False` to discard pending writes.
+After a query error, TypeBridge checks whether the provider transaction remains
+open. If it does, catching the error allows further queries and a normal commit.
+If the provider closed it, earlier writes cannot commit: further queries and a
+clean exit's commit raise `raw_transaction_failed` with a definite abort outcome.
+Open a new transaction in that case. Call `rollback()` or set
+`commit_on_exit=False` to discard pending writes.
+
+Measured on TypeDB 3.12.3, 3.13.6 and 3.14.0: a failed `match` leaves both read
+and write transactions open; a later valid query or write succeeds. A failed
+`insert` closes its write transaction, and a failed `define` closes its schema
+transaction. This behavior comes from provider state, rather than transaction
+kind or query-text classification.
 On a proxy connection a raw
 transaction holds one query, because `/v3/raw` runs each request as its own
 transaction. A second query raises `RawQueryError` with code

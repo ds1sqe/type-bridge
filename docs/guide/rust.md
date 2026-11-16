@@ -564,10 +564,12 @@ tx.execute_query("insert $x isa person, has name \"Ada\";").await?;
 tx.rollback().await?;
 ```
 
-Direct raw contexts share one real transaction across calls. A failed direct
-raw query aborts the transaction, discarding earlier writes.
-Further queries and commit return `raw_transaction_failed` with a definite
-abort outcome, even if the caller caught the provider error.
+Direct raw contexts share one real transaction across calls. After a query
+error, a provider transaction that remains open can continue and commit normally.
+When the provider closes it, further queries and commit return
+`raw_transaction_failed` with a definite abort outcome; earlier writes cannot
+commit. On TypeDB 3.12.3, 3.13.6 and 3.14.0, failed matches leave read and write
+transactions open, while failed inserts and defines close their transactions.
 
 On a proxy
 connection a raw transaction holds one query, because `/v3/raw` runs each
