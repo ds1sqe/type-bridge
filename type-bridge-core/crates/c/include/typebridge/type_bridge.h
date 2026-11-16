@@ -240,7 +240,6 @@ typedef uint32_t type_bridge_query_sort_direction_t;
 #define TYPE_BRIDGE_QUERY_SORT_DESCENDING                                  \
   ((type_bridge_query_sort_direction_t)2)
 
-
 typedef uint32_t type_bridge_query_selection_kind_t;
 #define TYPE_BRIDGE_QUERY_SELECTION_ONE                                    \
   ((type_bridge_query_selection_kind_t)1)

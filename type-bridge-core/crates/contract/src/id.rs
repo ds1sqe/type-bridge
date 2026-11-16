@@ -160,10 +160,6 @@ impl Label {
                 DiagnosticCategory::InvalidContract,
                 DiagnosticCode::new("malformed_id").expect("static diagnostic code"),
                 format!("reserved TypeQL keyword {value:?} cannot be used as a schema label"),
-            )
-            .with_detail(
-                "maximum_bytes",
-                i64::try_from(MAX_LABEL_BYTES).unwrap_or(i64::MAX),
             ));
         }
         let mut chars = value.chars();
@@ -373,6 +369,7 @@ mod tests {
         assert_eq!(error.code().as_str(), "malformed_id");
         assert!(error.message().contains("iid"));
         assert!(error.message().contains("reserved"));
+        assert!(!error.details().contains_key("maximum_bytes"));
     }
 
     #[test]
