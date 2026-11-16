@@ -3472,12 +3472,17 @@ enabled = ["audit-log", "rate-limiter", "custom"]
         );
         let raised = section(&[
             ("canonical_bytes", 64 << 20),
-            ("remote_request_bytes", 128 << 20),
+            ("remote_request_bytes", 32 << 20),
         ])
         .resolved_query_limits()
         .expect("raised limits");
         assert_eq!(raised.codec.max_bytes, 64 << 20);
-        assert_eq!(raised.remote_request_bytes, 128 << 20);
+        assert_eq!(raised.remote_request_bytes, 32 << 20);
+        assert!(
+            section(&[("remote_request_bytes", (32 << 20) + 1)])
+                .resolved_query_limits()
+                .is_err()
+        );
         assert_eq!(raised.structural, QueryLimits::CANONICAL.structural);
 
         assert!(

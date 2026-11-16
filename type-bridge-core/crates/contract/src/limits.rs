@@ -400,7 +400,11 @@ query_limit_fields![
         usize::MAX
     ),
     ("diagnostic_bytes", structural.diagnostic_bytes, usize::MAX),
-    ("remote_request_bytes", remote_request_bytes, usize::MAX),
+    (
+        "remote_request_bytes",
+        remote_request_bytes,
+        MAX_REMOTE_ENVELOPE_BYTES
+    ),
 ];
 
 impl QueryLimits {
@@ -803,11 +807,16 @@ mod query_limits_tests {
 
         let mut raised = QueryLimits::CANONICAL;
         raised.codec.max_bytes = 64 * 1024 * 1024;
-        raised.remote_request_bytes = 128 * 1024 * 1024;
+        raised.remote_request_bytes = MAX_REMOTE_ENVELOPE_BYTES;
         raised.codec.max_depth = MAX_SUPPORTED_CANONICAL_DEPTH;
         raised
             .validate()
             .expect("limits above canonical are admissible");
+        raised.remote_request_bytes = MAX_REMOTE_ENVELOPE_BYTES + 1;
+        assert_eq!(
+            raised.validate().unwrap_err().limit(),
+            "remote_request_bytes"
+        );
     }
 
     #[test]

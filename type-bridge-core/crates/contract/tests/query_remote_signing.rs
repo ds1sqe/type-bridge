@@ -267,7 +267,7 @@ fn advertised_query_limits_are_omitted_at_default_and_canonical_otherwise() {
 
     let mut raised = QueryLimits::CANONICAL;
     raised.codec.max_bytes = 64 * 1024 * 1024;
-    raised.remote_request_bytes = 128 * 1024 * 1024;
+    raised.remote_request_bytes = 32 * 1024 * 1024;
     raised.structural.boolean_terms = 8;
     let advertised = advertisement()
         .with_query_limits(raised)
