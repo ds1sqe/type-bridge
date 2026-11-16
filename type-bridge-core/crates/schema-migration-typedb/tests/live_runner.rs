@@ -2444,3 +2444,56 @@ async fn runner_adds_executes_observes_and_removes_functions_with_metadata() {
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_applies_split_yaml_reference_fixture_as_first_migration() {
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let documents = type_bridge_schema::SchemaDocumentSet::parse([(
+        DocumentId::new("reference-fixture.yaml").unwrap(),
+        include_str!("../../../../docs/fixtures/split-yaml-v1/schema/fixture.yaml"),
+    )])
+    .unwrap();
+    let target = type_bridge_schema::normalize_documents(&documents).unwrap();
+    let migration =
+        manifest_with_derived_assertions("0001_reference", vec![], &genesis, &target, &context);
+    let (managed, journal) = databases().await;
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &migration);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-reference-fixture").unwrap();
+    let outcome = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+        ),
+        "{outcome:?}"
+    );
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}
