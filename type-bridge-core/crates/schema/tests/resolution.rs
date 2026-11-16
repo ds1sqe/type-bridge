@@ -653,3 +653,23 @@ capabilities:
     resolve_schema_with_capabilities(&future, &profile(), &explicitly_available)
         .expect("explicitly injected open capability resolves");
 }
+
+#[test]
+fn backslash_values_are_refused_before_provider_writes() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+attributes:
+  path:
+    value:
+      type: string
+      values: ['back\slash']
+"#,
+    );
+    let error = resolve(&schema, &profile()).unwrap_err();
+    let diagnostic = error.iter().next().unwrap();
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "unsupported_values_backslash"
+    );
+    assert!(diagnostic.primary().is_some());
+}

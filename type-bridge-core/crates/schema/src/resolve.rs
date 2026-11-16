@@ -663,6 +663,17 @@ pub fn resolve_schema_with_capabilities(
             type_bridge_contract::schema::SchemaDiagnostic::new(diagnostic, None),
         )
     })?;
+    for fact in declared.facts() {
+        if let SchemaFact::Annotation(annotation) = fact
+            && let SchemaAnnotationValue::Values(values) = annotation.value()
+            && values.iter().any(|value| matches!(value,
+                type_bridge_contract::value::CanonicalValue::String(text) if text.as_str().contains('\\')))
+        {
+            return Err(source_error(declared, &fact.id(),
+                "unsupported_values_backslash",
+                "TypeDB cannot losslessly export a string @values entry containing a backslash"));
+        }
+    }
     let index = DirectIndex::build(declared)?;
     let parents = validate_parents(declared, &index)?;
     validate_inheritance_cycles(declared, &index.types, &parents)?;

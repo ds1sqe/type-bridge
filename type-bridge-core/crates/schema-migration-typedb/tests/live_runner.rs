@@ -1836,3 +1836,63 @@ async fn catalog_import_checks_adoption_evidence_before_any_new_journal_write() 
         managed.delete_database().await.unwrap();
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_regex_escapes_round_trip_and_accept_matching_data() {
+    let (managed, journal) = databases().await;
+    let context = context();
+    let genesis = declared_facts(Vec::new());
+    let target = typeql_to_declared(
+        DocumentId::new("regex.tql").unwrap(),
+        r#"define attribute code, value string @regex("^[A-Z]{2}\d+$");
+        attribute ref, value string;
+        entity item, owns code, owns ref @regex("^\w+\.\w+$");"#,
+    )
+    .unwrap();
+    let manifest =
+        manifest_with_derived_assertions("0001_regex", vec![], &genesis, &target, &context);
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &manifest);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-regex").unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query(r#"insert $x isa item, has code "AB12", has ref "abc.def";"#)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::UpToDate
+    ));
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}

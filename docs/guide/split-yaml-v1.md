@@ -163,6 +163,11 @@ the structured form requires `min` and may omit `max` for an unbounded maximum.
 `meta` is a string-keyed map of string values. Unknown or inapplicable keys are
 errors.
 
+Regex patterns retain their backslashes when lowered to TypeQL; use YAML
+single quotes for patterns such as `'^[A-Z]{2}\d+$'`. String `values` entries
+containing a backslash are refused during schema resolution because supported
+TypeDB servers cannot export those constraints losslessly.
+
 Schema extensions declare capability requirements only:
 
 ```yaml

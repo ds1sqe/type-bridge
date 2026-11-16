@@ -1102,6 +1102,30 @@ mod tests {
     }
 
     #[test]
+    fn regex_lowering_preserves_regex_escapes() {
+        for pattern in [r"^[A-Z]{2}\d+$", r"^\w+\.\s*$", r#"^a"b$"#] {
+            let fact = annotation(
+                AnnotationSubjectId::Value(ValueFactId::new(attribute_id("code"))),
+                AnnotationKindId::Regex,
+                SchemaAnnotationValue::Regex(RegexPattern::new(pattern).unwrap()),
+            );
+            let catalog =
+                SchemaFactCatalog::new([value_fact("code", ValueTypeTag::String)]).unwrap();
+            let rendered = render_operation_inner(
+                &SchemaOperation::define(vec![fact]).unwrap(),
+                &catalog,
+                &catalog,
+            )
+            .unwrap_or_else(|error| panic!("{pattern:?}: {error:?}"));
+            assert!(
+                rendered[0]
+                    .query()
+                    .contains(&format!("@regex(\"{}\")", pattern.replace('"', "\\\"")),)
+            );
+        }
+    }
+
+    #[test]
     fn tuple_function_lowering_corrects_old_invalid_header_and_keeps_body_bytes() {
         let body = "match\n  # retained tuple comment\n  let $value = $seed;\nreturn first $value, $value;\n";
         let element = FunctionReturnElement::new(TypeReference::Value(ValueTypeTag::Long), false);

@@ -130,9 +130,7 @@ pub fn schema_regex_source(pattern: &str) -> Result<SchemaAnnotation, TqlError> 
     })
 }
 pub fn schema_regex(pattern: &str) -> Result<SchemaAnnotation, TqlError> {
-    Ok(SchemaAnnotation {
-        inner: a::Annotation::Regex(a::Regex::new(None, quoted(pattern)?)),
-    })
+    schema_regex_source(pattern)
 }
 pub fn schema_values(values: &[&str]) -> Result<SchemaAnnotation, TqlError> {
     if values.is_empty() {
