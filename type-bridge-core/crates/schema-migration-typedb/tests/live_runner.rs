@@ -2622,3 +2622,214 @@ async fn runner_applies_strictly_narrowed_ownership_constraints() {
     journal.delete_database().await.unwrap();
     managed.delete_database().await.unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn killed_schema_group_resumes_before_or_after_commit() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    use type_bridge_schema_migration::{
+        ExecutionScope, GroupEventRecord, GroupJournalEventKind, MigrationExecutionJournal,
+        MigrationExecutionProvider, MigrationLeaseStore, PlanRecord,
+        build_verified_migration_apply_plan,
+    };
+    use type_bridge_schema_migration_typedb::{
+        TypeDbExecutionBinding, TypeDbMigrationProvider, TypeDbMigrationStore,
+        VerifiedMigrationCatalog,
+    };
+
+    // The child uses the real provider/store and stops at an exact durable boundary.
+    // Killing it leaves neither a Rust drop nor a lease-release cleanup path.
+    if let Ok(mode) = env::var("TYPE_BRIDGE_KILL_GROUP_CHILD") {
+        let (address, _, username, password, options) = connection();
+        let name = env::var("TYPE_BRIDGE_KILL_GROUP_DATABASE").unwrap();
+        let managed = Arc::new(
+            Database::connect_with_options(&address, &name, &username, &password, options)
+                .await
+                .unwrap(),
+        );
+        let journal = Arc::new(
+            Database::connect_with_options(
+                &address,
+                &derived_journal_database_name(&name),
+                &username,
+                &password,
+                options,
+            )
+            .await
+            .unwrap(),
+        );
+        let context = context();
+        let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+        let policy = MigrationSafetyPolicy::default_policy();
+        let runner = TypeDbMigrationRunner::new(
+            Arc::clone(&managed),
+            Arc::clone(&journal),
+            declared_facts(vec![]),
+            context.clone(),
+            lowering.clone(),
+            policy.clone(),
+        );
+        let directory = env::var("TYPE_BRIDGE_KILL_GROUP_DIRECTORY").unwrap();
+        let graph = runner.discover(Path::new(&directory)).unwrap();
+        let plan = build_verified_migration_apply_plan(
+            &graph,
+            &BTreeSet::new(),
+            &MigrationApplyTarget::DefaultHead,
+            &context,
+            &lowering,
+            &policy,
+            &[],
+        )
+        .unwrap();
+        let binding = TypeDbExecutionBinding::new(managed, journal, context.clone()).unwrap();
+        let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m)).unwrap();
+        let store = TypeDbMigrationStore::new(&binding, catalog)
+            .unwrap()
+            .bind_plan(&plan)
+            .unwrap();
+        store.ensure_control_schema().await.unwrap();
+        let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities()).unwrap();
+        let lease = store
+            .acquire(
+                &ExecutionScope::new(context.scope_id().clone()),
+                &LeaseHolderId::new("killed-schema-child").unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .begin_plan(
+                &lease,
+                PlanRecord::from_verified_plan(
+                    &lease,
+                    &plan,
+                    plan.applied_migrations(),
+                    plan.source_state().unwrap(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let migration = &plan.migrations()[0];
+        let group = &migration.transaction_groups()[0];
+        let step = &migration.steps()[group.end_step_index() - 1];
+        let delta = step.step().as_schema_delta().unwrap().delta();
+        let mut transaction = provider
+            .prepare_group(&lease, delta.source(), delta.target())
+            .await
+            .unwrap();
+        for unit in step.lowering().unwrap().units() {
+            transaction.execute_statement_unit(unit).await.unwrap();
+        }
+        store
+            .record_group_event(
+                &lease,
+                GroupEventRecord::new(
+                    &lease,
+                    migration,
+                    group,
+                    GroupJournalEventKind::BeforeCommit,
+                    None,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        if mode == "after" {
+            transaction.commit(&lease).await.unwrap();
+        }
+        fs::write(env::var("TYPE_BRIDGE_KILL_GROUP_READY").unwrap(), "ready").unwrap();
+        std::future::pending::<()>().await;
+        unreachable!();
+    }
+
+    for (mode, count) in [("after", 1), ("after", 2), ("before", 1)] {
+        let (managed, journal) = databases().await;
+        let context = context();
+        let genesis = declared_facts(vec![]);
+        let first_target = declared_facts(vec![type_fact("person")]);
+        let first = manifest_with_derived_assertions(
+            "0001_first",
+            vec![],
+            &genesis,
+            &first_target,
+            &context,
+        );
+        let directory = TempDirectory::new();
+        write_manifest(directory.path(), &first);
+        if count == 2 {
+            let target = declared_facts(vec![type_fact("person"), type_fact("company")]);
+            write_manifest(
+                directory.path(),
+                &manifest_with_derived_assertions(
+                    "0002_second",
+                    vec![first.id().clone()],
+                    &first_target,
+                    &target,
+                    &context,
+                ),
+            );
+        }
+        let ready = directory.path().join("child-ready");
+        let child_log = fs::File::create(directory.path().join("child.log")).unwrap();
+        let mut child = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "killed_schema_group_resumes_before_or_after_commit",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("TYPE_BRIDGE_KILL_GROUP_CHILD", mode)
+            .env("TYPE_BRIDGE_KILL_GROUP_DATABASE", managed.database_name())
+            .env("TYPE_BRIDGE_KILL_GROUP_DIRECTORY", directory.path())
+            .env("TYPE_BRIDGE_KILL_GROUP_READY", &ready)
+            .stdout(Stdio::from(child_log.try_clone().unwrap()))
+            .stderr(Stdio::from(child_log))
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !ready.exists() && Instant::now() < deadline && child.try_wait().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let reached_boundary = ready.exists();
+        let _ = child.kill();
+        let status = child.wait().unwrap();
+        let runner = TypeDbMigrationRunner::new(
+            Arc::clone(&managed),
+            Arc::clone(&journal),
+            genesis,
+            context.clone(),
+            SchemaLoweringBinding::for_context(&context).unwrap(),
+            MigrationSafetyPolicy::default_policy(),
+        );
+        let resumed = runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &LeaseHolderId::new("resume-killed-schema").unwrap(),
+                &[],
+            )
+            .await;
+        let verified = runner.verify(directory.path(), None).await;
+        journal.delete_database().await.unwrap();
+        managed.delete_database().await.unwrap();
+        assert!(
+            reached_boundary,
+            "child did not reach {mode}: {}",
+            fs::read_to_string(directory.path().join("child.log")).unwrap()
+        );
+        assert_eq!(status.signal(), Some(9), "real SIGKILL");
+        assert!(
+            matches!(
+                resumed,
+                Ok(MigrationDirectoryApplyOutcome::Executed(
+                    MigrationExecutionOutcome::Applied { .. }
+                ))
+            ),
+            "{mode}/{count}: {resumed:?}"
+        );
+        assert!(verified.unwrap().is_clean(), "resumed history is coherent");
+    }
+}

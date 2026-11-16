@@ -863,7 +863,7 @@ impl TypeDbMigrationRunner {
             holder,
             &legacy_binding,
             &basis,
-            &expected_current,
+            open_basis.is_none().then_some(&expected_current),
             &observation_authority,
         )
         .await?;
@@ -1250,7 +1250,7 @@ impl TypeDbMigrationRunner {
             holder,
             &legacy_binding,
             &basis,
-            &expected_current,
+            open_basis.is_none().then_some(&expected_current),
             &observation_authority,
         )
         .await?;
@@ -1488,7 +1488,7 @@ impl TypeDbMigrationRunner {
         holder: &LeaseHolderId,
         binding: &LegacyExecutionBinding,
         expected_basis: &BTreeSet<MigrationId>,
-        expected_live: &ManagedSchemaState,
+        expected_live: Option<&ManagedSchemaState>,
         observation_authority: &ManagedObservationAuthority,
     ) -> Result<(), Diagnostic> {
         let scope = ExecutionScope::new(self.context.scope_id().clone());
@@ -1501,31 +1501,35 @@ impl TypeDbMigrationRunner {
                         .validate_contents(&mut guard, self.context.scope_id().as_str())
                         .await?;
                     Self::require_exact_v2_basis(store, &lease, expected_basis).await?;
-                    let export = self.managed_database.schema_text().await.map_err(|error| {
-                        legacy_import_failure(
-                            "migration_legacy_boundary_live_export_failed",
-                            "managed schema cannot be exported inside the guarded pair boundary",
-                        )
-                        .with_detail("provider", error.to_string())
-                    })?;
-                    require_active_managed_fence(&mut guard, &lease).await?;
-                    binding
-                        .validate_contents(&mut guard, self.context.scope_id().as_str())
-                        .await?;
-                    Self::require_exact_v2_basis(store, &lease, expected_basis).await?;
-                    let observed = observe_managed_state_from_export_with_authority(
-                        DocumentId::new("typebridge-legacy-boundary-live.typeql")?,
-                        &export,
-                        self.context.available_capabilities(),
-                        expected_live,
-                        expected_live,
-                        observation_authority,
-                    )?;
-                    if observed != *expected_live {
-                        return Err(legacy_import_failure(
-                            "migration_legacy_boundary_live_state_mismatch",
-                            "guarded pair boundary did not observe the exact current managed state",
-                        ));
+                    // Interrupted groups are observed against their exact source/target by
+                    // the coordinator; the ledger alone may lag a committed schema group.
+                    if let Some(expected_live) = expected_live {
+                        let export = self.managed_database.schema_text().await.map_err(|error| {
+                            legacy_import_failure(
+                                "migration_legacy_boundary_live_export_failed",
+                                "managed schema cannot be exported inside the guarded pair boundary",
+                            )
+                            .with_detail("provider", error.to_string())
+                        })?;
+                        require_active_managed_fence(&mut guard, &lease).await?;
+                        binding
+                            .validate_contents(&mut guard, self.context.scope_id().as_str())
+                            .await?;
+                        Self::require_exact_v2_basis(store, &lease, expected_basis).await?;
+                        let observed = observe_managed_state_from_export_with_authority(
+                            DocumentId::new("typebridge-legacy-boundary-live.typeql")?,
+                            &export,
+                            self.context.available_capabilities(),
+                            expected_live,
+                            expected_live,
+                            observation_authority,
+                        )?;
+                        if observed != *expected_live {
+                            return Err(legacy_import_failure(
+                                "migration_legacy_boundary_live_state_mismatch",
+                                "guarded pair boundary did not observe the exact current managed state",
+                            ));
+                        }
                     }
                     require_active_managed_fence(&mut guard, &lease).await
                 }
