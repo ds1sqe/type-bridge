@@ -4407,3 +4407,120 @@ async fn subtype_manager_reads_share_native_origins_and_keep_exact_and_iid_fence
         assert_eq!((state.commits, state.rollbacks), (0, 0));
     }
 }
+
+#[tokio::test]
+async fn ordered_repeated_players_keep_positions_until_all_write_entrypoints_refuse_before_io() {
+    use type_bridge_orm::{
+        ProjectedBatch, ProjectedBatchExecutor, ProjectedBatchInvocationControl,
+        ProjectedBatchOperation, ProjectedBatchRow,
+    };
+    let schema = ORDERED_SCHEMA.replace("        distinct: true\n", "");
+    let installed = installed_ordered_with_schema(&schema);
+    let relation = type_id(TypeKind::Relation, "collaboration");
+    let role = RoleId::new("collaboration", "participant").unwrap();
+    let create = |installed: &InstalledRuntimeProjection| {
+        ProjectedCreate::try_new(
+            installed,
+            relation.clone(),
+            vec![],
+            vec![(
+                role.clone(),
+                ["0x10", "0x11", "0x10"]
+                    .into_iter()
+                    .map(|iid| {
+                        ProjectedReference::try_new(
+                            installed,
+                            type_id(TypeKind::Entity, "person"),
+                            Some(iid.into()),
+                            vec![],
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+            )],
+        )
+    };
+    let input = create(&installed).unwrap();
+    let assert_sequence = |input: &ProjectedCreate| {
+        assert_eq!(
+            input.roles()[&role]
+                .iter()
+                .map(|player| player.iid().unwrap())
+                .collect::<Vec<_>>(),
+            ["0x10", "0x11", "0x10"]
+        );
+    };
+    assert_sequence(&input);
+    let distinct = create(&installed_ordered()).unwrap_err();
+    assert_eq!(distinct.code().as_str(), "ordered_distinct_duplicate");
+    assert!(
+        distinct
+            .path()
+            .contains(&type_bridge_contract::sdk_diagnostic::SdkDiagnosticPathSegment::Index(2))
+    );
+
+    for operation in ["insert", "put", "put_many", "update"] {
+        let (mut backend, state) = RecordingBackend::new(vec![], CommitBehavior::Success);
+        backend.given_enabled = true;
+        let database = Database::with_backend(Box::new(backend), "ordered-repeats");
+        let crud = ProjectedCrudExecutor::new(&installed);
+        let failure = match operation {
+            "insert" => crud.insert_relation(&database, &input).await.unwrap_err(),
+            "put" => crud.put_relation(&database, &input).await.unwrap_err(),
+            "update" => crud
+                .update_relation(&database, "0x20", &input)
+                .await
+                .unwrap_err(),
+            _ => {
+                let batch = ProjectedBatch::try_new(
+                    &installed,
+                    relation.clone(),
+                    ProjectedBatchOperation::Put,
+                    vec![
+                        ProjectedBatchRow::Create(input.clone()),
+                        ProjectedBatchRow::Create(input.clone()),
+                    ],
+                )
+                .unwrap();
+                for index in 0..batch.len() {
+                    let Some((_, ProjectedBatchRow::Create(value))) = batch.row_at(index) else {
+                        panic!("put row")
+                    };
+                    assert_sequence(value);
+                }
+                let failure = ProjectedBatchExecutor::new(&installed)
+                    .execute(
+                        &database,
+                        &batch,
+                        ProjectedBatchInvocationControl::capture(
+                            Default::default(),
+                            Default::default(),
+                        ),
+                    )
+                    .await
+                    .unwrap_err();
+                for index in 0..batch.len() {
+                    let Some((_, ProjectedBatchRow::Create(value))) = batch.row_at(index) else {
+                        panic!("put row")
+                    };
+                    assert_sequence(value);
+                }
+                failure
+            }
+        };
+        assert_eq!(
+            failure.code().as_str(),
+            "query_plan_ordered_collection_unsupported",
+            "{operation}"
+        );
+        assert_eq!(
+            failure.category(),
+            SdkDiagnosticCategory::UnsupportedCapability
+        );
+        assert_sequence(&input);
+        let state = state.lock().unwrap();
+        assert!(state.opens.is_empty(), "{operation}");
+        assert!(state.queries.is_empty(), "{operation}");
+        assert_eq!((state.commits, state.rollbacks, state.closes), (0, 0, 0));
+    }
+}

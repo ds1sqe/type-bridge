@@ -37,6 +37,12 @@ plays:
 Relates-side cardinality constrains players on one relation instance. Plays-side
 cardinality constrains how often a player participates in that role.
 
+An unordered role is a set: a repeated player counts once toward its
+relates-side cardinality. Insert, put, batch put, and update normalize equivalent
+player references before checking that cardinality. Model normalization keeps
+positions and repetitions in ordered roles; `distinct: true` rejects repetitions.
+Supported TypeDB providers currently refuse writes with populated ordered roles.
+
 ## Construct and write a generated relation
 
 ```python
