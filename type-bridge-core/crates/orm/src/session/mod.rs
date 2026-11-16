@@ -53,3 +53,7 @@ pub use real_driver::{
     delete_database_prepared_secure, delete_database_secure, ensure_database_exists,
     ensure_database_exists_prepared_secure, ensure_database_exists_secure,
 };
+
+#[cfg(feature = "typedb")]
+#[doc(hidden)]
+pub use direct_connection::lower_secure_connect_error;

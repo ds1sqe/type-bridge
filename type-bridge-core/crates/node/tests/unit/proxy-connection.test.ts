@@ -5,7 +5,7 @@ import net = require("node:net");
 import path = require("node:path");
 import test = require("node:test");
 
-import { PlanAuthority } from "../../typescript/index.js";
+import { PlanAuthority, PlanError } from "../../typescript/index.js";
 import { loadNative } from "../../typescript/native.js";
 import {
   InstalledRuntimeProjection,
@@ -191,7 +191,7 @@ test("a staged proxy transaction refuses an unknown kind before any exchange", a
   });
   await assert.rejects(
     connection.transaction("bogus" as "read"),
-    /unknown transaction kind 'bogus'/,
+    (error: unknown) => error instanceof PlanError && error.code === "unknown_enum_value",
   );
 });
 

@@ -15,9 +15,9 @@ use type_bridge_contract::sdk_diagnostic::{
 use type_bridge_core_lib::version::{GeneratedPackageRelease, Version};
 use type_bridge_orm::{
     AnswerCancellation, Database, OrmError, PreparedSecureConnectOptions, QueryExecutionDeadline,
-    QueryExecutionResourceLimits, SecureConnectError, SecureConnectOptions, TlsMode,
-    TransactionContext, TransactionContextState, TxType, is_identity_safe_provider_address,
-    lower_execution_error,
+    QueryExecutionResourceLimits, SecureConnectOptions, TlsMode, TransactionContext,
+    TransactionContextState, TxType, is_identity_safe_provider_address, lower_execution_error,
+    lower_secure_connect_error,
 };
 
 use crate::abi::{
@@ -631,25 +631,6 @@ fn require_lifecycle_dispatch(
     }
 }
 
-fn tls_configuration_error(error: &SecureConnectError) -> SdkExecutionDiagnostic {
-    let code_value = error
-        .configuration_code()
-        .unwrap_or("c_database_tls_configuration_invalid");
-    SdkExecutionDiagnostic::invalid_input(
-        SdkDiagnosticCode::new(code_value)
-            .expect("typed TLS configuration codes are canonical SDK diagnostic codes"),
-        message("The database TLS policy or captured trust material is invalid"),
-    )
-}
-
-fn lower_secure_connect_error(error: SecureConnectError) -> SdkExecutionDiagnostic {
-    if error.configuration_code().is_some() {
-        return tls_configuration_error(&error);
-    }
-    let error: OrmError = error.into_runtime_error().into();
-    lower_execution_error(error, SdkProviderOperation::Connect)
-}
-
 fn in_use_diagnostic() -> SdkExecutionDiagnostic {
     invalid_input(
         "c_provider_parent_in_use",
@@ -1138,7 +1119,7 @@ unsafe fn prepare_database_config(
         Some(bytes) => options.prepare_transport_from_captured_custom_root(bytes),
         None => options.prepare_transport(),
     }
-    .map_err(|error| tls_configuration_error(&error))?;
+    .map_err(lower_secure_connect_error)?;
     if let Some(cancellation) = cancellation {
         check_control(preflight.deadline, cancellation)?;
     }

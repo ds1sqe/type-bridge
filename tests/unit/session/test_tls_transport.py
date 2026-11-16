@@ -902,3 +902,14 @@ def test_generated_connection_retains_tls_identity_and_root_snapshot(
         assert (native_paths[0] is not None) == (mode == "custom_root")
     finally:
         database.close()
+
+
+def test_root_snapshot_failure_redacts_the_private_configured_path(tmp_path: Path) -> None:
+    from type_bridge.session import _snapshot_tls_root_ca
+
+    private = tmp_path / "password-private-secret-key.pem"
+    with pytest.raises(ValueError) as refused:
+        _snapshot_tls_root_ca(str(private))
+    assert "tls_custom_root_ca_unreadable" in str(refused.value)
+    assert str(private) not in str(refused.value)
+    assert "private-secret" not in str(refused.value)

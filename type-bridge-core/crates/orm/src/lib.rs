@@ -200,3 +200,7 @@ mod native_batch_fixture;
 mod native_batch_answer_item {
     pub use crate::session::backend::{AnswerItem, QueryResult};
 }
+
+#[cfg(feature = "typedb")]
+#[doc(hidden)]
+pub use session::lower_secure_connect_error;

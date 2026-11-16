@@ -36,17 +36,13 @@ pub(crate) fn staged_options(
             milliseconds,
         ));
     }
-    let kind = match kind {
-        None => return Ok(options),
-        Some("read") => TransactionKind::Read,
-        Some("write") => TransactionKind::Write,
-        Some("schema") => TransactionKind::Schema,
-        Some(other) => {
-            return Err(napi::Error::new(
-                napi::Status::InvalidArg,
-                format!("unknown transaction kind '{other}'; expected read, write or schema"),
-            ));
-        }
+    let Some(kind) = kind else {
+        return Ok(options);
+    };
+    let kind = match crate::match_runtime::parse_enum::<type_bridge_orm::TxType>(kind)? {
+        type_bridge_orm::TxType::Read => TransactionKind::Read,
+        type_bridge_orm::TxType::Write => TransactionKind::Write,
+        type_bridge_orm::TxType::Schema => TransactionKind::Schema,
     };
     Ok(options.with_kind(kind))
 }
@@ -554,6 +550,13 @@ mod pending_diagnostic_redaction_tests {
 mod policy_tests {
     use super::*;
     use napi::bindgen_prelude::BigInt;
+
+    #[test]
+    fn unknown_staged_kind_uses_the_canonical_enum_diagnostic() {
+        let error = staged_options(Some("wirte"), None, None).unwrap_err();
+        let diagnostic: serde_json::Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "unknown_enum_value");
+    }
 
     #[test]
     fn staged_policy_defaults_and_signed_timeouts() {

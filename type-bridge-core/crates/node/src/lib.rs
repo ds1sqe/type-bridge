@@ -517,7 +517,7 @@ impl NodeDatabase {
 impl NodeDatabase {
     /// Create a deferred staged transaction; nothing opens until commit.
     /// An omitted kind is inferred from the staged writes. Timeout defaults to
-    /// 60000 ms; zero or negative disables it. Phase collection defaults off.
+    /// 60000 ms; zero disables it and negatives reject. Phase collection defaults off.
     #[napi(js_name = "stagedTransaction")]
     pub fn staged_transaction(
         &self,
@@ -578,9 +578,21 @@ fn connection_credentials(
         (Some(username), Some(password)) if !username.is_empty() && !password.is_empty() => {
             Ok((username, password))
         }
-        _ => Err(napi_orm_error(OrmError::Connection(
-            "username and password must both be nonempty when supplied".into(),
-        ))),
+        _ => {
+            use type_bridge_contract::sdk_diagnostic::{
+                SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
+            };
+            Err(match_runtime::napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::invalid_input(
+                    SdkDiagnosticCode::new("connection_credentials_invalid")
+                        .expect("static credential code"),
+                    SdkDiagnosticMessage::new(
+                        "username and password must both be nonempty when supplied",
+                    )
+                    .expect("static credential message"),
+                ),
+            ))
+        }
     }
 }
 
@@ -883,12 +895,7 @@ fn napi_secure_connect_options(
 }
 
 fn napi_secure_connect_error(error: type_bridge_orm::SecureConnectError) -> napi::Error {
-    let status = if error.configuration_code().is_some() {
-        Status::InvalidArg
-    } else {
-        Status::GenericFailure
-    };
-    Error::new(status, error.to_string())
+    match_runtime::napi_sdk_diagnostic(type_bridge_orm::lower_secure_connect_error(error))
 }
 
 pub(crate) fn napi_orm_error(error: OrmError) -> napi::Error {
@@ -911,7 +918,14 @@ pub(crate) fn napi_orm_error(error: OrmError) -> napi::Error {
             Error::new(Status::GenericFailure, error.to_string())
         }
         OrmError::Connection(_) | OrmError::QueryExecution(_) | OrmError::Transaction(_) => {
-            Error::new(Status::GenericFailure, error.to_string())
+            let operation = if matches!(error, OrmError::Connection(_)) {
+                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Connect
+            } else {
+                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write
+            };
+            match_runtime::napi_sdk_diagnostic(type_bridge_orm::lower_execution_error(
+                error, operation,
+            ))
         }
         _ => Error::new(Status::GenericFailure, error.to_string()),
     }
@@ -990,7 +1004,32 @@ mod tests {
     }
 
     #[test]
-    fn node_double_commit_keeps_the_released_lifecycle_error() {
+    fn node_secure_connect_diagnostic_redacts_credentials_and_private_paths() {
+        let error = core_version::TlsConfigurationError::CustomRootCaUnreadable {
+            path: PathBuf::from("/private/password-private-secret-key.pem"),
+        };
+        let mapped = napi_secure_connect_error(error.into());
+        let diagnostic: serde_json::Value = serde_json::from_str(&mapped.reason).unwrap();
+        assert_eq!(diagnostic["code"], "tls_custom_root_ca_unreadable");
+        assert!(!mapped.reason.contains("private-secret"));
+        assert!(!mapped.reason.contains("/private/"));
+    }
+
+    #[test]
+    fn node_connection_and_query_errors_use_redacted_sdk_diagnostics() {
+        for error in [
+            OrmError::Connection("private-provider-secret".into()),
+            OrmError::QueryExecution("private-provider-secret".into()),
+        ] {
+            let mapped = napi_orm_error(error);
+            let diagnostic: serde_json::Value = serde_json::from_str(&mapped.reason).unwrap();
+            assert_eq!(diagnostic["code"], "provider_operation_failed");
+            assert!(!mapped.reason.contains("private-provider-secret"));
+        }
+    }
+
+    #[test]
+    fn node_double_commit_uses_the_shared_lifecycle_diagnostic() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let database = NodeDatabase {
             db: Arc::new(type_bridge_orm::Database::with_backend(
@@ -1004,7 +1043,9 @@ mod tests {
         transaction.commit().unwrap();
         // Refused before dispatch: no unknown-outcome diagnostic.
         let error = transaction.commit().unwrap_err();
-        assert!(error.reason.contains("Transaction already consumed"));
+        let diagnostic: serde_json::Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "transaction_state_invalid");
+        assert_eq!(diagnostic["category"], "transaction");
         assert!(!error.reason.contains("commit_outcome_unknown"));
         assert_eq!(*events.lock().unwrap(), ["open", "commit"]);
     }

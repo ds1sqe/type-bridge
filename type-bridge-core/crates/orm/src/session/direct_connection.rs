@@ -229,7 +229,9 @@ pub(super) fn prepare_direct_connection(
     })
 }
 
-pub(super) fn lower_secure_connection(error: SecureConnectError) -> SdkExecutionDiagnostic {
+/// Lower secure connection errors for bindings without retaining private causes.
+#[doc(hidden)]
+pub fn lower_secure_connect_error(error: SecureConnectError) -> SdkExecutionDiagnostic {
     if let Some(code_value) = error.configuration_code() {
         let code = code(code_value);
         let message = message("The direct connection TLS policy is invalid");
@@ -323,7 +325,7 @@ fn check_control(
 }
 
 fn lower_tls_configuration(error: SecureConnectError) -> SdkExecutionDiagnostic {
-    lower_secure_connection(error)
+    lower_secure_connect_error(error)
 }
 
 fn invalid_input(code_value: &'static str, message_value: &'static str) -> SdkExecutionDiagnostic {

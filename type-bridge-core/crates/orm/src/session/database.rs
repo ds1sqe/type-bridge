@@ -293,7 +293,7 @@ impl Database {
             cancellation,
         )
         .await
-        .map_err(super::direct_connection::lower_secure_connection)
+        .map_err(super::direct_connection::lower_secure_connect_error)
         .map(|mut database| {
             database.query_limits = prepared.query_limits;
             database

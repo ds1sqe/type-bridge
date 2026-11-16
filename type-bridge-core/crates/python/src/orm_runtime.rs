@@ -1166,14 +1166,27 @@ pub(crate) fn py_provider_diagnostic(
     })
 }
 
-fn py_secure_connect_error(error: type_bridge_orm::SecureConnectError) -> PyErr {
-    if error.configuration_code().is_some() {
-        return py_value_error(error.to_string());
-    }
-    match error {
-        type_bridge_orm::SecureConnectError::Runtime(error) => py_orm_error(error.into()),
-        _ => py_runtime_error(error.to_string()),
-    }
+pub(crate) fn py_secure_connect_error(error: type_bridge_orm::SecureConnectError) -> PyErr {
+    let configuration = error.configuration_code().is_some();
+    let version = matches!(
+        &error,
+        type_bridge_orm::SecureConnectError::Runtime(runtime_error)
+            if std::error::Error::source(runtime_error)
+                .is_some_and(|source| source.is::<core_version::VersionError>())
+    );
+    let safe_version = version
+        .then(|| error.credential_safe_diagnostic())
+        .flatten();
+    let diagnostic = type_bridge_orm::lower_secure_connect_error(error);
+    let message = format!("{}: {}", diagnostic.code(), diagnostic.message());
+    let error = if configuration {
+        py_value_error(message)
+    } else if version {
+        VersionError::new_err(safe_version.unwrap_or(message))
+    } else {
+        py_runtime_error(message)
+    };
+    Python::attach(|py| crate::match_runtime::structured_py_error(py, error, &diagnostic))
 }
 
 fn py_value_error(message: impl Into<String>) -> PyErr {
@@ -1211,6 +1224,39 @@ mod provider_wait_tests {
     use tokio::runtime::Runtime;
 
     use super::*;
+
+    #[test]
+    fn secure_connect_errors_keep_python_classes_and_redact_private_causes() {
+        Python::initialize();
+        let missing =
+            std::env::temp_dir().join(format!("python-private-key-{}.pem", std::process::id()));
+        let mut options = type_bridge_orm::SecureConnectOptions::default();
+        options.tls_mode = type_bridge_orm::TlsMode::CustomRootCa(missing.clone());
+        let tls = options.prepare_transport().unwrap_err();
+        Python::attach(|py| {
+            let error = py_secure_connect_error(tls);
+            assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+            assert!(!error.to_string().contains(missing.to_str().unwrap()));
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "tls_custom_root_ca_unreadable"
+            );
+            let error = py_secure_connect_error(type_bridge_orm::SecureConnectError::Runtime(
+                core_version::VersionError::Parse(
+                    "password=private-secret /private/key.pem".into(),
+                )
+                .into(),
+            ));
+            assert!(error.is_instance_of::<VersionError>(py));
+            assert!(!error.to_string().contains("private-secret"));
+            assert!(!error.to_string().contains("/private/key.pem"));
+        });
+    }
 
     /// Bounds the GIL probe only so a provider wait that keeps the GIL fails
     /// instead of deadlocking the test binary; a passing run never waits on it.

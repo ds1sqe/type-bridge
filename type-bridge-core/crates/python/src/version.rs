@@ -55,7 +55,7 @@ impl PyCustomRootCaSnapshot {
             .detach(move || {
                 core_version::RetainedCustomRootCa::load_configured_alias(&configured_path)
             })
-            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            .map_err(|error| crate::orm_runtime::py_secure_connect_error(error.into()))?;
         Ok(Self {
             material: Mutex::new(Some(material)),
         })
@@ -71,7 +71,7 @@ impl PyCustomRootCaSnapshot {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("custom root CA snapshot has been closed"))?
             .with_driver_root_path(|path| path.to_path_buf())
-            .map_err(|error| PyValueError::new_err(error.to_string()))
+            .map_err(|error| crate::orm_runtime::py_secure_connect_error(error.into()))
     }
 
     fn cleanup(&self) -> PyResult<()> {
@@ -255,7 +255,7 @@ pub fn server_version(
         return result.map(|v| v.to_string()).map_err(|error| match error {
             core_version::VersionProbeError::Probe(error) => to_py_err(error),
             core_version::VersionProbeError::TlsConfiguration(error) => {
-                PyValueError::new_err(error.to_string())
+                crate::orm_runtime::py_secure_connect_error(error.into())
             }
         });
     }
