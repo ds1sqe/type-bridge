@@ -563,8 +563,8 @@ pub fn derive_safety_conditions_with_domain_index(
         )?,
     }
 
-    let condition_free =
-        conditions.is_empty() && is_proven_condition_free_constraint_transition(operation, domain)?;
+    let condition_free = conditions.is_empty()
+        && is_proven_condition_free_constraint_transition(operation, domain, target_declared)?;
     if policy == SafetyClass::Conditional && conditions.is_empty() && !condition_free {
         push_condition(
             &mut conditions,
@@ -727,6 +727,15 @@ fn derive_undefined_fact(
     semantic: &SemanticProfile,
     conditions: &mut Vec<RequiredSafetyCondition>,
 ) -> Result<(), Diagnostic> {
+    if let SchemaFact::Annotation(annotation) = fact
+        && target
+            .fact(&crate::delta_dependencies::annotation_subject_id(
+                annotation.id().subject(),
+            ))
+            .is_none()
+    {
+        return Ok(());
+    }
     match fact {
         SchemaFact::Type(type_fact) => push_condition(
             conditions,
@@ -921,9 +930,17 @@ fn derive_annotation_transition(
 fn is_proven_condition_free_constraint_transition(
     operation: &SchemaOperation,
     domain: &SafetyConditionDomainIndex,
+    target: &DeclaredSchema,
 ) -> Result<bool, Diagnostic> {
     if operation.kind() == SchemaOperationKind::Define {
         return Ok(is_proven_condition_free_define(operation, domain));
+    }
+    if let Some(SchemaFact::Annotation(annotation)) = operation.undefined_fact() {
+        return Ok(target
+            .fact(&crate::delta_dependencies::annotation_subject_id(
+                annotation.id().subject(),
+            ))
+            .is_none());
     }
     if operation.kind() != SchemaOperationKind::Redefine {
         return Ok(false);

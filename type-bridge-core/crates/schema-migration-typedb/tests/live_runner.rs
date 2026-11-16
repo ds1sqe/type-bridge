@@ -2149,3 +2149,105 @@ async fn refused_plans_close_and_stuck_plans_can_be_abandoned_safely() {
     managed.delete_database().await.unwrap();
     journal.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_tightens_maximum_and_removes_widened_interfaces() {
+    let (managed, journal) = databases().await;
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let source_text = "define attribute nick, value string; entity person, owns nick @card(0..), plays friendship:friend; relation friendship, relates friend @card(0..);";
+    let source =
+        typeql_to_declared(DocumentId::new("card-source.tql").unwrap(), source_text).unwrap();
+    let tightened = typeql_to_declared(
+        DocumentId::new("card-tightened.tql").unwrap(),
+        &source_text.replace("owns nick @card(0..)", "owns nick @card(0..2)"),
+    )
+    .unwrap();
+    let target = typeql_to_declared(
+        DocumentId::new("card-target.tql").unwrap(),
+        "define attribute nick, value string; entity person;",
+    )
+    .unwrap();
+    let first = manifest_with_derived_assertions("0001_cards", vec![], &genesis, &source, &context);
+    let second = manifest_with_derived_assertions(
+        "0002_tighten",
+        vec![first.id().clone()],
+        &source,
+        &tightened,
+        &context,
+    );
+    let third = manifest_with_derived_assertions(
+        "0003_drop",
+        vec![second.id().clone()],
+        &tightened,
+        &target,
+        &context,
+    );
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &first);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-card").unwrap();
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("insert $a isa person, has nick \"a\", has nick \"b\"; $b isa person; $r isa friendship, links (friend: $a, friend: $b);").await.unwrap();
+    tx.commit().await.unwrap();
+    write_manifest(directory.path(), &second);
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("match $r isa friendship; delete $r;")
+        .await
+        .unwrap();
+    tx.query("match $p isa person; delete $p;").await.unwrap();
+    tx.commit().await.unwrap();
+    write_manifest(directory.path(), &third);
+    let approval = MigrationApplyApproval::for_manifest(&third).unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[approval]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+}

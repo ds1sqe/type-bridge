@@ -971,3 +971,47 @@ fn concurrent_writers_use_one_locked_no_replace_publication() {
                 .ends_with(".tmp"))
     );
 }
+
+#[test]
+fn removed_widened_interfaces_and_maximum_tightening_are_authorable() {
+    use type_bridge_schema_compat::typeql_to_declared;
+    let source_text = "define attribute nick, value string; entity person, owns nick @card(0..), plays friendship:friend; relation friendship, relates friend @card(0..);";
+    let source =
+        typeql_to_declared(DocumentId::new("card-source.tql").unwrap(), source_text).unwrap();
+    let mut capabilities = generation_capabilities();
+    capabilities.insert(CapabilityId::new("schema.redefine").unwrap());
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("example-schema").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        capabilities,
+    );
+    for target_text in [
+        source_text.replace(", owns nick @card(0..)", ""),
+        "define attribute nick, value string; entity person, owns nick @card(0..);".to_owned(),
+    ] {
+        let target =
+            typeql_to_declared(DocumentId::new("card-target.tql").unwrap(), &target_text).unwrap();
+        let migration = generated(
+            &empty_graph(),
+            &request("drop_interface", &source, &target, &context),
+        );
+        assert_eq!(migration.manifest().safety(), SafetyClass::Destructive);
+    }
+    let target = typeql_to_declared(
+        DocumentId::new("card-target.tql").unwrap(),
+        &source_text.replace("owns nick @card(0..)", "owns nick @card(0..2)"),
+    )
+    .unwrap();
+    let migration = generated(
+        &empty_graph(),
+        &request("tighten_max", &source, &target, &context),
+    );
+    assert_eq!(migration.manifest().safety(), SafetyClass::Conditional);
+    assert!(
+        migration
+            .manifest()
+            .steps()
+            .iter()
+            .any(|step| step.as_assertion().is_some())
+    );
+}

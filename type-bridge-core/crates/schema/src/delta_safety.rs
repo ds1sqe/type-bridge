@@ -341,7 +341,7 @@ fn cardinality_transition_safety(from: (u64, Option<u64>), to: (u64, Option<u64>
         SafetyClass::FormalOnly
     } else if interval_contains(to, from) {
         SafetyClass::Additive
-    } else if interval_contains(from, to) {
+    } else if interval_contains(from, to) && to.0 > from.0 {
         SafetyClass::BackfillRequired
     } else {
         SafetyClass::Conditional
@@ -415,9 +415,23 @@ pub fn classify_schema_operation_safety(operation: &SchemaOperation) -> DeltaSaf
 /// Classify a delta without consulting or producing an authorization decision.
 #[must_use]
 pub fn classify_delta_safety(delta: &SchemaDelta) -> DeltaSafetyReport {
+    let removed: BTreeSet<_> = delta
+        .operations()
+        .iter()
+        .filter_map(|operation| operation.undefined_fact().map(SchemaFact::id))
+        .collect();
     let mut reasons = Vec::new();
     for (operation_index, operation) in delta.operations().iter().enumerate() {
-        let classification = classify_schema_operation_safety(operation);
+        let classification = match operation.undefined_fact() {
+            Some(SchemaFact::Annotation(annotation))
+                if removed.contains(&crate::delta_dependencies::annotation_subject_id(
+                    annotation.id().subject(),
+                )) =>
+            {
+                SafetyClass::Destructive
+            }
+            _ => classify_schema_operation_safety(operation),
+        };
         for fact_id in operation.affected_ids() {
             reasons.push(DeltaSafetyReason {
                 operation_index,

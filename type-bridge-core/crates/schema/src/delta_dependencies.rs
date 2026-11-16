@@ -305,7 +305,7 @@ fn dependencies_for(
     Ok(dependencies)
 }
 
-fn annotation_subject_id(subject: &AnnotationSubjectId) -> SchemaFactId {
+pub(crate) fn annotation_subject_id(subject: &AnnotationSubjectId) -> SchemaFactId {
     match subject {
         AnnotationSubjectId::Type(id) => SchemaFactId::Type(id.clone()),
         AnnotationSubjectId::Sub(id) => SchemaFactId::Sub(id.clone()),

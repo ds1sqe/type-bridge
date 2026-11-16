@@ -767,7 +767,7 @@ fn cardinality_transition_safety(from: (u64, Option<u64>), to: (u64, Option<u64>
         SafetyClass::FormalOnly
     } else if interval_contains(to, from) {
         SafetyClass::Additive
-    } else if interval_contains(from, to) {
+    } else if interval_contains(from, to) && to.0 > from.0 {
         SafetyClass::BackfillRequired
     } else {
         SafetyClass::Conditional

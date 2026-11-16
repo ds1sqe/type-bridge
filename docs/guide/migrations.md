@@ -81,6 +81,12 @@ authority.
 
 ## State authority
 
+Tightening an ownership maximum is conditional: the generated migration
+checks existing ownership counts in the schema transaction before changing
+`card`. Raising a minimum can still require backfill. Removing an ownership
+or role removes its cardinality constraint with it; its former widened
+maximum does not turn that destructive removal into a tightening operation.
+
 For managed database `NAME`, TypeBridge owns a companion journal database named
 `NAME__tb_journal`. Reserve that suffix. Back up, restore, clone, and delete
 the managed database and journal together.
