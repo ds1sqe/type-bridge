@@ -5888,7 +5888,7 @@ fn write_canonical_datetime(
 }
 
 fn write_datetime_tz_evidence(
-    output: &mut FallibleJsonWriter,
+    output: &mut impl fmt::Write,
     value: &CanonicalDateTimeTz,
 ) -> fmt::Result {
     if let type_bridge_contract::temporal::TimeZoneDesignator::Named(name) = value.zone() {
@@ -6388,7 +6388,12 @@ fn canonical_struct_attribute(value: &CanonicalValue) -> AttributeValue {
         CanonicalValue::Boolean(value) => AttributeValue::Boolean(*value),
         CanonicalValue::Date(value) => AttributeValue::Date(value.to_string()),
         CanonicalValue::DateTime(value) => AttributeValue::DateTime(value.to_string()),
-        CanonicalValue::DateTimeTz(value) => AttributeValue::DateTimeTZ(value.to_string()),
+        CanonicalValue::DateTimeTz(value) => {
+            let mut text = String::new();
+            write_datetime_tz_evidence(&mut text, value)
+                .expect("validated timezone formats into a String");
+            AttributeValue::DateTimeTZ(text)
+        }
         CanonicalValue::Decimal(value) => AttributeValue::Decimal(value.as_str().to_owned()),
         CanonicalValue::Duration(value) => AttributeValue::Duration(value.to_string()),
     }
@@ -8821,6 +8826,21 @@ entities:
             diagnostic.path(),
             [SdkDiagnosticPathSegment::Argument(name)] if name.as_str() == "rows"
         ));
+    }
+
+    #[test]
+    fn struct_timezone_scalars_preserve_resolved_overlap_offsets() {
+        for text in [
+            "2026-11-01T01:30:00-04:00[America/New_York]",
+            "2026-11-01T01:30:00-05:00[America/New_York]",
+        ] {
+            let value = CanonicalValue::DateTimeTz(
+                type_bridge_schema::parse_provider_datetime_tz_evidence(text).unwrap(),
+            );
+            let attribute = canonical_struct_attribute(&value);
+            assert_eq!(attribute, AttributeValue::DateTimeTZ(text.into()));
+            assert_eq!(canonical_struct_scalar(&attribute).unwrap(), value);
+        }
     }
 
     #[test]

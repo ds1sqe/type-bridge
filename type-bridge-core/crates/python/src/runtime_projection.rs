@@ -8771,21 +8771,11 @@ fn attribute_value_to_py(
         AttributeValue::Boolean(value) => pythonize(py, value)
             .map(Bound::unbind)
             .map_err(|error| py_runtime_error(error.to_string())),
-        AttributeValue::Date(value) => py
-            .import("datetime")?
-            .getattr("date")?
-            .call_method1("fromisoformat", (value,))
-            .map(Bound::unbind),
+        AttributeValue::Date(value) => ProjectedScalarHydration::capture(py)?
+            .date_from_canonical(py, value.parse().map_err(py_diagnostic)?),
         AttributeValue::DateTime(value) => ProjectedScalarHydration::capture(py)?
             .datetime_from_canonical(py, value.parse().map_err(py_diagnostic)?),
-        AttributeValue::DateTimeTZ(value) if named_zone_marker.is_some() => {
-            datetime_tz_to_py(py, value, named_zone_marker)
-        }
-        AttributeValue::DateTimeTZ(value) => py
-            .import("datetime")?
-            .getattr("datetime")?
-            .call_method1("fromisoformat", (value,))
-            .map(Bound::unbind),
+        AttributeValue::DateTimeTZ(value) => datetime_tz_to_py(py, value, named_zone_marker),
         AttributeValue::Decimal(value) => {
             let value = value.strip_suffix("dec").unwrap_or(value);
             py.import("decimal")?
@@ -8809,7 +8799,9 @@ fn canonical_struct_value_to_py(
         CanonicalValue::Boolean(value) => AttributeValue::Boolean(*value),
         CanonicalValue::Date(value) => AttributeValue::Date(value.to_string()),
         CanonicalValue::DateTime(value) => AttributeValue::DateTime(value.to_string()),
-        CanonicalValue::DateTimeTz(value) => AttributeValue::DateTimeTZ(value.to_string()),
+        CanonicalValue::DateTimeTz(_) => AttributeValue::DateTimeTZ(
+            canonical_temporal_text(value).expect("timezone has canonical text"),
+        ),
         CanonicalValue::Decimal(value) => AttributeValue::Decimal(value.to_string()),
         CanonicalValue::Duration(value) => AttributeValue::Duration(value.to_string()),
     };
@@ -8869,9 +8861,11 @@ fn datetime_tz_to_py(
             .call_method1("fromisoformat", (canonical.to_string(),))
             .map(Bound::unbind);
     };
-    let marker = named_zone_marker.ok_or_else(|| {
-        py_runtime_error("named-zone hydration requires installed timezone slots")
-    })?;
+    let Some(marker) = named_zone_marker else {
+        let hydration = ProjectedScalarHydration::capture(py)?;
+        let pool = BatchHydrationPool::try_new(&[]).map_err(py_sdk_diagnostic)?;
+        return hydration.datetime_tz_from_canonical(py, &canonical, None, &pool);
+    };
     let resolved = py
         .import("datetime")?
         .getattr("datetime")?
@@ -10275,6 +10269,19 @@ entities:
                     "2026-11-01T01:30:00-05:00",
                 ),
             ] {
+                let canonical = CanonicalValue::DateTimeTz(
+                    type_bridge_schema::parse_provider_datetime_tz_evidence(evidence).unwrap(),
+                );
+                let scalar = canonical_struct_value_to_py(py, &canonical, marker).unwrap();
+                assert_eq!(
+                    scalar
+                        .bind(py)
+                        .call_method0("isoformat")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    expected
+                );
                 let hydrated = datetime_tz_to_py(py, evidence, marker).unwrap();
                 assert_eq!(
                     hydrated
