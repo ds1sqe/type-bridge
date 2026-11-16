@@ -45,10 +45,11 @@ const SDK_QUERIES_CATALOG_RELATIVE: &str = "tests/contracts/sdk_conformance/quer
 /// The generated live fixture profile when `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
 /// is unset; it pairs with TypeDB 3.13.6, the default server image.
 const DEFAULT_ACCEPTANCE_PROFILE: &str = "typedb-3.13.6/v1";
-const CONSUMER_TESTS: [&str; 14] = [
+const CONSUMER_TESTS: [&str; 15] = [
     "generated_sdk_report_journeys",
     "generated_schema_handshake_and_tokens",
     "generated_entity_crud_batches_and_scalar_domains",
+    "temporal_values_survive_hydration_and_replacement_updates",
     "generated_inheritance_exact_and_subtype_reads",
     "generated_relation_query_and_remote_lifecycle",
     "generated_one_program_under_direct_and_proxy_connections",

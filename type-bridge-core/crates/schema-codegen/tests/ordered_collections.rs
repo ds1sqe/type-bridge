@@ -1064,7 +1064,7 @@ export function __testOrderedNativeCreate(
   value: unknown,
 ): { readonly json: string; readonly proofs: readonly unknown[] } {
   return {
-    json: JSON.stringify(lowerOrderedProjectedValue(value)),
+    json: JSON.stringify(lowerProjectedValue(value)),
     proofs: orderedRoleProofs(typeKey, value),
   };
 }

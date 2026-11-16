@@ -38,7 +38,7 @@ JOURNEY_CONTRACT = ROOT / "tests/contracts/c-artifact-journey-v1.json"
 PREDECESSOR_CATALOGS = tuple(
     ROOT / profile_matrix.catalog_relative(version) for version in tuple(profile_matrix.SUITES)[:-1]
 )
-FULL_MARKER_COUNT = 62
+FULL_MARKER_COUNT = 63
 QUERY_MARKER_COUNT = 8
 CODEC_MARKER = "Serialization C live codec direct/remote parity: passed"
 
