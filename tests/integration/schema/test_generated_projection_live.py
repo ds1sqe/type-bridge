@@ -4615,13 +4615,8 @@ def test_generated_projection_round_trips_live_models(
     queried_counter = counter_query.one()
     assert type(queried_counter) is generated.Counter
     assert queried_counter.iid == detached_counter.iid
-    with pytest.raises(
-        MatchRequestError,
-        match="The typed query plan does not satisfy the generated query contract",
-    ) as bounded_counter_error:
-        counter_query.rows(limit=2)
-    assert bounded_counter_error.value.category == "invalid_plan"
-    assert bounded_counter_error.value.code == "missing_stable_unique_key"
+    bounded_counters = counter_query.rows(limit=2)
+    assert [item.iid for item in bounded_counters] == [detached_counter.iid]
     counter_manager.delete(detached_counter)
     assert counter_manager.get_by_iid(detached_counter.iid) is None
     assert counter_manager.count() == 0

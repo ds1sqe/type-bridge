@@ -6090,11 +6090,28 @@ async fn generated_unkeyed_entity_iid_lifecycle_and_singular_query() {
             .await
             .expect("singular keyless counter result");
         assert_eq!(queried.iid().as_str(), counter.iid().as_str());
+        let duplicate = one_written(
+            db.entities::<Counter>()
+                .insert(CounterCreate::new(CounterValue::new(42).unwrap()).unwrap())
+                .await
+                .expect("second keyless counter"),
+        );
         let bounded = query
             .rows(RowsOptions::new(2))
             .await
-            .expect_err("bounded-many keyless counter requires a stable key");
-        assert_eq!(bounded.code(), Some("missing_stable_unique_key"));
+            .expect("bounded-many keyless counter uses IID ordering");
+        let mut expected_iids = vec![counter.iid().as_str(), duplicate.iid().as_str()];
+        expected_iids.sort();
+        assert_eq!(
+            bounded.iter().map(|item| item.iid().as_str()).collect::<Vec<_>>(),
+            expected_iids
+        );
+        let repeated = query.rows(RowsOptions::new(2)).await.unwrap();
+        assert_eq!(
+            repeated.iter().map(|item| item.iid().as_str()).collect::<Vec<_>>(),
+            expected_iids
+        );
+        db.entities::<Counter>().delete(duplicate.iid()).await.unwrap();
     }
 
     db.entities::<Counter>()

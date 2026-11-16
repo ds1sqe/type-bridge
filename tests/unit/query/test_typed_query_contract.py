@@ -147,11 +147,6 @@ def test_error_cases_pin_real_boundary_and_canonical_codes() -> None:
         "reachability.reversed-bounds": ("invalid_plan", "reachable_bounds"),
         "reachability.depth-ceiling": ("invalid_plan", "reachable_depth_limit"),
         "order.non-scalar-field": ("invalid_plan", "non_scalar_order_field"),
-        "order.missing-stable-root-key": ("invalid_plan", "missing_stable_unique_key"),
-        "order.missing-stable-collection-key": (
-            "invalid_plan",
-            "missing_stable_unique_key",
-        ),
         "cardinality.one-zero": ("cardinality", "no_result"),
         "cardinality.one-many": ("cardinality", "not_unique"),
         "transaction.non-read-context": (
@@ -268,6 +263,15 @@ def test_generated_operation_projection_is_derived_from_the_identity_manifest() 
         "count_by_person": expected["count_by_person"],
         "exists_by_person": expected["exists_by_person"],
     }
+
+
+def test_keyless_order_cases_use_iid_fallback() -> None:
+    cases = {case["id"]: case for case in _load(CORPUS_PATH)["cases"]}
+    for case_id in ("order.iid-root-fallback", "order.iid-collection-fallback"):
+        expected = cases[case_id]["expected"]
+        assert expected["outcome"] == "success"
+        assert expected["identity_basis"] == "root"
+        assert expected["error_code"] is None
 
 
 def test_contract_document_pins_required_sections_and_implemented_import_status() -> None:

@@ -528,10 +528,9 @@ fn shape_page_order_and_stable_key_rules_are_operation_specific() {
         None,
         vec![one(0)],
     );
-    assert_eq!(
-        code(no_key.clone().validate(&registry)),
-        "missing_stable_unique_key"
-    );
+    let keyless = no_key.clone().validate(&registry).unwrap();
+    assert!(keyless.stable_order().terms().is_empty()); // Provider appends the IID.
+
     if let MatchOperation::FetchRows {
         cardinality,
         window,
@@ -603,10 +602,7 @@ fn shape_page_order_and_stable_key_rules_are_operation_specific() {
             include_total: false,
         },
     );
-    assert_eq!(
-        code(unstable_collection.validate(&registry)),
-        "missing_stable_unique_key"
-    );
+    unstable_collection.validate(&registry).unwrap();
 
     let page = MatchRequest::v1(
         MatchPlan {

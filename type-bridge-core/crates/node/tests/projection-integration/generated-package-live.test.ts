@@ -2754,18 +2754,9 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       .query(counterVariable)
       .where(counterVariable.field(Counter.counterValue).eq(CounterValue.create(42n)));
     assertIidsEqual((await counterQuery.one()).iid, insertedCounter.iid);
-    await assert.rejects(
-      counterQuery.rows({ limit: 2n }),
-      (boundedCounterError: any) => {
-        assert.match(
-          String(boundedCounterError),
-          /The typed query plan does not satisfy the generated query contract/,
-        );
-        assert.equal(boundedCounterError.queryCategory, "invalid_plan");
-        assert.equal(boundedCounterError.code, "missing_stable_unique_key");
-        return true;
-      },
-    );
+    const boundedCounters = await counterQuery.rows({ limit: 2n });
+    assert.equal(boundedCounters.length, 1);
+    assertIidsEqual(boundedCounters[0]!.iid, insertedCounter.iid);
     counterManager.delete(insertedCounter);
     assertIidsEqual(counterManager.getByIid(insertedCounter.iid), null);
     assert.equal(counterManager.count(), 0n);

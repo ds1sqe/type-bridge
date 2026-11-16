@@ -389,23 +389,23 @@
       "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
     },
     {
-      "id": "order.missing-stable-root-key",
-      "description": "An incomplete root page without a present unique scalar root tie breaker fails closed.",
+      "id": "order.iid-root-fallback",
+      "description": "A keyless root page uses concept IID as its stable tie breaker.",
       "features": ["stable_root_order"],
       "operation": "page_by",
       "transaction_mode": "none",
       "input": {"root_key": "nullable_or_non_unique"},
-      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "missing_stable_unique_key", "zero_executor_invocations": true, "zero_data_statements": true},
+      "expected": {"outcome": "success", "identity_basis": "root", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
       "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
     },
     {
-      "id": "order.missing-stable-collection-key",
-      "description": "A collected binding without a present unique scalar binding-local tie breaker fails closed.",
+      "id": "order.iid-collection-fallback",
+      "description": "A keyless collected binding uses concept IID as its binding-local tie breaker.",
       "features": ["stable_collection_order"],
       "operation": "page_by",
       "transaction_mode": "none",
       "input": {"collection_key": "nullable_or_non_unique"},
-      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "missing_stable_unique_key", "zero_executor_invocations": true, "zero_data_statements": true},
+      "expected": {"outcome": "success", "identity_basis": "root", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
       "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
     },
     {

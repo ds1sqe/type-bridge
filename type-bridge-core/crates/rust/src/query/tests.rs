@@ -1713,7 +1713,7 @@ async fn query_facade_builds_validated_requests_and_replays_recorded_results() {
 }
 
 #[test]
-fn singular_keyless_relation_uses_exactly_one_without_a_stable_order_key() {
+fn keyless_relation_accepts_singular_and_bounded_rows() {
     use type_bridge_orm::match_request::model::{MatchOperation, RowCardinality, Window};
 
     let (db, _state) = test_db();
@@ -1747,8 +1747,23 @@ fn singular_keyless_relation_uses_exactly_one_without_a_stable_order_key() {
                 limit: 2,
             },
         )
-        .unwrap_err();
-    assert_eq!(bounded.code(), Some("missing_stable_unique_key"));
+        .unwrap();
+    let MatchOperation::FetchRows {
+        cardinality,
+        window,
+        ..
+    } = bounded.request().operation
+    else {
+        panic!("expected bounded row fetch")
+    };
+    assert_eq!(cardinality, RowCardinality::BoundedMany);
+    assert_eq!(
+        window,
+        Window {
+            offset: 0,
+            limit: 2
+        }
+    );
 }
 
 #[test]

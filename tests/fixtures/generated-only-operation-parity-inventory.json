@@ -1410,7 +1410,7 @@
                 "generated_unkeyed_entity_iid_lifecycle_and_singular_query",
                 "CounterCreate::new(CounterValue::new(42)",
                 "singular keyless counter result",
-                "missing_stable_unique_key"
+                "bounded-many keyless counter uses IID ordering"
               ]
             }
           ]
