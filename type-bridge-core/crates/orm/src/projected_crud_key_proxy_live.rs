@@ -64,7 +64,7 @@ async fn live_proxy_key_guards_refuse_atomically_and_measure_added_reads() {
         }).unwrap();
         let entry = type_bridge_contract::query_remote::StagedPlan::new(old.local(), old.local().given_rows().unwrap().to_vec(), authority.declared()).unwrap();
         proxy.execute_write_stack_mapped(vec![entry], policy, &AnswerCancellation::default(), QueryExecutionDeadline::for_limits(policy),
-            |mut answers| { let Some(PlanAnswer::Documents(documents)) = answers.pop() else { panic!("documents"); }; crud.hydrate_entity_documents(proxy.execution_identity(), &kind, &installed.entity_descriptor(&kind).unwrap(), &documents, ExecutionMode::default()) }).await.unwrap();
+            |mut answers| { let Some(PlanAnswer::Documents(documents)) = answers.pop() else { panic!("documents"); }; crud.hydrate_entity_documents(proxy.execution_identity(), &kind, installed.entity_descriptor(&kind).unwrap(), &documents, ExecutionMode::default()) }).await.unwrap();
         before.push(started.elapsed());
         let started = Instant::now();
         crud.execute_single_write_on_target(QueryTarget::Proxy(&proxy), &single, control(), Ok).await.unwrap();

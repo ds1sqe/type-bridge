@@ -477,19 +477,18 @@ impl ProjectedBatchExecutor<'_> {
                             .map_err(diagnostic)?;
                         if let type_bridge_contract::query_remote::StagedAnswer::Rows { rows } =
                             proof
-                        {
-                            if rows.iter().any(|row| {
+                            && rows.iter().any(|row| {
                                 matches!(row.get(1), Some(RemoteValue::Thing { .. }))
                                     && matches!(row.get(2), Some(RemoteValue::Absent))
-                            }) {
-                                let (row, iid) = &guard.rows[0];
-                                return Ok(Err(crate::projected_crud::key_update_refused_at_row(
-                                    batch.model(),
-                                    *row,
-                                    iid,
-                                    false,
-                                )));
-                            }
+                            })
+                        {
+                            let (row, iid) = &guard.rows[0];
+                            return Ok(Err(crate::projected_crud::key_update_refused_at_row(
+                                batch.model(),
+                                *row,
+                                iid,
+                                false,
+                            )));
                         }
                     }
                     ledger.charge_projected(things.items())?;

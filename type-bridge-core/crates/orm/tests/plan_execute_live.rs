@@ -1582,9 +1582,7 @@ plays:
 "#;
 
 async fn wide_relation_clear_case(size: usize, kept: usize) -> Option<[std::time::Duration; 2]> {
-    let Some(db) = live_database("wide_clears").await else {
-        return None;
-    };
+    let db = live_database("wide_clears").await?;
     db.execute_raw(
         &PARTY_SCHEMA_TYPEQL
             .replace("relates member @card(1..2)", "relates member @card(1..)")
