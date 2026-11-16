@@ -232,7 +232,7 @@ export interface NativeProjectionHandle {
     managerForTransaction(typeKey: string, transaction: NativeTransactionContext): NativeProjectedManager;
     matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, queryLimits?: NativeQueryLimits | null): RuntimeProjectionMatchSession;
     matchModelType(typeKey: string): string;
-    validateAttributeValueJson(typeKey: string, valueJson: string): void;
+    validateAttributeValueJson(typeKey: string, valueJson: string): string;
     validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
     validateMemberCardinality(typeKey: string, memberName: string, count: number): void;
@@ -298,7 +298,7 @@ export declare class InstalledRuntimeProjection {
     /** @internal Resolve one exact generated model token to its provider label. */
     matchModelType(typeKey: string): string;
     /** @internal Validate one generated attribute scalar against projected constraints. */
-    validateAttributeValueJson(typeKey: string, valueJson: string): void;
+    validateAttributeValueJson(typeKey: string, valueJson: string): string;
     /** @internal Validate one provider-hydrated attribute scalar. */
     validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     /** @internal Validate one generated owned-field scalar against projected constraints. */

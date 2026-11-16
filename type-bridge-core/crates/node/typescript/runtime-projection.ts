@@ -495,7 +495,7 @@ export interface NativeProjectionHandle {
     queryLimits?: NativeQueryLimits | null,
   ): RuntimeProjectionMatchSession;
   matchModelType(typeKey: string): string;
-  validateAttributeValueJson(typeKey: string, valueJson: string): void;
+  validateAttributeValueJson(typeKey: string, valueJson: string): string;
   validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
   validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
   validateMemberCardinality(typeKey: string, memberName: string, count: number): void;
@@ -658,8 +658,8 @@ export class InstalledRuntimeProjection {
   }
 
   /** @internal Validate one generated attribute scalar against projected constraints. */
-  validateAttributeValueJson(typeKey: string, valueJson: string): void {
-    this.#native.validateAttributeValueJson(typeKey, valueJson);
+  validateAttributeValueJson(typeKey: string, valueJson: string): string {
+    return this.#native.validateAttributeValueJson(typeKey, valueJson);
   }
 
   /** @internal Validate one provider-hydrated attribute scalar. */

@@ -716,7 +716,7 @@ interface NativeRuntimeProjectionHandle {
     queryLimits?: NativeQueryLimits | null,
   ): NativeMatchSessionHandle;
   matchModelType(typeKey: string): string;
-  validateAttributeValueJson(typeKey: string, valueJson: string): void;
+  validateAttributeValueJson(typeKey: string, valueJson: string): string;
   validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
   validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
   validateMemberCardinality(typeKey: string, memberName: string, count: number): void;

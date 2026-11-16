@@ -163,9 +163,26 @@ fn render_model_shell(
     }
     if let Some(value_type) = model_value_type(model)? {
         let value = scalar_type(value_type);
+        let temporal = matches!(
+            value_type,
+            ValueTypeTag::Date
+                | ValueTypeTag::DateTime
+                | ValueTypeTag::DateTimeTz
+                | ValueTypeTag::Duration
+        );
+        let canonical = if temporal {
+            "  readonly canonical: string;\n"
+        } else {
+            ""
+        };
+        let input = if temporal && value != "string" {
+            format!("{value} | string")
+        } else {
+            value.to_owned()
+        };
         let _ = writeln!(
             output,
-            "export interface {name} extends CompleteFacet<{id}> {{\n  readonly value: {value};\n}}\n\nexport type {name}Create = {value};\n"
+            "export interface {name} extends CompleteFacet<{id}> {{\n  readonly value: {value};\n{canonical}}}\n\nexport type {name}Create = {input};\n"
         );
     } else {
         let _ = writeln!(

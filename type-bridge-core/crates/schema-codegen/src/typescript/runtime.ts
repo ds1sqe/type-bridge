@@ -48,6 +48,28 @@ import { Iid, Pending, StagedTransaction } from "@type-bridge/node";
 import { Plan, Handle as PlanHandle, Value as PlanValue, Expr as PlanExpr, PlanInput, planFieldToken, planMatch, planInsert, planInsertMany, type FieldToken as AuthoringFieldToken, type PlanModelAuthoring } from "@type-bridge/node";
 export { Iid, Plan, PlanHandle, PlanValue, PlanExpr, PlanInput, planMatch, planInsertMany };
 
+const attributeScalars = new WeakMap<object, ScalarWire>();
+
+function isTemporal(valueType: ScalarValueType): boolean {
+  return ["date", "datetime", "datetime_tz", "duration"].includes(valueType);
+}
+
+function attributeInputFromWire(wire: ScalarWire): unknown {
+  return isTemporal(wire.valueType) ? wire.value : scalarFromWire(wire);
+}
+
+function installAttributeScalar(result: Record<string | symbol, unknown>, wire: ScalarWire): void {
+  attributeScalars.set(result, Object.freeze({ ...wire }));
+  if (isTemporal(wire.valueType)) {
+    Object.defineProperties(result, {
+      value: { enumerable: true, get: () => scalarFromWire(wire, (JSON.parse(String(result["__typebridgeModel"])) as { label: string }).label) },
+      canonical: { enumerable: true, value: wire.value },
+    });
+  } else {
+    result["value"] = scalarFromWire(wire);
+  }
+}
+
 const COMPLETE_BRAND: unique symbol = Symbol("typebridge.complete");
 const REFERENCE_BRAND: unique symbol = Symbol("typebridge.reference");
 const STRUCT_BRAND: unique symbol = Symbol("typebridge.struct");
@@ -650,7 +672,7 @@ function validateScalar(
       case "date":
       case "datetime":
       case "datetime_tz":
-        return value instanceof Date && Number.isFinite(value.getTime());
+        return typeof value === "string" || (value instanceof Date && Number.isFinite(value.getTime()));
     }
   })();
   if (!valid) {
@@ -727,11 +749,11 @@ export function defineModel<
     };
     if (definition.valueType !== null) {
       validateScalar(`${context} value`, input, definition.valueType);
-      requireProjection().validateAttributeValueJson(
+      const wire = JSON.parse(requireProjection().validateAttributeValueJson(
         definition.typeKey,
         JSON.stringify(scalarToWire(definition.valueType, input)),
-      );
-      result["value"] = freezeValue(input);
+      )) as ScalarWire;
+      installAttributeScalar(result, wire);
     } else {
       assertRecord(input, `${context} input`);
       const allowed = new Map(members.map((member) => [member.name, member]));
@@ -879,7 +901,7 @@ export function defineModel<
           );
         }
         return materializeComplete(
-          scalarFromWire(wire.value),
+          attributeInputFromWire(wire.value),
           null,
           [],
           `${definition.name}.decodeAttribute`,
@@ -1136,7 +1158,7 @@ function validateOwnedMember(
       typeKey,
       name,
       JSON.stringify(
-        scalarToWire(attribute.definition.valueType, candidate["value"]),
+        attributeScalars.get(candidate) ?? scalarToWire(attribute.definition.valueType, candidate["value"]),
       ),
     );
   }
@@ -1201,14 +1223,13 @@ function hydrateProjectedBatchValue(
     ) {
       throw new TypeError("native attribute wire has an invalid shape");
     }
-    const scalar = scalarFromWire(wire.value);
-    validateScalar("native projected attribute", scalar, definition.valueType);
+
     const result: Record<string | symbol, unknown> = {
       __typebridgeModel: wire.typeKey,
       __typebridgeForm: "complete",
       iid: null,
-      value: scalar,
     };
+    installAttributeScalar(result, wire.value);
     Object.defineProperty(result, COMPLETE_BRAND, {
       value: wire.typeKey,
     });
@@ -1486,7 +1507,7 @@ function lowerProjectedValue(value: unknown): ProjectedWire {
       typeKey,
       form,
       iid,
-      value: scalarToWire(entry.definition.valueType, value["value"]),
+      value: attributeScalars.get(value) ?? scalarToWire(entry.definition.valueType, value["value"]),
       values: {},
     };
   }
@@ -1522,27 +1543,28 @@ function lowerMemberValue(value: unknown): unknown {
 
 function scalarToWire(valueType: ScalarValueType, value: unknown): ScalarWire {
   validateScalar("projected attribute value", value, valueType);
+  if (isTemporal(valueType) && typeof value === "string") return { valueType, value };
   switch (valueType) {
     case "long":
       return { valueType, value: (value as bigint).toString() };
     case "double":
       return { valueType, value: Object.is(value, -0) ? "-0" : (value as number) };
     case "date": {
-      const iso = (value as Date).toISOString();
+      const iso = canonicalOrderedTemporalIso((value as Date).toISOString());
       if (!iso.endsWith("T00:00:00.000Z")) {
         throw new TypeError("date attributes require UTC midnight");
       }
-      return { valueType, value: iso.slice(0, 10) };
+      return { valueType, value: iso.slice(0, iso.indexOf("T")) };
     }
     case "datetime":
       return {
         valueType,
-        value: canonicalDateTime((value as Date).toISOString(), false),
+        value: canonicalDateTime(canonicalOrderedTemporalIso((value as Date).toISOString()), false),
       };
     case "datetime_tz":
       return {
         valueType,
-        value: canonicalDateTime((value as Date).toISOString(), true),
+        value: canonicalDateTime(canonicalOrderedTemporalIso((value as Date).toISOString()), true),
       };
     default:
       return { valueType, value: value as string | number | boolean };
@@ -1550,7 +1572,10 @@ function scalarToWire(valueType: ScalarValueType, value: unknown): ScalarWire {
 }
 
 function canonicalDateTime(iso: string, timezone: boolean): string {
-  const withoutZeroFraction = iso.replace(".000Z", "Z");
+  const withoutZeroFraction = iso.replace(/\.([0-9]+)Z$/, (_match, fraction: string) => {
+    const digits = fraction.replace(/0+$/, "");
+    return digits.length === 0 ? "Z" : `.${digits}Z`;
+  });
   return timezone ? withoutZeroFraction : withoutZeroFraction.slice(0, -1);
 }
 
@@ -1618,7 +1643,7 @@ function hydrateProjectedValue(
     }
     return entry.token[HYDRATE_COMPLETE_BRAND](
       null,
-      scalarFromWire(wire.value),
+      attributeInputFromWire(wire.value),
     );
   }
   const names =
@@ -1655,24 +1680,39 @@ function hydrateMemberValue(value: unknown): unknown {
   return hydrateProjectedValue(parseProjectedWire(value));
 }
 
-function scalarFromWire(wire: ScalarWire): unknown {
+function scalarFromWire(wire: ScalarWire, column?: number | string): unknown {
+  const context = typeof column === "number" ? `${wire.valueType} scalar column ${column}` : column ?? wire.valueType;
   switch (wire.valueType) {
     case "long":
       if (typeof wire.value !== "string")
         throw new TypeError("long wire requires a string");
       return BigInt(wire.value);
     case "date":
-      if (typeof wire.value !== "string")
-        throw new TypeError("date wire requires a string");
-      return new Date(`${wire.value}T00:00:00.000Z`);
     case "datetime":
-      if (typeof wire.value !== "string")
-        throw new TypeError("datetime wire requires a string");
-      return new Date(`${wire.value}Z`);
-    case "datetime_tz":
-      if (typeof wire.value !== "string")
-        throw new TypeError("datetime-tz wire requires a string");
-      return new Date(wire.value);
+    case "datetime_tz": {
+      if (typeof wire.value !== "string") throw new TypeError(`${wire.valueType} wire requires a string`);
+      let text = wire.value.replace(/\[[^\]]+\]$/, "");
+      const year = /^([+-]?\d+)-/.exec(text)?.[1];
+      if (year !== undefined && (year.startsWith("-") || year.startsWith("+") || year.length > 4)) {
+        text = text.replace(year, `${Number(year) < 0 ? "-" : "+"}${Math.abs(Number(year)).toString().padStart(6, "0")}`);
+      }
+      if (/\.\d{3}\d*[1-9]\d*(?:Z|[+-]\d{2}:\d{2}(?::\d{2})?)?$/.test(text)) {
+        throw new RangeError(`${context} native view loses sub-millisecond precision; select the attribute/model and use .canonical`);
+      }
+      if (wire.valueType === "date") text += "T00:00:00.000Z";
+      if (wire.valueType === "datetime") text += "Z";
+      const secondsOffset = /([+-])(\d{2}):(\d{2}):(\d{2})$/.exec(text);
+      let date: Date;
+      if (secondsOffset !== null) {
+        const local = new Date(`${text.slice(0, -9)}Z`);
+        const seconds = Number(secondsOffset[2]) * 3600 + Number(secondsOffset[3]) * 60 + Number(secondsOffset[4]);
+        date = new Date(local.getTime() - (secondsOffset[1] === "-" ? -seconds : seconds) * 1000);
+      } else {
+        date = new Date(text);
+      }
+      if (!Number.isFinite(date.getTime())) throw new RangeError(`${context} native view exceeds Date's range; select the attribute/model and use .canonical`);
+      return date;
+    }
     case "double":
       if (wire.value === "-0") return -0;
       if (typeof wire.value !== "number")
@@ -2152,9 +2192,9 @@ export function planDefinition<Model>(token: object): PlanModelAuthoring<Model> 
     },
     decodeRows: (projection) => {
       if (projection.rows === undefined || projection.rows === null) throw new TypeError("model tuples require the core's committed projection proof");
-      return projection.rows.map((row) => row.map((cell) => {
+      return projection.rows.map((row) => row.map((cell, column) => {
         if (cell.model !== undefined && cell.model !== null) return hydrateAuthoredPlanModel(cell.model);
-        if (cell.scalar !== undefined && cell.scalar !== null) return scalarFromWire(JSON.parse(cell.scalar) as ScalarWire);
+        if (cell.scalar !== undefined && cell.scalar !== null) return scalarFromWire(JSON.parse(cell.scalar) as ScalarWire, column);
         throw new TypeError("the core projection returned no tuple cell");
       }));
     },
@@ -3876,7 +3916,7 @@ function materializeFieldGroup(
   }
   return entry.token[HYDRATE_COMPLETE_BRAND](
     null,
-    scalarFromWire({ valueType, value }),
+    attributeInputFromWire({ valueType, value }),
   );
 }
 
@@ -3915,7 +3955,7 @@ function materializeFieldGroups(
       }
       return entry.token[HYDRATE_COMPLETE_BRAND](
         null,
-        scalarFromWire({ valueType, value: scalar }),
+        attributeInputFromWire({ valueType, value: scalar }),
       );
     }),
   );
@@ -4392,53 +4432,6 @@ function canonicalOrderedTemporalIso(iso: string): string {
   return iso;
 }
 
-function orderedScalarToWire(
-  valueType: ScalarValueType,
-  value: unknown,
-): ScalarWire {
-  if (
-    valueType !== "date" &&
-    valueType !== "datetime" &&
-    valueType !== "datetime_tz"
-  ) {
-    return scalarToWire(valueType, value);
-  }
-  validateScalar("projected attribute value", value, valueType);
-  const iso = canonicalOrderedTemporalIso((value as Date).toISOString());
-  if (valueType === "date") {
-    if (!iso.endsWith("T00:00:00.000Z")) {
-      throw new TypeError("date attributes require UTC midnight");
-    }
-    return { valueType, value: iso.slice(0, iso.indexOf("T")) };
-  }
-  return {
-    valueType,
-    value: canonicalDateTime(iso, valueType === "datetime_tz"),
-  };
-}
-
-function lowerOrderedProjectedValue(value: unknown): ProjectedWire {
-  const wire = lowerProjectedValue(value);
-  if (wire.value !== null) {
-    assertRecord(value, "ordered projected attribute");
-    return {
-      ...wire,
-      value: orderedScalarToWire(wire.value.valueType, value["value"]),
-    };
-  }
-  assertRecord(value, "ordered projected thing");
-  const values: Record<string, unknown> = {};
-  for (const name of Object.keys(wire.values)) {
-    const nested = value[name];
-    values[name] = Array.isArray(nested)
-      ? nested.map(lowerOrderedProjectedValue)
-      : nested === null || nested === undefined
-        ? null
-        : lowerOrderedProjectedValue(nested);
-  }
-  return { ...wire, values };
-}
-
 function lowerOrderedHydratedValue(value: unknown): ProjectedWire {
   assertRecord(value, "ordered hydrated value");
   const typeKey = value["__typebridgeModel"];
@@ -4451,7 +4444,7 @@ function lowerOrderedHydratedValue(value: unknown): ProjectedWire {
     throw new TypeError("ordered hydrated value belongs to a different runtime projection");
   }
   if (form === "reference" || entry.definition.valueType !== null) {
-    return lowerOrderedProjectedValue(value);
+    return lowerProjectedValue(value);
   }
   if (Object.getOwnPropertyDescriptor(value, COMPLETE_BRAND)?.value !== typeKey) {
     throw new TypeError("ordered hydrated value has no complete nominal brand");
@@ -4537,7 +4530,7 @@ function orderedProjectedManager<Complete, Owner extends string>(
 
 function exactOrderedModelWire(typeKey: string, instance: unknown, operation: string): ProjectedWire {
   requireLiveSnapshot(instance);
-  const wire = lowerOrderedProjectedValue(instance);
+  const wire = lowerProjectedValue(instance);
   if (wire.typeKey !== typeKey || wire.form !== "complete") {
     throw new TypeError(
       `projected ${operation} requires the manager's exact complete model`,
@@ -4769,7 +4762,7 @@ function orderedProjectedFilterForNative<
       if (definition === undefined) {
         return projectedManagerNativeCall(() => native.rejectForeignFieldToken());
       }
-      const wire = lowerOrderedProjectedValue(value);
+      const wire = lowerProjectedValue(value);
       return orderedProjectedFilterForNative(
         typeKey,
         projectedManagerNativeCall(() =>
@@ -4855,7 +4848,7 @@ export function defineOrderedModel<
         if (definition.valueType === null) {
           requireProjection().validateCreateJson(
             definition.typeKey,
-            JSON.stringify(lowerOrderedProjectedValue(result)),
+            JSON.stringify(lowerProjectedValue(result)),
           );
         }
         return result;
@@ -4872,7 +4865,7 @@ export function defineOrderedModel<
       if (definition.valueType !== null) {
         requireProjection().validateHydratedAttributeValueJson(
           definition.typeKey,
-          JSON.stringify(orderedScalarToWire(definition.valueType, input)),
+          JSON.stringify(scalarToWire(definition.valueType, input)),
         );
       }
       const result = hydrate(iid, input);

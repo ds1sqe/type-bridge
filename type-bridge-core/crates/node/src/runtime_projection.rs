@@ -2494,7 +2494,7 @@ impl NodeRuntimeProjection {
         &self,
         type_key: String,
         value_json: String,
-    ) -> napi::Result<()> {
+    ) -> napi::Result<String> {
         let id = type_id_from_key(&type_key)?;
         if id.kind() != TypeKind::Attribute {
             return Err(invalid_error(
@@ -2515,17 +2515,24 @@ impl NodeRuntimeProjection {
         let wire: ScalarWire = serde_json::from_str(&value_json)
             .map_err(|error| invalid_error(format!("invalid projected scalar wire: {error}")))?;
         let expected = ValueType::from(value_type);
-        if projection_uses_ordered_collections(self.package.projection.projection()) {
+        let canonical = if projection_uses_ordered_collections(self.package.projection.projection())
+        {
             project_attribute_scalar(&self.package.projection, id, &wire, expected)
-                .map(|_| ())
-                .map_err(napi_sdk_diagnostic)
+                .map(|value| value.value().clone())
+                .map_err(napi_sdk_diagnostic)?
         } else {
             let value = scalar_to_attribute(&wire, expected)?;
             self.package
                 .projection
                 .validate_attribute_value(&id, &value)
-                .map_err(|error| invalid_error(error.to_string()))
-        }
+                .map_err(|error| invalid_error(error.to_string()))?;
+            canonical_struct_scalar(&value)?
+        };
+        let mut output = FallibleJsonWriter::default();
+        write_projected_scalar(&mut output, &canonical)
+            .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+        String::from_utf8(output.bytes)
+            .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))
     }
 
     /// Validate one generated provider-hydrated attribute scalar through the common Rust contract.
@@ -5873,105 +5880,29 @@ fn write_fractional_nanoseconds(output: &mut FallibleJsonWriter, nanosecond: u32
     Ok(())
 }
 
-fn write_canonical_time(
-    output: &mut FallibleJsonWriter,
-    hour: u8,
-    minute: u8,
-    second: u8,
-    nanosecond: u32,
-) -> fmt::Result {
-    write!(output, "{hour:02}:{minute:02}:{second:02}")?;
-    write_fractional_nanoseconds(output, nanosecond)
-}
-
 fn write_canonical_datetime(
     output: &mut FallibleJsonWriter,
     value: CanonicalDateTime,
 ) -> fmt::Result {
-    let (year, month, day) = value.date().components();
-    write_javascript_date(output, year, month, day)?;
-    output.write_char('T')?;
-    let (hour, minute, second, nanosecond) = value.time().components();
-    write_canonical_time(output, hour, minute, second, nanosecond)
-}
-
-fn is_leap_year(year: i32) -> bool {
-    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
-}
-
-fn days_in_month(year: i32, month: u8) -> u8 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        _ => 0,
-    }
-}
-
-fn adjacent_date(year: i32, month: u8, day: u8, delta: i32) -> (i32, u8, u8) {
-    debug_assert!(matches!(delta, -1..=1));
-    match delta {
-        -1 if day > 1 => (year, month, day - 1),
-        -1 if month > 1 => {
-            let month = month - 1;
-            (year, month, days_in_month(year, month))
-        }
-        -1 => (year - 1, 12, 31),
-        1 if day < days_in_month(year, month) => (year, month, day + 1),
-        1 if month < 12 => (year, month + 1, 1),
-        1 => (year + 1, 1, 1),
-        _ => (year, month, day),
-    }
-}
-
-fn write_javascript_date(
-    output: &mut FallibleJsonWriter,
-    year: i32,
-    month: u8,
-    day: u8,
-) -> fmt::Result {
-    // ECMAScript's date-time string format uses four digits in the ordinary
-    // range and a signed six-digit extended year outside it.
-    if (0..=9_999).contains(&year) {
-        write!(output, "{year:04}")?;
-    } else {
-        let sign = if year < 0 { '-' } else { '+' };
-        write!(
-            output,
-            "{sign}{absolute:06}",
-            absolute = year.unsigned_abs()
-        )?;
-    }
-    write!(output, "-{month:02}-{day:02}")
+    write!(output, "{value}")
 }
 
 fn write_datetime_tz_evidence(
     output: &mut FallibleJsonWriter,
     value: &CanonicalDateTimeTz,
 ) -> fmt::Result {
-    // JavaScript Date does not accept IANA suffixes or second-precision UTC
-    // offsets. Preserve the exact instant by normalizing the already-resolved
-    // local value and effective offset to UTC before crossing the callback.
-    let local = value.local();
-    let (year, month, day) = local.date().components();
-    let (hour, minute, second, nanosecond) = local.time().components();
-    let local_seconds = i32::from(hour) * 3_600 + i32::from(minute) * 60 + i32::from(second);
-    let utc_seconds = local_seconds - value.effective_offset_seconds();
-    let day_delta = utc_seconds.div_euclid(86_400);
-    debug_assert!(matches!(day_delta, -1..=1));
-    let seconds = utc_seconds.rem_euclid(86_400);
-    let (year, month, day) = adjacent_date(year, month, day, day_delta);
-    write_javascript_date(output, year, month, day)?;
-    output.write_char('T')?;
-    write_canonical_time(
-        output,
-        (seconds / 3_600) as u8,
-        (seconds % 3_600 / 60) as u8,
-        (seconds % 60) as u8,
-        nanosecond,
-    )?;
-    output.write_char('Z')
+    if let type_bridge_contract::temporal::TimeZoneDesignator::Named(name) = value.zone() {
+        let seconds = value.effective_offset_seconds();
+        let zone = if seconds == 0 {
+            type_bridge_contract::temporal::TimeZoneDesignator::Utc
+        } else {
+            type_bridge_contract::temporal::TimeZoneDesignator::OffsetSeconds(seconds)
+        };
+        let fixed = CanonicalDateTimeTz::new_fixed(value.local(), zone).map_err(|_| fmt::Error)?;
+        write!(output, "{fixed}[{name}]")
+    } else {
+        write!(output, "{value}")
+    }
 }
 
 fn write_canonical_duration(
@@ -6019,8 +5950,7 @@ fn write_projected_scalar(output: &mut FallibleJsonWriter, value: &CanonicalValu
         }
         CanonicalValue::Date(value) => {
             output.write_char('"')?;
-            let (year, month, day) = value.components();
-            write_javascript_date(output, year, month, day)?;
+            write!(output, "{value}")?;
             output.write_char('"')?;
         }
         CanonicalValue::DateTime(value) => {
@@ -6931,7 +6861,15 @@ fn scalar_to_attribute(wire: &ScalarWire, expected: ValueType) -> napi::Result<A
             canonical_temporal::<CanonicalDateTime>(text()?, AttributeValue::DateTime)
         }
         ValueType::DateTimeTz => {
-            canonical_temporal::<CanonicalDateTimeTz>(text()?, AttributeValue::DateTimeTZ)
+            let value = type_bridge_schema::parse_provider_datetime_tz_evidence(text()?)
+                .map_err(diagnostic_error)?;
+            let mut output = FallibleJsonWriter::default();
+            write_datetime_tz_evidence(&mut output, &value)
+                .map_err(|_| runtime_error("datetime-tz allocation failed"))?;
+            Ok(AttributeValue::DateTimeTZ(
+                String::from_utf8(output.bytes)
+                    .map_err(|_| runtime_error("invalid datetime-tz text"))?,
+            ))
         }
         ValueType::Decimal => {
             let value = text()?;
@@ -8912,19 +8850,19 @@ entities:
             ),
             (
                 CanonicalValue::Date("+10000-01-02".parse().unwrap()),
-                serde_json::json!({"valueType":"date","value":"+010000-01-02"}),
+                serde_json::json!({"valueType":"date","value":"+10000-01-02"}),
             ),
             (
                 CanonicalValue::DateTime("-9999-01-02T03:04:05.12".parse().unwrap()),
-                serde_json::json!({"valueType":"datetime","value":"-009999-01-02T03:04:05.12"}),
+                serde_json::json!({"valueType":"datetime","value":"-9999-01-02T03:04:05.12"}),
             ),
             (
                 CanonicalValue::DateTimeTz(named),
-                serde_json::json!({"valueType":"datetime_tz","value":"2026-10-25T00:30:00.123456789Z"}),
+                serde_json::json!({"valueType":"datetime_tz","value":"2026-10-25T01:30:00.123456789+01:00[Europe/London]"}),
             ),
             (
                 CanonicalValue::DateTimeTz(second_offset),
-                serde_json::json!({"valueType":"datetime_tz","value":"2026-10-25T00:28:59.123456789Z"}),
+                serde_json::json!({"valueType":"datetime_tz","value":"2026-10-25T01:30:00.123456789+01:01:01"}),
             ),
             (
                 CanonicalValue::Decimal(DecimalValue::new("123.450").unwrap()),

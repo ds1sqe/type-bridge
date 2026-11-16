@@ -4381,3 +4381,59 @@ test("debug listener delivers a manager statement after synchronous bulk hydrati
     }
   }
 });
+
+test("generated temporal values remain exact", { timeout: 360_000 }, async () => {
+  const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
+  const stage = suppliedStage === undefined
+    ? await mkdtemp(join(tmpdir(), "type-bridge-node-temporal-"))
+    : resolve(suppliedStage);
+  const generatedDirectory = resolve(stage, "generated_package");
+  let database: ReturnType<typeof connectIntegration> | undefined;
+  try {
+    if (suppliedStage === undefined) run(resolve(ROOT, "scripts/ci/prepare_generated_live_fixture.sh"), ["node", stage], ROOT);
+    const packageScope = resolve(stage, "node_modules/@type-bridge");
+    await mkdir(packageScope, { recursive: true });
+    await rm(resolve(packageScope, "node"), { recursive: true, force: true });
+    await symlink(NODE_RUNTIME_PACKAGE, resolve(packageScope, "node"), process.platform === "win32" ? "junction" : "dir");
+    run(resolve(NODE_SOURCE_PACKAGE, "node_modules/.bin/tsc"), ["--project", resolve(generatedDirectory, "tsconfig.json")], generatedDirectory);
+    const generated = await import(pathToFileURL(resolve(generatedDirectory, "dist/index.js")).href);
+    const { Person, Identifier, Score, ValBool, ValConstrained, ValDate, ValDatetime, ValDatetimeTz, ValDecimal, ValDouble, ValDuration } = generated;
+    database = connectIntegration();
+    database.resetDatabase();
+    await defineSchema(database, await readFile(PROVIDER_SCHEMA, "utf8"));
+    const personManager = Person.manager(database);
+    // Every write retains temporal text even when its native Date view is unavailable.
+    const fidelity = oneWritten(personManager.insert(Person.create({
+      identifier: Identifier.create("temporal-fidelity"), score: Score.create(9007199254740995n),
+      valBool: ValBool.create(true), valConstrained: ValConstrained.create(20n),
+      valDate: ValDate.create("-0001-01-01"),
+      valDatetime: ValDatetime.create("2024-01-01T00:00:00.123456789"),
+      valDatetimeTz: ValDatetimeTz.create("2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]"),
+      valDecimal: ValDecimal.create("0.0000001"), valDouble: ValDouble.create(3.5),
+      valDuration: ValDuration.create("P1M"),
+    })));
+    const temporalQuery = 'match $p isa person, has identifier "temporal-fidelity", has val_datetime $d, has val_datetime_tz $z, has val_date $day, has val_duration $duration; fetch {"d": $d, "z": $z, "day": $day, "duration": $duration};';
+    const temporalBefore = await database.executeQuery(temporalQuery, "read");
+    const temporalStored = personManager.getByIid(fidelity.iid);
+    assert.equal(temporalStored.valDatetime.canonical, "2024-01-01T00:00:00.123456789");
+    assert.equal(temporalStored.valDatetimeTz.canonical, "2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]");
+    assert.throws(() => temporalStored.valDatetime.value, /canonical/);
+    assert.throws(() => temporalStored.valDatetimeTz.value, /canonical/);
+    const temporalReplacement = Person.create({
+      identifier: temporalStored.identifier, score: Score.create(9007199254740995n),
+      valBool: ValBool.create(false), valConstrained: temporalStored.valConstrained,
+      valDate: temporalStored.valDate, valDatetime: temporalStored.valDatetime,
+      valDatetimeTz: temporalStored.valDatetimeTz, valDecimal: temporalStored.valDecimal,
+      valDouble: temporalStored.valDouble, valDuration: temporalStored.valDuration,
+    });
+    personManager.update(fidelity.iid, temporalReplacement);
+    assert.deepEqual(await database.executeQuery(temporalQuery, "read"), temporalBefore);
+    personManager.put(temporalReplacement);
+    assert.deepEqual(await database.executeQuery(temporalQuery, "read"), temporalBefore);
+    personManager.delete(fidelity.iid);
+
+  } finally {
+    try { database?.deleteDatabase(); } finally { database?.close(); }
+    if (suppliedStage === undefined) await rm(stage, { recursive: true, force: true });
+  }
+});

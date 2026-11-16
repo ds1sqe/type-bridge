@@ -306,12 +306,12 @@ assert.throws(() => OrderedScore.create(1n << 63n), TypeError);
 assert.throws(() => OrderedValDouble.create(Number.POSITIVE_INFINITY), TypeError);
 const fractionalInstant = new Date("2026-07-29T01:02:03.120Z");
 assert.equal(
-  OrderedValDatetime.create(fractionalInstant).value,
-  fractionalInstant,
+  OrderedValDatetime.create(fractionalInstant).value.toISOString(),
+  fractionalInstant.toISOString(),
 );
 assert.equal(
-  OrderedValDatetimeTz.create(fractionalInstant).value,
-  fractionalInstant,
+  OrderedValDatetimeTz.create(fractionalInstant).value.toISOString(),
+  fractionalInstant.toISOString(),
 );
 
 const foreignPerson = Foreign.Person.create({
@@ -1503,3 +1503,33 @@ assert.equal(generatedRemoteSession.isClosed, true);
 assert.equal(remoteLifecycleClone.isClosed, true);
 await rejectsClosedRemoteTerminal(() => remoteLifecycleClone.one());
 emitSdkModelsPackageProofFragment();
+
+// Temporal wrappers keep the exact value even when Date cannot project it.
+for (const [token, text, native] of [
+  [ValDate, "-0001-01-01", "-000001-01-01T00:00:00.000Z"],
+  [ValDatetime, "2024-01-01T00:00:00.123456789", null],
+  [ValDatetimeTz, "2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]", null],
+  [ValDatetimeTz, "2024-01-01T00:00:00+09:00[Asia/Seoul]", "2023-12-31T15:00:00.000Z"],
+  [OrderedValDatetime, "2024-01-01T00:00:00.123456789", null],
+  [OrderedValDatetimeTz, "2024-01-01T00:00:00+09:00[Asia/Seoul]", "2023-12-31T15:00:00.000Z"],
+]) {
+  const attribute = token.create(text);
+  assert.equal(attribute.canonical, text);
+  if (native === null) assert.throws(() => attribute.value, /canonical/);
+  else assert.equal(attribute.value.toISOString(), native);
+  const decoded = token.decodeAttribute(token.encodeAttribute(attribute));
+  assert.equal(decoded.canonical, text);
+}
+const precisionPerson = Person.create({ ...personValues,
+  valDatetime: ValDatetime.create("2024-01-01T00:00:00.123456789"),
+  valDatetimeTz: ValDatetimeTz.create("2024-01-01T00:00:00.123456789+09:00[Asia/Seoul]"),
+});
+const precisionDecoded = Person.decodeCreate(Person.encodeCreate(precisionPerson));
+assert.equal(precisionDecoded.valDatetime.canonical, precisionPerson.valDatetime.canonical);
+assert.equal(precisionDecoded.valDatetimeTz.canonical, precisionPerson.valDatetimeTz.canonical);
+
+const { planDefinition } = await import("./generated_package/dist/runtime.js");
+const decodeScalarRows = planDefinition(Person).decodeRows;
+assert.throws(() => decodeScalarRows({ rows: [[{ scalar: JSON.stringify({ valueType: "datetime", value: "2024-01-01T00:00:00.123456789" }) }]] }), /datetime scalar column 0.*canonical/);
+assert.equal(decodeScalarRows({ rows: [[{ scalar: JSON.stringify({ valueType: "datetime_tz", value: "2024-01-01T00:00:00+09:00[Asia/Seoul]" }) }]] })[0][0].toISOString(), "2023-12-31T15:00:00.000Z");
+assert.throws(() => precisionPerson.valDatetime.value, /val_datetime.*canonical/);
