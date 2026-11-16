@@ -1762,7 +1762,20 @@ fn publish_profile_upgrade_bridge(
         )
         .map_err(display_diagnostic)?
         {
-            type_bridge_schema_migration::MigrationProfileUpgrade::Bridged { bridge, .. } => {
+            type_bridge_schema_migration::MigrationProfileUpgrade::Bridged { graph, bridge } => {
+                let manifest = graph.manifest(&bridge).ok_or_else(|| {
+                    "profile bridge is absent from its verified history".to_owned()
+                })?;
+                let preview = type_bridge_schema_migration::render_migration_preview(
+                    manifest,
+                    workspace.delta_context(),
+                )
+                .map_err(display)?;
+                publish_authority(
+                    directory,
+                    &format!("{}.typeql", bridge.name().as_str()),
+                    preview.as_bytes(),
+                )?;
                 return Ok(ProfileUpgradeBridge { id: bridge });
             }
             type_bridge_schema_migration::MigrationProfileUpgrade::Pending {
@@ -1797,7 +1810,25 @@ fn publish_profile_upgrade_bridge(
     .map_err(display)?;
     let bytes = type_bridge_schema_migration::encode_verified_manifest(&bridge).map_err(display)?;
     let file_name = format!("{}.tbmigration.json", id.name().as_str());
-    let created = publish_authority(directory, &file_name, &bytes)?;
+    let preview_name = format!("{}.typeql", id.name().as_str());
+    let preview =
+        type_bridge_schema_migration::render_migration_preview(&bridge, workspace.delta_context())
+            .map_err(display)?;
+    let preview_created = publish_authority(directory, &preview_name, preview.as_bytes())?;
+    let created = match publish_authority(directory, &file_name, &bytes) {
+        Ok(created) => created,
+        Err(error) => {
+            if preview_created {
+                directory
+                    .remove_file(preview_name.as_ref())
+                    .and_then(|()| directory.sync_all())
+                    .map_err(|cleanup| {
+                        format!("{error}; cannot remove newly published bridge preview: {cleanup}")
+                    })?;
+            }
+            return Err(error);
+        }
+    };
     if let Err(error) = workspace.discover_migrations_in(migration_directory) {
         let primary = display_workspace(error);
         if !created {
@@ -1806,6 +1837,13 @@ fn publish_profile_upgrade_bridge(
         return Err(
             match directory
                 .remove_file(file_name.as_ref())
+                .and_then(|()| {
+                    if preview_created {
+                        directory.remove_file(preview_name.as_ref())
+                    } else {
+                        Ok(())
+                    }
+                })
                 .and_then(|()| directory.sync_all())
             {
                 Ok(()) => primary,
@@ -2958,6 +2996,10 @@ mod migration_command_tests {
             .expect_err("the fixture has no credentials");
         assert!(error.contains("credential environment variable"), "{error}");
         let published = fs::read(&bridge).expect("the bridge is published before connecting");
+        let preview = directory
+            .path()
+            .join("migrations/v2/0002_profile_upgrade_typedb_3_13_6.typeql");
+        assert_eq!(fs::read(&preview).unwrap(), b"\n");
 
         // The bridged history is ordinary again; a retry reuses the bridge.
         let plan = workspace
@@ -2981,6 +3023,18 @@ mod migration_command_tests {
             ]
         );
         assert_eq!(fs::read(&bridge).expect("bridge"), published);
+        fs::remove_file(&preview).unwrap();
+        let error = run_connected(&workspace, "dev", upgrade(NEW_PROFILE, None)).unwrap_err();
+        assert!(error.contains("credential environment variable"), "{error}");
+        assert_eq!(fs::read(&preview).unwrap(), b"\n");
+        fs::write(&preview, b"tampered review artifact").unwrap();
+        let error = run_connected(&workspace, "dev", upgrade(NEW_PROFILE, None)).unwrap_err();
+        assert!(
+            error.contains("already exists with different authority bytes"),
+            "{error}"
+        );
+        assert_before_credentials(&error);
+        fs::write(&preview, b"\n").unwrap();
 
         // The next authored migration continues after the bridge.
         fs::write(

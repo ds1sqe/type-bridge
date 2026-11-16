@@ -117,6 +117,12 @@ fn author_administration_profile_bridge(directory: &Path, requested: &str) {
         encode_verified_manifest(&bridge).expect("profile bridge encodes"),
     )
     .expect("profile bridge writes");
+    fs::write(
+        directory.join(format!("{}.typeql", id.name().as_str())),
+        type_bridge_schema_migration::render_migration_preview(&bridge, &context)
+            .expect("profile bridge preview renders"),
+    )
+    .expect("profile bridge preview writes");
 }
 
 /// The live server an administration report on the requested profile declares.
