@@ -193,7 +193,9 @@ them without one, opt in explicitly:
 allow_unauthenticated_staged_writes = true
 ```
 
-Supply `TYPEDB_USERNAME` and `TYPEDB_PASSWORD` at runtime. `managed`
+Supply nonempty `TYPEDB_USERNAME` and `TYPEDB_PASSWORD` at runtime, or set
+`typedb.username` and `typedb.password` in the mounted configuration. Startup
+refuses missing or empty credentials; it never falls back to `admin`/`password`. `managed`
 authority requires the artifact's exact migration-control partition and free
 singleton. Use `query_only` only for a database with neither canonical nor
 archived migration controls. Scope and semantic profile come from the verified

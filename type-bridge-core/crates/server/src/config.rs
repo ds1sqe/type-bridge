@@ -528,10 +528,10 @@ pub struct TypeDBSection {
     /// Default TypeDB database name.
     pub database: String,
     /// TypeDB username.
-    #[serde(default = "default_username")]
+    #[serde(default)]
     pub username: String,
     /// TypeDB password.
-    #[serde(default = "default_password")]
+    #[serde(default)]
     pub password: String,
     /// Port of the TypeDB HTTP API on the same host as `address`; the
     /// connect-time version gate probes `/v1/version` here.
@@ -594,9 +594,9 @@ struct RuntimeServerSectionWire {
 struct RuntimeTypeDBSectionWire {
     address: String,
     database: String,
-    #[serde(default = "default_username")]
+    #[serde(default)]
     username: String,
-    #[serde(default = "default_password")]
+    #[serde(default)]
     password: String,
     #[serde(default = "default_http_port")]
     http_port: u16,
@@ -803,12 +803,14 @@ fn default_http_port() -> u16 {
     core_version::DEFAULT_HTTP_PORT
 }
 
-fn default_username() -> String {
-    "admin".to_string()
-}
-
-fn default_password() -> String {
-    "password".to_string()
+fn validate_credentials(username: &str, password: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if username.is_empty() || password.is_empty() {
+        return Err(
+            "typedb.username and typedb.password must both be explicitly supplied and nonempty"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 fn default_log_level() -> String {
@@ -836,6 +838,7 @@ impl ServerConfig {
         let content = std::fs::read_to_string(path)?;
         let mut config: ServerConfig = toml::from_str(&content)?;
         config.apply_env_overrides_from(get_env)?;
+        validate_credentials(&config.typedb.username, &config.typedb.password)?;
         Ok(config)
     }
 
@@ -1012,6 +1015,8 @@ impl RuntimeServerConfig {
         } else {
             None
         };
+
+        validate_credentials(&wire.typedb.username, &wire.typedb.password)?;
 
         Ok(Self {
             server: ServerSection {
@@ -1771,6 +1776,8 @@ format = "text"
 [typedb]
 address = "localhost:1729"
 database = "mydb"
+username = "admin"
+password = "password"
 "#;
 
     // --- from_file tests ---
@@ -2446,6 +2453,8 @@ key-path = "certs/server.key"
 [typedb]
 address = "localhost:1729"
 database = "db"
+username = "admin"
+password = "password"
 tls = true
 tls-root-ca = "certs/ca.pem"
 "#,
@@ -2482,6 +2491,8 @@ tls-root-ca = "certs/ca.pem"
 [typedb]
 address = "localhost:1729"
 database = "{database}"
+username = "admin"
+password = "password"
 tls = true
 tls-root-ca = "root.pem"
 "#
@@ -2539,6 +2550,8 @@ key-path = "server.key"
 [typedb]
 address = "localhost:1729"
 database = "original-db"
+username = "admin"
+password = "password"
 tls = true
 tls-root-ca = "root.pem"
 "#,
@@ -2612,6 +2625,8 @@ tls-root-ca = "root.pem"
 [typedb]
 address = "localhost:1729"
 database = "original-db"
+username = "admin"
+password = "password"
 tls = true
 tls-root-ca = "../root.pem"
 "#,
@@ -2678,6 +2693,8 @@ tls-root-ca = "../root.pem"
 [typedb]
 address = "localhost:1729"
 database = "db"
+username = "admin"
+password = "password"
 tls = true
 tls-root-ca = {root:?}
 "#,
@@ -2731,6 +2748,8 @@ key-path = {private_key:?}
 [typedb]
 address = "localhost:1729"
 database = "db"
+username = "admin"
+password = "password"
 tls = true
 tls-root-ca = {root:?}
 "#,
@@ -2873,6 +2892,8 @@ key-path = "server.key"
 [typedb]
 address = "localhost:1729"
 database = "db"
+username = "admin"
+password = "password"
 "#,
         )
         .unwrap();
@@ -2925,6 +2946,8 @@ key-path = "identity/server.key"
 [typedb]
 address = "localhost:1729"
 database = "db"
+username = "admin"
+password = "password"
 "#,
         )
         .unwrap();
@@ -2955,6 +2978,8 @@ key-path = "server.key"
 [typedb]
 address = "localhost:1729"
 database = "db"
+username = "admin"
+password = "password"
 "#,
         )
         .unwrap();
@@ -3195,13 +3220,44 @@ database = "db"
     }
 
     #[test]
-    fn default_username_value() {
-        assert_eq!(default_username(), "admin");
-    }
-
-    #[test]
-    fn default_password_value() {
-        assert_eq!(default_password(), "password");
+    fn runtime_requires_explicit_nonempty_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        for pair in [
+            "",
+            "username = \"alice\"",
+            "password = \"secret\"",
+            "username = \"alice\"\npassword = \"\"",
+        ] {
+            let source = format!(
+                "[server]\n[typedb]\naddress = \"localhost:1729\"\ndatabase = \"db\"\n{pair}\n"
+            );
+            std::fs::write(&path, source).unwrap();
+            for runtime in [true, false] {
+                let error = if runtime {
+                    RuntimeServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None)
+                        .unwrap_err()
+                } else {
+                    ServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap_err()
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("must both be explicitly supplied")
+                );
+                assert!(!error.to_string().contains("alice"));
+                assert!(!error.to_string().contains("secret"));
+            }
+            let configured =
+                RuntimeServerConfig::from_file_with_env(path.to_str().unwrap(), |key| match key {
+                    "TYPEDB_USERNAME" => Some("explicit-user".to_owned()),
+                    "TYPEDB_PASSWORD" => Some("explicit-password".to_owned()),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(configured.typedb.connection.username, "explicit-user");
+            assert_eq!(configured.typedb.connection.password, "explicit-password");
+        }
     }
 
     #[test]
