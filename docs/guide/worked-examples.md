@@ -23,9 +23,14 @@ bash scripts/walkthrough.sh
 The runner generates all four packages and builds their source-tree consumers.
 It writes one JSON-line transcript per SDK under the printed output directory.
 Use `--output path` to choose a new directory, or `--sdk python` (and the other
-SDK names) for a focused run. Each SDK gets a fresh database; cleanup deletes
-that exact database on success or failure. `TMPDIR`, `CARGO_TARGET_DIR` and
-`CARGO_BUILD_JOBS` control local build storage and concurrency.
+SDK names) for a focused run. Each SDK gets a fresh database, which cleanup
+normally deletes by its exact name. After a failed child, the runner prints the
+database name and failure, then tries three delayed fresh read transactions.
+It deletes only after a read opens and closes successfully, allowing the server
+to release the child's transactions first. If every probe fails, the runner
+leaves the named database and exits nonzero; clean it up after the server has
+recovered. `TMPDIR`, `CARGO_TARGET_DIR` and `CARGO_BUILD_JOBS` control local build
+storage and concurrency.
 
 The programs live in `examples/walkthrough/{python,typescript,rust,c}/`.
 The snippets below are their printed calls; connection setup, output helpers

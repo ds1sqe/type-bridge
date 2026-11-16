@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -35,6 +36,34 @@ def stage_workspace(workspace: Path) -> None:
         ROOT / "tests/contracts/sdk_conformance/writes/shop/schema/fragments/shop.yaml",
         workspace / "shop.yaml",
     )
+
+
+def cleanup_database(
+    db: Database, name: str, failed_child: subprocess.CalledProcessError | None
+) -> None:
+    if failed_child is not None:
+        print(
+            f"Walkthrough child failed: {failed_child}; database: {name}",
+            file=sys.stderr,
+            flush=True,
+        )
+        for attempt in range(3):
+            time.sleep(1)
+            try:
+                # A crashed child may leave server transactions closing asynchronously.
+                with db.raw_transaction("read", commit_on_exit=False):
+                    pass
+            except Exception as error:
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"Leaving walkthrough database {name}: fresh read did not close: {error}"
+                    ) from error
+            else:
+                break
+    db.delete_database()
+    if db.database_exists():
+        raise RuntimeError(f"walkthrough database still exists after deletion: {name}")
+    print(f"Deleted walkthrough database: {name}", flush=True)
 
 
 def main() -> None:
@@ -185,6 +214,7 @@ type-bridge = {{ path = "{ROOT / "type-bridge-core/crates/rust"}" }}
             http_port=int(environment["TYPEDB_HTTP_PORT"]),
         )
         created = False
+        failed_child = None
         try:
             if db.create_database_outcome() != "created":
                 raise RuntimeError(f"refusing to reuse existing database {name}")
@@ -196,15 +226,13 @@ type-bridge = {{ path = "{ROOT / "type-bridge-core/crates/rust"}" }}
             transcript = output / f"{sdk}.jsonl"
             run(command, env=environment, output=transcript)
             transcripts.append(transcript)
+        except subprocess.CalledProcessError as error:
+            failed_child = error
+            raise
         finally:
             try:
                 if created:
-                    db.delete_database()
-                    if db.database_exists():
-                        raise RuntimeError(
-                            f"walkthrough database still exists after deletion: {name}"
-                        )
-                    print(f"Deleted walkthrough database: {name}", flush=True)
+                    cleanup_database(db, name, failed_child)
             finally:
                 db.close()
     run(
