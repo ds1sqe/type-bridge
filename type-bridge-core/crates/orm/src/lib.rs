@@ -193,6 +193,10 @@ pub use type_bridge_core_lib::version::Version as _ProviderVersion;
 pub use value::AttributeValue;
 pub use write_result::{BatchWriteResult, WriteResult};
 
+#[cfg(feature = "typedb")]
+#[doc(hidden)]
+pub use session::lower_secure_connect_error;
+
 #[cfg(test)]
 #[path = "../tests/support/native_batch.rs"]
 mod native_batch_fixture;
@@ -200,7 +204,3 @@ mod native_batch_fixture;
 mod native_batch_answer_item {
     pub use crate::session::backend::{AnswerItem, QueryResult};
 }
-
-#[cfg(feature = "typedb")]
-#[doc(hidden)]
-pub use session::lower_secure_connect_error;

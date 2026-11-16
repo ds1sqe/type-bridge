@@ -161,10 +161,10 @@ impl RawTransaction {
                     // No commit was sent. Drop all earlier writes and refuse
                     // further work even when the caller catches this error.
                     self.state = State::QueryFailed;
-                    if let Some(mut provider) = transaction.take() {
-                        if let Err(error) = provider.close_raw().await {
-                            tracing::warn!(code = %error.code, "failed raw transaction cleanup failed");
-                        }
+                    if let Some(mut provider) = transaction.take()
+                        && let Err(error) = provider.close_raw().await
+                    {
+                        tracing::warn!(code = %error.code, "failed raw transaction cleanup failed");
                     }
                 }
                 result
