@@ -162,7 +162,12 @@ pub(super) async fn handle_raw(
         .as_millis();
     let Some(validity_ms) = u128::from(request.expires_at_unix_ms)
         .checked_sub(now_ms)
-        .filter(|ms| *ms > 0 && *ms <= state.query.admission_window.as_millis())
+        .filter(|ms| {
+            *ms > 0
+                && *ms
+                    <= state.query.admission_window.as_millis()
+                        + u128::from(type_bridge_contract::query_remote::MAX_REMOTE_CLOCK_SKEW_MS)
+        })
     else {
         return refuse(
             &state,

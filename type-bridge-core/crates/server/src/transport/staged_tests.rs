@@ -1773,11 +1773,21 @@ mod raw_tests {
         let plan = count_plan(&fixture.declared);
         let staged = staged(&fixture, &[plan], "shared-admission-window");
         assert_eq!(staged.limits().admission_window_milliseconds, 5_000);
-        assert_eq!(raw(&fixture, request("read", "read", "raw-window-too-far")).await.0, StatusCode::BAD_REQUEST);
+        let mut too_far = request("read", "read", "raw-window-too-far");
+        too_far["expires_at_unix_ms"] = serde_json::json!(now_ms() + 66_000);
+        assert_eq!(raw(&fixture, too_far).await.0, StatusCode::BAD_REQUEST);
         assert!(host.queries.lock().unwrap().is_empty());
         let mut request = request("read", "read", "raw-window-admitted");
         request["expires_at_unix_ms"] = serde_json::json!(now_ms() + 2_000);
         assert_eq!(raw(&fixture, request).await.0, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn raw_client_thirty_seconds_ahead_is_admitted() {
+        let fixture = fixture(Arc::new(RawHost::default()), None);
+        let mut ahead = request("read", "read", "raw-clock-skew-ahead");
+        ahead["expires_at_unix_ms"] = serde_json::json!(now_ms() + 90_000);
+        assert_eq!(raw(&fixture, ahead).await.0, StatusCode::OK);
     }
 
     #[tokio::test]

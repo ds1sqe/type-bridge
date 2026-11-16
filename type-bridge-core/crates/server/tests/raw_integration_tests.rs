@@ -121,7 +121,7 @@ async fn raw(router: &axum::Router, query: &str, kind: &str) -> (StatusCode, Vec
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
-        + 30_000;
+        + 90_000;
     let body = json!({"query":query,"kind":kind,"nonce":format!("raw-live-{}",uuid::Uuid::new_v4()),"expires_at_unix_ms":expires_at_unix_ms});
     let response = router
         .clone()

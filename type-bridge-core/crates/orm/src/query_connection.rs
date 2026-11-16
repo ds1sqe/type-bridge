@@ -156,7 +156,8 @@ impl std::fmt::Debug for ProxyQueryConnection {
 
 impl ProxyQueryConnection {
     /// Open a single-query unchecked context using this connection's route.
-    /// Raw calls bypass typed plans, advertisements, hooks and answer limits.
+    /// Raw calls bypass typed plans, hooks and answer limits. The pinned
+    /// advertisement still caps the request delivery window.
     pub fn raw_transaction(
         &self,
         kind: crate::TxType,
@@ -176,7 +177,16 @@ impl ProxyQueryConnection {
         Ok(RawTransaction::proxy(
             exchange,
             kind,
-            self.admission_window_milliseconds,
+            std::num::NonZeroU64::new(
+                self.admission_window_milliseconds.get().min(
+                    RemoteCapabilities::decode(&self.advertisement)
+                        .map_err(|error| {
+                            RawQueryError::refusal("raw_advertisement_invalid", &error.to_string())
+                        })?
+                        .admission_window_milliseconds(),
+                ),
+            )
+            .expect("advertised admission windows are nonzero"),
         ))
     }
 
@@ -1687,11 +1697,20 @@ mod policy_tests {
                 Box::pin(async move {
                     let request: serde_json::Value = serde_json::from_slice(request).unwrap();
                     assert_eq!(request["query"], "unchecked text");
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64;
+                    let expiry = request["expires_at_unix_ms"].as_u64().unwrap();
+                    assert!(expiry > now && expiry <= now + 5_000);
                     Ok(b"raw answer".to_vec())
                 })
             }
         }
-        let connection = connection(advertisement(QueryLimits::PLAN));
+        let advertised = advertisement(QueryLimits::PLAN)
+            .with_admission_window_milliseconds(5_000)
+            .unwrap();
+        let connection = connection(advertised);
         assert_eq!(
             connection
                 .raw_transaction(crate::TxType::Write)
