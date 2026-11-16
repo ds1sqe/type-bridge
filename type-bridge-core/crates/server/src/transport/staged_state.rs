@@ -410,6 +410,9 @@ impl StagedQueryState {
         self.ceilings.answer.max_items = ceilings.items;
         self.ceilings.answer.max_bytes = ceilings.bytes;
         self.ceilings.max_collection_members = ceilings.collection_members;
+        self.ceilings.max_graph_nodes = ceilings.graph_nodes;
+        self.ceilings.max_attribute_values = ceilings.attribute_values;
+        self.ceilings.max_role_players = ceilings.role_players;
         Ok(self)
     }
 

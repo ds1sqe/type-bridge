@@ -2000,3 +2000,24 @@ async fn staged_iid_ref_policy_sees_metadata_and_templates_before_provider_io() 
         }
     }
 }
+
+#[test]
+fn advertised_answer_dimensions_reach_execution_ceilings() {
+    for value in [17, 1_000_000] {
+        let authority = authority_fixture(false);
+        let database = Database::with_backend(
+            Box::new(CountingBackend::new([], Arc::new(BackendMetrics::default()))),
+            "server-answer-limits",
+        );
+        let query = StagedQueryState::new_query_only(
+            CapabilitySet::new(), AnswerLimits::default(), database,
+            authority.declared, authority.delta_context, authority.managed,
+        ).unwrap().with_answer_limits(type_bridge_orm::QueryExecutionResourceLimits {
+            graph_nodes: value, attribute_values: value + 1, role_players: value + 2,
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(query.ceilings.max_graph_nodes, value);
+        assert_eq!(query.ceilings.max_attribute_values, value + 1);
+        assert_eq!(query.ceilings.max_role_players, value + 2);
+    }
+}
