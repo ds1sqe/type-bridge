@@ -975,11 +975,15 @@ mod tests {
             .unwrap(),
             AttributeValue::DateTimeTZ("2026-08-03T03:55:00Z".into())
         );
-        for duration in ["PT1H", "P1DT30M"] {
+        for (duration, canonical) in [
+            ("PT1H", "PT3600S"),
+            ("P1DT30M", "P1DT1800S"),
+            ("P1Y", "P12M"),
+        ] {
             assert_eq!(
                 canonicalize_provider_attribute_value(AttributeValue::Duration(duration.into()))
                     .unwrap(),
-                AttributeValue::Duration(duration.into())
+                AttributeValue::Duration(canonical.into())
             );
         }
     }

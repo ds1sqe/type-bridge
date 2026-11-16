@@ -5432,9 +5432,16 @@ impl ProjectedScalarHydration {
         value: CanonicalDuration,
     ) -> PyResult<Py<PyAny>> {
         let (negative, months, days, seconds, nanosecond) = value.components();
-        if negative || months != 0 || nanosecond % 1_000 != 0 || days > 999_999_999 || seconds / 86_400 > 999_999_999 - days {
+        if months != 0
+            || nanosecond % 1_000 != 0
+            || days > 999_999_999
+            || seconds / 86_400 > 999_999_999 - days
+            || negative
+                && days + seconds / 86_400 == 999_999_999
+                && (seconds % 86_400 != 0 || nanosecond != 0)
+        {
             return Err(py_value_error(
-                "duration native view requires a nonnegative day-time value at microsecond precision; select the attribute/model and use .canonical",
+                "duration native view requires a day-time value within timedelta range at microsecond precision; select the attribute/model and use .canonical",
             ));
         }
         let days = i64::try_from(days)
@@ -5442,7 +5449,13 @@ impl ProjectedScalarHydration {
         let seconds = i64::try_from(seconds).map_err(|_| {
             py_value_error("duration hydration second count exceeds the Python range")
         })?;
-        self.timedelta_from_components(py, days, seconds, i64::from(nanosecond / 1_000))
+        let sign = if negative { -1 } else { 1 };
+        self.timedelta_from_components(
+            py,
+            sign * days,
+            sign * seconds,
+            sign * i64::from(nanosecond / 1_000),
+        )
     }
 
     fn datetime_tz_from_canonical(
@@ -8427,7 +8440,14 @@ fn canonical_projected_duration(
     let days = projected_i32_attribute(py, value, pyo3::ffi::c_str!("days"))?;
     let seconds = projected_i32_attribute(py, value, pyo3::ffi::c_str!("seconds"))?;
     let microseconds = projected_i32_attribute(py, value, pyo3::ffi::c_str!("microseconds"))?;
-    if days < 0 || seconds < 0 || microseconds < 0 {
+    if days < 0 {
+        let absolute = value.call_method0("__neg__")?;
+        let positive = canonical_projected_duration(py, &absolute, hydration)?;
+        let (_, months, days, seconds, nanosecond) = positive.components();
+        return CanonicalDuration::new(true, months, days, seconds, nanosecond)
+            .map_err(py_diagnostic);
+    }
+    if seconds < 0 || microseconds < 0 {
         return Err(py_value_error(
             "negative projected durations are not representable losslessly",
         ));
@@ -8580,7 +8600,6 @@ fn canonical_python_datetime(value: &str, timezone_required: bool) -> String {
     }
 }
 
-
 fn python_decimal_fixed_text(value: &Bound<'_, PyAny>) -> PyResult<String> {
     if value.call_method0("is_zero")?.extract::<bool>()? {
         return Ok("0".into());
@@ -8625,35 +8644,8 @@ fn exact_module_value_string(
 }
 
 fn canonical_duration_from_py(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String> {
-    let (days, seconds, micros) = duration_components_from_py(py, value)?;
-    CanonicalDuration::new(
-        false,
-        0,
-        u64::try_from(days).expect("a nonnegative Python timedelta day count fits u64"),
-        u64::try_from(seconds).expect("a nonnegative Python timedelta second count fits u64"),
-        u32::try_from(micros).expect("Python timedelta microseconds fit u32") * 1_000,
-    )
-    .map(|duration| duration.to_string())
-    .map_err(py_diagnostic)
-}
-
-fn duration_components_from_py(
-    py: Python<'_>,
-    value: &Bound<'_, PyAny>,
-) -> PyResult<(i64, i64, i64)> {
-    let class = py.import("datetime")?.getattr("timedelta")?;
-    if value.get_type().as_ptr() != class.as_ptr() {
-        return Err(py_type_error("attribute value requires an exact timedelta"));
-    }
-    let days: i64 = value.getattr("days")?.extract()?;
-    let seconds: i64 = value.getattr("seconds")?.extract()?;
-    let micros: i64 = value.getattr("microseconds")?.extract()?;
-    if days < 0 {
-        return Err(py_value_error(
-            "negative projected durations are not representable losslessly",
-        ));
-    }
-    Ok((days, seconds, micros))
+    let hydration = ProjectedScalarHydration::capture(py)?;
+    canonical_projected_duration(py, value, &hydration).map(|value| value.to_string())
 }
 
 fn ensure_attribute_type(value: &AttributeValue, expected: ValueType) -> PyResult<()> {
@@ -8875,6 +8867,9 @@ fn datetime_tz_to_py(
 }
 
 fn duration_to_py(py: Python<'_>, value: &str) -> PyResult<Py<PyAny>> {
+    if let Ok(canonical) = value.parse::<CanonicalDuration>() {
+        return ProjectedScalarHydration::capture(py)?.duration_from_canonical(py, canonical);
+    }
     let (days, seconds, micros) = parse_python_day_time_duration(value).ok_or_else(|| {
         py_value_error(
             "duration native view requires a day-time value within timedelta range at microsecond precision; select the attribute/model and use .canonical",
@@ -10064,7 +10059,6 @@ plays:
         });
     }
 
-
     #[test]
     fn python_decimal_exponents_convert_without_rounding_or_unbounded_expansion() {
         Python::initialize();
@@ -10109,6 +10103,21 @@ plays:
         });
     }
 
+    #[test]
+    fn negative_day_time_durations_have_exact_native_views() {
+        Python::initialize();
+        Python::attach(|py| {
+            let hydration = ProjectedScalarHydration::capture(py).unwrap();
+            for text in ["-PT1S", "-PT0.000001S", "-P1DT3.5S"] {
+                let canonical = text.parse::<CanonicalDuration>().unwrap();
+                let native = hydration.duration_from_canonical(py, canonical).unwrap();
+                assert_eq!(
+                    canonical_projected_duration(py, native.bind(py), &hydration).unwrap(),
+                    canonical
+                );
+            }
+        });
+    }
 
     #[test]
     fn named_timezone_wrapper_storage_uses_one_pool_object_and_a_lazy_native_view() {

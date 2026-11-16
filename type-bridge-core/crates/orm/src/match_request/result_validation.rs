@@ -1159,9 +1159,12 @@ pub(crate) fn canonicalize_provider_attribute_value(
             let value = normalize_provider_fraction(value);
             match value.parse::<CanonicalDuration>() {
                 Ok(value) => Ok(AttributeValue::Duration(value.to_string())),
-                Err(_) => ModelValue::released_duration(value.clone())
-                    .map(|_| AttributeValue::Duration(value))
-                    .map_err(|_| malformed()),
+                Err(_) => {
+                    ModelValue::released_duration(value.clone()).map_err(|_| malformed())?;
+                    native_duration(&value)
+                        .map(|value| AttributeValue::Duration(value.to_string()))
+                        .ok_or_else(malformed)
+                }
             }
         }
         value => Ok(value),

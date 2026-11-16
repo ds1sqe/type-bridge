@@ -2116,3 +2116,15 @@ precision_person = make_person(
 precision_decoded = Person.decode_create(precision_person.encode_create())
 assert precision_decoded.val_datetime.canonical == precision_person.val_datetime.canonical
 assert precision_decoded.val_datetime_tz.canonical == precision_person.val_datetime_tz.canonical
+
+for duration_text in ("PT0S", "P1M", "P2M3DT4.123456789S", "-PT1S"):
+    assert ValDuration(duration_text).canonical == duration_text
+for invalid_duration in ("P1Y", "PT1H", "P0D", "-PT0S", "PT0.000000000S", "PT1.0000000001S"):
+    try:
+        ValDuration(invalid_duration)
+    except (MatchRequestError, ValueError):
+        pass
+    else:
+        raise AssertionError(f"noncanonical duration accepted: {invalid_duration}")
+assert ValDuration("-PT1S").value == timedelta(seconds=-1)
+assert ValDuration(timedelta(seconds=-1)).canonical == "-PT1S"

@@ -1528,6 +1528,12 @@ const precisionDecoded = Person.decodeCreate(Person.encodeCreate(precisionPerson
 assert.equal(precisionDecoded.valDatetime.canonical, precisionPerson.valDatetime.canonical);
 assert.equal(precisionDecoded.valDatetimeTz.canonical, precisionPerson.valDatetimeTz.canonical);
 
+for (const text of ["PT0S", "P1M", "P2M3DT4.123456789S", "-PT1S"]) {
+  assert.equal(ValDuration.create(text).canonical, text);
+}
+for (const text of ["P1Y", "PT1H", "P0D", "-PT0S", "PT0.000000000S", "PT1.0000000001S"]) {
+  assert.throws(() => ValDuration.create(text));
+}
 const { planDefinition } = await import("./generated_package/dist/runtime.js");
 const decodeScalarRows = planDefinition(Person).decodeRows;
 assert.throws(() => decodeScalarRows({ rows: [[{ scalar: JSON.stringify({ valueType: "datetime", value: "2024-01-01T00:00:00.123456789" }) }]] }), /datetime scalar column 0.*canonical/);
