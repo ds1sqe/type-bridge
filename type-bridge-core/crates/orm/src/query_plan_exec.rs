@@ -1084,7 +1084,7 @@ fn lower_inner(
                 .map(|input| input.public_name().as_str().to_owned())
                 .collect()
         } else {
-            given_regex_inputs(plan)
+            literal_input_columns(plan)
         },
         snapshot,
         given,
@@ -1595,7 +1595,7 @@ fn snapshot_iid_inputs(plan: &QueryPlan) -> Vec<SnapshotIidInput<'_>> {
     result
 }
 
-fn given_regex_inputs(plan: &QueryPlan) -> BTreeSet<String> {
+fn literal_input_columns(plan: &QueryPlan) -> BTreeSet<String> {
     fn collect(patterns: &[QueryPattern], plan: &QueryPlan, columns: &mut BTreeSet<String>) {
         use type_bridge_contract::migration_assertion::ValueComparator;
         for pattern in patterns {
@@ -1606,6 +1606,17 @@ fn given_regex_inputs(plan: &QueryPlan) -> BTreeSet<String> {
                     right: QueryOperand::Input { column },
                     ..
                 } => {
+                    columns.insert(
+                        plan.inputs()[usize::from(column.get())]
+                            .public_name()
+                            .as_str()
+                            .to_owned(),
+                    );
+                }
+                QueryPattern::Iid {
+                    iid: QueryOperand::Input { column },
+                    ..
+                } if plan.given_rows().is_some_and(|rows| rows.len() == 1) => {
                     columns.insert(
                         plan.inputs()[usize::from(column.get())]
                             .public_name()
@@ -1644,7 +1655,7 @@ fn given_regex_inputs(plan: &QueryPlan) -> BTreeSet<String> {
 pub(crate) struct LiteralComparisonPolicy<'a> {
     inputs: &'a [InputColumn],
     remaining: std::cell::Cell<usize>,
-    redact_inputs: bool,
+    pub(crate) redact_inputs: bool,
 }
 
 /// TypeDB requires literal regexes. Each input value is guarded by its
@@ -2525,11 +2536,11 @@ mod tests {
         for optional in [false, true] {
             let (positive, _) = typeql(&race::scoped_given_iid("0x10", false, optional));
             assert_eq!(
-                positive.matches("iid($buyer) == $wanted_iid;").count(),
+                positive.matches("$buyer iid 0x10;").count(),
                 if optional { 1 } else { 2 },
                 "{positive}"
             );
-            let branch = "$buyer isa! account; $purchase isa! purchase, links (buyer: $buyer); iid($buyer) == $wanted_iid;";
+            let branch = "$buyer isa! account; $purchase isa! purchase, links (buyer: $buyer); $buyer iid 0x10;";
             let scope = if optional {
                 format!("try {{ {branch} }};")
             } else {

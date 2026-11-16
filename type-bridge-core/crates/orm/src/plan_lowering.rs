@@ -233,6 +233,17 @@ fn lower_scoped_patterns_inner(
                         local_variable(bindings, *binding)?,
                         vec![ast(tql::iid(iid.as_str()))?],
                     ))?);
+                } else if scope.negative_depth == 0
+                    && !literal_policy.is_some_and(|policy| policy.redact_inputs)
+                    && let QueryOperand::Input { column } = iid
+                    && let Some([row]) = values
+                    && let Some(Some(type_bridge_contract::value::CanonicalValue::String(iid))) =
+                        row.values().get(usize::from(column.get()))
+                {
+                    output.push(ast(tql::thing(
+                        local_variable(bindings, *binding)?,
+                        vec![ast(tql::iid(iid.as_str()))?],
+                    ))?);
                 } else if scope.negative_depth > 0 {
                     // TypeDB 3.12.3 drops the connection for direct iid() filters in negated disjunctions.
                     let actual = format!("PlanNestedIid{}", scope.next_iid);
@@ -551,4 +562,27 @@ pub(crate) fn failure(
         DiagnosticCode::new(code).expect("static query lowering diagnostic code"),
         message,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn singleton_given_iids_use_checked_literals_without_changing_negation() {
+        use crate::query_plan_exec::{lower, lower_redacted, race};
+        let plan = race::scoped_given_iid("0x0123", false, false);
+        let query = tql::render(&lower(&plan).unwrap().query).unwrap();
+        assert!(query.contains("iid 0x0123"), "{query}");
+        let redacted = tql::render(&lower_redacted(&plan).unwrap().query).unwrap();
+        assert!(!redacted.contains("0x0123"), "{redacted}");
+        let staged = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+        assert!(staged.typeql.contains("iid 0x0123"));
+        assert!(!staged.redacted_typeql.as_ref().unwrap().contains("0x0123"));
+        let negative = race::scoped_given_iid("0x0123", true, false);
+        let query = tql::render(&lower(&negative).unwrap().query).unwrap();
+        assert!(query.contains("PlanNestedIid"), "{query}");
+        assert!(!query.contains("iid 0x0123"), "{query}");
+        assert!(tql::iid("0x01; delete $x;").is_err());
+    }
 }
