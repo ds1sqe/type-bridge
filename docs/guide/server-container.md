@@ -44,6 +44,14 @@ Published platforms are `linux/amd64` and `linux/arm64`.
 
 ## Run securely
 
+The shipped server has no client authentication. Reads on `/v3/staged`
+and `/v3/raw` are unauthenticated whenever those endpoints are enabled.
+Put an authenticating reverse proxy or gateway in front of the server,
+restrict network access to that gateway, and enforce request size,
+connection, concurrency and rate limits there. TypeDB credentials authenticate
+only the server's upstream connection. Staged writes require a host
+interceptor's authorization or an explicit opt-in to unauthenticated writes.
+
 The image runs as fixed UID/GID `10001:10001` and needs no Linux
 capabilities or writable root filesystem:
 
@@ -148,13 +156,14 @@ stricter ones, name the limits to change under `[staged.query_limits]`:
 
 ```toml
 [staged.query_limits]
-canonical_bytes = 67108864       # 64 MiB plans
-remote_request_bytes = 134217728 # 128 MiB request envelopes
+canonical_bytes = 8388608        # 8 MiB plans
+remote_request_bytes = 16777216  # 16 MiB request envelopes
 ```
 
 The server validates the table at startup, advertises these limits in
 `/v3/capabilities`, and enforces exactly what it advertises. An unknown name
-or an unsupported value aborts startup. Clients older than configurable query
+or an unsupported value aborts startup. Remote request envelopes have a hard
+32 MiB codec ceiling; plan bytes and framing must fit inside that envelope. Clients older than configurable query
 limits cannot read an advertisement that names any, so leave the table out
 until every client is upgraded. Limit names and defaults are listed in the
 [typed-query contract](../development/typed-query-contract.md#query-limits).

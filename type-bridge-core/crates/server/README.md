@@ -140,12 +140,13 @@ file twice, retains the verified bytes as an immutable snapshot, and does not
 reopen it while serving requests. After replacing the file, reload the complete
 configuration; changing the public path field on a loaded value is rejected.
 
-Prepared query execution captures the exact schema export under a bounded
+Staged plan execution captures the exact schema export under a bounded
 TypeDB schema-exclusion fence. That fence uses a `WRITE`
 transaction even though emitted staged TypeQL is read-only, so the server
 credential needs that transaction permission and an executing request can
-delay concurrent schema work. The default absolute request deadline is 30
-seconds and the hard maximum is five minutes.
+delay concurrent schema work. The default execution deadline is 60 seconds. A nonpositive configured
+`timeout_milliseconds` disables that deadline; positive values are not
+capped at five minutes. The finite admission window remains independent.
 
 
 ## HTTP API
