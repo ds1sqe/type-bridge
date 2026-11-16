@@ -1700,6 +1700,39 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
 - Refuse playerless projected relation creates with `relation_requires_player`
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
+- Treat every nonzero C migration callback return, including `-1`, as a
+  defined migration failure. Require empty diagnostics output slots and close
+  diagnostics between calls in the C guide.
+
+- Report the supported Ubuntu 24.04 x86_64 C shared-runtime matrix throughout
+  artifact, security, consumer and FULL-C evidence; remove the obsolete #189
+  gate from the audit summary while preserving nonpublishing audit authority.
+
+- Apply the same clock-skew allowance to raw and staged proxy requests and
+  intersect raw client admission windows with the server advertisement.
+
+- Reject remote envelope budgets above the codec's 32 MiB ceiling and enforce
+  all advertised graph, attribute and role-player answer limits.
+
+- Include native third-party notices in the server image and describe its
+  current routes. Document unauthenticated reads and gateway requirements.
+
+- Require a dated changelog for stable tag publication and wait for successful
+  crates.io publication before core PyPI publication. Remove temporary 3.0
+  preparation wording and correct the documented server execution deadline.
+
+- After a failed walkthrough child, delay database cleanup until a fresh read
+  opens and closes successfully; bound retries and report the exact retained
+  database when the server remains unavailable, avoiding the observed upstream
+  TypeDB 3.13.6 delete-after-abort panic. An interrupted child is handled
+  the same way.
+
+- The native third-party notices now cover the server's dependencies, and the
+  server image ships them read-only.
+
+- The Rust SDK applies the server's advertised admission window to raw proxy
+  requests made before a schema is bound.
+
 ## [2.3.3] - 2026-10-27
 
 ### Fixed
