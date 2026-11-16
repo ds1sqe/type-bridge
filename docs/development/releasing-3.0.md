@@ -25,8 +25,8 @@ artifact hashes and public-consumer reports together as release evidence.
    `CHANGELOG.md` to the actual publication date in a final PR. Merge that PR
    before accepting the final source. Do not date the changelog in a new commit
    after acceptance: every source-bound gate must cover the exact dated SHA.
-   `python scripts/ci/check_upgrade_guide.py --release` requires a valid
-   publication date; the tag workflow runs this gate before publication.
+   `python scripts/ci/check_upgrade_guide.py --release --version 3.0.0` requires a valid
+   publication date; stable candidate and tag workflows run this gate before publication.
 3. Require complete attempt-one master CI on that SHA:
 
    ```bash

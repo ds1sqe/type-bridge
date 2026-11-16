@@ -1425,4 +1425,11 @@ def test_publishers_consume_same_run_artifacts_and_recheck_the_frozen_tag() -> N
 
 def test_stable_publication_requires_a_dated_changelog() -> None:
     workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text()
-    assert "run: python scripts/ci/check_upgrade_guide.py --release" in workflow
+    gate = workflow.split("- name: Require dated publication changelog", 1)[1].split("- name:", 1)[
+        0
+    ]
+    assert "if: env.RELEASE_CHANNEL == 'stable'" in gate
+    assert (
+        'run: python scripts/ci/check_upgrade_guide.py --release --version "$RELEASE_VERSION"'
+        in gate
+    )

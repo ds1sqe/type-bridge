@@ -175,8 +175,8 @@ jobs:
           --expected-manifest-sha256 "${{ steps.cargo-candidate.outputs.manifest_sha256 }}"
 
       - name: Require dated publication changelog
-        if: github.event_name == 'push'
-        run: python scripts/ci/check_upgrade_guide.py --release
+        if: env.RELEASE_CHANNEL == 'stable'
+        run: python scripts/ci/check_upgrade_guide.py --release --version "$RELEASE_VERSION"
 
       # Bind Python, npm, Cargo, and OCI artifacts to one release identity.
       - name: Validate identity and retained TypeDB package provenance

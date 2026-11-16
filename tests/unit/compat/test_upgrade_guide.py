@@ -1,8 +1,11 @@
 """The shared snippet must cover the whole breaking-change inventory."""
 
+import subprocess
+import sys
+
 import pytest
 
-from scripts.ci.check_upgrade_guide import END, INCLUDE, ROOT, START, check
+from scripts.ci.check_upgrade_guide import END, INCLUDE, ROOT, START, check, check_release_date
 
 
 def test_repository_upgrade_guide_covers_every_breaking_entry() -> None:
@@ -32,9 +35,33 @@ def test_missing_guide_include_is_rejected() -> None:
 def test_publication_rejects_undated_or_invalid_changelog(published: str) -> None:
     changelog = f"## [3.0.0] - {published}\n### Breaking\n{START}\n- Change\n{END}"
     with pytest.raises((AssertionError, ValueError)):
-        check(changelog, INCLUDE, release=True)
+        check(changelog, INCLUDE, release=True, version="3.0.0")
 
 
 def test_publication_accepts_dated_changelog() -> None:
     changelog = f"## [3.0.0] - 2026-11-16\n### Breaking\n{START}\n- Change\n{END}"
-    assert check(changelog, INCLUDE, release=True) == 1
+    assert check(changelog, INCLUDE, release=True, version="3.0.0") == 1
+
+
+def test_release_date_checks_selected_version_instead_of_previous_release() -> None:
+    changelog = "## [3.1.0] - Unreleased\n\n## [3.0.0] - 2026-11-16\n"
+    with pytest.raises(ValueError, match="release 3.1.0"):
+        check_release_date(changelog, "3.1.0")
+    check_release_date(changelog.replace("[3.1.0] - Unreleased", "[3.1.0] - 2026-12-01"), "3.1.0")
+
+
+def test_release_date_is_enforced_with_python_optimization() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-O",
+            "-c",
+            "from scripts.ci.check_upgrade_guide import check_release_date; "
+            "check_release_date('## [3.1.0] - Unreleased\\n', '3.1.0')",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "must have a publication date" in result.stderr
