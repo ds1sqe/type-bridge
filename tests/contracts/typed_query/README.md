@@ -30,3 +30,9 @@ it names every case it skips, with the reason.
 Python and TypeScript bindings must consume the same Rust semantics. A
 language-specific test may render or type a case, but it must not change the
 expected identity, multiplicity, error, transaction, or statement behavior.
+
+The two `order.iid-root-fallback` and `order.iid-collection-fallback` entries
+are declarative contracts: no corpus runner executes these entries as queries.
+Their successful page operations require executor and data statements; the
+collection entry describes concept identity within each collected binding.
+Live generated SDK suites exercise IID ordering independently of this manifest.

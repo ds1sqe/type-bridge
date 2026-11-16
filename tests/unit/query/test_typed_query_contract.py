@@ -267,10 +267,15 @@ def test_generated_operation_projection_is_derived_from_the_identity_manifest() 
 
 def test_keyless_order_cases_use_iid_fallback() -> None:
     cases = {case["id"]: case for case in _load(CORPUS_PATH)["cases"]}
-    for case_id in ("order.iid-root-fallback", "order.iid-collection-fallback"):
+    for case_id, identity in (
+        ("order.iid-root-fallback", "root"),
+        ("order.iid-collection-fallback", "concept"),
+    ):
         expected = cases[case_id]["expected"]
         assert expected["outcome"] == "success"
-        assert expected["identity_basis"] == "root"
+        assert expected["identity_basis"] == identity
+        assert not expected["zero_executor_invocations"]
+        assert not expected["zero_data_statements"]
         assert expected["error_code"] is None
 
 

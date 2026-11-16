@@ -395,7 +395,7 @@
       "operation": "page_by",
       "transaction_mode": "none",
       "input": {"root_key": "nullable_or_non_unique"},
-      "expected": {"outcome": "success", "identity_basis": "root", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
+      "expected": {"outcome": "success", "identity_basis": "root", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false},
       "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
     },
     {
@@ -405,7 +405,7 @@
       "operation": "page_by",
       "transaction_mode": "none",
       "input": {"collection_key": "nullable_or_non_unique"},
-      "expected": {"outcome": "success", "identity_basis": "root", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
+      "expected": {"outcome": "success", "identity_basis": "concept", "multiplicity": "deduplicate_identity", "error_category": null, "error_code": null, "zero_executor_invocations": false, "zero_data_statements": false},
       "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
     },
     {
