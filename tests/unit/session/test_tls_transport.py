@@ -904,6 +904,28 @@ def test_generated_connection_retains_tls_identity_and_root_snapshot(
         database.close()
 
 
+@pytest.mark.parametrize(
+    "credentials",
+    [{"username": "admin"}, {"password": "password"}, {"username": ""}, {"password": ""}],
+)
+def test_generated_connection_rejects_partial_credentials_before_native_dispatch(
+    credentials: dict[str, str],
+) -> None:
+    import runpy
+
+    source = (
+        Path(__file__).parents[3] / "type-bridge-core/crates/schema-codegen/src/python/runtime.py"
+    )
+    runtime = runpy.run_path(str(source))
+    connect = runtime["connect"]
+    native = MagicMock(return_value=_CurrentRustDatabaseHandle())
+    connect.__globals__["_package_runtime_projection"] = SimpleNamespace(connect_direct=native)
+    policy = runtime["DirectConnectionPolicy"]("localhost:1729", "generated", **credentials)
+    with pytest.raises(ValueError, match="username.*password"):
+        connect(policy)
+    native.assert_not_called()
+
+
 def test_root_snapshot_failure_redacts_the_private_configured_path(tmp_path: Path) -> None:
     from type_bridge.session import _snapshot_tls_root_ca
 

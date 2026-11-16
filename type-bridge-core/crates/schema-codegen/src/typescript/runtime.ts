@@ -2300,6 +2300,12 @@ export class DirectConnectionPolicy {
   ) {
     this.endpoint = endpoint;
     this.database = database;
+    if ((options.username === undefined) !== (options.password === undefined) ||
+        (options.username !== undefined &&
+          (typeof options.username !== "string" || options.username.length === 0 ||
+            typeof options.password !== "string" || options.password.length === 0))) {
+      throw new TypeError("username and password must both be nonempty when supplied");
+    }
     this.#username = options.username ?? "admin";
     this.#password = options.password ?? "password";
     this.#httpPort = options.httpPort ?? 8000;

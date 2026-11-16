@@ -114,7 +114,7 @@ mod tests {
         assert!(!source.contains("globals()["));
         assert!(!source.contains("_LegacyProjectedField"));
         assert!(source.contains("class DirectConnectionPolicy:"));
-        assert!(source.contains("password: str = field(default=\"password\", repr=False)"));
+        assert!(source.contains("password: str | None = field(default=None, repr=False)"));
         assert!(source.contains("DirectConnectionPolicy([REDACTED])"));
         assert!(source.contains("projection.connect_direct("));
     }

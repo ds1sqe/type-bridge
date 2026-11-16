@@ -77,6 +77,23 @@ const directPolicy = new OrderedDirectConnectionPolicy(
   },
 );
 assert.equal(directPolicy.toString(), "DirectConnectionPolicy([REDACTED])");
+const defaultCredentials = [];
+new OrderedDirectConnectionPolicy("localhost:1729", "app").__connect({
+  connectDirect(input) {
+    defaultCredentials.push([input.username, input.password]);
+    return {};
+  },
+});
+assert.deepEqual(defaultCredentials, [["admin", "password"]]);
+for (const credentials of [
+  { username: "admin" }, { password: "password" },
+  { username: "alice", password: "" }, { username: "", password: "secret" },
+]) {
+  assert.throws(
+    () => new OrderedDirectConnectionPolicy("localhost:1729", "app", credentials),
+    /username and password/,
+  );
+}
 for (const secret of [
   "hostile-endpoint",
   "hostile-database",

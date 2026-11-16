@@ -1358,8 +1358,8 @@ class DirectTlsMode(StrEnum):
 class DirectConnectionPolicy:
     endpoint: str
     database: str
-    username: str = "admin"
-    password: str = field(default="password", repr=False)
+    username: str | None = None
+    password: str | None = field(default=None, repr=False)
     http_port: int = 8000
     tls: DirectTlsMode = DirectTlsMode.DISABLED
     tls_root_ca: str | None = None

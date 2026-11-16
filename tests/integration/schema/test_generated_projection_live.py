@@ -3427,6 +3427,50 @@ def test_reentering_transaction_preserves_pending_writes_live(
         clean_db.transaction("wirte")
 
 
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        {"username": "admin"},
+        {"password": "password"},
+        {"username": "alice", "password": ""},
+        {"username": "", "password": "secret"},
+    ],
+)
+def test_generated_partial_credentials_never_substitute_admin_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+    credentials: dict[str, str],
+) -> None:
+    policy = generated_package.DirectConnectionPolicy(
+        clean_db.address,
+        clean_db.database_name,
+        http_port=clean_db.http_port,
+        **credentials,
+    )
+    connection = None
+    try:
+        with pytest.raises(ValueError, match="username.*password"):
+            connection = generated_package.connect(policy)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def test_generated_omitted_credentials_use_default_pair_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    connection = generated_package.connect(
+        generated_package.DirectConnectionPolicy(
+            clean_db.address, clean_db.database_name, http_port=clean_db.http_port
+        )
+    )
+    try:
+        assert connection.database_exists() is True
+    finally:
+        connection.close()
+
+
 def test_rejected_generated_query_releases_owned_transaction_before_close_live(
     clean_db: Database,
     generated_package: ModuleType,
