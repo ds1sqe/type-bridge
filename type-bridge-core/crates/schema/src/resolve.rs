@@ -1097,10 +1097,18 @@ fn validate_owns_value_constraints(
                         lower && upper && own != parent
                     }
                     (SchemaAnnotationValue::Values(own), SchemaAnnotationValue::Values(parent)) => {
-                        own.iter().len() < parent.iter().len()
-                            && own
-                                .iter()
-                                .all(|value| parent.iter().any(|candidate| candidate == value))
+                        let mut matched = BTreeSet::new();
+                        own != parent
+                            && own.iter().all(|value| {
+                                parent
+                                    .iter()
+                                    .position(|candidate| {
+                                        candidate == value
+                                            || candidate.semantic_cmp_same_domain(value)
+                                                == Some(Ordering::Equal)
+                                    })
+                                    .is_some_and(|index| matched.insert(index))
+                            })
                     }
                     (SchemaAnnotationValue::Regex(own), SchemaAnnotationValue::Regex(parent)) => {
                         own != parent

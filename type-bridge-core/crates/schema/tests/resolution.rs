@@ -773,6 +773,32 @@ fn owns_constraints_must_narrow_direct_and_inherited_attribute_constraints() {
 }
 
 #[test]
+fn owns_value_narrowing_compares_numeric_values_but_preserves_annotation_identity() {
+    // TypeDB accepts a distinct annotation spelling of signed zero while
+    // still matching the same numeric value; duplicate numeric members fail.
+    for values in ["[0.0]", "[0.0, 1.0]"] {
+        let schema = declared(&format!(
+            "format: typebridge.schema/v2\nattributes:\n  score:\n    value: {{type: double, values: [-0.0, 1.0]}}\nentities:\n  person:\n    owns:\n      score: {{values: {values}}}\n"
+        ));
+        resolve(&schema, &profile()).unwrap();
+    }
+    let schema = declared(
+        "format: typebridge.schema/v2\nattributes:\n  score:\n    value: {type: double, values: [-0.0, 1.0]}\nentities:\n  person:\n    owns:\n      score: {values: [-0.0, 0.0]}\n",
+    );
+    assert_eq!(
+        resolve(&schema, &profile())
+            .unwrap_err()
+            .iter()
+            .next()
+            .unwrap()
+            .diagnostic()
+            .code()
+            .as_str(),
+        "owns_constraint_not_narrowing"
+    );
+}
+
+#[test]
 fn owns_constraints_accept_strict_subsets_and_distinct_conjunctive_regexes() {
     for (value_type, attribute, own) in [
         (
