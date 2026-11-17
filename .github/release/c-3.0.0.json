@@ -628,7 +628,7 @@
       "type_bridge_write_transaction_rollback_keep"
     ],
     "header": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-    "header_sha256": "35825eb03dec4b40134fe2f8d1999e466fe773cc98c6cccfcd300190dac6b259"
+    "header_sha256": "1b26d9186a34134f8a7f5f5d1e49dbd2749214ea1cad0548ce73ccf787145c60"
   },
   "artifact_disposition": "unchanged; promotion is a separate signed record",
   "certificate_identity": "https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/v3.0.0",
@@ -916,8 +916,10 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "skipped",
+      "Prepare the four-SDK complex query fixture": "skipped",
       "Restore cargo build cache": "success",
       "Run integration tests for queries": "success",
+      "Set up Node for the four-SDK complex query fixture": "skipped",
       "Set up Python": "success",
       "Upload Python queries report": "skipped",
       "Wait for TypeDB server to be ready": "success"
@@ -931,8 +933,10 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "success",
+      "Prepare the four-SDK complex query fixture": "success",
       "Restore cargo build cache": "success",
       "Run integration tests for schema": "success",
+      "Set up Node for the four-SDK complex query fixture": "success",
       "Set up Python": "success",
       "Upload Python queries report": "success",
       "Wait for TypeDB server to be ready": "success"
@@ -946,8 +950,10 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "skipped",
+      "Prepare the four-SDK complex query fixture": "skipped",
       "Restore cargo build cache": "success",
       "Run integration tests for session": "success",
+      "Set up Node for the four-SDK complex query fixture": "skipped",
       "Set up Python": "success",
       "Upload Python queries report": "skipped",
       "Wait for TypeDB server to be ready": "success"
@@ -1404,7 +1410,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "898a2c97476cf7660ac783ef6bbefd02c1c94218482a18065cb8dcdae7b43b0f",
+  "ci_workflow_sha256": "289820893f87db0cc68467dcff8ea949f2987a052b9eaa6e1eafdc055c1cbac9",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-3.0.0.tar.gz",
   "format": "typebridge.c-release-policy/v1",
