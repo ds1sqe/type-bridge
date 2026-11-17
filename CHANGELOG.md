@@ -1322,6 +1322,19 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
 - Python rejects an unknown transaction kind, where a misspelled kind used to
   open a read transaction, and rejects entering a transaction context that is
   already open.
+- Missing-value ordering is removed: the `missing=` option of Python and
+  Node `asc`/`desc`, Rust `missing_first`/`missing_last`, and the C
+  field-order constructor argument. It was always refused. To sort by an
+  optional field, filter to the rows where it is present. The C order
+  descriptor keeps its layout; the slot is `reserved_missing` and must be
+  zero.
+- The generic `PlanBuilder` refuses an `exact` read of an abstract type at
+  build time with `query_plan_abstract_exact_read`. Use `subtypes`. Managers
+  and typed queries read an abstract type through its subtypes.
+- Plans refuse an attribute variable compared with itself at build time with
+  `query_plan_attribute_self_comparison`, because TypeDB 3.12 to 3.14 crash on
+  that statement. Compare two independent bindings instead. Raw TypeQL is not
+  guarded.
 
 <!-- --8<-- [end:breaking-3-0] -->
 
@@ -1746,6 +1759,22 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
 - Examples forward the credential environment variables unchanged, so a
   half-set environment is refused instead of being completed with a default.
 
+- `retry_safe` is documented as "repeating the transaction cannot duplicate a
+  commit". A deterministic validation, inference or constraint rejection is
+  retry-safe and fails again unchanged.
+
+- The string-match rules are documented: `contains` ignores case, while
+  `starts_with` and `ends_with` do not. Predicates on one multi-valued field
+  are independent; requiring one value to satisfy several needs raw TypeQL.
+
+- A label that is a reserved TypeQL keyword is refused at `schema check` with
+  a diagnostic naming the keyword. Keyword-like labels that TypeDB accepts,
+  such as `label`, `count`, `value` and `type`, work through generation,
+  migration, managers and typed queries in every SDK.
+
+- A size-parameterized complex-query fixture relating up to twelve types runs
+  in the live SDK tier for all four SDKs, checked against raw TypeQL.
+
 ### Fixed
 
 - A proxy request that exceeds the advertised budgets, such as more staged
@@ -1934,6 +1963,30 @@ See [Upgrading to 3.0](docs/guide/upgrade-3.0.md) for replacements and migration
   its declarations compile without the DOM library.
 
 - The server builds with only its `typedb` feature enabled.
+
+- `rows`, `first` and `page_by` accept entity and relation types without a
+  key, ordering and paging by IID. The cross-type query in the quickstart and
+  the relation examples no longer fail with `missing_stable_unique_key`.
+
+- An optional scalar field can be sorted when the query's predicates
+  guarantee it is present in every matching row.
+
+- Managers and bindings on an abstract type read its concrete subtypes in
+  every SDK, including keyword filters, role-player positions and nested
+  relation keys. They previously failed with a TypeDB inference error.
+
+- Two predicates on the same multi-valued field no longer make a manager
+  read fail with `predicate_evidence_mismatch`; managers now agree with typed
+  queries, keyword filters, `count` and `exists`.
+
+- Comparisons between incompatible value types, such as a naive datetime
+  against a `datetime-tz` field, an integer against a boolean or a string
+  against an integer, are refused when the plan is built instead of matching
+  nothing. Typed queries and managers require the same numeric type on both
+  sides; the generic `Plan` and raw TypeQL follow TypeDB's numeric comparison.
+
+- Generated Python field-to-field comparison methods accept a field of a
+  different attribute class in their type signatures.
 
 ## [2.3.3] - 2026-10-27
 
