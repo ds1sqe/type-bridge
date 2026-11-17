@@ -636,6 +636,8 @@ raw TypeQL. This crashes TypeDB 3.12.3, 3.13.6 and 3.14.0, including other
 comparison operators. Generic Plan builds refuse that shape before execution;
 raw text cannot be guarded. Use two independent attribute witnesses or remove
 the redundant comparison.
+The upstream report is
+[typedb/typedb#7725](https://github.com/typedb/typedb/issues/7725).
 
 `type_bridge_database_execute_query` sends unchecked TypeQL to TypeDB.
 See [raw execution](queries.md#raw-typeql-execution) for transaction behavior.
