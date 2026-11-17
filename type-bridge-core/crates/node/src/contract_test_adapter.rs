@@ -20,7 +20,7 @@ use type_bridge_orm::{
     ProviderRuntimeOwner, TxType,
 };
 
-use crate::NodeRustDatabase;
+use crate::NodeDatabase;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ContractFoundationProbe {
@@ -46,7 +46,8 @@ pub(crate) enum ProjectionRecordingResponse {
 /// This symbol exists only in builds that explicitly enable the private
 /// `contract-test-adapter` feature.
 #[napi(js_name = "__roundTripContractFoundation")]
-pub fn round_trip_contract_foundation(input: Buffer) -> Result<Buffer> {
+pub fn round_trip_contract_foundation(env: Env, input: Unknown) -> Result<Buffer> {
+    let input = crate::plan_runtime::non_shared_buffer(&env, input)?;
     let probe: ContractFoundationProbe =
         from_canonical_json(input.as_ref()).map_err(contract_error)?;
     if !matches!(probe.long, CanonicalValue::Long(_)) {
@@ -72,6 +73,8 @@ pub(crate) struct ProjectionRecordingState {
     pub(crate) closes: usize,
     #[serde(skip)]
     commit_failure: Option<CommitFailureCertainty>,
+    #[serde(skip)]
+    commit_conflict: bool,
 }
 
 #[cfg(test)]
@@ -98,6 +101,10 @@ struct ProjectionRecordingBackend {
 }
 
 impl DriverBackend for ProjectionRecordingBackend {
+    fn match_capabilities(&self) -> type_bridge_orm::CapabilitySet {
+        type_bridge_orm::CapabilitySet::all()
+    }
+
     fn open_transaction(
         &self,
         _database: &str,
@@ -195,6 +202,18 @@ impl TransactionOps for ProjectionRecordingTransaction {
     }
 
     fn commit(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+        if self
+            .state
+            .lock()
+            .expect("recording state poisoned")
+            .commit_conflict
+        {
+            return Box::pin(async move {
+                self.commit_classified()
+                    .await
+                    .map_err(ClassifiedCommitError::into_orm_error)
+            });
+        }
         Box::pin(async {
             Err(OrmError::QueryExecution(
                 "contract recording adapter used the lossy commit path".to_owned(),
@@ -208,15 +227,20 @@ impl TransactionOps for ProjectionRecordingTransaction {
         let failure = {
             let mut state = self.state.lock().expect("recording state poisoned");
             state.commits += 1;
-            state.commit_failure
+            (state.commit_failure, state.commit_conflict)
         };
         Box::pin(async move {
             match failure {
-                Some(certainty) => Err(ClassifiedCommitError::Driver {
+                (Some(certainty), conflict) => Err(ClassifiedCommitError::Driver {
                     certainty,
-                    message: "contract recording commit failed".to_owned(),
+                    message: if conflict {
+                        "[STC2] TypeDB commit rejected: exclusive lock conflict"
+                    } else {
+                        "contract recording commit failed"
+                    }
+                    .to_owned(),
                 }),
-                None => Ok(()),
+                (None, _) => Ok(()),
             }
         })
     }
@@ -244,7 +268,7 @@ pub fn new_projection_recording_authority() -> External<DatabaseConnectionAuthor
 /// One feature-gated database plus stable provider-I/O counters.
 #[napi(js_name = "__ProjectionRecordingFixture")]
 pub struct ProjectionRecordingFixture {
-    database: Option<NodeRustDatabase>,
+    database: Option<NodeDatabase>,
     state: Arc<Mutex<ProjectionRecordingState>>,
 }
 
@@ -260,19 +284,23 @@ impl ProjectionRecordingFixture {
             .map_err(|error| {
                 Error::new(Status::InvalidArg, format!("invalid responses: {error}"))
             })?;
+        let commit_conflict = commit_failure.as_deref() == Some("conflict");
         let commit_failure = match commit_failure.as_deref() {
             None => None,
-            Some("definitely_aborted") => Some(CommitFailureCertainty::DefinitelyAborted),
+            Some("conflict" | "definitely_aborted") => {
+                Some(CommitFailureCertainty::DefinitelyAborted)
+            }
             Some("unknown") => Some(CommitFailureCertainty::Unknown),
             Some(_) => {
                 return Err(Error::new(
                     Status::InvalidArg,
-                    "commit failure must be 'definitely_aborted' or 'unknown'",
+                    "commit failure must be 'conflict', 'definitely_aborted' or 'unknown'",
                 ));
             }
         };
         let state = Arc::new(Mutex::new(ProjectionRecordingState {
             commit_failure,
+            commit_conflict,
             ..ProjectionRecordingState::default()
         }));
         let backend = ProjectionRecordingBackend {
@@ -294,7 +322,7 @@ impl ProjectionRecordingFixture {
             )
         })?;
         Ok(Self {
-            database: Some(NodeRustDatabase {
+            database: Some(NodeDatabase {
                 db: Arc::new(database),
                 runtime,
                 managed_scope_id: None,
@@ -304,7 +332,7 @@ impl ProjectionRecordingFixture {
     }
 
     #[napi(js_name = "takeDatabase")]
-    pub fn take_database(&mut self) -> Result<NodeRustDatabase> {
+    pub fn take_database(&mut self) -> Result<NodeDatabase> {
         self.database.take().ok_or_else(|| {
             Error::new(
                 Status::InvalidArg,

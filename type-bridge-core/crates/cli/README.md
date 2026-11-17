@@ -2,14 +2,14 @@
 
 The `type-bridge` command-line interface for split-YAML workspaces, generated
 bindings, and canonical schema migrations. Schema checking, generation, and
-migration authoring/planning are offline; apply, verify, rollback, adopt, and
+migration authoring/planning are offline; apply, verify, rollback, and
 upgrade-profile connect only through an explicitly selected workspace
 environment.
 
 ## Install and start
 
 ```bash
-cargo install type-bridge-cli --version 2.3.3 --locked
+cargo install type-bridge-cli --version 3.0.0 --locked
 type-bridge --help
 type-bridge schema check
 type-bridge schema generate
@@ -49,14 +49,27 @@ and the committed head must still equal the current schema sources. The CLI
 serializes discovery, parsing, generation, and no-overwrite publication under
 one directory lock.
 
+`migration abandon-plan --environment <name>` clears an open execution plan
+only when the live schema matches the applied ledger at a completed manifest
+boundary and no unresolved commit, backfill, or data evidence remains. It
+requires `migrate: true` and an existing owned database pair, retains the
+applied ledger, and is safe to repeat. `migration verify` reports open plans;
+restoring their exact manifests and retrying is the normal recovery path.
+
 The crate has no optional features. It is released in lockstep with TypeBridge
-2.3.3 and requires Rust 1.88+. Offline schema checking, generation, migration
-authoring, and planning accept the frozen TypeDB 3.11.5, 3.12.1, and 3.13.6
+3.0.0 and requires Rust 1.88+. Offline schema checking, generation, migration
+authoring, and planning accept the frozen TypeDB 3.12.1 and 3.13.6
 semantic profiles. Connected migration commands run on exactly two profile/server
 pairs: `typedb-3.12.1/v1` with TypeDB 3.12.3 and `typedb-3.13.6/v1` with
 TypeDB 3.13.6 or 3.14.0. `migration upgrade-profile` moves a history from the
 first to the second.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-cli/2.3.3) ·
+[API documentation](https://docs.rs/type-bridge-cli/3.0.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)
+
+`type-bridge migration regenerate-previews --check` lists derived review files
+that differ from verified canonical history and exits nonzero without writing.
+Omit `--check` to regenerate those previews; canonical manifest and plan bytes
+remain unchanged. Profile-bridge previews are repaired by rerunning
+`migration upgrade-profile` for the original environment and target profile.

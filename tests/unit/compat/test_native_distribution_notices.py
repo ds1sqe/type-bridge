@@ -32,25 +32,17 @@ def test_native_distributions_ship_one_byte_identical_consolidated_notice() -> N
     assert "THIRD_PARTY_NOTICES.md" in node["files"]
 
 
-def test_notice_pins_namespaced_sources_and_complete_license_texts() -> None:
+def test_notice_pins_official_sources_and_complete_license_texts() -> None:
     notice = PYTHON_NOTICE.read_text(encoding="utf-8")
     normalized_notice = " ".join(notice.split())
 
     for identity in (
-        "type-bridge-typedb-driver-b8` 3.11.5",
-        "type-bridge-typedb-protocol-b8` 3.11.0",
         "official `typedb-driver` 3.14.0",
         "official `typedb-protocol` 3.14.0",
         "`ed25519-dalek` | 2.2.0",
         "`curve25519-dalek` | 4.1.3",
     ):
         assert identity in notice
-
-    for upstream_commit in (
-        "7e669e41d9fee22fde8d5e60be7edbf00c6ec64b",
-        "1db5bdd6579352d31343da28be41844ed07da1b5",
-    ):
-        assert upstream_commit in notice
 
     for official_source in (
         "https://crates.io/crates/typedb-driver/3.14.0",
@@ -59,10 +51,7 @@ def test_notice_pins_namespaced_sources_and_complete_license_texts() -> None:
         assert official_source in notice
 
     assert "no active, consumed, or release-input TypeBridge band-9" in normalized_notice
-    assert "no transaction terminal-close patch or other behavioral change" in normalized_notice
-    assert "driver `src/` tree and protocol generated source" in normalized_notice
     assert "TypeDB remains the original upstream owner and source" in normalized_notice
-    assert "immutable TypeBridge v2.0.0 source tag" in normalized_notice
     assert "band-7" not in normalized_notice.lower()
     assert "typedb-driver-b7" not in normalized_notice
     assert "typedb-protocol-b7" not in normalized_notice

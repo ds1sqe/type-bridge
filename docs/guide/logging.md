@@ -1,8 +1,9 @@
 # Logging
 
-TypeBridge does not configure application logging. Python uses the standard
-`logging` hierarchy; Rust and Node surface structured errors and diagnostics at
-their public boundaries.
+TypeBridge leaves application logging configuration to the host. Native plan
+and IO events use Rust `tracing`, forwarded to Python `logging`, a Node listener
+or a C database callback. Rust hosts use their subscriber. See
+[Debugging plans](debugging.md) for explain, event fields and `RUST_LOG`.
 
 ## Python
 
@@ -19,10 +20,10 @@ Useful retained namespaces include:
 
 ```text
 type_bridge
+├── type_bridge.plan          native plan construction and execution
+├── type_bridge.io            native provider and server IO
 ├── type_bridge.session       connection and transaction facade
-├── type_bridge.query         retained raw query facade
-├── type_bridge.migration     V2 CLI and read-only archive recovery
-└── type_bridge.proxy         remote proxy boundary
+└── type_bridge.migration     canonical workspace migration CLI
 ```
 
 Generated package managers execute in the native Rust engine. Their failures

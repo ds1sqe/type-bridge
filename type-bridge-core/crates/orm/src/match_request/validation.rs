@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{FunctionReturnProjection, ProjectedTypeRef};
-use type_bridge_contract::value::ValueTypeTag;
+use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz};
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_core_lib::decimal::parse_decimal;
 
 use crate::_attribute::ValueType;
@@ -225,12 +226,17 @@ pub fn validate_match_request(
 /// validation ran under.
 pub fn validate_match_request_with_limits(
     registry: &DescriptorRegistry,
-    request: MatchRequest,
+    mut request: MatchRequest,
     query_limits: QueryLimits,
 ) -> Result<ValidatedMatchRequest, MatchError> {
     let limits = query_limits.structural;
     validate_version_and_structure(limits, &request)?;
     let bindings = resolve_bindings(registry, &request)?;
+    for binding in &mut request.plan.bindings {
+        if bindings[&binding.id].is_abstract() {
+            binding.match_mode = MatchMode::Subtypes;
+        }
+    }
     validate_expression(registry, &request, &bindings)?;
     validate_topology(&request)?;
     let (stable_order, collection_orders) = validate_operation(registry, &request, &bindings)?;
@@ -823,7 +829,7 @@ fn validate_expr_node(
             if attribute.value_type.as_str() != value.value_type_name() {
                 return Err(invalid(
                     "literal_type_mismatch",
-                    "literal value type does not match the descriptor field",
+                    "typed comparisons require the same scalar value type, including numeric types; use the generic Plan builder or raw TypeQL for TypeDB cross-numeric-type semantics",
                 )
                 .at(MatchErrorPathSegment::Field(field.field.clone())));
             }
@@ -853,7 +859,7 @@ fn validate_expr_node(
             if left_attr.value_type != right_attr.value_type {
                 return Err(invalid(
                     "field_type_mismatch",
-                    "field comparison requires identical descriptor value types",
+                    "typed comparisons require the same scalar value type, including numeric types; use the generic Plan builder or raw TypeQL for TypeDB cross-numeric-type semantics",
                 )
                 .at(MatchErrorPathSegment::Field(right.field.clone())));
             }
@@ -1567,13 +1573,10 @@ fn derive_stable_order(
             .filter(|attribute| is_stable_unique_scalar(attribute))
             .collect();
         candidates.sort_by(|left, right| left.field_name.cmp(&right.field_name));
-        let candidate = candidates.first().ok_or_else(|| {
-            invalid(
-                "missing_stable_unique_key",
-                "bounded result identity requires a present unique scalar descriptor field",
-            )
-            .at(MatchErrorPathSegment::Binding(binding))
-        })?;
+        // The plan adapter always appends the selected concept IIDs.
+        let Some(candidate) = candidates.first() else {
+            continue;
+        };
         let descriptor_id = registry
             .descriptor_id(descriptor.type_name())
             .expect("resolved descriptor remains registered");
@@ -1768,6 +1771,13 @@ fn validate_safe_value(value: &AttributeValue) -> Result<(), MatchError> {
 }
 
 fn valid_date(value: &str) -> bool {
+    value
+        .parse::<CanonicalDate>()
+        .is_ok_and(|parsed| parsed.to_string() == value)
+        || released_valid_date(value)
+}
+
+fn released_valid_date(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
         return false;
@@ -1803,10 +1813,36 @@ fn valid_date(value: &str) -> bool {
 }
 
 fn valid_datetime(value: &str, timezone_required: bool) -> bool {
+    if timezone_required && value.ends_with(']') {
+        return type_bridge_schema::parse_provider_datetime_tz_evidence(value).is_ok_and(
+            |parsed| {
+                matches!(
+                    crate::runtime_projection::attribute_value_from_canonical(
+                        &CanonicalValue::DateTimeTz(parsed)
+                    ),
+                    AttributeValue::DateTimeTZ(canonical) if canonical == value
+                )
+            },
+        );
+    }
+    let canonical = if timezone_required {
+        value
+            .parse::<CanonicalDateTimeTz>()
+            .is_ok_and(|parsed| parsed.to_string() == value)
+    } else {
+        value
+            .parse::<CanonicalDateTime>()
+            .is_ok_and(|parsed| parsed.to_string() == value)
+    };
+    canonical || released_valid_datetime(value, timezone_required)
+}
+
+// Preserve the released four-digit lexical path; new forms must be canonical above.
+fn released_valid_datetime(value: &str, timezone_required: bool) -> bool {
     let Some((date, time)) = value.split_once('T') else {
         return false;
     };
-    if !valid_date(date) {
+    if !released_valid_date(date) {
         return false;
     }
     let (clock, has_timezone) = if let Some(clock) = time.strip_suffix('Z') {
@@ -2198,18 +2234,18 @@ fn selected_slot_cap(
     message: &'static str,
     path: MatchErrorPathSegment,
 ) -> Result<(), MatchError> {
-    if count <= limits.selected_slots {
+    let maximum = limits
+        .selected_slots
+        .min(type_bridge_contract::limits::MAX_SELECTED_SLOTS);
+    if count <= maximum {
         return Ok(());
     }
     Err(invalid(code, message)
         .at(path)
         .with_detail("actual", usize_detail(count))
-        .with_detail("maximum", usize_detail(limits.selected_slots))
+        .with_detail("maximum", usize_detail(maximum))
         .with_detail("limit", "selected_slots")
-        .with_detail(
-            "source",
-            limit_source("selected_slots", limits.selected_slots),
-        ))
+        .with_detail("source", limit_source("selected_slots", maximum)))
 }
 
 fn check_limit(
@@ -2271,7 +2307,7 @@ fn usize_detail(value: usize) -> u64 {
 mod tests {
     use std::collections::BTreeSet;
 
-    use type_bridge_contract::query_plan::CompatibilityValueV2;
+    use type_bridge_contract::query_plan::ModelValue;
     use type_bridge_contract::temporal::{CanonicalDateTime, CanonicalDateTimeTz};
 
     use super::*;
@@ -2407,10 +2443,61 @@ mod tests {
     fn v2_datetime_lexical_is_accepted(value: &str, timezone_required: bool) -> bool {
         if timezone_required {
             value.parse::<CanonicalDateTimeTz>().is_ok()
-                || CompatibilityValueV2::released_datetime_tz(value).is_ok()
+                || ModelValue::released_datetime_tz(value).is_ok()
         } else {
             value.parse::<CanonicalDateTime>().is_ok()
-                || CompatibilityValueV2::released_datetime(value).is_ok()
+                || ModelValue::released_datetime(value).is_ok()
+        }
+    }
+
+    #[test]
+    fn emitted_canonical_temporal_literals_are_safe_filter_values() {
+        for value in ["-0001-01-02", "+10000-01-02", "0000-02-29"] {
+            assert!(
+                validate_safe_value(&AttributeValue::Date(value.into())).is_ok(),
+                "{value}"
+            );
+        }
+        for value in ["-9999-01-02T03:04:05", "+10000-01-02T03:04:05.123456789"] {
+            assert!(
+                validate_safe_value(&AttributeValue::DateTime(value.into())).is_ok(),
+                "{value}"
+            );
+        }
+        for value in [
+            "2026-11-01T01:30:00-05:00[America/New_York]",
+            "2026-11-01T01:30:00-04:00[America/New_York]",
+            "1900-01-01T00:00:00+08:27:52[Asia/Seoul]",
+        ] {
+            assert!(
+                validate_safe_value(&AttributeValue::DateTimeTZ(value.into())).is_ok(),
+                "{value}"
+            );
+        }
+        for value in [
+            "+010000-01-02",
+            "-000001-01-02",
+            "-0001-01-02; match $x isa person;",
+        ] {
+            assert!(
+                validate_safe_value(&AttributeValue::Date(value.into())).is_err(),
+                "{value}"
+            );
+        }
+        for value in [
+            "2026-11-01T01:30:00-03:00[America/New_York]",
+            "2024-01-01T00:00:00Z[Not/AZone]",
+            "2024-01-01T00:00:00+09:00[Asia/Seoul]; match $x isa person;",
+            "2024-01-01T00:00:00+09:00[Asia/Seoul][UTC]",
+            "2024-01-01T00:00:00+09:00[Asia/Seoul\"]",
+            "2024-01-01T00:00:00+09:00[Asia/[Seoul]]",
+            "2024-01-01T00:00:00+09:00[Asia/Seoul\n]",
+            "2024-01-01T00:00:00 Asia/Seoul",
+        ] {
+            assert!(
+                validate_safe_value(&AttributeValue::DateTimeTZ(value.into())).is_err(),
+                "{value}"
+            );
         }
     }
 

@@ -1,0 +1,2033 @@
+//! Canonical staged transactions. Requests are unsigned; replies retain the
+//! existing Ed25519 signed outer envelope.
+
+use crate::capability::{CapabilityId, CapabilitySet};
+use crate::codec::{from_canonical_json_with_limits, to_canonical_json_with_limits};
+use crate::diagnostic::{Diagnostic, DiagnosticCategory};
+use crate::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
+use crate::limits::{
+    DEFAULT_STAGED_READ_STATEMENTS, DEFAULT_STAGED_WRITE_STATEMENTS, MAX_REMOTE_ENVELOPE_BYTES,
+    MAX_STAGED_ITEMS, MAX_STAGED_PLANS, MAX_STAGED_STATEMENTS, QueryLimits,
+    STAGED_REMOTE_CODEC_LIMITS,
+};
+use crate::query_plan::{InputRow, QueryOutput};
+use crate::query_plan::{Operation, QueryPlan, WriteReturns, decode_query_plan_with_limits};
+use crate::query_plan_wire::{PlanScalarWire, WireScalar};
+use crate::query_remote::{
+    DEFAULT_ADMISSION_WINDOW_MILLISECONDS, MAX_REMOTE_CLOCK_SKEW_MS,
+    QUERY_REMOTE_REQUEST_FINGERPRINT_DOMAIN, RemoteCapabilities, RemoteFieldValue,
+    RemoteReplySigner, RemoteReplyVerifier, RemoteSigningPublicKey, RemoteValue,
+};
+use crate::schema::DeclaredSchema;
+use crate::sdk_diagnostic::SdkExecutionDiagnostic;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[path = "query_remote_failure.rs"]
+mod pre_request_failure;
+pub use pre_request_failure::{
+    QUERY_REMOTE_FAILURE_FORMAT, StagedFailure, decode_signed_staged_failure,
+};
+
+#[path = "query_remote_result_ref.rs"]
+mod result_ref;
+pub use result_ref::{StagedResultRef, validate_staged_result_refs};
+
+/// Admission capability for IID dependencies between staged plans.
+pub const CAP_QUERY_STAGE_RESULT_REF: &str = "query.stage.result_ref";
+
+/// Exact request discriminator and fingerprint canonicalization.
+pub const QUERY_REMOTE_REQUEST_FORMAT: &str = "typebridge.query-remote-request/v3";
+/// Exact staged reply payload discriminator.
+pub const QUERY_REMOTE_REPLY_FORMAT: &str = "typebridge.query-remote-response/v3";
+/// Admission capability for the staged envelope.
+pub const CAP_QUERY_REMOTE_STAGED: &str = "query.remote.envelope-v3";
+/// Admission capability for additional semantic answer budgets.
+pub const CAP_QUERY_REMOTE_ANSWER_DIMENSIONS: &str = "query.remote.answer-dimensions";
+/// Admission capability for authenticated write staging.
+pub const CAP_QUERY_REMOTE_WRITE: &str = "query.remote.write";
+
+fn invalid(code: &'static str, message: &'static str) -> Diagnostic {
+    Diagnostic::stable(DiagnosticCategory::InvalidContract, code, message)
+}
+fn limit(code: &'static str, message: &'static str) -> Diagnostic {
+    Diagnostic::stable(DiagnosticCategory::ResourceLimit, code, message)
+}
+fn mismatch() -> Diagnostic {
+    Diagnostic::stable(
+        DiagnosticCategory::Integrity,
+        "query_remote_binding_mismatch",
+        "staged reply does not bind the expected request",
+    )
+}
+
+fn validate_reply_binding(
+    format: &str,
+    nonce: &str,
+    fingerprint: &str,
+    request: &StagedRequest,
+) -> Result<(), Diagnostic> {
+    if format != QUERY_REMOTE_REPLY_FORMAT {
+        return Err(invalid(
+            "query_remote_format_unsupported",
+            "unsupported staged reply format",
+        ));
+    }
+    if nonce != request.nonce() {
+        return Err(mismatch().with_detail("reason", "nonce"));
+    }
+    if fingerprint != request.fingerprint()?.digest().to_hex() {
+        return Err(mismatch().with_detail("reason", "request"));
+    }
+    Ok(())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+fn unhex(value: &str) -> Result<Vec<u8>, &'static str> {
+    if !value.len().is_multiple_of(2)
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("invalid lowercase byte encoding");
+    }
+    value
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let digit = |b: u8| if b <= b'9' { b - b'0' } else { b - b'a' + 10 };
+            Ok((digit(pair[0]) << 4) | digit(pair[1]))
+        })
+        .collect()
+}
+
+/// Explicit transaction kind. Schema transactions do not admit staged plans.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StagedKind {
+    /// A read-only transaction, closed instead of committed by execution.
+    Read,
+    /// A write transaction, including a caller-selected write snapshot for reads.
+    Write,
+    /// Reserved schema kind; staged query staging rejects it.
+    Schema,
+}
+
+/// Aggregate staged answer and execution budgets.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StagedLimits {
+    /// Collect diagnostic phase records without requiring a tracing subscriber.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub collect_phase_timestamps: bool,
+    /// Execution deadline; null means unbounded, a positive integer is milliseconds.
+    pub deadline_ms: Option<u64>,
+    /// Finite delivery window from issue to admission, independent of execution.
+    #[serde(
+        default = "default_admission_window",
+        skip_serializing_if = "is_default_admission_window"
+    )]
+    pub admission_window_milliseconds: u64,
+    /// Maximum signed successful reply bytes.
+    pub max_bytes: u64,
+    /// Maximum aggregate answer items across all plans.
+    pub max_items: u64,
+    /// Optional maximum hydrated graph nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_graph_nodes: Option<u64>,
+    /// Optional maximum attribute values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attribute_values: Option<u64>,
+    /// Optional maximum collection members.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_collection_members: Option<u64>,
+    /// Optional maximum role-player references.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_role_players: Option<u64>,
+    /// Maximum ordered plans, at most 64.
+    pub max_staged_plans: u32,
+    /// Maximum read provider statements, charged during execution.
+    pub max_read_statements: u32,
+    /// Independent write provider-statement budget.
+    pub max_write_statements: u32,
+}
+fn is_false(value: &bool) -> bool {
+    !value
+}
+fn default_admission_window() -> u64 {
+    DEFAULT_ADMISSION_WINDOW_MILLISECONDS
+}
+fn is_default_admission_window(value: &u64) -> bool {
+    *value == DEFAULT_ADMISSION_WINDOW_MILLISECONDS
+}
+impl Default for StagedLimits {
+    fn default() -> Self {
+        Self {
+            collect_phase_timestamps: false,
+            deadline_ms: Some(60_000),
+            admission_window_milliseconds: DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
+            max_bytes: MAX_REMOTE_ENVELOPE_BYTES as u64,
+            max_items: MAX_STAGED_ITEMS,
+            max_graph_nodes: None,
+            max_attribute_values: None,
+            max_collection_members: None,
+            max_role_players: None,
+
+            max_staged_plans: MAX_STAGED_PLANS,
+            max_read_statements: DEFAULT_STAGED_READ_STATEMENTS,
+            max_write_statements: DEFAULT_STAGED_WRITE_STATEMENTS,
+        }
+    }
+}
+impl StagedLimits {
+    /// Refuse unsupported execution budgets; semantic ceilings may be zero.
+    pub fn validate(self) -> Result<Self, Diagnostic> {
+        if [
+            self.max_graph_nodes,
+            self.max_attribute_values,
+            self.max_collection_members,
+            self.max_role_players,
+        ]
+        .into_iter()
+        .zip(&crate::limits::ANSWER_LIMIT_FIELDS[3..7])
+        .any(|(value, field)| value.is_some_and(|value| value > field.maximum))
+            || self.max_bytes == 0
+            || self.max_bytes > crate::limits::ANSWER_LIMIT_FIELDS[2].maximum
+            || self.max_items == 0
+            || self.max_items > crate::limits::ANSWER_LIMIT_FIELDS[1].maximum
+            || self.max_staged_plans == 0
+            || self.max_staged_plans > MAX_STAGED_PLANS
+            || self.max_read_statements == 0
+            || self.max_read_statements > MAX_STAGED_STATEMENTS
+            || self.max_write_statements == 0
+            || self.max_write_statements > MAX_STAGED_STATEMENTS
+            || self.deadline_ms == Some(0)
+            || self.admission_window_milliseconds == 0
+        {
+            return Err(limit(
+                "query_remote_limits",
+                "staged budgets exceed the supported range",
+            ));
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct PlanWire {
+    plan_bytes: String,
+    rows: Vec<InputRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    result_refs: Vec<StagedResultRef>,
+}
+impl<'de> Deserialize<'de> for PlanWire {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            plan_bytes: String,
+            rows: Vec<Vec<Option<crate::value::CanonicalValue>>>,
+            #[serde(default)]
+            result_refs: Vec<StagedResultRef>,
+        }
+        let raw = Raw::deserialize(d)?;
+        Ok(Self {
+            plan_bytes: raw.plan_bytes,
+            rows: raw.rows.into_iter().map(InputRow::new).collect(),
+            result_refs: raw.result_refs,
+        })
+    }
+}
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawPlanWire {
+    plan_bytes: String,
+    rows: Vec<Vec<Option<PlanScalarWire>>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    result_refs: Vec<StagedResultRef>,
+}
+impl RawPlanWire {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<PlanWire, Diagnostic> {
+        Ok(PlanWire {
+            plan_bytes: self.plan_bytes,
+            result_refs: self.result_refs,
+            rows: self
+                .rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|value| value.map(|value| value.rebuild(limits)).transpose())
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(InputRow::new)
+                })
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+/// One canonical plan and positional invocation rows in an ordered stack.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StagedPlan {
+    wire: PlanWire,
+    plan: QueryPlan,
+}
+impl StagedPlan {
+    /// Validate one plan under schema authority and bind its invocation rows.
+    pub fn new(
+        plan: &QueryPlan,
+        rows: Vec<InputRow>,
+        schema: &DeclaredSchema,
+    ) -> Result<Self, Diagnostic> {
+        Self::rebuild(
+            PlanWire {
+                plan_bytes: hex(&plan.canonical_bytes()?),
+                rows,
+                result_refs: Vec::new(),
+            },
+            schema,
+            plan.limits(),
+        )
+    }
+    fn rebuild(
+        wire: PlanWire,
+        schema: &DeclaredSchema,
+        limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        to_canonical_json_with_limits(&wire.rows, limits.codec)
+            .map_err(|error| limits.annotate(error))?;
+        // The outer codec bounds the string before the embedded bytes are allocated.
+        if wire.plan_bytes.len() > limits.codec.max_bytes.saturating_mul(2) {
+            return Err(limit(
+                "query_remote_plan_bytes",
+                "embedded plan exceeds its byte ceiling",
+            ));
+        }
+        let bytes = unhex(&wire.plan_bytes).map_err(|_| {
+            invalid(
+                "query_remote_plan_bytes",
+                "embedded plan bytes are not canonical lowercase hexadecimal",
+            )
+        })?;
+        let plan = decode_query_plan_with_limits(&bytes, schema, limits)?;
+        if !wire.result_refs.is_empty() {
+            if plan.given_rows().is_some() {
+                return Err(invalid(
+                    "query_stage_result_ref_bound",
+                    "a referenced input template requires an unbound plan",
+                ));
+            }
+            let entry = Self { wire, plan };
+            entry.validate_ref_template()?;
+            return Ok(entry);
+        }
+        if let Some(bound) = plan.given_rows() {
+            if bound != wire.rows {
+                return Err(invalid(
+                    "query_remote_given_mismatch",
+                    "bound plan rows differ from staged invocation rows",
+                ));
+            }
+        } else if plan.inputs().is_empty() {
+            if !wire.rows.is_empty() {
+                return Err(invalid(
+                    "query_remote_unexpected_rows",
+                    "a plan without columns has no invocation rows",
+                ));
+            }
+        } else {
+            plan.with_given_rows(wire.rows.clone(), schema)?;
+        }
+        Ok(Self { wire, plan })
+    }
+    /// Original trusted plan, whose operation selects the answer kind.
+    pub fn plan(&self) -> &QueryPlan {
+        &self.plan
+    }
+    /// Consume this entry and return its validated plan, without copying it.
+    pub fn into_plan(self) -> QueryPlan {
+        self.plan
+    }
+
+    /// Exact positional invocation rows.
+    pub fn rows(&self) -> &[InputRow] {
+        &self.wire.rows
+    }
+    /// Materialize invocation values as a trusted plan for the staged executor.
+    pub fn bound_plan(&self, schema: &DeclaredSchema) -> Result<QueryPlan, Diagnostic> {
+        if !self.result_refs().is_empty() {
+            return Err(invalid(
+                "query_stage_result_ref_unresolved",
+                "result references must bind inside the staged transaction",
+            ));
+        }
+        if self.plan.inputs().is_empty() || self.plan.given_rows().is_some() {
+            Ok(self.plan.clone())
+        } else {
+            self.plan.with_given_rows(self.wire.rows.clone(), schema)
+        }
+    }
+}
+
+/// Untrusted request constructor inputs. Expiry is derived from preparation time.
+pub struct StagedRequestSpec {
+    /// Caller nonce, 16..128 ASCII letters, digits, hyphens or underscores.
+    pub nonce: String,
+    /// Optional kind, otherwise inferred from all plan operations.
+    pub kind: Option<StagedKind>,
+    /// Aggregate execution budgets.
+    pub limits: StagedLimits,
+    /// Ordered transaction stack.
+    pub plans: Vec<StagedPlan>,
+    /// Caller preparation timestamp in Unix milliseconds.
+    pub prepared_at_unix_ms: u64,
+}
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RequestWire<P = PlanWire> {
+    advertisement: String,
+    expires_at_unix_ms: u64,
+    format: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    kind: Option<StagedKind>,
+    limits: StagedLimits,
+    nonce: String,
+    plans: Vec<P>,
+    prepared_at_unix_ms: u64,
+}
+/// Validated canonical staged request; no execution opens at construction.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StagedRequest {
+    wire: RequestWire,
+    plans: Vec<StagedPlan>,
+}
+impl StagedRequest {
+    /// Construct a request bound to one exact executor advertisement.
+    pub fn new(
+        spec: StagedRequestSpec,
+        schema: &DeclaredSchema,
+        advertisement: &RemoteCapabilities,
+    ) -> Result<Self, Diagnostic> {
+        Self::new_with_limits(spec, schema, advertisement, QueryLimits::PLAN)
+    }
+
+    /// Construct under caller query limits, constrained by the advertised receiver limits.
+    pub fn new_with_limits(
+        spec: StagedRequestSpec,
+        schema: &DeclaredSchema,
+        advertisement: &RemoteCapabilities,
+        query_limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        query_limits.validate_plan().map_err(|_| {
+            invalid(
+                "query_remote_query_limits",
+                "caller query limits are invalid",
+            )
+        })?;
+        let mut limits = spec.limits.validate()?;
+        limits.admission_window_milliseconds = limits
+            .admission_window_milliseconds
+            .min(advertisement.admission_window_milliseconds());
+        let expires = spec
+            .prepared_at_unix_ms
+            .checked_add(limits.admission_window_milliseconds)
+            .ok_or_else(|| invalid("query_remote_time", "staged request lifetime is invalid"))?;
+        let wire = RequestWire {
+            advertisement: advertisement.fingerprint()?.digest_hex(),
+            expires_at_unix_ms: expires,
+            format: QUERY_REMOTE_REQUEST_FORMAT.into(),
+            kind: spec.kind,
+            limits,
+            nonce: spec.nonce,
+            plans: spec.plans.into_iter().map(|p| p.wire).collect(),
+            prepared_at_unix_ms: spec.prepared_at_unix_ms,
+        };
+        Self::rebuild(wire, schema, advertisement, query_limits)
+    }
+    fn rebuild(
+        wire: RequestWire,
+        schema: &DeclaredSchema,
+        advertisement: &RemoteCapabilities,
+        receiver: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        wire.limits.validate()?;
+        if wire.format != QUERY_REMOTE_REQUEST_FORMAT {
+            return Err(invalid(
+                "query_remote_format",
+                "unsupported staged request format",
+            ));
+        }
+        if wire.advertisement != advertisement.fingerprint()?.digest_hex() {
+            return Err(mismatch());
+        }
+        pre_request_failure::validate_nonce(&wire.nonce)?;
+        if wire
+            .expires_at_unix_ms
+            .checked_sub(wire.prepared_at_unix_ms)
+            != Some(wire.limits.admission_window_milliseconds)
+            || wire.limits.admission_window_milliseconds
+                > advertisement.admission_window_milliseconds()
+        {
+            return Err(invalid(
+                "query_remote_time",
+                "staged request lifetime is invalid",
+            ));
+        }
+        if wire.plans.is_empty() || wire.plans.len() > wire.limits.max_staged_plans as usize {
+            return Err(limit(
+                "query_remote_plan_limit",
+                "staged plan count exceeds its budget",
+            ));
+        }
+        let advertised = advertisement.query_limits();
+        let limits = QueryLimits::from_overrides(QueryLimits::FIELDS.iter().map(|name| {
+            (
+                *name,
+                receiver
+                    .get(name)
+                    .unwrap()
+                    .min(advertised.get(name).unwrap()) as u64,
+            )
+        }))
+        .map_err(|_| {
+            invalid(
+                "query_remote_query_limits",
+                "receiver query limits are invalid",
+            )
+        })?;
+        let plans = wire
+            .plans
+            .iter()
+            .cloned()
+            .map(|p| StagedPlan::rebuild(p, schema, limits))
+            .collect::<Result<Vec<_>, _>>()?;
+        validate_staged_result_refs(&plans, schema)?;
+        let (reads, writes) = plans.iter().fold((0, 0), |(reads, writes), entry| {
+            let (plan_reads, plan_writes) = entry.plan.statement_counts();
+            (reads + plan_reads, writes + plan_writes)
+        });
+        if wire.kind == Some(StagedKind::Schema)
+            || (writes > 0 && wire.kind == Some(StagedKind::Read))
+        {
+            return Err(invalid(
+                "query_remote_kind",
+                "transaction kind refuses the staged operations",
+            ));
+        }
+        if writes > wire.limits.max_write_statements as usize
+            || reads > wire.limits.max_read_statements as usize
+        {
+            return Err(limit(
+                "query_remote_statement_limit",
+                "staged plans exceed their minimum statement budget",
+            ));
+        }
+        if let Some(maximum) = advertisement.answer_limits().get("statements")
+            && reads.saturating_add(writes) as u64 > *maximum
+        {
+            return Err(limit(
+                "query_remote_statement_limit",
+                "staged plans exceed the receiver's explicit statement ceiling",
+            )
+            .with_detail("limit", "statements")
+            .with_detail("maximum", i64::try_from(*maximum).unwrap_or(i64::MAX))
+            .with_detail("source", crate::limits::LIMIT_SOURCE_CONFIGURED));
+        }
+        let mut capabilities = CapabilitySet::new();
+        capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_STAGED)?);
+        if plans.iter().any(|entry| !entry.result_refs().is_empty()) {
+            capabilities.insert(CapabilityId::new(CAP_QUERY_STAGE_RESULT_REF)?);
+        }
+        if [
+            wire.limits.max_graph_nodes,
+            wire.limits.max_attribute_values,
+            wire.limits.max_collection_members,
+            wire.limits.max_role_players,
+        ]
+        .iter()
+        .any(Option::is_some)
+        {
+            capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_ANSWER_DIMENSIONS)?);
+        }
+        if writes > 0 {
+            capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_WRITE)?);
+        }
+        if plans.iter().flat_map(|entry| entry.rows()).flat_map(|row| row.values()).flatten().any(|value| matches!(value, crate::value::CanonicalValue::String(text) if text.as_str().len() > crate::limits::MAX_CANONICAL_STRING_BYTES)) {
+            capabilities.insert(CapabilityId::new(crate::query_plan::CAP_QUERY_INPUT_WIDE_STRINGS)?);
+        }
+        for plan in &plans {
+            for capability in plan.plan.required_capabilities().iter() {
+                capabilities.insert(capability.clone());
+            }
+        }
+        capabilities.ensure_supported_by(advertisement.capabilities())?;
+        let request = Self { wire, plans };
+        request.encode()?;
+        Ok(request)
+    }
+    /// Decode canonical bytes through schema and advertisement validation.
+    pub fn decode(
+        bytes: &[u8],
+        schema: &DeclaredSchema,
+        advertisement: &RemoteCapabilities,
+    ) -> Result<Self, Diagnostic> {
+        Self::decode_with_limits(bytes, schema, advertisement, QueryLimits::PLAN)
+    }
+    /// Decode with receiver-owned query limits; senders cannot widen them.
+    pub fn decode_with_limits(
+        bytes: &[u8],
+        schema: &DeclaredSchema,
+        advertisement: &RemoteCapabilities,
+        limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        limits.validate_plan().map_err(|_| {
+            invalid(
+                "query_remote_query_limits",
+                "receiver query limits are invalid",
+            )
+        })?;
+        let wire: RequestWire<RawPlanWire> = from_canonical_json_with_limits(
+            bytes,
+            crate::limits::CodecLimits {
+                max_bytes: limits.remote_request_bytes.min(MAX_REMOTE_ENVELOPE_BYTES),
+                ..STAGED_REMOTE_CODEC_LIMITS
+            },
+        )?;
+        let wire = RequestWire {
+            advertisement: wire.advertisement,
+            expires_at_unix_ms: wire.expires_at_unix_ms,
+            format: wire.format,
+            kind: wire.kind,
+            limits: wire.limits,
+            nonce: wire.nonce,
+            plans: wire
+                .plans
+                .into_iter()
+                .map(|plan| plan.rebuild(limits.codec))
+                .collect::<Result<_, _>>()?,
+            prepared_at_unix_ms: wire.prepared_at_unix_ms,
+        };
+        let request = Self::rebuild(wire, schema, advertisement, limits)?;
+        if request.encode()?.as_slice() != bytes {
+            return Err(invalid(
+                "query_remote_noncanonical",
+                "staged request reconstruction changes canonical bytes",
+            ));
+        }
+        Ok(request)
+    }
+    /// Encode exact canonical request bytes.
+    pub fn encode(&self) -> Result<Vec<u8>, Diagnostic> {
+        to_canonical_json_with_limits(&self.wire, STAGED_REMOTE_CODEC_LIMITS)
+    }
+    /// Fingerprint the complete request, including key, kind, rows and expiry.
+    pub fn fingerprint(&self) -> Result<Fingerprint, Diagnostic> {
+        Ok(Fingerprint::compute(
+            FingerprintDomain::new(QUERY_REMOTE_REQUEST_FINGERPRINT_DOMAIN)?,
+            CanonicalizationVersion::new(QUERY_REMOTE_REQUEST_FORMAT)?,
+            None,
+            &self.encode()?,
+        ))
+    }
+    /// Validate freshness separately from canonical archival decoding.
+    pub fn validate_at(&self, now_unix_ms: u64) -> Result<(), Diagnostic> {
+        if now_unix_ms >= self.wire.expires_at_unix_ms
+            || self.wire.prepared_at_unix_ms > now_unix_ms.saturating_add(MAX_REMOTE_CLOCK_SKEW_MS)
+        {
+            return Err(invalid(
+                "query_remote_expired",
+                "staged request is expired or prepared beyond the clock-skew allowance",
+            ));
+        }
+        Ok(())
+    }
+    /// Exact advertisement fingerprint binding.
+    pub fn advertisement(&self) -> &str {
+        &self.wire.advertisement
+    }
+    /// Exact caller nonce.
+    pub fn nonce(&self) -> &str {
+        &self.wire.nonce
+    }
+    /// Absolute expiry in Unix milliseconds.
+    pub fn expires_at_unix_ms(&self) -> u64 {
+        self.wire.expires_at_unix_ms
+    }
+    /// Aggregate execution budgets.
+    pub fn limits(&self) -> StagedLimits {
+        self.wire.limits
+    }
+    /// Ordered validated plans and invocation rows.
+    pub fn plans(&self) -> &[StagedPlan] {
+        &self.plans
+    }
+    /// Consume this request and return its validated entries, without copying them.
+    pub fn into_plans(self) -> Vec<StagedPlan> {
+        self.plans
+    }
+
+    /// Selected or inferred transaction kind.
+    pub fn kind(&self) -> StagedKind {
+        self.wire.kind.unwrap_or_else(|| {
+            if self
+                .plans
+                .iter()
+                .any(|p| matches!(p.plan.operation(), Operation::Write { .. }))
+            {
+                StagedKind::Write
+            } else {
+                StagedKind::Read
+            }
+        })
+    }
+}
+
+/// Per-plan successful evidence. Array position binds each answer to its plan.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StagedAnswer {
+    /// Positional typed rows, including write-returning rows.
+    Rows {
+        /// Complete rows.
+        rows: Vec<Vec<RemoteValue>>,
+    },
+    /// Named fetched documents.
+    Documents {
+        /// Complete documents.
+        documents: Vec<BTreeMap<String, RemoteFieldValue>>,
+    },
+    /// Read row count.
+    Count {
+        /// Exact count.
+        value: u64,
+    },
+    /// Read presence.
+    Exists {
+        /// Whether any row exists.
+        value: bool,
+    },
+    /// Number of rows matched by a write pipeline.
+    Matched {
+        /// Exact matched count.
+        value: u64,
+    },
+}
+impl StagedAnswer {
+    /// Verify one answer against its trusted plan, also for direct execution.
+    pub fn validate_for(&self, plan: &QueryPlan) -> Result<(), Diagnostic> {
+        validate_answer(self, plan).map(|_| ())
+    }
+
+    /// Provider documents, including every collected player document.
+    pub fn item_count(&self) -> u64 {
+        match self {
+            Self::Documents { documents } => {
+                documents
+                    .iter()
+                    .fold(documents.len() as u64, |total, fields| {
+                        fields.values().fold(total, |total, field| {
+                            if let RemoteFieldValue::Documents { documents } = field {
+                                total.saturating_add(documents.len() as u64)
+                            } else {
+                                total
+                            }
+                        })
+                    })
+            }
+            Self::Rows { rows } => rows.len() as u64,
+            _ => 1,
+        }
+    }
+
+    /// Semantic resource counts: graph nodes, attribute values, collection
+    /// members and role players, shared by local execution and reply verification.
+    pub fn resource_counts(&self) -> [u64; 4] {
+        let mut counts = [0_u64; 4];
+        match self {
+            Self::Rows { rows } => {
+                for value in rows.iter().flatten() {
+                    match value {
+                        RemoteValue::Thing { .. } => counts[0] = counts[0].saturating_add(1),
+                        RemoteValue::Attribute { .. } => counts[1] = counts[1].saturating_add(1),
+                        _ => {}
+                    }
+                    counts[2] = counts[2].saturating_add(1);
+                }
+            }
+            Self::Documents { documents } => {
+                fn iid(field: Option<&RemoteFieldValue>) -> Option<&str> {
+                    match field? {
+                        RemoteFieldValue::Scalar {
+                            value: crate::value::CanonicalValue::String(value),
+                        } => Some(value.as_str()),
+                        _ => None,
+                    }
+                }
+                // Role Cartesian products repeat complete nodes; charge logical
+                // nodes and edges once, as the projected materializer does.
+                let mut nodes = std::collections::BTreeSet::new();
+                let mut edges = std::collections::BTreeSet::new();
+                for document in documents {
+                    let root = iid(document.get("_iid"));
+                    for (key, field) in document {
+                        if let RemoteFieldValue::Documents { documents: players } = field {
+                            for player in players {
+                                if let Some(player_iid) = iid(player.get("_iid")) {
+                                    if edges.insert((root, key, player_iid)) {
+                                        counts[3] = counts[3].saturating_add(1);
+                                        counts[2] = counts[2].saturating_add(1);
+                                    }
+                                    if nodes.insert(player_iid) {
+                                        counts[0] = counts[0].saturating_add(1);
+                                        if let Some(RemoteFieldValue::Document { fields }) =
+                                            player.get("attributes")
+                                        {
+                                            for field in fields.values() {
+                                                let count = match field {
+                                                    RemoteFieldValue::Scalar { .. } => 1,
+                                                    RemoteFieldValue::List { values } => {
+                                                        values.len() as u64
+                                                    }
+                                                    _ => 0,
+                                                };
+                                                counts[1] = counts[1].saturating_add(count);
+                                                counts[2] = counts[2].saturating_add(count);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if key.starts_with("_role_")
+                            && key.ends_with("_iid")
+                            && let Some(player) = iid(Some(field))
+                            && edges.insert((root, key, player))
+                        {
+                            counts[3] = counts[3].saturating_add(1);
+                            counts[2] = counts[2].saturating_add(1);
+                        }
+                        if (key == "attributes" || key.ends_with("_attributes"))
+                            && let RemoteFieldValue::Document { fields } = field
+                        {
+                            let owner_key = if key == "attributes" {
+                                "_iid".to_owned()
+                            } else {
+                                key.replace("_attributes", "_iid")
+                            };
+                            if let Some(owner) = iid(document.get(&owner_key))
+                                && !nodes.insert(owner)
+                            {
+                                continue;
+                            }
+                            counts[0] = counts[0].saturating_add(1);
+                            for field in fields.values() {
+                                let count = match field {
+                                    RemoteFieldValue::Scalar { .. } => 1,
+                                    RemoteFieldValue::List { values } => values.len() as u64,
+                                    _ => 0,
+                                };
+                                counts[1] = counts[1].saturating_add(count);
+                                counts[2] = counts[2].saturating_add(count);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        counts
+    }
+}
+
+/// Typed server outcome, sharing the existing SDK diagnostic authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum StagedOutcome {
+    /// The complete stack succeeded; read transactions were closed successfully.
+    Committed,
+    /// The stack failed; diagnostic certainty governs retry safety.
+    Failed {
+        /// Existing SDK diagnostic, including additive phase-B failures.
+        diagnostic: SdkExecutionDiagnostic,
+    },
+}
+
+/// Authenticated wire projection of an SDK diagnostic, not a second failure
+/// model or a decoder that weakens implementation-owned static SDK messages.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SdkDiagnosticProjection {
+    version: u16,
+    category: String,
+    sdk_category: String,
+    query_category: Option<String>,
+    code: String,
+    message: String,
+    path: Vec<serde_json::Value>,
+    details: BTreeMap<String, serde_json::Value>,
+}
+impl<'de> Deserialize<'de> for SdkDiagnosticProjection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            version: u16,
+            category: String,
+            sdk_category: String,
+            query_category: Option<String>,
+            code: String,
+            message: String,
+            path: Vec<serde_json::Value>,
+            details: BTreeMap<String, serde_json::Value>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let projection = Self {
+            version: wire.version,
+            category: wire.category,
+            sdk_category: wire.sdk_category,
+            query_category: wire.query_category,
+            code: wire.code,
+            message: wire.message,
+            path: wire.path,
+            details: wire.details,
+        };
+        projection
+            .validate()
+            .map_err(|_| serde::de::Error::custom("invalid SDK diagnostic projection"))?;
+        Ok(projection)
+    }
+}
+impl SdkDiagnosticProjection {
+    fn from_diagnostic(diagnostic: &SdkExecutionDiagnostic) -> Result<Self, Diagnostic> {
+        let value = serde_json::to_value(diagnostic.host_json()).map_err(|_| bad_diagnostic())?;
+        let projection: Self = serde_json::from_value(value).map_err(|_| bad_diagnostic())?;
+        projection.validate()?;
+        Ok(projection)
+    }
+    /// Retain the exact established host JSON form for the SDK exception mapper.
+    pub fn host_json(&self) -> Result<serde_json::Value, Diagnostic> {
+        serde_json::to_value(self).map_err(|_| bad_diagnostic())
+    }
+    /// Reconstruct an authenticated typed-read failure with a static SDK message.
+    /// The checked path, typed details and failure certainty are retained.
+    pub fn to_query_diagnostic(&self) -> Result<SdkExecutionDiagnostic, Diagnostic> {
+        use crate::sdk_diagnostic::*;
+        self.validate()?;
+        let category = match self.query_category.as_deref().unwrap_or(&self.sdk_category) {
+            "invalid_plan" | "invalid_input" => SdkQueryDiagnosticCategory::InvalidPlan,
+            "cardinality" => SdkQueryDiagnosticCategory::Cardinality,
+            "unsupported_capability" => SdkQueryDiagnosticCategory::UnsupportedCapability,
+            "stale_schema" => SdkQueryDiagnosticCategory::StaleSchema,
+            "resource_limit" => SdkQueryDiagnosticCategory::ResourceLimit,
+            "cancelled" => SdkQueryDiagnosticCategory::Cancelled,
+            "provider" | "transaction" => SdkQueryDiagnosticCategory::Provider,
+            _ => SdkQueryDiagnosticCategory::ResultDecode,
+        };
+        let identity = |value: &serde_json::Value| {
+            SdkQueryDiagnosticIdentity::new(value.as_str().ok_or_else(bad_diagnostic)?)
+                .map_err(|_| bad_diagnostic())
+        };
+        let ownership = |value: &serde_json::Value| {
+            crate::schema::OwnsFactId::new(
+                serde_json::from_value(value["owner"].clone()).map_err(|_| bad_diagnostic())?,
+                crate::id::AttributeId::new(
+                    value["attribute"].as_str().ok_or_else(bad_diagnostic)?,
+                )
+                .map_err(|_| bad_diagnostic())?,
+            )
+            .map_err(|_| bad_diagnostic())
+        };
+        let mut diagnostic = SdkExecutionDiagnostic::query_failure(
+            category,
+            SdkDiagnosticCode::new(self.code.clone()).map_err(|_| bad_diagnostic())?,
+        );
+        for segment in &self.path {
+            let (kind, value) = tagged(segment)?;
+            let value = value.unwrap_or(&serde_json::Value::Null);
+            let path = match kind {
+                "request" => SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Request),
+                "plan" => SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Plan),
+                "operation" => {
+                    SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Operation)
+                }
+                "predicate" => {
+                    SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Predicate)
+                }
+                "output" => SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Output),
+                "provider_evidence" => {
+                    SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::ProviderEvidence)
+                }
+                "result" => SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Result),
+                "argument" => SdkDiagnosticPathSegment::Argument(
+                    SdkDiagnosticName::new(value.as_str().ok_or_else(bad_diagnostic)?)
+                        .map_err(|_| bad_diagnostic())?,
+                ),
+                "index" => {
+                    SdkDiagnosticPathSegment::Index(value.as_u64().ok_or_else(bad_diagnostic)?)
+                }
+                "binding" => SdkDiagnosticPathSegment::QueryBinding(
+                    value.as_u64().ok_or_else(bad_diagnostic)? as u16,
+                ),
+                "role_edge" => SdkDiagnosticPathSegment::QueryRoleEdge(
+                    value.as_u64().ok_or_else(bad_diagnostic)? as u16,
+                ),
+                "output_slot" => SdkDiagnosticPathSegment::QueryOutputSlot(
+                    value.as_u64().ok_or_else(bad_diagnostic)?,
+                ),
+                "output_name" => SdkDiagnosticPathSegment::QueryOutputName(identity(value)?),
+                "contract_field" => SdkDiagnosticPathSegment::ContractField(identity(value)?),
+                "contract_identity" => SdkDiagnosticPathSegment::ContractIdentity(identity(value)?),
+                "type" => SdkDiagnosticPathSegment::Type(
+                    serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                ),
+                "field" if owned_name(value) => SdkDiagnosticPathSegment::QueryField {
+                    owner: identity(&value["owner"])?,
+                    name: identity(&value["name"])?,
+                },
+                "role" if owned_name(value) => SdkDiagnosticPathSegment::QueryRole {
+                    owner: identity(&value["owner"])?,
+                    name: identity(&value["name"])?,
+                },
+                "field" => SdkDiagnosticPathSegment::Field(ownership(value)?),
+                "role" => SdkDiagnosticPathSegment::Role(
+                    serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                ),
+                _ => return Err(bad_diagnostic()),
+            };
+            diagnostic = diagnostic.try_at(path).map_err(|_| bad_diagnostic())?;
+        }
+        for (name, detail) in &self.details {
+            if name == "query_category" {
+                continue;
+            }
+            let (kind, value) = tagged(detail)?;
+            let value = value.ok_or_else(bad_diagnostic)?;
+            let detail = match kind {
+                "execution_timeline" => SdkDiagnosticDetailValue::ExecutionTimeline(
+                    serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                ),
+                "boolean" => {
+                    SdkDiagnosticDetailValue::Boolean(value.as_bool().ok_or_else(bad_diagnostic)?)
+                }
+                "count" => SdkDiagnosticDetailValue::Count(
+                    value
+                        .as_str()
+                        .ok_or_else(bad_diagnostic)?
+                        .parse()
+                        .map_err(|_| bad_diagnostic())?,
+                ),
+                "byte_count" => SdkDiagnosticDetailValue::ByteCount(
+                    value
+                        .as_str()
+                        .ok_or_else(bad_diagnostic)?
+                        .parse()
+                        .map_err(|_| bad_diagnostic())?,
+                ),
+                "signed" => SdkDiagnosticDetailValue::Signed(
+                    value
+                        .as_str()
+                        .ok_or_else(bad_diagnostic)?
+                        .parse()
+                        .map_err(|_| bad_diagnostic())?,
+                ),
+                "query_identity" => SdkDiagnosticDetailValue::QueryIdentity(identity(value)?),
+                "query_identity_list" => SdkDiagnosticDetailValue::QueryIdentityList(
+                    value
+                        .as_array()
+                        .ok_or_else(bad_diagnostic)?
+                        .iter()
+                        .map(identity)
+                        .collect::<Result<_, _>>()?,
+                ),
+                "text" if value.is_string() => SdkDiagnosticDetailValue::Capability(
+                    CapabilityId::new(value.as_str().ok_or_else(bad_diagnostic)?)
+                        .map_err(|_| bad_diagnostic())?,
+                ),
+                "text" if typed_identity::<crate::id::TypeId>(value) => {
+                    SdkDiagnosticDetailValue::Type(
+                        serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                    )
+                }
+                "text" if typed_identity::<crate::id::RoleId>(value) => {
+                    SdkDiagnosticDetailValue::Role(
+                        serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                    )
+                }
+                "text" if ownership_identity(value) => {
+                    SdkDiagnosticDetailValue::Field(ownership(value)?)
+                }
+                "text" => SdkDiagnosticDetailValue::Fingerprint(
+                    serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                ),
+                _ => return Err(bad_diagnostic()),
+            };
+            diagnostic = diagnostic
+                .try_with_detail(
+                    SdkDiagnosticName::new(name.clone()).map_err(|_| bad_diagnostic())?,
+                    detail,
+                )
+                .map_err(|_| bad_diagnostic())?;
+        }
+        if let Some(failure) = self.failure() {
+            diagnostic = diagnostic.with_failure(&failure, FailureContext::default());
+        }
+        Ok(diagnostic)
+    }
+
+    /// Stable diagnostic code.
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+    /// The typed failure the signed details carry, as the server classified
+    /// it ([`SdkExecutionDiagnostic::failure_from_host_json`]).
+    #[must_use]
+    pub fn failure(&self) -> Option<crate::failure::Failure> {
+        SdkExecutionDiagnostic::failure_from_host_json(&self.host_json().ok()?)
+    }
+    fn validate(&self) -> Result<(), Diagnostic> {
+        use crate::sdk_diagnostic::*;
+        if self.version != 1
+            || !matches!(
+                self.sdk_category.as_str(),
+                "invalid_input"
+                    | "unsupported_capability"
+                    | "resource_limit"
+                    | "integrity"
+                    | "provider"
+                    | "transaction"
+                    | "cancelled"
+                    | "internal"
+            )
+            || self.query_category.as_deref().is_some_and(|q| {
+                !matches!(
+                    q,
+                    "invalid_plan"
+                        | "cardinality"
+                        | "unsupported_capability"
+                        | "stale_schema"
+                        | "resource_limit"
+                        | "cancelled"
+                        | "provider"
+                        | "result_decode"
+                )
+            })
+            || self.category != self.query_category.as_deref().unwrap_or(&self.sdk_category)
+            || self.message.is_empty()
+            || self.message.len() > MAX_SDK_DIAGNOSTIC_MESSAGE_BYTES
+            || self.message.trim() != self.message
+            || self
+                .message
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '/' | '\\'))
+            || self.path.len() > MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS
+            || self.details.len() > MAX_SDK_DIAGNOSTIC_DETAILS
+        {
+            return Err(bad_diagnostic());
+        }
+        if let Some(query) = self.query_category.as_deref() {
+            let expected = match query {
+                "invalid_plan" | "cardinality" => "invalid_input",
+                "stale_schema" | "result_decode" => "integrity",
+                other => other,
+            };
+            if self.sdk_category != expected {
+                return Err(bad_diagnostic());
+            }
+        }
+        SdkDiagnosticCode::new(self.code.clone()).map_err(|_| bad_diagnostic())?;
+        for segment in &self.path {
+            validate_sdk_segment(segment)?;
+        }
+        for (key, value) in &self.details {
+            SdkDiagnosticName::new(key.clone()).map_err(|_| bad_diagnostic())?;
+            validate_sdk_detail(value)?;
+            if tagged(value)?.0 == "execution_timeline" && key != "execution_timeline" {
+                return Err(bad_diagnostic());
+            }
+        }
+        let bytes = to_canonical_json_with_limits(self, STAGED_REMOTE_CODEC_LIMITS)?;
+        preflight_diagnostic(
+            &bytes,
+            crate::limits::MAX_STAGED_STATEMENTS.saturating_mul(2),
+        )?;
+        if bytes.len() > MAX_REMOTE_ENVELOPE_BYTES {
+            return Err(limit(
+                "query_remote_diagnostic_limit",
+                "SDK diagnostic exceeds its byte ceiling",
+            ));
+        }
+        Ok(())
+    }
+}
+fn bad_diagnostic() -> Diagnostic {
+    invalid(
+        "query_remote_diagnostic",
+        "staged reply has an invalid SDK diagnostic projection",
+    )
+}
+fn tagged(value: &serde_json::Value) -> Result<(&str, Option<&serde_json::Value>), Diagnostic> {
+    let object = value.as_object().ok_or_else(bad_diagnostic)?;
+    let kind = object
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .ok_or_else(bad_diagnostic)?;
+    if object.len() != 1 + usize::from(object.contains_key("value")) {
+        return Err(bad_diagnostic());
+    }
+    Ok((kind, object.get("value")))
+}
+fn query_identity(value: &serde_json::Value) -> Result<(), Diagnostic> {
+    crate::sdk_diagnostic::SdkQueryDiagnosticIdentity::new(
+        value.as_str().ok_or_else(bad_diagnostic)?.to_owned(),
+    )
+    .map(|_| ())
+    .map_err(|_| bad_diagnostic())
+}
+fn typed_identity<T: serde::de::DeserializeOwned + Serialize>(value: &serde_json::Value) -> bool {
+    serde_json::from_value::<T>(value.clone())
+        .is_ok_and(|decoded| serde_json::to_value(decoded).is_ok_and(|encoded| encoded == *value))
+}
+fn ownership_identity(value: &serde_json::Value) -> bool {
+    let Some(fields) = value.as_object() else {
+        return false;
+    };
+    if fields.len() != 2 {
+        return false;
+    }
+    let Some(owner) = fields.get("owner") else {
+        return false;
+    };
+    let Some(attribute) = fields.get("attribute").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    if !typed_identity::<crate::id::TypeId>(owner) {
+        return false;
+    }
+    let Ok(owner) = serde_json::from_value::<crate::id::TypeId>(owner.clone()) else {
+        return false;
+    };
+    let Ok(attribute) = crate::id::AttributeId::new(attribute) else {
+        return false;
+    };
+    crate::schema::OwnsFactId::new(owner, attribute).is_ok()
+}
+
+fn validate_sdk_segment(value: &serde_json::Value) -> Result<(), Diagnostic> {
+    let (kind, payload) = tagged(value)?;
+    if matches!(
+        kind,
+        "request" | "plan" | "operation" | "predicate" | "output" | "provider_evidence" | "result"
+    ) {
+        return if payload.is_none() {
+            Ok(())
+        } else {
+            Err(bad_diagnostic())
+        };
+    }
+    let value = payload.ok_or_else(bad_diagnostic)?;
+    let valid = match kind {
+        "argument" => value
+            .as_str()
+            .is_some_and(|s| crate::sdk_diagnostic::SdkDiagnosticName::new(s.to_owned()).is_ok()),
+        "index" => value.as_u64().is_some(),
+        "binding" => value.as_u64().is_some_and(|v| v < 256),
+        "role_edge" | "output_slot" => value.as_u64().is_some_and(|v| v <= u64::from(u16::MAX)),
+        "output_name" | "contract_field" | "contract_identity" => query_identity(value).is_ok(),
+        "type" => typed_identity::<crate::id::TypeId>(value),
+        "field" => ownership_identity(value) || owned_name(value),
+        "role" => typed_identity::<crate::id::RoleId>(value) || owned_name(value),
+        _ => false,
+    };
+    if valid { Ok(()) } else { Err(bad_diagnostic()) }
+}
+fn owned_name(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(|v| {
+        v.len() == 2
+            && v.get("owner").is_some_and(|x| query_identity(x).is_ok())
+            && v.get("name").is_some_and(|x| query_identity(x).is_ok())
+    })
+}
+fn validate_sdk_detail(value: &serde_json::Value) -> Result<(), Diagnostic> {
+    let (kind, payload) = tagged(value)?;
+    let payload = payload.ok_or_else(bad_diagnostic)?;
+    let valid = match kind {
+        "execution_timeline" => {
+            typed_identity::<crate::execution_timeline::ExecutionTimeline>(payload)
+        }
+        "boolean" => payload.is_boolean(),
+        "count" | "byte_count" => payload
+            .as_str()
+            .is_some_and(|s| s.parse::<u64>().is_ok_and(|v| v.to_string() == s)),
+        "signed" => payload
+            .as_str()
+            .is_some_and(|s| s.parse::<i64>().is_ok_and(|v| v.to_string() == s)),
+        "query_identity" => query_identity(payload).is_ok(),
+        "query_identity_list" => payload.as_array().is_some_and(|v| {
+            v.len() <= crate::sdk_diagnostic::MAX_SDK_QUERY_DIAGNOSTIC_IDENTITY_LIST
+                && v.iter().all(|x| query_identity(x).is_ok())
+        }),
+        "text" => {
+            payload.as_str().is_some_and(|s| {
+                CapabilityId::new(s).is_ok()
+                    || crate::sdk_diagnostic::SdkDiagnosticName::new(s.to_owned()).is_ok()
+            }) || typed_identity::<crate::id::TypeId>(payload)
+                || typed_identity::<crate::id::RoleId>(payload)
+                || ownership_identity(payload)
+                || typed_identity::<Fingerprint>(payload)
+        }
+        _ => false,
+    };
+    if valid { Ok(()) } else { Err(bad_diagnostic()) }
+}
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum OutcomeWire {
+    Committed,
+    Failed { diagnostic: SdkDiagnosticProjection },
+}
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReplyWire<A = StagedAnswer> {
+    answers: Vec<A>,
+    format: String,
+    nonce: String,
+    outcome: OutcomeWire,
+    request: String,
+}
+/// Server-side reply authoring uses only the typed SDK failure authority.
+#[derive(Clone, Debug)]
+pub struct StagedReply {
+    wire: ReplyWire,
+}
+impl StagedReply {
+    /// Bind an all-or-nothing outcome and ordered answers to one request.
+    pub fn new(
+        request: &StagedRequest,
+        outcome: StagedOutcome,
+        answers: Vec<StagedAnswer>,
+    ) -> Result<Self, Diagnostic> {
+        let outcome = match outcome {
+            StagedOutcome::Committed => OutcomeWire::Committed,
+            StagedOutcome::Failed { diagnostic } => OutcomeWire::Failed {
+                diagnostic: SdkDiagnosticProjection::from_diagnostic(&diagnostic)?,
+            },
+        };
+        let wire = ReplyWire {
+            answers,
+            format: QUERY_REMOTE_REPLY_FORMAT.into(),
+            nonce: request.nonce().into(),
+            outcome,
+            request: request.fingerprint()?.digest().to_hex(),
+        };
+        validate_reply(&wire, request)?;
+        Ok(Self { wire })
+    }
+    /// Canonical unsigned payload, used only inside the signed outer envelope.
+    pub fn encode_payload(&self) -> Result<Vec<u8>, Diagnostic> {
+        to_canonical_json_with_limits(&self.wire, STAGED_REMOTE_CODEC_LIMITS)
+    }
+    /// Sign with the unchanged V1 outer envelope, bound to the exact advertisement.
+    pub fn encode_signed(
+        &self,
+        request: &StagedRequest,
+        advertisement: &RemoteCapabilities,
+        signer: &impl RemoteReplySigner,
+    ) -> Result<Vec<u8>, Diagnostic> {
+        validate_reply(&self.wire, request)?;
+        if request.advertisement() != advertisement.fingerprint()?.digest_hex()
+            || signer.public_key() != advertisement.reply_key()
+        {
+            return Err(mismatch());
+        }
+        let bytes = crate::query_remote::encode_signed_reply_payload(
+            &self.encode_payload()?,
+            &advertisement.fingerprint()?,
+            signer,
+        )?;
+        if matches!(self.wire.outcome, OutcomeWire::Committed)
+            && bytes.len() as u64 > request.limits().max_bytes
+        {
+            return Err(limit(
+                "query_remote_reply_bytes",
+                "staged successful reply exceeds its byte budget",
+            ));
+        }
+        Ok(bytes)
+    }
+}
+/// Authenticated decoded evidence. The SDK diagnostic remains its established
+/// host-JSON wire projection; it is never converted into a new runtime failure.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VerifiedStagedReply {
+    wire: ReplyWire,
+    correlations: Vec<Option<std::sync::Arc<crate::query_plan::BulkCorrelation>>>,
+}
+impl VerifiedStagedReply {
+    /// Authenticate before interpreting any outcome or SDK diagnostic content.
+    pub fn decode(
+        bytes: &[u8],
+        request: &StagedRequest,
+        advertisement: &RemoteCapabilities,
+        trusted_key: RemoteSigningPublicKey,
+        verifier: &impl RemoteReplyVerifier,
+    ) -> Result<Self, Diagnostic> {
+        if request.advertisement() != advertisement.fingerprint()?.digest_hex()
+            || trusted_key != advertisement.reply_key()
+        {
+            return Err(mismatch());
+        }
+        crate::query_remote::preflight_signed_reply_size(bytes, MAX_REMOTE_ENVELOPE_BYTES as u64)?;
+        let payload = crate::query_remote::verify_signed_reply_payload(
+            bytes,
+            &advertisement.fingerprint()?,
+            trusted_key,
+            verifier,
+        )?;
+        preflight_reply_payload(payload, bytes.len(), request)?;
+        let raw: ReplyWire<serde_json::Value> =
+            from_canonical_json_with_limits(payload, STAGED_REMOTE_CODEC_LIMITS)?;
+        if raw.answers.len() != request.plans().len()
+            && matches!(raw.outcome, OutcomeWire::Committed)
+        {
+            return Err(invalid(
+                "query_remote_answer_count",
+                "staged reply answer count differs from its plan stack",
+            ));
+        }
+        let wire = ReplyWire {
+            answers: raw
+                .answers
+                .into_iter()
+                .zip(request.plans())
+                .map(|(answer, entry)| decode_answer(answer, entry.plan().limits().codec))
+                .collect::<Result<_, _>>()?,
+            format: raw.format,
+            nonce: raw.nonce,
+            outcome: raw.outcome,
+            request: raw.request,
+        };
+        let correlations = validate_reply(&wire, request)?;
+        if to_canonical_json_with_limits(&wire, STAGED_REMOTE_CODEC_LIMITS)?.as_slice() != payload {
+            return Err(invalid(
+                "query_remote_noncanonical",
+                "staged reply reconstruction changes canonical bytes",
+            ));
+        }
+        if matches!(wire.outcome, OutcomeWire::Committed)
+            && bytes.len() as u64 > request.limits().max_bytes
+        {
+            return Err(limit(
+                "query_remote_reply_bytes",
+                "staged successful reply exceeds its byte budget",
+            ));
+        }
+        Ok(Self { wire, correlations })
+    }
+    /// Whether every plan succeeded and its answers are final.
+    pub fn committed(&self) -> bool {
+        matches!(self.wire.outcome, OutcomeWire::Committed)
+    }
+    /// Ordered final answers, empty on failure.
+    pub fn answers(&self) -> &[StagedAnswer] {
+        &self.wire.answers
+    }
+    /// In-memory correlation proofs retained from answer verification.
+    /// These ordinals are never serialized or supplied by the remote peer.
+    pub fn correlations(&self) -> &[Option<std::sync::Arc<crate::query_plan::BulkCorrelation>>] {
+        &self.correlations
+    }
+    /// Established SDK diagnostic projection when the transaction failed.
+    pub fn diagnostic(&self) -> Option<&SdkDiagnosticProjection> {
+        match &self.wire.outcome {
+            OutcomeWire::Failed { diagnostic } => Some(diagnostic),
+            OutcomeWire::Committed => None,
+        }
+    }
+    /// Exact canonical authenticated payload for fixture round-trips.
+    pub fn encode_payload(&self) -> Result<Vec<u8>, Diagnostic> {
+        to_canonical_json_with_limits(&self.wire, STAGED_REMOTE_CODEC_LIMITS)
+    }
+}
+fn validate_reply(
+    wire: &ReplyWire,
+    request: &StagedRequest,
+) -> Result<Vec<Option<std::sync::Arc<crate::query_plan::BulkCorrelation>>>, Diagnostic> {
+    validate_reply_binding(&wire.format, &wire.nonce, &wire.request, request)?;
+    if let OutcomeWire::Failed { diagnostic } = &wire.outcome {
+        diagnostic.validate()?;
+        for detail in diagnostic.details.values() {
+            let (kind, value) = tagged(detail)?;
+            if kind == "execution_timeline" {
+                let timeline: crate::execution_timeline::ExecutionTimeline =
+                    serde_json::from_value(value.ok_or_else(bad_diagnostic)?.clone())
+                        .map_err(|_| bad_diagnostic())?;
+                timeline
+                    .validate(
+                        request
+                            .limits()
+                            .max_read_statements
+                            .saturating_add(request.limits().max_write_statements),
+                    )
+                    .map_err(|_| {
+                        limit(
+                            "query_remote_execution_timeline_limit",
+                            "Execution timeline exceeds the request statement bound",
+                        )
+                    })?;
+            }
+        }
+        return if wire.answers.is_empty() {
+            Ok(vec![])
+        } else {
+            Err(invalid(
+                "query_remote_partial_answers",
+                "failed transactions do not expose partial answers",
+            ))
+        };
+    }
+    if wire.answers.len() != request.plans().len() {
+        return Err(invalid(
+            "query_remote_answer_count",
+            "answer count does not match the staged stack",
+        ));
+    }
+    let mut items = 0_u64;
+    let mut correlations = Vec::with_capacity(wire.answers.len());
+    let mut dimensions = [0_u64; 4];
+    let limits = request.limits();
+    let ceilings = [
+        limits.max_graph_nodes,
+        limits.max_attribute_values,
+        limits.max_collection_members,
+        limits.max_role_players,
+    ];
+    for (answer, entry) in wire.answers.iter().zip(request.plans()) {
+        let (count, correlation) = validate_answer(answer, entry.plan())?;
+        items = items.saturating_add(count);
+        correlations.push(correlation.map(std::sync::Arc::new));
+        for (index, count) in answer.resource_counts().into_iter().enumerate() {
+            dimensions[index] = dimensions[index].saturating_add(count);
+            if ceilings[index].is_some_and(|maximum| dimensions[index] > maximum) {
+                return Err(limit(
+                    "query_remote_answer_dimensions",
+                    "aggregate staged evidence exceeds its semantic answer budget",
+                ));
+            }
+        }
+        if items > request.limits().max_items {
+            return Err(limit(
+                "query_remote_answer_items",
+                "aggregate staged answers exceed their item budget",
+            )
+            .with_detail("actual", i64::try_from(items).unwrap_or(i64::MAX))
+            .with_detail(
+                "maximum",
+                i64::try_from(request.limits().max_items).unwrap_or(i64::MAX),
+            ));
+        }
+    }
+    Ok(correlations)
+}
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ValueWire {
+    Thing {
+        iid: String,
+        type_id: crate::id::TypeId,
+    },
+    Attribute {
+        type_id: crate::id::TypeId,
+        value: PlanScalarWire,
+    },
+    Value {
+        value: PlanScalarWire,
+    },
+    Absent,
+}
+impl ValueWire {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<RemoteValue, Diagnostic> {
+        Ok(match self {
+            Self::Thing { iid, type_id } => RemoteValue::Thing { iid, type_id },
+            Self::Attribute { type_id, value } => RemoteValue::Attribute {
+                type_id,
+                value: value.rebuild(limits)?,
+            },
+            Self::Value { value } => RemoteValue::Value {
+                value: value.rebuild(limits)?,
+            },
+            Self::Absent => RemoteValue::Absent,
+        })
+    }
+}
+
+/// Decode one staged row cell under the caller's scalar byte budgets.
+pub fn decode_remote_value_with_limits(
+    value: serde_json::Value,
+    limits: crate::limits::CodecLimits,
+) -> Result<RemoteValue, Diagnostic> {
+    serde_json::from_value::<ValueWire>(value)
+        .map_err(|_| invalid("query_remote_answer_concept", "invalid staged row cell"))?
+        .rebuild(limits)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum FieldWire {
+    Documents {
+        documents: Vec<BTreeMap<String, FieldWire>>,
+    },
+    Document {
+        fields: BTreeMap<String, FieldWire>,
+    },
+    Scalar {
+        value: PlanScalarWire,
+    },
+    Absent,
+    List {
+        values: Vec<PlanScalarWire>,
+    },
+}
+impl FieldWire {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<RemoteFieldValue, Diagnostic> {
+        Ok(match self {
+            Self::Documents { documents } => RemoteFieldValue::Documents {
+                documents: documents
+                    .into_iter()
+                    .map(|fields| {
+                        fields
+                            .into_iter()
+                            .map(|(name, value)| Ok((name, value.rebuild(limits)?)))
+                            .collect()
+                    })
+                    .collect::<Result<_, Diagnostic>>()?,
+            },
+            Self::Document { fields } => RemoteFieldValue::Document {
+                fields: fields
+                    .into_iter()
+                    .map(|(name, value)| Ok((name, value.rebuild(limits)?)))
+                    .collect::<Result<_, Diagnostic>>()?,
+            },
+            Self::Scalar { value } => RemoteFieldValue::Scalar {
+                value: value.rebuild(limits)?,
+            },
+            Self::Absent => RemoteFieldValue::Absent,
+            Self::List { values } => RemoteFieldValue::List {
+                values: values
+                    .into_iter()
+                    .map(|value| value.rebuild(limits))
+                    .collect::<Result<_, _>>()?,
+            },
+        })
+    }
+}
+
+fn decode_answer(
+    value: serde_json::Value,
+    limits: crate::limits::CodecLimits,
+) -> Result<StagedAnswer, Diagnostic> {
+    #[derive(Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+    enum Wire {
+        Rows {
+            rows: Vec<Vec<ValueWire>>,
+        },
+        Documents {
+            documents: Vec<BTreeMap<String, FieldWire>>,
+        },
+        Count {
+            value: u64,
+        },
+        Exists {
+            value: bool,
+        },
+        Matched {
+            value: u64,
+        },
+    }
+    Ok(
+        match serde_json::from_value(value)
+            .map_err(|_| invalid("query_remote_answer_kind", "invalid staged answer"))?
+        {
+            Wire::Rows { rows } => StagedAnswer::Rows {
+                rows: rows
+                    .into_iter()
+                    .map(|row| {
+                        row.into_iter()
+                            .map(|value| value.rebuild(limits))
+                            .collect::<Result<_, _>>()
+                    })
+                    .collect::<Result<_, _>>()?,
+            },
+            Wire::Documents { documents } => StagedAnswer::Documents {
+                documents: documents
+                    .into_iter()
+                    .map(|document| {
+                        document
+                            .into_iter()
+                            .map(|(name, value)| Ok((name, value.rebuild(limits)?)))
+                            .collect::<Result<_, Diagnostic>>()
+                    })
+                    .collect::<Result<_, _>>()?,
+            },
+            Wire::Count { value } => StagedAnswer::Count { value },
+            Wire::Exists { value } => StagedAnswer::Exists { value },
+            Wire::Matched { value } => StagedAnswer::Matched { value },
+        },
+    )
+}
+
+fn validate_answer_strings(
+    answer: &StagedAnswer,
+    limits: crate::limits::CodecLimits,
+) -> Result<(), Diagnostic> {
+    fn scalar(
+        value: &crate::value::CanonicalValue,
+        limits: crate::limits::CodecLimits,
+    ) -> Result<(), Diagnostic> {
+        if let crate::value::CanonicalValue::String(value) = value {
+            value.validate_limits(limits)?;
+        }
+        Ok(())
+    }
+    fn field(
+        value: &RemoteFieldValue,
+        limits: crate::limits::CodecLimits,
+    ) -> Result<(), Diagnostic> {
+        match value {
+            RemoteFieldValue::Documents { documents } => {
+                for value in documents.iter().flat_map(|fields| fields.values()) {
+                    field(value, limits)?;
+                }
+            }
+            RemoteFieldValue::Document { fields } => {
+                for value in fields.values() {
+                    field(value, limits)?;
+                }
+            }
+            RemoteFieldValue::Scalar { value } => scalar(value, limits)?,
+            RemoteFieldValue::List { values } => {
+                for value in values {
+                    scalar(value, limits)?;
+                }
+            }
+            RemoteFieldValue::Absent => {}
+        }
+        Ok(())
+    }
+    match answer {
+        StagedAnswer::Rows { rows } => {
+            for value in rows.iter().flatten() {
+                if let RemoteValue::Value { value } | RemoteValue::Attribute { value, .. } = value {
+                    scalar(value, limits)?;
+                }
+            }
+        }
+        StagedAnswer::Documents { documents } => {
+            for value in documents.iter().flat_map(|document| document.values()) {
+                field(value, limits)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_answer(
+    answer: &StagedAnswer,
+    plan: &QueryPlan,
+) -> Result<(u64, Option<crate::query_plan::BulkCorrelation>), Diagnostic> {
+    validate_answer_strings(answer, plan.limits().codec)
+        .map_err(|error| plan.limits().annotate(error))?;
+
+    let bad = || {
+        invalid(
+            "query_remote_answer_kind",
+            "staged evidence does not match its plan operation and output",
+        )
+    };
+    if let Some(shape) = plan.fetch_document_shape() {
+        let StagedAnswer::Documents { documents } = answer else {
+            return Err(bad());
+        };
+        for document in documents {
+            shape.validate(document)?;
+        }
+        let correlation = plan
+            .standalone_entity_rows()
+            .map(|expected| expected.correlate_proof(documents))
+            .transpose()?;
+        return Ok((answer.item_count(), correlation));
+    }
+    match (answer, plan.operation(), plan.output()) {
+        (StagedAnswer::Count { .. }, Operation::Count, _)
+        | (StagedAnswer::Exists { .. }, Operation::Exists, _)
+        | (
+            StagedAnswer::Matched { .. },
+            Operation::Write {
+                returns: WriteReturns::Matched,
+            },
+            _,
+        ) => Ok((1, None)),
+        (
+            StagedAnswer::Rows { rows },
+            Operation::Rows
+            | Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            QueryOutput::Rows { columns },
+        ) => {
+            for row in rows {
+                if row.len() != columns.len() {
+                    return Err(bad());
+                }
+                for (value, column) in row.iter().zip(columns) {
+                    if let Some(expected) = plan.scalar_value_type(*column) {
+                        match value {
+                            RemoteValue::Value { value } | RemoteValue::Attribute { value, .. }
+                                if value.value_type() == expected => {}
+                            RemoteValue::Absent => {}
+                            _ => return Err(bad()),
+                        }
+                    }
+                    match value {
+                        RemoteValue::Thing { iid, type_id }
+                            if !crate::id::is_canonical_thing_iid(iid)
+                                || !matches!(
+                                    type_id.kind(),
+                                    crate::id::TypeKind::Entity | crate::id::TypeKind::Relation
+                                ) =>
+                        {
+                            return Err(bad());
+                        }
+                        RemoteValue::Attribute { type_id, .. }
+                            if type_id.kind() != crate::id::TypeKind::Attribute =>
+                        {
+                            return Err(bad());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok((rows.len() as u64, None))
+        }
+        (
+            StagedAnswer::Documents { documents },
+            Operation::Rows
+            | Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            QueryOutput::Documents { fields },
+        ) => {
+            for document in documents {
+                if document.values().any(|value| {
+                    matches!(
+                        value,
+                        RemoteFieldValue::Document { .. } | RemoteFieldValue::Documents { .. }
+                    )
+                }) {
+                    return Err(bad());
+                }
+                if document.len() != fields.len()
+                    || fields
+                        .iter()
+                        .any(|field| !document.contains_key(field.key().as_str()))
+                {
+                    return Err(bad());
+                }
+                for field in fields {
+                    if matches!(
+                        field.source(),
+                        crate::query_plan::DocumentSource::AttributeList { .. }
+                    ) && !matches!(
+                        document.get(field.key().as_str()),
+                        Some(RemoteFieldValue::List { .. })
+                    ) {
+                        return Err(bad());
+                    }
+                }
+            }
+            Ok((documents.len() as u64, None))
+        }
+        _ => Err(bad()),
+    }
+}
+
+// Authentication has already succeeded. Borrow payload fragments so tighter
+// success and diagnostic budgets are checked before their owned DTOs allocate.
+fn preflight_reply_payload(
+    payload: &[u8],
+    envelope_bytes: usize,
+    request: &StagedRequest,
+) -> Result<(), Diagnostic> {
+    #[derive(Deserialize)]
+    struct Peek<'a> {
+        #[serde(borrow)]
+        format: &'a str,
+        #[serde(borrow)]
+        nonce: &'a str,
+        #[serde(borrow)]
+        request: &'a str,
+        #[serde(borrow)]
+        outcome: &'a serde_json::value::RawValue,
+        #[serde(borrow)]
+        answers: &'a serde_json::value::RawValue,
+    }
+    #[derive(Deserialize)]
+    struct OutcomePeek<'a> {
+        #[serde(borrow)]
+        kind: &'a str,
+        #[serde(borrow)]
+        diagnostic: Option<&'a serde_json::value::RawValue>,
+    }
+    let peek: Peek<'_> = serde_json::from_slice(payload).map_err(|_| {
+        invalid(
+            "query_remote_reply_shape",
+            "staged reply has an invalid framing shape",
+        )
+    })?;
+    validate_reply_binding(peek.format, peek.nonce, peek.request, request)?;
+    let outcome: OutcomePeek<'_> = serde_json::from_str(peek.outcome.get()).map_err(|_| {
+        invalid(
+            "query_remote_reply_shape",
+            "staged reply has an invalid outcome framing",
+        )
+    })?;
+    match outcome.kind {
+        "committed" if envelope_bytes as u64 > request.limits().max_bytes => Err(limit(
+            "query_remote_reply_bytes",
+            "staged successful reply exceeds its byte budget",
+        )),
+        "committed" => Ok(()),
+        "failed" => {
+            if peek.answers.get() != "[]" {
+                return Err(invalid(
+                    "query_remote_partial_answers",
+                    "failed transactions do not expose partial answers",
+                ));
+            }
+            let diagnostic = outcome.diagnostic.ok_or_else(|| {
+                invalid(
+                    "query_remote_reply_shape",
+                    "staged failed reply is missing its diagnostic",
+                )
+            })?;
+            preflight_diagnostic(
+                diagnostic.get().as_bytes(),
+                request
+                    .limits()
+                    .max_read_statements
+                    .saturating_add(request.limits().max_write_statements),
+            )
+        }
+        _ => Err(invalid(
+            "query_remote_reply_shape",
+            "staged reply has an unsupported outcome",
+        )),
+    }
+}
+
+// Only the named timeline detail may exceed the ordinary diagnostic ceiling.
+// Borrowed framing and a streaming record visitor precede owned DTO decoding.
+fn preflight_diagnostic(bytes: &[u8], statement_limit: u32) -> Result<(), Diagnostic> {
+    #[derive(Deserialize)]
+    struct Details<'a> {
+        #[serde(borrow)]
+        execution_timeline: Option<&'a serde_json::value::RawValue>,
+    }
+    #[derive(Deserialize)]
+    struct Peek<'a> {
+        #[serde(borrow)]
+        details: Details<'a>,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Timeline<'a> {
+        #[serde(borrow)]
+        kind: &'a str,
+        #[serde(borrow)]
+        value: &'a serde_json::value::RawValue,
+    }
+    let peek: Peek<'_> = serde_json::from_slice(bytes).map_err(|_| {
+        if bytes.len() > crate::limits::MAX_DIAGNOSTIC_BYTES {
+            limit(
+                "query_remote_diagnostic_limit",
+                "SDK diagnostic exceeds its byte ceiling",
+            )
+        } else {
+            bad_diagnostic()
+        }
+    })?;
+    let mut ordinary_bytes = bytes.len();
+    if let Some(raw) = peek.details.execution_timeline {
+        let timeline: Timeline<'_> =
+            serde_json::from_str(raw.get()).map_err(|_| bad_diagnostic())?;
+        if timeline.kind != "execution_timeline" {
+            return Err(bad_diagnostic());
+        }
+        crate::execution_timeline::preflight_json(timeline.value.get(), statement_limit)?;
+        ordinary_bytes -= raw.get().len();
+    }
+    if ordinary_bytes > crate::limits::MAX_DIAGNOSTIC_BYTES {
+        return Err(limit(
+            "query_remote_diagnostic_limit",
+            "SDK diagnostic exceeds its byte ceiling",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod execution_timeline_preflight_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn diagnostic(statements: u32) -> serde_json::Value {
+        let mut stamps = vec![
+            json!({"phase": "fired", "offset_milliseconds": 0}),
+            json!({"phase": "accepted", "offset_milliseconds": 1}),
+            json!({"phase": "execution_started", "offset_milliseconds": 2}),
+        ];
+        stamps.extend((0..statements).map(|index| json!({"phase": "db_write", "offset_milliseconds": 3 + u64::from(index), "statement_index": index})));
+        stamps.push(json!({"phase": "failed", "offset_milliseconds": 3 + u64::from(statements), "failing_phase": "db_write"}));
+        json!({"details": {"execution_timeline": {"kind": "execution_timeline", "value": {"anchor_unix_milliseconds": 1000, "stamps": stamps}}}})
+    }
+
+    #[test]
+    fn execution_timeline_streaming_preflight_preserves_ordinary_ceiling() {
+        let maximum = MAX_STAGED_STATEMENTS * 2;
+        let value = diagnostic(maximum);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(bytes.len() > crate::limits::MAX_DIAGNOSTIC_BYTES);
+        preflight_diagnostic(&bytes, maximum).unwrap();
+        let over = serde_json::to_vec(&diagnostic(maximum + 1)).unwrap();
+        assert_eq!(
+            preflight_diagnostic(&over, maximum)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_remote_execution_timeline_limit"
+        );
+        let mut malformed = value.clone();
+        malformed["details"]["execution_timeline"]["value"]["stamps"][3]["statement_index"] =
+            json!(1);
+        assert_eq!(
+            preflight_diagnostic(&serde_json::to_vec(&malformed).unwrap(), maximum)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_remote_execution_timeline"
+        );
+        let mut ordinary = value;
+        ordinary["details"]["ordinary"] =
+            json!({"kind": "text", "value": "x".repeat(crate::limits::MAX_DIAGNOSTIC_BYTES)});
+        assert_eq!(
+            preflight_diagnostic(&serde_json::to_vec(&ordinary).unwrap(), maximum)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_remote_diagnostic_limit"
+        );
+    }
+}

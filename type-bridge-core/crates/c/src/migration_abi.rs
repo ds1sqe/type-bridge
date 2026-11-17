@@ -119,6 +119,7 @@ const PAIR_ABSENT: u32 = 1;
 const PAIR_STANDALONE_MANAGED: u32 = 2;
 const PAIR_OWNED: u32 = 3;
 const PAIR_OWNED_JOURNAL_ORPHAN: u32 = 4;
+const PAIR_IMPORT_PENDING: u32 = 5;
 const CREATE_CREATED: u32 = 1;
 const CREATE_ALREADY_EXISTS: u32 = 2;
 const DELETE_ALREADY_ABSENT: u32 = 1;
@@ -641,6 +642,9 @@ pub unsafe extern "C" fn type_bridge_database_administration_close(
 fn pair_state(state: type_bridge_schema_migration_typedb::ManagedDatabasePairState) -> u32 {
     match state {
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::Absent => PAIR_ABSENT,
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::ImportPending => {
+            PAIR_IMPORT_PENDING
+        }
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::StandaloneManaged => {
             PAIR_STANDALONE_MANAGED
         }
@@ -674,7 +678,7 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
     package: *const TypeBridgeSchemaPackage,
     bundle: TypeBridgeByteView,
     out_catalog: *mut *mut TypeBridgeMigrationCatalog,
-    out_diagnostics: *mut *mut TypeBridgeDiagnostics,
+    out_diagnostics: *mut *mut crate::execution_diagnostic::TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     let outputs = match direct_output_preflight(&[
         (
@@ -683,7 +687,7 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
         ),
         (
             out_diagnostics.cast(),
-            size_of::<*mut TypeBridgeDiagnostics>(),
+            size_of::<*mut crate::execution_diagnostic::TypeBridgeExecutionDiagnostics>(),
         ),
     ]) {
         Ok(value) => value,
@@ -697,9 +701,10 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
     {
         return TypeBridgeStatus::InvalidArgument;
     }
-    if let Err(status) = unsafe { initialize_diagnostics(out_diagnostics) } {
-        return status;
+    if out_diagnostics.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
     }
+    unsafe { out_diagnostics.write_unaligned(ptr::null_mut()) };
     unsafe { out_catalog.write_unaligned(ptr::null_mut()) };
     guarded(|| {
         let Some(package) = (unsafe { package.as_ref() }) else {
@@ -713,10 +718,8 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
         } {
             Ok(value) => value,
             Err((status, diagnostics)) => {
-                return match unsafe { publish_diagnostics(diagnostics, out_diagnostics) } {
-                    Ok(()) => status,
-                    Err(status) => status,
-                };
+                return crate::abi::return_schema_package_open_error(status, diagnostics,
+                    type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence::Present, out_diagnostics);
             }
         };
         match MigrationCatalogState::open(&package.state()._authority, &bytes) {
@@ -727,7 +730,12 @@ pub unsafe extern "C" fn type_bridge_migration_catalog_open(
                     out_catalog,
                 )
             },
-            Err(error) => return_failure(error, out_diagnostics),
+            Err(error) => crate::abi::return_schema_package_open_error(
+                failure_status(&error),
+                vec![error],
+                type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence::Present,
+                out_diagnostics,
+            ),
         }
     })
 }
@@ -2251,6 +2259,78 @@ pub unsafe extern "C" fn type_bridge_migration_verification_finding_close(
     finding: *mut *mut TypeBridgeMigrationVerificationFinding,
 ) -> TypeBridgeStatus {
     unsafe { close_box(finding) }
+}
+
+/// Register callbacks before creating a preview. Context must remain live and
+/// callable from a worker thread until the catalog and all derived plans close.
+/// # Safety
+/// All inputs are live and disjoint from the writable diagnostics slot. Callbacks
+/// must not unwind and transfer any returned diagnostics to the engine.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_migration_catalog_register(
+    catalog: *const TypeBridgeMigrationCatalog,
+    step_id: TypeBridgeByteView,
+    forward: Option<crate::TypeBridgeMigrationCallback>,
+    reverse: Option<crate::TypeBridgeMigrationCallback>,
+    context: *mut std::ffi::c_void,
+    out_diagnostics: *mut *mut crate::execution_diagnostic::TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let outputs = match direct_output_preflight(&[(
+        out_diagnostics.cast(),
+        size_of::<*mut crate::execution_diagnostic::TypeBridgeExecutionDiagnostics>(),
+    )]) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    if catalog.is_null()
+        || forward.is_none()
+        || out_diagnostics.is_null()
+        || outputs
+            .check_bytes(catalog.cast(), size_of::<TypeBridgeMigrationCatalog>())
+            .and_then(|()| outputs.check_bytes(step_id.data.cast(), step_id.length))
+            .is_err()
+    {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    // SAFETY: fenced writable output slot.
+    unsafe { out_diagnostics.write_unaligned(ptr::null_mut()) };
+    guarded(|| {
+        // SAFETY: caller retains the input bytes and catalog for this call.
+        let bytes = match unsafe { step_id.snapshot("migration_step_id", 1024) } {
+            Ok(value) => value,
+            Err((status, diagnostics)) => return crate::abi::return_schema_package_open_error(
+                status,
+                diagnostics,
+                type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence::Present,
+                out_diagnostics,
+            ),
+        };
+        let Ok(id) = std::str::from_utf8(&bytes) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        // SAFETY: complete live catalog input was checked above.
+        let catalog = unsafe { &*catalog };
+        let result = catalog
+            .state
+            .user_steps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .register(
+                id,
+                forward.expect("checked callback"),
+                reverse,
+                context as usize,
+            );
+        match result {
+            Ok(()) => TypeBridgeStatus::Ok,
+            Err(error) => crate::abi::return_schema_package_open_error(
+                failure_status(&error),
+                vec![error],
+                type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence::Present,
+                out_diagnostics,
+            ),
+        }
+    })
 }
 
 #[cfg(test)]

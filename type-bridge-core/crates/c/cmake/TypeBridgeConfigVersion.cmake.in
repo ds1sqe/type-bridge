@@ -4,7 +4,7 @@
 # as the package version. ABI minors are additive, so the runtime also serves
 # every supported earlier minor of the same major, down to
 # @TYPE_BRIDGE_C_ABI_OLDEST@: a consumer pinned with
-# `find_package(TypeBridge 1.6.0 EXACT)` keeps finding it, and a consumer of
+# `find_package(TypeBridge 2.0.0 EXACT)` keeps finding it, and a consumer of
 # the newer surface can require the current minor.
 set(PACKAGE_VERSION "@TYPE_BRIDGE_C_ABI_VERSION@")
 set(PACKAGE_VERSION_COMPATIBLE FALSE)

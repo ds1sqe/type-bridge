@@ -1,6 +1,6 @@
 //! Projection-authoritative entity conversion at the generated/client boundary.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::error::Error as StdError;
 
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
@@ -11,26 +11,15 @@ use type_bridge_contract::projection::{
 };
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{CanonicalString, ValueTypeTag};
-use type_bridge_orm::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
-use type_bridge_orm::{
-    AttributeValue, DynamicAttributeMap, DynamicEntityRow, InstalledRuntimeProjection,
-};
+use type_bridge_orm::_descriptor::EntityDescriptor;
+use type_bridge_orm::{AttributeValue, DynamicEntityRow, InstalledRuntimeProjection};
 
 use crate::__codegen::{
-    CanonicalDouble, Date, DateTime, DateTimeTz, Decimal, Duration, EncodedCreate, EncodedScalar,
-    HydratedRow, IntoEncodedCreate, ValidationError,
+    CanonicalDouble, Date, DateTime, DateTimeTz, Decimal, Duration, EncodedScalar, HydratedRow,
+    ValidationError,
 };
 use crate::Result;
 use crate::error::{Error, ModelValidationPhase};
-
-pub(crate) fn lower_entity_create<T: IntoEncodedCreate>(
-    input: T,
-    requested_id: &TypeId,
-    installed: &InstalledRuntimeProjection,
-) -> Result<DynamicAttributeMap> {
-    let encoded = input.into_encoded_create().map_err(map_generated_input)?;
-    lower_encoded_entity_create(&encoded, requested_id, installed)
-}
 
 pub(crate) fn resolve_entity_authority(
     identity_json: &str,
@@ -126,165 +115,6 @@ pub(crate) fn map_validation_error(error: ValidationError, phase: ModelValidatio
         error.to_string(),
         Some(Box::new(error)),
     )
-}
-
-fn lower_encoded_entity_create(
-    encoded: &EncodedCreate,
-    requested_id: &TypeId,
-    installed: &InstalledRuntimeProjection,
-) -> Result<DynamicAttributeMap> {
-    let model = selected_entity_model(
-        encoded.type_id_json(),
-        requested_id,
-        installed,
-        ModelValidationPhase::Input,
-    )?;
-    let descriptor = installed
-        .entity_descriptor(requested_id)
-        .map_err(|source| {
-            sourced_validation(
-                ModelValidationPhase::Input,
-                "model_not_projected",
-                Vec::new(),
-                "the requested entity descriptor is not installed",
-                source,
-            )
-        })?;
-    if !model.declaration().is_constructible() || !model.create().enabled() {
-        return Err(validation(
-            ModelValidationPhase::Input,
-            "model_not_constructible",
-            Vec::new(),
-            "the requested entity is not constructible",
-        ));
-    }
-    if !encoded.roles().is_empty() {
-        return Err(validation(
-            ModelValidationPhase::Input,
-            "entity_roles_not_allowed",
-            vec!["roles".into()],
-            "entity create evidence cannot contain relation roles",
-        ));
-    }
-
-    lower_projected_create_fields(
-        encoded,
-        model,
-        &descriptor.owned_attributes,
-        installed.projection(),
-    )
-}
-
-pub(crate) fn lower_projected_create_fields(
-    encoded: &EncodedCreate,
-    model: &ModelProjection,
-    descriptor_attributes: &[OwnedAttributeDescriptor],
-    projection: &RuntimeProjection,
-) -> Result<DynamicAttributeMap> {
-    let mut by_declaring = BTreeMap::<Vec<u8>, (&[EncodedScalar], usize)>::new();
-    for (index, (identity, values)) in encoded.fields().iter().enumerate() {
-        let Some((canonical, token)) = model.query_tokens().fields().values().find_map(|token| {
-            let canonical = canonical_owns_identity(
-                token.declaring_id(),
-                ModelValidationPhase::Input,
-                vec![format!("fields[{index}]")],
-            )
-            .ok()?;
-            (canonical.as_slice() == identity.as_bytes()).then_some((canonical, token))
-        }) else {
-            return Err(validation(
-                ModelValidationPhase::Input,
-                "unexpected_field_evidence",
-                vec![format!("fields[{index}]")],
-                "field evidence is not one canonical declaring ownership token of the selected model",
-            ));
-        };
-        let classification = classify_create_membership(
-            true,
-            model
-                .create()
-                .fields()
-                .iter()
-                .any(|field| field.token() == token.id()),
-        );
-        if classification != "accepted" {
-            return Err(validation(
-                ModelValidationPhase::Input,
-                classification,
-                vec![format!("fields[{index}]")],
-                "field evidence names a selected-model query token outside the create facet",
-            ));
-        }
-        if by_declaring
-            .insert(canonical, (values.as_slice(), index))
-            .is_some()
-        {
-            return Err(validation(
-                ModelValidationPhase::Input,
-                "duplicate_field_evidence",
-                vec![format!("fields[{index}]")],
-                "create evidence repeats one declaring ownership identity",
-            ));
-        }
-    }
-
-    let mut output = Vec::new();
-    let mut consumed = BTreeSet::new();
-    for field in model.create().fields() {
-        let token = query_field(model, field.token(), ModelValidationPhase::Input)?;
-        if !descriptor_attributes.iter().any(|attribute| {
-            attribute.attr_name == token.id().attribute().label().as_str()
-                && attribute.field_name == token.target_name().as_str()
-        }) {
-            return Err(validation(
-                ModelValidationPhase::Input,
-                "invalid_installed_projection",
-                Vec::new(),
-                "projected ownership is absent from the installed provider descriptor",
-            ));
-        }
-        let declaring_json = canonical_owns_identity(
-            token.declaring_id(),
-            ModelValidationPhase::Input,
-            Vec::new(),
-        )?;
-        let path = vec![token.target_name().as_str().to_owned()];
-        let values = match by_declaring.get(&declaring_json) {
-            Some((values, index)) => {
-                consumed.insert(*index);
-                *values
-            }
-            None => &[],
-        };
-        enforce_cardinality(
-            values.len(),
-            field.multiplicity(),
-            ModelValidationPhase::Input,
-            path.clone(),
-        )?;
-        let domain = projected_domain(projection, field.value(), ModelValidationPhase::Input)?;
-        for (index, value) in values.iter().enumerate() {
-            let value_path = indexed_path(&path, field.multiplicity(), index);
-            output.push((
-                token.id().attribute().label().as_str().to_owned(),
-                lower_scalar(value, domain, ModelValidationPhase::Input, value_path)?,
-            ));
-        }
-    }
-
-    if consumed.len() != by_declaring.len() {
-        let (_, (_, index)) = by_declaring
-            .iter()
-            .find(|(_, (_, index))| !consumed.contains(index))
-            .expect("unequal lengths imply one unconsumed create field");
-        return Err(validation(
-            ModelValidationPhase::Input,
-            "unexpected_field_evidence",
-            vec![format!("fields[{index}]")],
-            "create evidence contains an identity outside the selected create facet",
-        ));
-    }
-    Ok(output)
 }
 
 pub(crate) fn hydrate_entity(
@@ -445,14 +275,6 @@ fn require_unambiguous_provider_attribute(
     Ok(())
 }
 
-fn classify_create_membership(is_query_token: bool, is_create_field: bool) -> &'static str {
-    match (is_query_token, is_create_field) {
-        (true, true) => "accepted",
-        (true, false) => "non_create_field_evidence",
-        (false, _) => "unexpected_field_evidence",
-    }
-}
-
 fn selected_entity_model<'a>(
     identity_json: &str,
     requested_id: &TypeId,
@@ -603,55 +425,6 @@ fn enforce_cardinality(
     Ok(())
 }
 
-pub(crate) fn lower_scalar(
-    value: &EncodedScalar,
-    domain: ValueTypeTag,
-    phase: ModelValidationPhase,
-    path: Vec<String>,
-) -> Result<AttributeValue> {
-    let converted = match (domain, value) {
-        (ValueTypeTag::String, EncodedScalar::String(value)) => {
-            CanonicalString::new(value).map_err(|source| {
-                sourced_validation(
-                    phase,
-                    "string_limit_exceeded",
-                    path.clone(),
-                    "string value is outside the canonical scalar envelope",
-                    source,
-                )
-            })?;
-            AttributeValue::String(value.clone())
-        }
-        (ValueTypeTag::Long, EncodedScalar::Long(value)) => AttributeValue::Long(*value),
-        (ValueTypeTag::Double, EncodedScalar::Double(value)) => AttributeValue::Double(value.get()),
-        (ValueTypeTag::Boolean, EncodedScalar::Boolean(value)) => AttributeValue::Boolean(*value),
-        (ValueTypeTag::Date, EncodedScalar::Date(value)) => {
-            AttributeValue::Date(value.as_str().to_owned())
-        }
-        (ValueTypeTag::DateTime, EncodedScalar::DateTime(value)) => {
-            AttributeValue::DateTime(value.as_str().to_owned())
-        }
-        (ValueTypeTag::DateTimeTz, EncodedScalar::DateTimeTz(value)) => {
-            AttributeValue::DateTimeTZ(value.as_str().to_owned())
-        }
-        (ValueTypeTag::Decimal, EncodedScalar::Decimal(value)) => {
-            AttributeValue::Decimal(value.as_str().to_owned())
-        }
-        (ValueTypeTag::Duration, EncodedScalar::Duration(value)) => {
-            AttributeValue::Duration(value.as_str().to_owned())
-        }
-        _ => {
-            return Err(validation(
-                phase,
-                "wrong_scalar_domain",
-                path,
-                "scalar variant does not match the projected attribute domain",
-            ));
-        }
-    };
-    Ok(converted)
-}
-
 pub(crate) fn hydrate_scalar(
     value: &AttributeValue,
     domain: ValueTypeTag,
@@ -700,19 +473,6 @@ pub(crate) fn hydrate_scalar(
             "provider scalar variant does not match the projected attribute domain",
         )),
     }
-}
-
-fn map_generated_input(source: ValidationError) -> Error {
-    let code = source.code().to_owned();
-    let path = split_path(source.field());
-    let message = source.to_string();
-    Error::model_validation(
-        ModelValidationPhase::Input,
-        code,
-        path,
-        message,
-        Some(Box::new(source)),
-    )
 }
 
 fn map_scalar_validation(source: ValidationError, path: Vec<String>) -> Error {

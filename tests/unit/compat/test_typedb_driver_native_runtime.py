@@ -2,13 +2,11 @@
 
 Import-only checks do not catch native-extension incompatibilities. This smoke
 test deliberately crosses the FFI boundary without opening a network
-connection, so the CPython 3.12–3.13/driver-3.11 and CPython
-3.14/driver-3.14 CI lanes prove that their selected wheel is usable.
+connection, so every supported interpreter proves its retained driver wheel
+is usable.
 """
 
 from __future__ import annotations
-
-import sys
 
 import typedb
 from typedb.driver import Credentials, DriverTlsConfig
@@ -26,6 +24,5 @@ def test_interpreter_selected_driver_native_constructors() -> None:
     assert options is not None
 
     version = tuple(int(part) for part in driver_version().split(".")[:2])
-    expected_minor = (3, 14) if sys.version_info >= (3, 14) else (3, 11)
-    assert version == expected_minor
+    assert version == (3, 14)
     assert typedb is not None

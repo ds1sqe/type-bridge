@@ -111,8 +111,46 @@ pub enum TypeBridgeExecutionDiagnosticDetailKind {
     Signed = 13,
     /// A bounded ordered identity list available through list accessors.
     TextList = 14,
+    /// Execution phase records available through the timeline accessors.
+    ExecutionTimeline = 15,
+    /// Exact canonical generic admission-diagnostics JSON array in `primary`.
+    AdmissionCause = 16,
     /// A newer detail kind unknown to this ABI minor.
     Unknown = 255,
+}
+
+/// Summary of a diagnostic-owned execution timeline.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TypeBridgeExecutionTimelineViewV1 {
+    /// Exact size of this view.
+    pub struct_size: u32,
+    /// Reserved zero word.
+    pub reserved0: u32,
+    /// UTC anchor in Unix milliseconds.
+    pub anchor_unix_milliseconds: u64,
+    /// Number of ordered stamps owned by the diagnostic.
+    pub stamp_count: usize,
+}
+
+/// Read-only execution phase; text borrows the diagnostic lifetime.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TypeBridgeExecutionPhaseViewV1 {
+    /// Exact size of this view.
+    pub struct_size: u32,
+    /// Whether statement_index is present (zero or one).
+    pub has_statement_index: u32,
+    /// Monotonic offset from call entry.
+    pub offset_milliseconds: u64,
+    /// Zero-based statement index, otherwise zero.
+    pub statement_index: u32,
+    /// Reserved zero word.
+    pub reserved0: u32,
+    /// Stable named phase.
+    pub phase: TypeBridgeByteView,
+    /// Stable failing phase, empty except on failure.
+    pub failing_phase: TypeBridgeByteView,
 }
 
 /// Borrowed summary of one execution diagnostic.
@@ -302,6 +340,7 @@ struct OwnedDetail {
     signed_value: i64,
     text: [Vec<u8>; 4],
     list: Vec<Vec<u8>>,
+    timeline: Option<type_bridge_contract::execution_timeline::ExecutionTimeline>,
 }
 
 #[derive(Debug)]
@@ -329,6 +368,27 @@ fn check_slice<T>(values: &[T], preflight: &DirectOutputPreflight) -> Result<(),
 }
 
 impl TypeBridgeExecutionDiagnostics {
+    pub(crate) fn callback_cause(&self) -> String {
+        self.items
+            .iter()
+            .map(|item| {
+                let mut cause = format!(
+                    "{}: {}",
+                    String::from_utf8_lossy(&item.code),
+                    String::from_utf8_lossy(&item.message)
+                );
+                for detail in &item.details {
+                    if detail.kind == TypeBridgeExecutionDiagnosticDetailKind::AdmissionCause {
+                        cause.push_str(": ");
+                        cause.push_str(&String::from_utf8_lossy(&detail.text[0]));
+                    }
+                }
+                cause
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     pub(crate) fn check_borrowed_ranges(
         &self,
         preflight: &DirectOutputPreflight,
@@ -352,6 +412,9 @@ impl TypeBridgeExecutionDiagnostics {
                 check_slice(&detail.key, preflight)?;
                 for value in &detail.text {
                     check_slice(value, preflight)?;
+                }
+                if let Some(timeline) = &detail.timeline {
+                    check_slice(timeline.stamps(), preflight)?;
                 }
                 check_slice(&detail.list, preflight)?;
                 for value in &detail.list {
@@ -508,8 +571,13 @@ impl OwnedDetail {
             signed_value: 0,
             text: std::array::from_fn(|_| Vec::new()),
             list: Vec::new(),
+            timeline: None,
         };
         match value {
+            SdkDiagnosticDetailValue::ExecutionTimeline(value) => {
+                output.kind = TypeBridgeExecutionDiagnosticDetailKind::ExecutionTimeline;
+                output.timeline = Some(value.clone());
+            }
             SdkDiagnosticDetailValue::Boolean(value) => {
                 output.kind = TypeBridgeExecutionDiagnosticDetailKind::Boolean;
                 output.boolean_value = *value;
@@ -632,6 +700,51 @@ pub(crate) fn execution_diagnostics_handle(
     TypeBridgeExecutionDiagnostics {
         items: diagnostics.into_iter().map(OwnedDiagnostic::from).collect(),
     }
+}
+
+/// Preserve the structured admission cause without changing the shared SDK contract.
+pub(crate) fn admission_diagnostics_handle(
+    diagnostic: SdkExecutionDiagnostic,
+    cause: Vec<type_bridge_contract::diagnostic::Diagnostic>,
+) -> TypeBridgeExecutionDiagnostics {
+    diagnostics_with_encoded_cause(
+        diagnostic,
+        crate::diagnostic::diagnostics_handle(cause).encoded,
+    )
+}
+
+/// Raw callback causes preserve provider spelling and category without treating
+/// provider text as a canonical contract diagnostic code.
+pub(crate) fn raw_execution_diagnostics_handle(
+    diagnostic: SdkExecutionDiagnostic,
+    error: type_bridge_orm::session::raw::RawQueryError,
+) -> TypeBridgeExecutionDiagnostics {
+    let cause = serde_json::to_vec(&serde_json::json!([{
+        "category": diagnostic.category().as_str(), "code": error.code,
+        "message": error.message, "path": [],
+        "details": {"status": error.status, "provider_code": error.provider_code},
+    }]))
+    .expect("raw error fields are JSON primitives");
+    diagnostics_with_encoded_cause(diagnostic, cause)
+}
+
+fn diagnostics_with_encoded_cause(
+    diagnostic: SdkExecutionDiagnostic,
+    cause: Vec<u8>,
+) -> TypeBridgeExecutionDiagnostics {
+    let mut item = OwnedDiagnostic::from(diagnostic);
+    item.details.push(OwnedDetail {
+        key: b"admission_cause".to_vec(),
+        kind: TypeBridgeExecutionDiagnosticDetailKind::AdmissionCause,
+        boolean_value: false,
+        unsigned_value: 0,
+        signed_value: 0,
+        text: [cause, Vec::new(), Vec::new(), Vec::new()],
+        list: Vec::new(),
+        timeline: None,
+    });
+    item.details.sort_by(|left, right| left.key.cmp(&right.key));
+    TypeBridgeExecutionDiagnostics { items: vec![item] }
 }
 
 pub(crate) fn status_for(diagnostic: &SdkExecutionDiagnostic) -> TypeBridgeStatus {
@@ -1077,6 +1190,113 @@ pub unsafe extern "C" fn type_bridge_execution_diagnostics_detail_list_get(
     })
 }
 
+/// Read one timeline from a diagnostic-owned execution timeline.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_execution_diagnostics_timeline_get_v1(
+    diagnostics: *const TypeBridgeExecutionDiagnostics,
+    diagnostic_index: usize,
+    detail_index: usize,
+    out_value: *mut TypeBridgeExecutionTimelineViewV1,
+) -> TypeBridgeStatus {
+    // SAFETY: fence the complete diagnostic graph before writing caller outputs.
+    if let Err(status) = unsafe { preflight_diagnostics_output(diagnostics, out_value) } {
+        return status;
+    }
+    guarded(|| {
+        if out_value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: output is writable and does not alias the diagnostic.
+        unsafe { out_value.write(TypeBridgeExecutionTimelineViewV1::default()) };
+        if diagnostics.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains the immutable diagnostic handle.
+        let diagnostics = unsafe { &*diagnostics };
+        let Some(timeline) = diagnostics
+            .items
+            .get(diagnostic_index)
+            .and_then(|item| item.details.get(detail_index))
+            .and_then(|detail| detail.timeline.as_ref())
+        else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        // SAFETY: output was fenced and initialized above.
+        unsafe {
+            out_value.write(TypeBridgeExecutionTimelineViewV1 {
+                struct_size: size_of::<TypeBridgeExecutionTimelineViewV1>() as u32,
+                reserved0: 0,
+                anchor_unix_milliseconds: timeline.anchor_unix_milliseconds(),
+                stamp_count: timeline.stamps().len(),
+            })
+        };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Read one phase from a diagnostic-owned execution timeline.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_execution_diagnostics_phase_get_v1(
+    diagnostics: *const TypeBridgeExecutionDiagnostics,
+    diagnostic_index: usize,
+    detail_index: usize,
+    stamp_index: usize,
+    out_value: *mut TypeBridgeExecutionPhaseViewV1,
+) -> TypeBridgeStatus {
+    // SAFETY: fence the complete diagnostic graph before writing caller outputs.
+    if let Err(status) = unsafe { preflight_diagnostics_output(diagnostics, out_value) } {
+        return status;
+    }
+    guarded(|| {
+        if out_value.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: output is writable and does not alias the diagnostic.
+        unsafe {
+            out_value.write(TypeBridgeExecutionPhaseViewV1 {
+                struct_size: 0,
+                has_statement_index: 0,
+                offset_milliseconds: 0,
+                statement_index: 0,
+                reserved0: 0,
+                phase: empty_view(),
+                failing_phase: empty_view(),
+            })
+        };
+        if diagnostics.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: caller retains the immutable diagnostic handle.
+        let diagnostics = unsafe { &*diagnostics };
+        let Some(timeline) = diagnostics
+            .items
+            .get(diagnostic_index)
+            .and_then(|item| item.details.get(detail_index))
+            .and_then(|detail| detail.timeline.as_ref())
+        else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        let Some(stamp) = timeline.stamps().get(stamp_index) else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        // SAFETY: output was fenced and initialized above.
+        unsafe {
+            out_value.write(TypeBridgeExecutionPhaseViewV1 {
+                struct_size: size_of::<TypeBridgeExecutionPhaseViewV1>() as u32,
+                has_statement_index: u32::from(stamp.statement_index.is_some()),
+                offset_milliseconds: stamp.offset_milliseconds,
+                statement_index: stamp.statement_index.unwrap_or(0),
+                reserved0: 0,
+                phase: view(stamp.phase.as_str().as_bytes()),
+                failing_phase: stamp
+                    .failing_phase
+                    .map_or_else(empty_view, |phase| view(phase.as_str().as_bytes())),
+            })
+        };
+        TypeBridgeStatus::Ok
+    })
+}
+
 /// Close one Rust-owned SDK execution-diagnostic collection and clear its slot.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_execution_diagnostics_close(
@@ -1162,6 +1382,7 @@ mod tests {
                         signed_value: -17,
                         text: std::array::from_fn(|_| Vec::new()),
                         list: Vec::new(),
+                        timeline: None,
                     },
                     OwnedDetail {
                         key: b"binding_list_with_alias_storage".to_vec(),
@@ -1170,6 +1391,7 @@ mod tests {
                         unsigned_value: 0,
                         signed_value: 0,
                         text: std::array::from_fn(|_| Vec::new()),
+                        timeline: None,
                         list: vec![
                             b"binding_identity_with_ample_alias_storage".to_vec(),
                             b"second_binding_identity".to_vec(),
@@ -1179,6 +1401,86 @@ mod tests {
                 failure: None,
             }],
         }))
+    }
+
+    #[test]
+    fn execution_timeline_detail_is_preserved() {
+        let timeline: type_bridge_contract::execution_timeline::ExecutionTimeline =
+            serde_json::from_value(serde_json::json!({
+                "anchor_unix_milliseconds": 1000,
+                "stamps": [
+                    {"phase": "fired", "offset_milliseconds": 0},
+                    {"phase": "failed", "offset_milliseconds": 5, "failing_phase": "fired"}
+                ]
+            }))
+            .unwrap();
+        let diagnostic = type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()
+            .try_with_detail(
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("execution_timeline").unwrap(),
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticDetailValue::ExecutionTimeline(timeline.clone()),
+            ).unwrap();
+        let diagnostics = TypeBridgeExecutionDiagnostics {
+            items: vec![diagnostic.into()],
+        };
+        let mut summary = TypeBridgeExecutionTimelineViewV1::default();
+        assert_eq!(
+            unsafe {
+                type_bridge_execution_diagnostics_timeline_get_v1(&diagnostics, 0, 0, &mut summary)
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(summary.anchor_unix_milliseconds, 1000);
+        assert_eq!(summary.stamp_count, 2);
+        let mut phase = std::mem::MaybeUninit::<TypeBridgeExecutionPhaseViewV1>::uninit();
+        assert_eq!(
+            unsafe {
+                type_bridge_execution_diagnostics_phase_get_v1(
+                    &diagnostics,
+                    0,
+                    0,
+                    1,
+                    phase.as_mut_ptr(),
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        let phase = unsafe { phase.assume_init() };
+        assert_eq!(phase.offset_milliseconds, 5);
+        assert_eq!(
+            unsafe {
+                std::slice::from_raw_parts(phase.failing_phase.data, phase.failing_phase.length)
+            },
+            b"fired"
+        );
+        let mut phase = std::mem::MaybeUninit::<TypeBridgeExecutionPhaseViewV1>::uninit();
+        assert_eq!(
+            unsafe {
+                type_bridge_execution_diagnostics_phase_get_v1(
+                    &diagnostics,
+                    0,
+                    0,
+                    2,
+                    phase.as_mut_ptr(),
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        let stamps = diagnostics.items[0].details[0]
+            .timeline
+            .as_ref()
+            .unwrap()
+            .stamps();
+        assert_eq!(
+            unsafe {
+                type_bridge_execution_diagnostics_timeline_get_v1(
+                    &diagnostics,
+                    0,
+                    0,
+                    stamps.as_ptr().cast_mut().cast(),
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
     }
 
     #[test]

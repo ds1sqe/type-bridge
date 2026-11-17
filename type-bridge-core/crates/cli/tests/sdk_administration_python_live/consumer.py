@@ -7,7 +7,7 @@ from type_bridge_core import (
     MigrationCancellation,
     MigrationExecutionResources,
     MigrationIdentity,
-    PyRustDatabase,
+    PyDatabase,
 )
 
 
@@ -22,14 +22,8 @@ def identity(value: object) -> str:
     return f"{value.app_label}/{value.name}"
 
 
-def execute(database: PyRustDatabase, transaction_type: str, query: str):
-    transaction = database.transaction(transaction_type)
-    result = transaction.execute(query)
-    if transaction_type == "read":
-        transaction.close()
-    else:
-        transaction.commit()
-    return result
+def execute(database: PyDatabase, transaction_type: str, query: str):
+    return database.execute_query(query, transaction_type).get("answers") or []
 
 
 def main() -> None:

@@ -16,6 +16,8 @@ pub mod decimal;
 pub mod diagnostic;
 /// One parser per closed enum and the `unknown_enum_value` diagnostic.
 pub mod enum_spelling;
+/// Diagnostic-only execution phase timelines.
+pub mod execution_timeline;
 /// Value-only typed provider failures.
 pub mod failure;
 /// Domain-separated fingerprint algorithms and values.
@@ -32,8 +34,10 @@ pub mod migration;
 pub mod migration_assertion;
 /// Closed binding-neutral migration backfill plans and fingerprints.
 pub mod migration_backfill;
+/// Atomic migration data programs.
+pub mod migration_data;
 pub use migration_assertion::migration_assertion_capability_vocabulary;
-pub use query_plan::{query_given_rows_capability, query_plan_capability_vocabulary};
+pub use query_plan::query_given_rows_capability;
 mod migration_assertion_wire;
 /// Target-independent canonical generated-model records and ordered archives.
 pub mod projected_record;
@@ -41,17 +45,16 @@ pub mod projected_record;
 pub mod projection;
 /// Fail-closed canonical wire decoding for runtime projections.
 pub mod projection_wire;
-/// Versioned schema identities, facts, provenance, and fingerprints.
-/// Reusable typed query plans and the first public V2 read vocabulary.
+pub mod query_model_evidence;
+pub mod query_model_limits;
+/// Canonical typed read/write plans and their shared vocabulary.
 pub mod query_plan;
+/// Staged transaction envelopes and authenticated replies.
 pub mod query_remote;
-/// Additive V2 remote envelopes and hydrated model-result evidence.
-pub mod query_remote_v2;
-/// Additive staged transaction envelopes and authenticated replies.
-pub mod query_remote_v3;
+/// Bounded structured diagnostics shared by remote plan transports.
+pub mod query_remote_diagnostic;
 pub mod reserved;
 
-mod query_invocation_wire;
 mod query_plan_wire;
 
 mod declared_schema_wire;

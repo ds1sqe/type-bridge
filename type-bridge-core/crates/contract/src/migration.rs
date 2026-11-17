@@ -302,6 +302,8 @@ pub enum MigrationStepKind {
     Assertion,
     /// One closed binding-neutral data backfill.
     Backfill,
+    /// One atomic plan, raw TypeQL, or registered user program.
+    Data,
 }
 
 /// Context-free claims derived exactly from one closed backfill plan.
@@ -584,6 +586,8 @@ impl AssertionStepContract {
 /// Exact ordered migration step algebra. Trusted steps deliberately do not deserialize.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrationStep {
+    /// One atomic data program with an optional reverse.
+    Data(crate::migration_data::DataStep),
     /// One state-changing schema delta.
     SchemaDelta(Box<SchemaDeltaStep>),
     /// One state-preserving verifier-derived assertion.
@@ -630,6 +634,7 @@ impl MigrationStep {
     /// Return the closed step discriminator.
     pub const fn kind(&self) -> MigrationStepKind {
         match self {
+            Self::Data(_) => MigrationStepKind::Data,
             Self::SchemaDelta(_) => MigrationStepKind::SchemaDelta,
             Self::Assertion { .. } => MigrationStepKind::Assertion,
             Self::Backfill { .. } => MigrationStepKind::Backfill,
@@ -639,6 +644,7 @@ impl MigrationStep {
     /// Return the unique step-local identity.
     pub const fn id(&self) -> &MigrationStepId {
         match self {
+            Self::Data(step) => step.id(),
             Self::SchemaDelta(step) => step.contract().id(),
             Self::Assertion { contract, .. } => contract.id(),
             Self::Backfill { contract, .. } => contract.id(),
@@ -648,6 +654,7 @@ impl MigrationStep {
     /// Return constructor-derived required capabilities.
     pub const fn required_capabilities(&self) -> &CapabilitySet {
         match self {
+            Self::Data(step) => step.required_capabilities(),
             Self::SchemaDelta(step) => step.contract().required_capabilities(),
             Self::Assertion { contract, .. } => contract.required_capabilities(),
             Self::Backfill { contract, .. } => contract.required_capabilities(),
@@ -658,7 +665,7 @@ impl MigrationStep {
     pub fn as_schema_delta(&self) -> Option<&SchemaDeltaStep> {
         match self {
             Self::SchemaDelta(step) => Some(step),
-            Self::Assertion { .. } | Self::Backfill { .. } => None,
+            Self::Data(_) | Self::Assertion { .. } | Self::Backfill { .. } => None,
         }
     }
 
@@ -671,7 +678,7 @@ impl MigrationStep {
         AssertionExpectation,
     )> {
         match self {
-            Self::SchemaDelta(_) | Self::Backfill { .. } => None,
+            Self::Data(_) | Self::SchemaDelta(_) | Self::Backfill { .. } => None,
             Self::Assertion {
                 contract,
                 plan,
@@ -684,13 +691,26 @@ impl MigrationStep {
     pub fn as_backfill(&self) -> Option<(&BackfillStepContract, &AttributeBackfillPlan)> {
         match self {
             Self::Backfill { contract, plan } => Some((contract, plan)),
-            Self::SchemaDelta(_) | Self::Assertion { .. } => None,
+            Self::Data(_) | Self::SchemaDelta(_) | Self::Assertion { .. } => None,
+        }
+    }
+
+    /// Return an atomic data step.
+    pub const fn as_data(&self) -> Option<&crate::migration_data::DataStep> {
+        match self {
+            Self::Data(step) => Some(step),
+            _ => None,
         }
     }
 
     /// Rebuild all derived claims and reject an assembled mismatched step.
     pub fn validate(&self) -> Result<(), Diagnostic> {
         let rebuilt = match self {
+            Self::Data(step) => Self::Data(crate::migration_data::DataStep::new(
+                step.id().clone(),
+                step.forward().clone(),
+                step.reverse().cloned(),
+            )?),
             Self::SchemaDelta(step) => Self::SchemaDelta(Box::new(SchemaDeltaStep::new(
                 step.contract().id().clone(),
                 step.delta().clone(),
@@ -748,6 +768,18 @@ impl Serialize for MigrationStep {
         S: Serializer,
     {
         match self {
+            Self::Data(step) => {
+                #[derive(Serialize)]
+                struct DataView<'a> {
+                    kind: MigrationStepKind,
+                    step: &'a crate::migration_data::DataStep,
+                }
+                DataView {
+                    kind: MigrationStepKind::Data,
+                    step,
+                }
+                .serialize(serializer)
+            }
             Self::SchemaDelta(step) => step.serialize(serializer),
             Self::Assertion {
                 contract,

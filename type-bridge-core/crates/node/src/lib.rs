@@ -1,7 +1,7 @@
 //! Generated-projection and query runtime for the Node binding.
 //!
-//! The addon exposes connection, transaction, verified projection, and Query
-//! V2 handles. Arbitrary descriptor registration, handwritten dynamic managers,
+//! The addon exposes connection, transaction, verified projection, and staged
+//! plan handles. Arbitrary descriptor registration, handwritten dynamic managers,
 //! parser/generator entry points, and descriptor-marshalling functions are not
 //! part of this boundary.
 
@@ -9,6 +9,10 @@
 
 #[cfg(feature = "contract-test-adapter")]
 mod contract_test_adapter;
+mod debug;
+pub use debug::set_debug_listener;
+mod iid;
+pub use iid::validate_iid;
 pub mod limits;
 mod match_runtime;
 mod migration_catalog_runtime;
@@ -16,14 +20,14 @@ mod perf_stages;
 #[cfg(feature = "perf-stages")]
 pub use perf_stages::perf_stages;
 mod plan_builder_runtime;
+mod plan_model_remote_runtime;
+pub mod plan_runtime;
 mod proxy_connection_runtime;
 #[cfg(test)]
 #[path = "../../rust/tests/support/purchase_plan.rs"]
 mod purchase_plan;
-mod query_plan_v3_codec;
-mod query_v2_builder_runtime;
-mod query_v2_model_remote_runtime;
-pub mod query_v2_runtime;
+mod query_plan_codec;
+mod raw_runtime;
 mod runtime_projection;
 #[cfg(test)]
 #[path = "../../../../tests/support/sdk_profile_matrix.rs"]
@@ -52,16 +56,19 @@ pub use migration_catalog_runtime::{
     NodeMigrationVerificationFinding, NodeMigrationVerificationReport, open_migration_catalog,
 };
 pub use plan_builder_runtime::{NodePlan, NodePlanBuilder, NodePlanOperand};
-pub use proxy_connection_runtime::NodeProxyConnection;
-pub use query_plan_v3_codec::{_query_plan_v3_round_trip, QueryPlanV3Encoding};
-pub use query_v2_model_remote_runtime::{
-    NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,
-    query_v2_prepare_remote_model_exists, query_v2_prepare_remote_model_page,
-    query_v2_prepare_remote_model_reduce, query_v2_prepare_remote_model_reduce_by_field,
-    query_v2_prepare_remote_model_reduce_by_fields, query_v2_prepare_remote_model_rows,
-    query_v2_remote_model_context_with_resources,
+pub use plan_model_remote_runtime::{
+    NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, plan_prepare_remote_model_count,
+    plan_prepare_remote_model_exists, plan_prepare_remote_model_page,
+    plan_prepare_remote_model_reduce, plan_prepare_remote_model_reduce_by_field,
+    plan_prepare_remote_model_reduce_by_fields, plan_prepare_remote_model_rows,
+    plan_remote_model_context_with_resources,
 };
-pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
+pub use proxy_connection_runtime::NodeProxyConnection;
+pub use query_plan_codec::{_query_plan_round_trip, QueryPlanEncoding};
+pub use runtime_projection::{
+    NodeProjectedModelManager, NodeRuntimeProjection, install_plan_runtime_projection,
+    projected_batch_deleted,
+};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -77,20 +84,23 @@ use type_bridge_core_lib::version as core_version;
 use type_bridge_orm::_descriptor::{EntityDescriptor, RelationDescriptor};
 #[cfg(test)]
 use type_bridge_orm::_registry::DescriptorRegistry;
+#[cfg(test)]
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, OrmError, ProviderRuntimeOwner, TransactionContext, TxType, ValueType,
 };
 
 fn node_administration_control(
-    timeout_milliseconds: Option<i64>,
+    timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
     cancellation: Option<&NodeMigrationCancellation>,
 ) -> Result<type_bridge_schema_migration::MigrationExecutionControl> {
     let milliseconds = timeout_milliseconds
-        .map(u64::try_from)
-        .transpose()
-        .map_err(|_| Error::new(Status::InvalidArg, "timeout must be non-negative"))?;
+        .as_ref()
+        .map(|value| match_runtime::bigint_u64(value, "timeoutMilliseconds"))
+        .transpose()?;
+
     let deadline = milliseconds
+        .filter(|value| *value != 0)
         .map(|value| {
             Instant::now()
                 .checked_add(Duration::from_millis(value))
@@ -157,13 +167,13 @@ impl NodeDescriptorRegistry {
 
 /// JavaScript-facing Rust database handle backed by the shared ORM runtime.
 #[napi]
-pub struct NodeRustDatabase {
+pub struct NodeDatabase {
     db: Arc<type_bridge_orm::Database>,
     runtime: Arc<ProviderRuntimeOwner>,
     managed_scope_id: Option<type_bridge_contract::managed_scope::ManagedScopeId>,
 }
 
-impl NodeRustDatabase {
+impl NodeDatabase {
     pub(crate) fn from_handles(
         db: Arc<type_bridge_orm::Database>,
         runtime: Arc<ProviderRuntimeOwner>,
@@ -229,7 +239,7 @@ impl NodeManagedDatabaseDeletionPlan {
     #[napi(js_name = "executeControlled")]
     pub fn execute_controlled(
         &mut self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<String> {
         let control = node_administration_control(timeout_milliseconds, cancellation)?;
@@ -255,6 +265,9 @@ fn node_pair_state(
 ) -> &'static str {
     match state {
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::Absent => "absent",
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::ImportPending => {
+            "import_pending"
+        }
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::StandaloneManaged => {
             "standalone_managed"
         }
@@ -281,14 +294,11 @@ fn node_delete_outcome(
 }
 
 fn napi_administration_error(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
-    Error::new(
-        Status::GenericFailure,
-        format!("database administration failed [{}]", error.code().as_str()),
-    )
+    crate::plan_runtime::napi_error(&error)
 }
 
 #[napi]
-impl NodeRustDatabase {
+impl NodeDatabase {
     #[napi(js_name = "isConnected")]
     pub fn is_connected(&self) -> bool {
         self.db.is_connected()
@@ -314,7 +324,7 @@ impl NodeRustDatabase {
     #[napi(js_name = "databaseExistsControlled")]
     pub fn database_exists_controlled(
         &self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<bool> {
         let control = node_administration_control(timeout_milliseconds, cancellation)?;
@@ -339,7 +349,7 @@ impl NodeRustDatabase {
     #[napi(js_name = "createDatabaseControlled")]
     pub fn create_database_controlled(
         &self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<()> {
         self.create_database_outcome_controlled(timeout_milliseconds, cancellation)
@@ -372,7 +382,7 @@ impl NodeRustDatabase {
     #[napi(js_name = "createDatabaseOutcomeControlled")]
     pub fn create_database_outcome_controlled(
         &self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<String> {
         let control = node_administration_control(timeout_milliseconds, cancellation)?;
@@ -388,24 +398,20 @@ impl NodeRustDatabase {
 
     #[napi(js_name = "deleteDatabase")]
     pub fn delete_database(&self) -> Result<()> {
-        if self.managed_scope_id.is_some() {
-            return Err(Error::new(
-                Status::InvalidArg,
-                "managed database deletion requires planDatabaseDelete() and explicit plan execution",
-            ));
-        }
-        self.runtime
-            .block_on(self.db.delete_database())
-            .map_err(napi_orm_error)
+        self.delete_database_outcome().map(|_| ())
     }
 
     #[napi(js_name = "deleteDatabaseOutcome")]
     pub fn delete_database_outcome(&self) -> Result<String> {
         if self.managed_scope_id.is_some() {
-            return Err(Error::new(
-                Status::InvalidArg,
-                "managed database deletion requires planDatabaseDelete() and explicit plan execution",
-            ));
+            return self.runtime.block_on(async {
+                self.pair_administrator()?.plan_delete().await
+                    .map_err(napi_administration_error)?.execute().await
+                    .map(|outcome| match outcome {
+                        type_bridge_schema_migration_typedb::ManagedDatabasePairDeleteOutcome::AlreadyAbsent => "already_absent".to_owned(),
+                        _ => "deleted".to_owned(),
+                    }).map_err(napi_administration_error)
+            });
         }
         self.runtime
             .block_on(self.db.delete_database_outcome())
@@ -448,7 +454,7 @@ impl NodeRustDatabase {
     #[napi(js_name = "inspectDatabasePairControlled")]
     pub fn inspect_database_pair_controlled(
         &self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<String> {
         let control = node_administration_control(timeout_milliseconds, cancellation)?;
@@ -474,7 +480,7 @@ impl NodeRustDatabase {
     #[napi(js_name = "planDatabaseDeleteControlled")]
     pub fn plan_database_delete_controlled(
         &self,
-        timeout_milliseconds: Option<i64>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         cancellation: Option<&NodeMigrationCancellation>,
     ) -> Result<NodeManagedDatabaseDeletionPlan> {
         let control = node_administration_control(timeout_milliseconds, cancellation)?;
@@ -508,19 +514,29 @@ impl NodeRustDatabase {
 }
 
 #[napi]
-impl NodeRustDatabase {
+impl NodeDatabase {
     /// Create a deferred staged transaction; nothing opens until commit.
-    /// An omitted kind is inferred from the staged writes.
+    /// An omitted kind is inferred from the staged writes. Timeout defaults to
+    /// 60000 ms; zero disables it and negatives reject. Phase collection defaults off.
     #[napi(js_name = "stagedTransaction")]
     pub fn staged_transaction(
         &self,
         kind: Option<String>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
+        collect_phase_timestamps: Option<bool>,
     ) -> Result<staged_transaction_runtime::NodeStagedTransaction> {
-        let options = staged_transaction_runtime::staged_options(kind.as_deref())?;
+        let options = staged_transaction_runtime::staged_options(
+            kind.as_deref(),
+            timeout_milliseconds,
+            collect_phase_timestamps,
+        )?;
         Ok(staged_transaction_runtime::NodeStagedTransaction::new(
             self.db.transaction(options),
             Arc::clone(&self.runtime),
-        ))
+        )
+        .with_origin(type_bridge_orm::ProjectedQueryOrigin::for_database(
+            &self.db,
+        )))
     }
 }
 
@@ -533,6 +549,17 @@ pub struct NodeRustTransactionContext {
 }
 
 impl NodeRustTransactionContext {
+    pub(crate) fn from_borrowed(
+        context: TransactionContext,
+        runtime: Arc<ProviderRuntimeOwner>,
+    ) -> Self {
+        Self {
+            context,
+            runtime,
+            successor_batch_invoked: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
     }
@@ -542,15 +569,51 @@ impl NodeRustTransactionContext {
     }
 }
 
+fn connection_credentials(
+    username: Option<String>,
+    password: Option<String>,
+) -> Result<(String, String)> {
+    match (username, password) {
+        (None, None) => Ok(("admin".into(), "password".into())),
+        (Some(username), Some(password)) if !username.is_empty() && !password.is_empty() => {
+            Ok((username, password))
+        }
+        _ => {
+            use type_bridge_contract::sdk_diagnostic::{
+                SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
+            };
+            Err(match_runtime::napi_sdk_diagnostic(
+                SdkExecutionDiagnostic::invalid_input(
+                    SdkDiagnosticCode::new("connection_credentials_invalid")
+                        .expect("static credential code"),
+                    SdkDiagnosticMessage::new(
+                        "username and password must both be nonempty when supplied",
+                    )
+                    .expect("static credential message"),
+                ),
+            ))
+        }
+    }
+}
+
 #[napi]
 impl NodeRustTransactionContext {
-    #[napi(js_name = "queryJson")]
-    pub fn query_json(&self, query: String) -> Result<String> {
-        let result = self
-            .runtime
-            .block_on(self.context.query(&query))
-            .map_err(napi_orm_error)?;
-        query_result_to_json(result)
+    #[napi(js_name = "executeQuery", ts_return_type = "Promise<unknown>")]
+    pub fn execute_query(
+        &self,
+        env: Env,
+        query: String,
+    ) -> napi::Result<napi::bindgen_prelude::Object<'static>> {
+        let tx = self.context.clone();
+        crate::proxy_connection_runtime::settle(&env, &self.runtime, async move {
+            let bytes = tx
+                .execute_query(&query)
+                .await
+                .map_err(crate::raw_runtime::raw_error)?;
+            serde_json::from_slice(&bytes)
+                .map(crate::raw_runtime::RawJson)
+                .map_err(|_| napi::Error::from_reason("raw_answer_encoding"))
+        })
     }
 
     #[napi(js_name = "commit")]
@@ -603,6 +666,7 @@ pub fn ensure_rust_database(
     tls_enabled: Option<bool>,
     tls_root_ca: Option<String>,
 ) -> Result<()> {
+    let (username, password) = connection_credentials(username, password)?;
     let options = napi_secure_connect_options(http_port, server_version, tls_enabled, tls_root_ca)?;
     let prepared = options
         .prepare_transport()
@@ -613,8 +677,6 @@ pub fn ensure_rust_database(
             format!("Failed to create Tokio runtime: {error}"),
         )
     })?;
-    let username = username.unwrap_or_else(|| "admin".to_string());
-    let password = password.unwrap_or_else(|| "password".to_string());
     runtime
         .block_on(type_bridge_orm::ensure_database_exists_prepared_secure(
             &address, &database, &username, &password, prepared,
@@ -637,7 +699,13 @@ pub fn connect_rust_database(
     server_version: Option<String>,
     tls_enabled: Option<bool>,
     tls_root_ca: Option<String>,
-) -> Result<NodeRustDatabase> {
+    query_limits: Option<&match_runtime::NodeQueryLimits>,
+) -> Result<NodeDatabase> {
+    let (username, password) = connection_credentials(username, password)?;
+    let query_limits = query_limits
+        .map(|limits| limits.inner().validate_plan())
+        .transpose()
+        .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?;
     let options = napi_secure_connect_options(http_port, server_version, tls_enabled, tls_root_ca)?;
     let prepared = options
         .prepare_transport()
@@ -648,8 +716,6 @@ pub fn connect_rust_database(
             format!("Failed to create Tokio runtime: {error}"),
         )
     })?;
-    let username = username.unwrap_or_else(|| "admin".to_string());
-    let password = password.unwrap_or_else(|| "password".to_string());
     let db = runtime
         .block_on(
             type_bridge_orm::Database::connect_prepared_secure_with_options(
@@ -658,7 +724,14 @@ pub fn connect_rust_database(
         )
         .map_err(napi_secure_connect_error)?;
 
-    Ok(NodeRustDatabase {
+    let db = match query_limits {
+        Some(limits) => db
+            .with_query_limits(limits)
+            .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?,
+        None => db,
+    };
+
+    Ok(NodeDatabase {
         db: Arc::new(db),
         runtime,
         managed_scope_id: None,
@@ -762,16 +835,9 @@ fn invalid_json_error(kind: &'static str) -> impl Fn(serde_json::Error) -> napi:
     move |error| Error::from_reason(format!("Invalid {kind} descriptor JSON: {error}"))
 }
 
+#[cfg(test)]
 fn json_serialize_error(error: serde_json::Error) -> napi::Error {
     Error::from_reason(format!("Failed to serialize Node runtime JSON: {error}"))
-}
-
-fn query_result_to_json(result: QueryResult) -> Result<String> {
-    let values = match result {
-        QueryResult::Ok => Vec::new(),
-        QueryResult::Documents(values) | QueryResult::Rows(values) => values,
-    };
-    serde_json::to_string(&values).map_err(json_serialize_error)
 }
 
 fn napi_secure_connect_options(
@@ -803,9 +869,10 @@ fn napi_secure_connect_options(
             ));
         }
     };
-    let mut options = type_bridge_orm::SecureConnectOptions {
-        tls_mode,
-        ..type_bridge_orm::SecureConnectOptions::default()
+    let mut options = {
+        let mut options = type_bridge_orm::SecureConnectOptions::default();
+        options.tls_mode = tls_mode;
+        options
     };
     if let Some(port) = http_port {
         options.http_port = u16::try_from(port).map_err(|_| {
@@ -828,12 +895,7 @@ fn napi_secure_connect_options(
 }
 
 fn napi_secure_connect_error(error: type_bridge_orm::SecureConnectError) -> napi::Error {
-    let status = if error.configuration_code().is_some() {
-        Status::InvalidArg
-    } else {
-        Status::GenericFailure
-    };
-    Error::new(status, error.to_string())
+    match_runtime::napi_sdk_diagnostic(type_bridge_orm::lower_secure_connect_error(error))
 }
 
 pub(crate) fn napi_orm_error(error: OrmError) -> napi::Error {
@@ -844,6 +906,9 @@ pub(crate) fn napi_orm_error(error: OrmError) -> napi::Error {
         ));
     }
     match error {
+        OrmError::ExecutionDiagnostic(diagnostic) => {
+            match_runtime::napi_sdk_diagnostic(*diagnostic)
+        }
         OrmError::Match(error) => match_runtime::napi_match_error(error),
         OrmError::DescriptorValidation { .. }
         | OrmError::DescriptorConflict { .. }
@@ -853,7 +918,14 @@ pub(crate) fn napi_orm_error(error: OrmError) -> napi::Error {
             Error::new(Status::GenericFailure, error.to_string())
         }
         OrmError::Connection(_) | OrmError::QueryExecution(_) | OrmError::Transaction(_) => {
-            Error::new(Status::GenericFailure, error.to_string())
+            let operation = if matches!(error, OrmError::Connection(_)) {
+                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Connect
+            } else {
+                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write
+            };
+            match_runtime::napi_sdk_diagnostic(type_bridge_orm::lower_execution_error(
+                error, operation,
+            ))
         }
         _ => Error::new(Status::GenericFailure, error.to_string()),
     }
@@ -906,7 +978,7 @@ mod tests {
     #[test]
     fn node_transaction_queries_and_commits_after_rollback_on_the_same_provider() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let database = NodeRustDatabase {
+        let database = NodeDatabase {
             db: Arc::new(type_bridge_orm::Database::with_backend(
                 Box::new(ReusableBackend(Arc::clone(&events))),
                 "test",
@@ -915,9 +987,15 @@ mod tests {
             managed_scope_id: None,
         };
         let transaction = database.transaction(Some("write".into())).unwrap();
-        transaction.query_json("before".into()).unwrap();
+        transaction
+            .runtime
+            .block_on(transaction.context.query("before"))
+            .unwrap();
         transaction.rollback().unwrap();
-        transaction.query_json("after".into()).unwrap();
+        transaction
+            .runtime
+            .block_on(transaction.context.query("after"))
+            .unwrap();
         transaction.commit().unwrap();
         assert_eq!(
             *events.lock().unwrap(),
@@ -926,9 +1004,34 @@ mod tests {
     }
 
     #[test]
-    fn node_double_commit_keeps_the_released_lifecycle_error() {
+    fn node_secure_connect_diagnostic_redacts_credentials_and_private_paths() {
+        let error = core_version::TlsConfigurationError::CustomRootCaUnreadable {
+            path: PathBuf::from("/private/password-private-secret-key.pem"),
+        };
+        let mapped = napi_secure_connect_error(error.into());
+        let diagnostic: serde_json::Value = serde_json::from_str(&mapped.reason).unwrap();
+        assert_eq!(diagnostic["code"], "tls_custom_root_ca_unreadable");
+        assert!(!mapped.reason.contains("private-secret"));
+        assert!(!mapped.reason.contains("/private/"));
+    }
+
+    #[test]
+    fn node_connection_and_query_errors_use_redacted_sdk_diagnostics() {
+        for error in [
+            OrmError::Connection("private-provider-secret".into()),
+            OrmError::QueryExecution("private-provider-secret".into()),
+        ] {
+            let mapped = napi_orm_error(error);
+            let diagnostic: serde_json::Value = serde_json::from_str(&mapped.reason).unwrap();
+            assert_eq!(diagnostic["code"], "provider_operation_failed");
+            assert!(!mapped.reason.contains("private-provider-secret"));
+        }
+    }
+
+    #[test]
+    fn node_double_commit_uses_the_shared_lifecycle_diagnostic() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let database = NodeRustDatabase {
+        let database = NodeDatabase {
             db: Arc::new(type_bridge_orm::Database::with_backend(
                 Box::new(ReusableBackend(Arc::clone(&events))),
                 "test",
@@ -940,7 +1043,9 @@ mod tests {
         transaction.commit().unwrap();
         // Refused before dispatch: no unknown-outcome diagnostic.
         let error = transaction.commit().unwrap_err();
-        assert!(error.reason.contains("Transaction already consumed"));
+        let diagnostic: serde_json::Value = serde_json::from_str(&error.reason).unwrap();
+        assert_eq!(diagnostic["code"], "transaction_state_invalid");
+        assert_eq!(diagnostic["category"], "transaction");
         assert!(!error.reason.contains("commit_outcome_unknown"));
         assert_eq!(*events.lock().unwrap(), ["open", "commit"]);
     }
@@ -1011,7 +1116,7 @@ mod tests {
     #[test]
     fn node_generated_administration_is_pair_aware_and_plan_owned() {
         let databases = Arc::new(Mutex::new(BTreeSet::new()));
-        let database = NodeRustDatabase {
+        let database = NodeDatabase {
             db: Arc::new(type_bridge_orm::Database::with_backend(
                 Box::new(AdministrationBackend {
                     databases: Arc::clone(&databases),
@@ -1037,7 +1142,12 @@ mod tests {
             database.inspect_database_pair().unwrap(),
             "standalone_managed"
         );
-        assert!(database.delete_database().is_err());
+        assert_eq!(database.delete_database_outcome().unwrap(), "deleted");
+        assert_eq!(
+            database.delete_database_outcome().unwrap(),
+            "already_absent"
+        );
+        assert_eq!(database.create_database_outcome().unwrap(), "created");
         let mut plan = database.plan_database_delete().unwrap();
         drop(database);
         assert_eq!(plan.execute().unwrap(), "deleted_standalone_managed");
@@ -1076,5 +1186,34 @@ mod tests {
         );
         assert!(napi_secure_connect_options(None, None, None, Some("ca.pem".into())).is_err());
         assert!(napi_secure_connect_options(None, None, Some(true), Some(String::new())).is_err());
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::connection_credentials;
+
+    #[test]
+    fn defaults_require_a_fully_omitted_pair() {
+        assert_eq!(
+            connection_credentials(None, None).unwrap(),
+            ("admin".into(), "password".into())
+        );
+        assert_eq!(
+            connection_credentials(Some("alice".into()), Some("secret".into())).unwrap(),
+            ("alice".into(), "secret".into())
+        );
+        for (username, password) in [
+            (Some("alice"), None),
+            (None, Some("secret")),
+            (Some("alice"), Some("")),
+            (Some(""), Some("secret")),
+            (Some(""), Some("")),
+        ] {
+            let error =
+                connection_credentials(username.map(str::to_owned), password.map(str::to_owned))
+                    .unwrap_err();
+            assert!(error.reason.contains("username and password"));
+        }
     }
 }

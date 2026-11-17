@@ -95,6 +95,23 @@ fn guide_plan_example_compiles_and_matches_the_hand_built_plan() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    let clippy_output = cargo_with_env(
+        &[
+            "clippy",
+            "--quiet",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+            "--",
+            "-D",
+            "warnings",
+        ],
+        &[],
+    );
+    assert!(
+        clippy_output.status.success(),
+        "complete-only consumer clippy failed\n{}",
+        String::from_utf8_lossy(&clippy_output.stderr)
+    );
     let authority = support::authority_with(
         purchase_plan::SOURCE,
         purchase_plan::SCOPE,
@@ -133,7 +150,7 @@ fn writes_suite_purchase_bytes_are_the_hand_built_purchase() {
     )
     .expect("expected results parse");
     let authority = support::authority_with(&source, scope, purchase_plan::PROFILE);
-    let bytes = purchase_plan::hand_built_purchase(
+    let bytes = purchase_plan::authored_purchase(
         authority.declared_schema(),
         authority.managed_state().managed_semantic_schema().clone(),
         "O1",
@@ -144,4 +161,167 @@ fn writes_suite_purchase_bytes_are_the_hand_built_purchase() {
     .unwrap();
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(expected["plans"]["purchase"], hex);
+}
+
+#[test]
+fn authoring_helpers_compile_and_record_typed_purchase() {
+    let stage = Stage::new();
+    let source = include_str!("acceptance/schema-plan-idioms.yaml");
+    let projection = support::rust_projection(source, "plan-idioms.yaml");
+    let generated = RustEmitter::new()
+        .emit(&projection, &support::authority(source))
+        .unwrap();
+    let helpers = std::str::from_utf8(generated.get("src/plan.rs").unwrap()).unwrap();
+    for method in ["insert_many", "put_many"] {
+        let (row_mapping, metadata) = helpers
+            .split(&format!("pub fn {method}("))
+            .skip(1)
+            .filter_map(|body| body.split_once("}).collect();"))
+            .map(|(rows, tail)| {
+                (
+                    rows,
+                    tail.lines()
+                        .find(|line| line.contains("p.bulk::<Self>"))
+                        .unwrap(),
+                )
+            })
+            .find(|(_, metadata)| metadata.contains("ItemType::"))
+            .unwrap();
+        assert!(!row_mapping.contains("owns_id_json"));
+        assert_eq!(metadata.matches("owns_id_json()").count(), 3);
+    }
+    write_package(&generated, &stage.path().join("generated"));
+    let consumer = stage.path().join("consumer");
+    write_consumer(
+        &consumer,
+        r#"
+use models::*;
+fn main() {
+    let plan: Plan<Vec<Purchase>> = Plan::build(|p| {
+        let item = Item::matching(p, "I1").where_(ItemType::stock.gt(0_i64));
+        let buyer = Account::matching(p, "A1").where_(AccountType::balance.ge(item.price()));
+        item.set(p).stock(item.stock() - 1_i64);
+        buyer.set(p).balance(buyer.balance() - item.price());
+        Purchase::insert(p, PurchaseInsert { order_id: "O1".into(), buyer: &buyer, item: &item })
+    }).unwrap();
+    let strings: Plan<i64> = Plan::build(|p| {
+        let item = Item::matching(p, "I1").where_(ItemType::item_id.contains("I")).where_(ItemType::item_id.starts_with("I"));
+        let text = item.item_id();
+        item.where_(text.ends_with("1")).where_(text.like("I.*"));
+        p.count()
+    }).unwrap();
+    assert!(!strings.canonical_bytes().unwrap().is_empty());
+    let price_left: Plan<i64> = Plan::build(|p| {
+        let item = Item::matching(p, "I1");
+        let buyer = Account::matching(p, "A1");
+        let _buyer: AccountHandle = buyer.clone().where_(item.price().le(buyer.balance()));
+        p.count()
+    }).unwrap();
+    assert!(!price_left.canonical_bytes().unwrap().is_empty());
+    let count: Plan<i64> = Plan::build(|p| {
+        Item::matching_by(p).item_id("I1").stock(2_i64).handle();
+        p.count()
+    }).unwrap();
+    assert!(!count.canonical_bytes().unwrap().is_empty());
+    let duplicate = Plan::<i64>::build(|p| {
+        Item::matching_by(p).stock(1_i64).stock(2_i64).handle();
+        p.count()
+    }).unwrap_err();
+    assert_eq!(duplicate.code(), Some("plan_duplicate_match_field"));
+    let updated: Plan<Vec<Item>> = Plan::build(|p| {
+        let item = Item::matching(p, "I1");
+        let updated: Plan<Vec<Item>> = item.set(p).stock(1_i64).into();
+        updated
+    }).unwrap();
+    assert!(updated.writes());
+    let _rows: Plan<Vec<(Item, i64)>> = Plan::build(|p| {
+        let item = Item::matching(p, "I1");
+        p.returning((&item, item.stock()))
+    }).unwrap();
+    let _scalar_rows: Plan<Vec<(i64, String)>> = Plan::build(|p| {
+        let item = Item::matching(p, "I1");
+        p.returning((item.stock(), item.item_id()))
+    }).unwrap();
+    let bulk: Plan<Vec<Item>> = Plan::build(|p| Item::insert_many(p, [
+        ItemValues { item_id: "I1".into(), price: 3, stock: None },
+        ItemValues { item_id: "I2".into(), price: 4, stock: Some(2) },
+    ])).unwrap();
+    assert!(bulk.writes());
+    assert_eq!(bulk.canonical_bytes().unwrap_err().code(), Some("plan_batch_split"));
+    assert_eq!(bulk.explain().unwrap_err().code(), Some("plan_batch_split"));
+    let empty: Plan<Vec<Item>> = Plan::build(|p| Item::put_many(p, [])).unwrap();
+    assert!(empty.writes());
+    assert_eq!(empty.canonical_bytes().unwrap_err().code(), Some("plan_batch_split"));
+    assert!(plan.writes());
+    assert!(!plan.canonical_bytes().unwrap().is_empty());
+}
+"#,
+    );
+    let manifest = consumer.join("Cargo.toml");
+    let output = cargo_with_env(
+        &[
+            "run",
+            "--quiet",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "authoring consumer failed\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = cargo_with_env(
+        &[
+            "clippy",
+            "--quiet",
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+            "--",
+            "-D",
+            "warnings",
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "authoring consumer clippy failed\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for (source, expected) in [
+        (
+            r#"use models::*; fn main() { let _: Plan<Vec<Purchase>> = Plan::build(|p| { let item = Item::matching(p, "I1"); let buyer = Account::matching(p, "A1"); Purchase::insert(p, PurchaseInsert { buyer: &buyer, item: &item }) }).unwrap(); }"#,
+            "missing field `order_id`",
+        ),
+        (
+            r#"use models::*; fn main() { let _: Plan<Vec<Purchase>> = Plan::build(|p| { let item = Item::matching(p, "I1"); Purchase::insert(p, PurchaseInsert { order_id: "O1".into(), buyer: &item, item: &item }) }).unwrap(); }"#,
+            "RolePlayerBinding",
+        ),
+        (
+            r#"use models::*; fn main() { let _: Plan<i64> = Plan::build(|p| { let item = Item::matching(p, "I1"); let buyer = Account::matching(p, "A1"); let _ = buyer.clone().where_(item.item_id().le(buyer.balance())); p.count() }).unwrap(); }"#,
+            "Comparable<String>",
+        ),
+    ] {
+        fs::write(consumer.join("src/main.rs"), source).unwrap();
+        let output = cargo_with_env(
+            &[
+                "check",
+                "--quiet",
+                "--manifest-path",
+                manifest.to_str().unwrap(),
+            ],
+            &[],
+        );
+        assert!(
+            !output.status.success(),
+            "invalid authoring consumer compiled"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "unexpected compiler refusal: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

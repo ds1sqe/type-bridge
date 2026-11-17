@@ -53,7 +53,7 @@ def payload(
 
 
 def all_roots(value: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {"Python": value, "Node": value, "CLI": value, "C": value}
+    return {root.name: value for root in generator.ROOT_SPECS}
 
 
 def policy(*accepted: str) -> Any:
@@ -147,8 +147,12 @@ def test_native_distributions_are_scanned_as_independent_union_roots(tmp_path: P
         [("MIT", "MIT terms\n", ["c-only"])],
     )
 
+    server = payload(
+        [package("server-only", "MIT")],
+        [("MIT", "MIT terms\n", ["server-only"])],
+    )
     packages, texts = generator.merge_payloads(
-        {"Python": python, "Node": node, "CLI": cli, "C": c},
+        {"Python": python, "Node": node, "CLI": cli, "C": c, "Server": server},
         policy=policy("MIT"),
         workspace=tmp_path,
     )
@@ -158,6 +162,7 @@ def test_native_distributions_are_scanned_as_independent_union_roots(tmp_path: P
     assert "`node-only` | `1.0.0` | Node |" in rendered
     assert "`cli-only` | `1.0.0` | CLI |" in rendered
     assert "`c-only` | `1.0.0` | C |" in rendered
+    assert "`server-only` | `1.0.0` | Server |" in rendered
 
 
 def test_actual_policy_is_exact_and_checksum_clarified() -> None:

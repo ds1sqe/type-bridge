@@ -6,7 +6,7 @@ import pytest
 import type_bridge_core
 from type_bridge_core import ProxyConnection
 
-from tests.unit.query.test_query_v2_remote_runtime import (
+from tests.unit.query.remote_fixture import (
     PLAN_CAPABILITIES,
     _advertisement,
     _authority,
@@ -15,7 +15,7 @@ from tests.unit.typed_query.test_core_limits import _closed_endpoint
 
 
 def _connection() -> ProxyConnection:
-    # A pinned v2 advertisement connects without reaching the endpoint.
+    # A pinned advertisement connects without reaching the endpoint.
     return ProxyConnection.connect(
         _authority(),
         _closed_endpoint(),
@@ -41,6 +41,45 @@ def test_transaction_fetches_the_staged_advertisement_and_fails_typed() -> None:
     # The staged advertisement is fetched at open; an unreachable server is
     # a typed provider failure, not a transaction that fails later at commit.
     with pytest.raises(Exception) as raised:
-        _connection().transaction("write")
+        ProxyConnection.connect(
+            _authority(), _closed_endpoint(), advertisement=_advertisement([])
+        ).transaction("write")
     assert not isinstance(raised.value, (ValueError, TypeError))
     assert type(raised.value).__module__.startswith("type_bridge")
+
+
+def test_admission_window_defaults_and_round_trips() -> None:
+    assert _connection().admission_window_milliseconds == 60_000
+    connection = ProxyConnection.connect(
+        _authority(),
+        _closed_endpoint(),
+        advertisement=_advertisement(PLAN_CAPABILITIES),
+        admission_window_milliseconds=1234,
+    )
+    assert connection.admission_window_milliseconds == 1234
+    with pytest.raises((ValueError, OverflowError)):
+        ProxyConnection.connect(_authority(), _closed_endpoint(), admission_window_milliseconds=0)
+
+
+def test_generated_manager_selects_the_native_proxy_connection() -> None:
+    from typing import cast
+
+    from type_bridge_core import PyProjectedModelManager, PyRuntimeProjection
+
+    from type_bridge._runtime_projection import projected_manager_for
+
+    connection = _connection()
+    expected = cast(PyProjectedModelManager, object())
+
+    class Projection:
+        def manager_for_proxy(
+            self, model: type[object], target: ProxyConnection
+        ) -> PyProjectedModelManager:
+            assert model is object
+            assert target is connection
+            return expected
+
+    assert (
+        projected_manager_for(cast(PyRuntimeProjection, Projection()), object, connection)
+        is expected
+    )

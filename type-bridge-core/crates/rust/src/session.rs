@@ -34,6 +34,8 @@ pub enum ManagedDatabasePairState {
     Absent,
     /// Only a standalone managed database without TypeBridge control state exists.
     StandaloneManaged,
+    /// The valid old pair remains usable until migration execution imports it.
+    ImportPending,
     /// Both members exist and the journal owns this exact database and scope.
     OwnedPair,
     /// Only the exact owner-verified journal remains.
@@ -129,12 +131,35 @@ impl ConnectionOptions {
         }
     }
 
-    /// Set authentication credentials.
+    /// Set authentication credentials; both must be nonempty when connecting.
     #[must_use]
     pub fn credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
         self.username = Some(username.into());
         self.password = Some(password.into());
         self
+    }
+
+    #[cfg(feature = "typedb")]
+    fn resolved_credentials(&self) -> Result<(&str, &str)> {
+        match (self.username.as_deref(), self.password.as_deref()) {
+            (None, None) => Ok(("admin", "password")),
+            (Some(username), Some(password)) if !username.is_empty() && !password.is_empty() => {
+                Ok((username, password))
+            }
+            _ => Err(Error::from_sdk_execution(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::invalid_input(
+                    type_bridge_contract::sdk_diagnostic::SdkDiagnosticCode::new(
+                        "connection_credentials_invalid",
+                    )
+                    .expect("credential diagnostic code is canonical"),
+                    type_bridge_contract::sdk_diagnostic::SdkDiagnosticMessage::new(
+                        "The username and password must both be nonempty when supplied",
+                    )
+                    .expect("credential diagnostic message is bounded"),
+                ),
+                crate::error::ModelValidationPhase::Input,
+            )),
+        }
     }
 
     /// Set the HTTP probe port.
@@ -192,6 +217,19 @@ pub struct Database<S: Schema = Unbound> {
     marker: std::marker::PhantomData<fn() -> S>,
 }
 
+impl<S: Schema> Database<S> {
+    #[cfg(feature = "typedb")]
+    pub(crate) fn clone_for_migration(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            installed_schema: self.installed_schema.clone(),
+            match_registry: self.match_registry.clone(),
+            managed_scope_id: self.managed_scope_id.clone(),
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
 pub(crate) fn build_match_registry(
     installed: &type_bridge_orm::InstalledRuntimeProjection,
 ) -> Result<Arc<DescriptorRegistry>> {
@@ -206,12 +244,12 @@ impl Database<Unbound> {
     #[cfg(feature = "typedb")]
     pub async fn connect(options: impl Into<ConnectionOptions>) -> Result<Database<Unbound>> {
         let opts = options.into();
-        let username = opts.username.as_deref().unwrap_or("admin");
-        let password = opts.password.as_deref().unwrap_or("password");
-        let orm_opts = type_bridge_orm::ConnectOptions {
-            http_port: opts.http_port,
-            tls: opts.tls,
-            ..type_bridge_orm::ConnectOptions::default()
+        let (username, password) = opts.resolved_credentials()?;
+        let orm_opts = {
+            let mut options = type_bridge_orm::ConnectOptions::default();
+            options.http_port = opts.http_port;
+            options.tls = opts.tls;
+            options
         };
 
         let inner = type_bridge_orm::Database::connect_with_options(
@@ -259,6 +297,34 @@ impl Database<Unbound> {
 }
 
 impl<S: Schema> Database<S> {
+    /// Open an eager unchecked transaction of the requested kind.
+    pub async fn raw_transaction(
+        &self,
+        kind: crate::raw::TransactionKind,
+    ) -> std::result::Result<crate::RawTransaction, crate::RawQueryError> {
+        self.inner
+            .raw_transaction(kind.into())
+            .await
+            .map(crate::RawTransaction::new)
+    }
+
+    /// Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+    /// to TypeDB as written, and TypeDB's output comes back as it
+    /// answered, in this SDK's native data types. TypeBridge adds no
+    /// validation, rewriting, hydration, hooks, limits or extra
+    /// queries. It runs in read, write and schema transactions and
+    /// accepts any TypeQL, schema-breaking changes included. The caller
+    /// owns its correctness; TypeBridge makes no promise about its
+    /// effects. On a proxy connection it posts to the server's opt-in
+    /// `/v3/raw` endpoint, which is off by default.
+    pub async fn execute_query(
+        &self,
+        query: &str,
+        kind: crate::raw::TransactionKind,
+    ) -> std::result::Result<serde_json::Value, crate::RawQueryError> {
+        self.raw_transaction(kind).await?.execute_one(query).await
+    }
+
     pub(crate) fn from_bound_parts(
         inner: type_bridge_orm::Database,
         installed: Arc<type_bridge_orm::InstalledRuntimeProjection>,
@@ -327,6 +393,10 @@ impl<S: Schema> Database<S> {
         options: crate::staged::TransactionOptions,
     ) -> crate::staged::Transaction<S> {
         crate::staged::Transaction::new(self.inner.transaction(options))
+            .with_query_schema(self.installed_schema.clone(), self.match_registry.clone())
+            .with_origin(type_bridge_orm::ProjectedQueryOrigin::for_database(
+                &self.inner,
+            ))
     }
     /// Open one client-owned write transaction over this schema-bound
     /// database. Operations on its borrowed managers never auto-commit;
@@ -417,15 +487,18 @@ impl<S: Schema> Database<S> {
         self.create_database().await
     }
 
-    /// Delete the one configured database and return its normalized outcome.
+    /// Delete the configured database and its owner-verified journal, if managed.
     pub async fn delete_database(&self) -> Result<DatabaseDeleteOutcome> {
         #[cfg(feature = "typedb")]
         if self.managed_scope_id.is_some() {
-            return Err(Error::Database {
-                message: "managed database deletion requires plan_database_delete() and explicit plan execution"
-                    .to_owned(),
-                source: None,
-            });
+            return self.plan_database_delete().await?.execute().await.map(
+                |outcome| match outcome {
+                    ManagedDatabaseDeleteOutcome::AlreadyAbsent => {
+                        DatabaseDeleteOutcome::AlreadyAbsent
+                    }
+                    _ => DatabaseDeleteOutcome::Deleted,
+                },
+            );
         }
         self.inner
             .delete_database_outcome()
@@ -583,6 +656,9 @@ fn map_pair_state(
     state: type_bridge_schema_migration_typedb::ManagedDatabasePairState,
 ) -> ManagedDatabasePairState {
     match state {
+        type_bridge_schema_migration_typedb::ManagedDatabasePairState::ImportPending => {
+            ManagedDatabasePairState::ImportPending
+        }
         type_bridge_schema_migration_typedb::ManagedDatabasePairState::Absent => {
             ManagedDatabasePairState::Absent
         }
@@ -631,6 +707,29 @@ mod tests {
 
     use super::Database;
     use crate::schema::Unbound;
+
+    #[test]
+    #[cfg(feature = "typedb")]
+    fn connection_credentials_only_default_when_both_omitted() {
+        let mut options = super::ConnectionOptions::new("localhost:1729", "sdk");
+        assert_eq!(
+            options.resolved_credentials().unwrap(),
+            ("admin", "password")
+        );
+        for (username, password) in [
+            (Some("alice"), None),
+            (None, Some("secret")),
+            (Some("alice"), Some("")),
+            (Some(""), Some("secret")),
+            (Some(""), Some("")),
+        ] {
+            options.username = username.map(str::to_owned);
+            options.password = password.map(str::to_owned);
+            assert!(options.resolved_credentials().is_err());
+        }
+        options = options.credentials("alice", "secret");
+        assert_eq!(options.resolved_credentials().unwrap(), ("alice", "secret"));
+    }
 
     struct CloseBackend {
         closed: Arc<AtomicBool>,
@@ -773,7 +872,18 @@ mod tests {
             database.inspect_database_pair().await.unwrap(),
             super::ManagedDatabasePairState::StandaloneManaged
         );
-        assert!(database.delete_database().await.is_err());
+        assert_eq!(
+            database.delete_database().await.unwrap(),
+            super::DatabaseDeleteOutcome::Deleted
+        );
+        assert_eq!(
+            database.delete_database().await.unwrap(),
+            super::DatabaseDeleteOutcome::AlreadyAbsent
+        );
+        assert_eq!(
+            database.create_database().await.unwrap(),
+            super::DatabaseCreateOutcome::Created
+        );
         let plan = database.plan_database_delete().await.unwrap();
         drop(database);
         assert_eq!(

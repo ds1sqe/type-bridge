@@ -18,18 +18,12 @@ const FUNCTION_ARGUMENT_MAX: usize = 256;
 const FUNCTION_ARGUMENT_BYTES: usize = 72;
 
 const FUNCTION_COMPARISONS: [(&str, &str); 6] = [
-    ("equal", "TYPE_BRIDGE_QUERY_COMPARE_EQUAL"),
-    ("not_equal", "TYPE_BRIDGE_QUERY_COMPARE_NOT_EQUAL"),
-    ("less_than", "TYPE_BRIDGE_QUERY_COMPARE_LESS_THAN"),
-    (
-        "less_than_or_equal",
-        "TYPE_BRIDGE_QUERY_COMPARE_LESS_THAN_OR_EQUAL",
-    ),
-    ("greater_than", "TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN"),
-    (
-        "greater_than_or_equal",
-        "TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN_OR_EQUAL",
-    ),
+    ("eq", "TYPE_BRIDGE_QUERY_COMPARE_EQUAL"),
+    ("ne", "TYPE_BRIDGE_QUERY_COMPARE_NOT_EQUAL"),
+    ("lt", "TYPE_BRIDGE_QUERY_COMPARE_LESS_THAN"),
+    ("le", "TYPE_BRIDGE_QUERY_COMPARE_LESS_THAN_OR_EQUAL"),
+    ("gt", "TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN"),
+    ("ge", "TYPE_BRIDGE_QUERY_COMPARE_GREATER_THAN_OR_EQUAL"),
 ];
 
 #[derive(Clone, Copy)]
@@ -731,7 +725,7 @@ fn render_function_definitions(
              TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION, arguments, sizeof(*arguments),\n\
              {members_pointer}, {member_count}, {{ 0u, 0u, 0u }}\n\
            }};\n\
-           return type_bridge_query_function_call_open_v1(\n\
+           return type_bridge_query_function_call_open(\n\
                (const type_bridge_query_function_t *)function, &{token}, &graph,\n\
                (type_bridge_query_function_call_t **)out_call, out_diagnostics);\n\
          }}\n\n\

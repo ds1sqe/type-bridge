@@ -45,3 +45,30 @@ internal C packages. Every package embeds byte-identical canonical history at
 SHA-256 `a087c2de09f1fd186321f97c05f43911fa99f1af3fc29383cc8f6536116f9b7f`.
 The replay-verified catalog fingerprint observed through generated public
 facades is `a34672f796977f0b3e01e16540c1b33957c405ad76034f9e05849d4d35be3a59`.
+
+The original format-1 backfill manifest and YAML intent remain historical
+fixtures. New authoring examples live beside them as
+`copy-display-name.format2.backfill.json` and
+`copy-display-name.format2.backfill.yaml`; `backfill-format2-fixtures.json`
+records only those new files. They require explicit `isa`/`isa!` mode and do
+not replace or alter the historical four-manifest catalog.
+
+`new-authoring-format2-history.json` pins regenerated format-2 histories for
+live SDK reports on both semantic profiles. The standalone report comparator
+needs these pins without a generated workspace or Rust runtime. The CLI history
+test regenerates both histories and checks the pins; `profiles.json` and the
+original manifests retain their historical format-1 fingerprints.
+
+Canonical migration review previews are derived from the verified manifests.
+After changing the renderer, regenerate only the `.typeql` files from the
+repository root and review the diff:
+
+```bash
+cargo +1.94.1 test --manifest-path type-bridge-core/Cargo.toml \
+  -p type-bridge-schema-migration --test generate \
+  regenerate_administration_previews -- --exact --ignored
+```
+
+The normal `committed_administration_previews_match_verified_manifests` test
+checks that the committed previews match. Regeneration leaves canonical
+manifests and plan bytes unchanged.

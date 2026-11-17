@@ -10,6 +10,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, isAbsolute, resolve } from "node:path";
@@ -18,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   ProducerError,
   canonicalString,
+  expectedServerVersion,
   publishReport,
   realDirectory,
   requireCondition,
@@ -77,7 +79,7 @@ export function profileIdentity(root = MODULE_REPOSITORY_ROOT, environment = {})
   );
   return Object.freeze({
     semanticProfile: profile,
-    liveServerVersion: entry.live_server_version,
+    liveServerVersion: expectedServerVersion(profile, entry.live_server_version, environment),
     semantic,
   });
 }
@@ -332,9 +334,9 @@ export async function loadGeneratedPackages(packageRoot, identity = catalogIdent
     }
   }
   requireCondition(
-    typeof runtime?.RustDatabase?.connect === "function",
+    typeof runtime?.Database?.connect === "function",
     "generated_package_import",
-    "@type-bridge/node has no RustDatabase facade",
+    "@type-bridge/node has no Database facade",
   );
   return { local: local.package_, foreign: foreign.package_, runtime };
 }
@@ -788,13 +790,20 @@ function fieldTokenObservation(package_) {
   };
 }
 
+function planMark(name = "") {
+  const path = process.env.TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL;
+  if (path !== undefined) writeFileSync(path, name);
+}
+
 async function runManagerJourney(package_, database) {
   const transaction = database.transaction("read");
   try {
     const manager = package_.Person.manager(transaction);
     const root = manager.where();
     const operatorOutcomes = ["eq", "ne", "gt", "gte", "lt", "lte"].map(
-      (operator) => ({
+      (operator) => {
+        planMark(`manager_field_token_filter.operator.${operator}`);
+        return {
         operator,
         normalized_keys: keys(
           package_,
@@ -806,15 +815,20 @@ async function runManagerJourney(package_, database) {
             )
             .all(),
         ),
-      }),
+      };
+      },
     );
     const authoredOrder = ["foo__bar:gte:7", "score:gt:40"];
     const conjunction = manager
       .where(package_.Person.fields.fooBar, "gte", package_.FooBar.create(7n))
       .where(package_.Person.fields.score, "gt", package_.Score.create(40n));
+    planMark("manager_field_token_filter.conjunction");
     const conjunctionKeys = keys(package_, conjunction.all());
+    planMark("manager_field_token_filter.all");
     const allKeys = keys(package_, root.all());
+    planMark("manager_field_token_filter.count");
     const count = root.count();
+    planMark("manager_field_token_filter.exists");
     const exists = root.exists();
     requireCondition(
       canonicalString(allKeys) === canonicalString(["data-ada", "data-dana"]) &&
@@ -828,6 +842,7 @@ async function runManagerJourney(package_, database) {
       "eq",
       package_.Identifier.create("data-ada"),
     );
+    planMark("manager_field_token_filter.first");
     const first = identity.first();
     requireCondition(
       first?.__typebridgeModel === package_.Person.typeKey &&
@@ -846,6 +861,7 @@ async function runManagerJourney(package_, database) {
             .field(package_.Person.fields.identifier)
             .eq(package_.Identifier.create("data-ada")),
         );
+      planMark("manager_field_token_filter.sibling_query_count");
       requireCondition(
         (await sibling_query.countBy(person)) === 1n,
         "borrowed_read_reuse",
@@ -859,6 +875,7 @@ async function runManagerJourney(package_, database) {
       "eq",
       package_.FooBar.create(9n),
     );
+    planMark("manager_field_token_filter.sibling_filter");
     requireCondition(
       canonicalString(keys(package_, sibling.all())) ===
         canonicalString(["data-dana"]),
@@ -866,6 +883,7 @@ async function runManagerJourney(package_, database) {
       "sibling manager filter was not reusable",
     );
 
+    planMark();
     return {
       model: "person",
       field_token: fieldTokenObservation(package_),
@@ -896,21 +914,6 @@ async function runManagerJourney(package_, database) {
   }
 }
 
-function installSchema(database, providerSchema) {
-  const transaction = database.transaction("schema");
-  try {
-    transaction.query(providerSchema);
-    transaction.commit();
-  } catch (error) {
-    try {
-      transaction.close();
-    } catch {
-      // Database deletion is the authoritative schema-failure cleanup.
-    }
-    throw error;
-  }
-}
-
 async function runOwnedDatabase({
   local,
   foreign,
@@ -930,7 +933,7 @@ async function runOwnedDatabase({
       `exact TypeDB ${liveServerVersion} required, detected ${JSON.stringify(detected)}`,
     );
   }
-  const bootstrap = runtime.RustDatabase.connect(address, databaseName, {
+  const bootstrap = runtime.Database.connect(address, databaseName, {
     httpPort: port,
     ...(tlsRootCa === undefined ? {} : { tlsEnabled: true, tlsRootCa }),
   });
@@ -946,7 +949,7 @@ async function runOwnedDatabase({
     );
     bootstrap.createDatabase();
     ownsDatabase = true;
-    installSchema(bootstrap, providerSchema);
+    await bootstrap.executeQuery(providerSchema, "schema");
     bootstrap.close();
     if (tlsRootCa !== undefined) {
       let untrusted;
@@ -980,9 +983,14 @@ async function runOwnedDatabase({
     const hostile = preIoRejections(local, foreign, database);
 
     const manager = local.Person.manager(database);
-    const inserted = records.map((record) =>
+    const results = records.map((record) =>
       manager.insert(personValue(local, record)),
     );
+    requireCondition(
+      results.every((result) => result.count === 1 && result.item !== null && result.items[0] === result.item),
+      "seed_mismatch", "single-person insert did not return one item",
+    );
+    const inserted = results.map((result) => result.item);
     requireCondition(
       canonicalString(keys(local, inserted)) ===
         canonicalString(["data-ada", "data-dana"]),

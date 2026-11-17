@@ -122,7 +122,7 @@ fn generated_rust_public_facade_observes_the_administration_catalog() {
     fs::write(
         &manifest,
         source.replace(
-            "type-bridge = { version = \"=2.3.3\", default-features = false }",
+            "type-bridge = { version = \"=3.0.0\", default-features = false }",
             &format!(
                 "type-bridge = {{ path = {:?}, default-features = false }}",
                 runtime
@@ -268,31 +268,31 @@ fn native_profile_copies_keep_four_reversible_migrations() {
         }
         assert_eq!(
             history["fingerprint"]["digest"],
-            support::sdk_profile_matrix::select_from(
-                &support::sdk_profile_matrix::repository_root(),
-                "administration",
-                profile
-            )
-            .expected_history_fingerprint
-            .expect("profile history digest")
+            support::format2_history_fingerprint(profile)
         );
-        if profile == "typedb-3.12.1/v1" {
-            for name in [
-                "0001_initial",
-                "0002_expand-display-name",
-                "0003_backfill-display-name",
-                "0004_contract-legacy-name",
-            ] {
-                let relative = format!("migrations/v2/{name}.tbmigration.json");
-                assert_eq!(
-                    fs::read(temporary.path().join(&relative)).unwrap(),
-                    fs::read(fixture().join(relative)).unwrap()
-                );
-            }
-        }
+        let backfill = &entries[2]["manifest"]["steps"][0]["plan"];
+        assert_eq!(backfill["mode"], "isa");
+        assert_eq!(backfill["format"], 2);
     }
     assert_eq!(
         fs::read(fixture().join("typebridge.yaml")).unwrap(),
         committed
     );
+}
+
+/// Not a test: writes the format-2 administration workspace that the
+/// standalone CLI artifact smoke applies with the shipped binary alone.
+/// The historical format-1 fixture cannot execute its backfill as new work.
+#[test]
+#[ignore = "workspace writer; requires TYPE_BRIDGE_FORMAT2_ADMINISTRATION_WORKSPACE"]
+fn write_format2_administration_workspace() {
+    let destination = PathBuf::from(
+        std::env::var_os("TYPE_BRIDGE_FORMAT2_ADMINISTRATION_WORKSPACE")
+            .expect("TYPE_BRIDGE_FORMAT2_ADMINISTRATION_WORKSPACE names the output directory"),
+    );
+    assert!(
+        !destination.exists(),
+        "the format-2 workspace destination must not exist yet"
+    );
+    support::prepare_administration_native_workspace_for(&destination, "typedb-3.12.1/v1");
 }

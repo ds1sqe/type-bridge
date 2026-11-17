@@ -82,48 +82,130 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
     contract = _load("tests/contracts/c-abi.json")
     header = ROOT / contract["header"]
     assert hashlib.sha256(header.read_bytes()).hexdigest() == contract["header_sha256"]
-    assert contract["version"] == "1.7.0"
+    assert contract["version"] == "2.0.0"
     assert not any(key.startswith("parent_") for key in contract)
-    exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", header.read_text()))
+    exports = set(
+        re.findall(r"TYPE_BRIDGE_CALL\s+(type_bridge_[a-z0-9_]+)\s*\(", header.read_text())
+    )
     assert contract["exports"] == sorted(exports)
-    assert len(exports) == 394
+    assert len(exports) == 624
     previous = ROOT / "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == (
         "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
     )
-    previous_exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", previous.read_text()))
-    # ABI 1.7 is additive: keep-open rollback, the staged transaction surface,
-    # the plan builder, the typed failure accessor, the proxy connection and
-    # the limits session open.
+    previous_exports: set[str] = set(
+        re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", previous.read_text())
+    )
+    # ABI 2.0 renames the typed query entry points retained from ABI 1.6.
+    previous_exports = {
+        name.removesuffix("_v1")
+        if name.startswith("type_bridge_query_") or "_query_execute_" in name
+        else name
+        for name in previous_exports
+    }
+    query_names = {
+        "type_bridge_query_add_hidden": "type_bridge_query_match",
+        "type_bridge_query_role_connects": "type_bridge_query_role_links",
+    }
+    previous_exports = {query_names.get(name, name) for name in previous_exports}
+    # ABI 2.0 consolidates old package/database openers into current signatures.
+    opener_names = {
+        "type_bridge_schema_package_open_v1": "type_bridge_schema_package_open",
+        "type_bridge_schema_package_open_v2": "type_bridge_schema_package_open",
+        "type_bridge_schema_package_open_chunked_v1": "type_bridge_schema_package_open_chunked",
+        "type_bridge_schema_package_open_chunked_v2": "type_bridge_schema_package_open_chunked",
+        "type_bridge_database_open_v1": "type_bridge_database_open",
+        "type_bridge_database_open_v2": "type_bridge_database_open",
+        "type_bridge_database_config_validate_v2": "type_bridge_database_config_validate",
+    }
+    opener_names.update(
+        {
+            f"type_bridge_{name}_v2": f"type_bridge_{name}"
+            for name in (
+                "read_transaction_open",
+                "write_transaction_open",
+                "write_transaction_commit",
+            )
+        }
+    )
+    opener_names.update(
+        {
+            f"type_bridge_{target}_{kind}_{operation}_v2": f"type_bridge_{target}_{kind}_{operation}"
+            for target in ("database", "read_transaction", "write_transaction")
+            for kind in ("entity", "relation")
+            for operation in ("insert", "put", "get_by_iid", "update", "delete_by_iid", "count")
+            if target != "read_transaction" or operation in ("get_by_iid", "count")
+        }
+    )
+    previous_exports = {opener_names.get(name, name) for name in previous_exports}
     builder = {
         f"type_bridge_plan_builder_{name}"
         for name in (
             "new free type owns role exact subtypes field links compare input let "
             "expr_arith expr_call update update_player insert put thing_field "
             "thing_player delete delete_field delete_player row returning count "
-            "exists build value_string value_long value_double value_boolean "
+            "exists fetch build value_string value_long value_double value_boolean "
             "value_date value_datetime value_datetime_tz value_decimal value_duration"
         ).split()
     }
-    assert exports == previous_exports | builder | {
-        "type_bridge_write_transaction_rollback_keep",
-        "type_bridge_plan_v3_decode",
-        "type_bridge_plan_v3_canonical_bytes",
-        "type_bridge_plan_free",
-        "type_bridge_database_transaction",
-        "type_bridge_proxy_connection_transaction",
-        "type_bridge_staged_transaction_stage",
-        "type_bridge_staged_transaction_commit",
-        "type_bridge_staged_transaction_rollback",
-        "type_bridge_staged_transaction_close",
-        "type_bridge_pending_answer",
-        "type_bridge_pending_free",
-        "type_bridge_execution_diagnostics_failure_get_v1",
-        "type_bridge_proxy_connection_open_v1",
-        "type_bridge_proxy_connection_close",
-        "type_bridge_proxy_query_execute_v1",
-        "type_bridge_query_session_open_with_limits_v1",
+    cursors = {
+        f"type_bridge_{prefix}_{suffix}"
+        for prefix in ("document_attribute", "row_value")
+        for suffix in (
+            "string",
+            "long",
+            "double",
+            "boolean",
+            "date",
+            "datetime",
+            "datetime_tz",
+            "decimal",
+            "duration",
+        )
     }
+    cursors |= {
+        "type_bridge_pending_document_count",
+        "type_bridge_pending_document",
+        "type_bridge_pending_row_count",
+        "type_bridge_pending_row",
+        "type_bridge_document_iid",
+        "type_bridge_document_type",
+        "type_bridge_document_role",
+        "type_bridge_document_attribute_count",
+        "type_bridge_document_attribute_kind",
+        "type_bridge_row_value_kind",
+    }
+    retained = (
+        previous_exports
+        | builder
+        | cursors
+        | {
+            "type_bridge_write_transaction_rollback_keep",
+            "type_bridge_plan_builder_selection_plan",
+            "type_bridge_plan_decode",
+            "type_bridge_plan_canonical_bytes",
+            "type_bridge_plan_explain",
+            "type_bridge_plan_free",
+            "type_bridge_database_transaction",
+            "type_bridge_debug_listener_set",
+            "type_bridge_proxy_connection_transaction",
+            "type_bridge_staged_transaction_stage",
+            "type_bridge_staged_transaction_commit",
+            "type_bridge_staged_transaction_rollback",
+            "type_bridge_staged_transaction_close",
+            "type_bridge_pending_answer",
+            "type_bridge_pending_free",
+            "type_bridge_execution_diagnostics_failure_get_v1",
+            "type_bridge_proxy_connection_open_v1",
+            "type_bridge_database_open_with_query_limits",
+            "type_bridge_proxy_connection_open_with_query_limits_v1",
+            "type_bridge_proxy_connection_close",
+            "type_bridge_proxy_query_execute",
+            "type_bridge_query_session_open_with_limits",
+        }
+    )
+    assert retained <= exports
+    assert "type_bridge_rows_stage" not in exports
     assert contract["options"]["size_64_bit"] == 72
     assert contract["options"]["alignment_64_bit"] == 8
     assert contract["ownership"]["partial_archive_result"] is False

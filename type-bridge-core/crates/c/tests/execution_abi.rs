@@ -5,7 +5,7 @@ use std::process::Command;
 use std::ptr::{self, NonNull};
 
 use type_bridge_c::{
-    TypeBridgeCancellation, TypeBridgeDatabaseConfigV1, TypeBridgeExecutionDiagnostics,
+    TypeBridgeCancellation, TypeBridgeDatabaseConfig, TypeBridgeExecutionDiagnostics,
     TypeBridgeRuntime, TypeBridgeRuntimeConfigV1, TypeBridgeStatus,
 };
 
@@ -52,7 +52,7 @@ fn compiler<'candidate>(candidates: &'candidate [&'candidate str]) -> Option<&'c
 fn expected_layout() -> Vec<usize> {
     vec![
         1,
-        1,
+        2,
         1,
         64,
         4096,
@@ -70,17 +70,17 @@ fn expected_layout() -> Vec<usize> {
         offset_of!(TypeBridgeRuntimeConfigV1, worker_threads),
         offset_of!(TypeBridgeRuntimeConfigV1, reserved0),
         offset_of!(TypeBridgeRuntimeConfigV1, reserved),
-        size_of::<TypeBridgeDatabaseConfigV1>(),
-        align_of::<TypeBridgeDatabaseConfigV1>(),
-        offset_of!(TypeBridgeDatabaseConfigV1, struct_size),
-        offset_of!(TypeBridgeDatabaseConfigV1, version),
-        offset_of!(TypeBridgeDatabaseConfigV1, address),
-        offset_of!(TypeBridgeDatabaseConfigV1, database),
-        offset_of!(TypeBridgeDatabaseConfigV1, username),
-        offset_of!(TypeBridgeDatabaseConfigV1, password),
-        offset_of!(TypeBridgeDatabaseConfigV1, http_port),
-        offset_of!(TypeBridgeDatabaseConfigV1, tls_mode),
-        offset_of!(TypeBridgeDatabaseConfigV1, reserved),
+        size_of::<TypeBridgeDatabaseConfig>(),
+        align_of::<TypeBridgeDatabaseConfig>(),
+        offset_of!(TypeBridgeDatabaseConfig, struct_size),
+        offset_of!(TypeBridgeDatabaseConfig, version),
+        offset_of!(TypeBridgeDatabaseConfig, address),
+        offset_of!(TypeBridgeDatabaseConfig, database),
+        offset_of!(TypeBridgeDatabaseConfig, username),
+        offset_of!(TypeBridgeDatabaseConfig, password),
+        offset_of!(TypeBridgeDatabaseConfig, http_port),
+        offset_of!(TypeBridgeDatabaseConfig, tls_mode),
+        offset_of!(TypeBridgeDatabaseConfig, reserved),
     ]
 }
 
@@ -122,17 +122,17 @@ void type_bridge_function_type_probe(void) {
       type_bridge_execution_diagnostics_t **) = &type_bridge_runtime_open_v1;
   type_bridge_status_t (*database_open)(
       const type_bridge_runtime_t *, const type_bridge_schema_package_t *,
-      const type_bridge_database_config_v1_t *,
+      const type_bridge_database_config_t *,
       const type_bridge_cancellation_t *, type_bridge_database_t **,
-      type_bridge_execution_diagnostics_t **) = &type_bridge_database_open_v1;
+      type_bridge_execution_diagnostics_t **) = &type_bridge_database_open;
   type_bridge_status_t (*read_open)(
-      const type_bridge_database_t *, const type_bridge_cancellation_t *,
-      type_bridge_read_transaction_t **,
+      const type_bridge_database_t *, const type_bridge_query_execution_limits_v1_t *,
+      const type_bridge_cancellation_t *, type_bridge_read_transaction_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_read_transaction_open;
   type_bridge_status_t (*write_open)(
-      const type_bridge_database_t *, const type_bridge_cancellation_t *,
-      type_bridge_write_transaction_t **,
+      const type_bridge_database_t *, const type_bridge_query_execution_limits_v1_t *,
+      const type_bridge_cancellation_t *, type_bridge_write_transaction_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_open;
   type_bridge_status_t (*generated_preflight)(
@@ -177,169 +177,169 @@ void type_bridge_function_type_probe(void) {
   type_bridge_status_t (*database_entity_insert)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_entity_insert;
   type_bridge_status_t (*database_entity_put)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) = &type_bridge_database_entity_put;
   type_bridge_status_t (*database_entity_get)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
-      type_bridge_byte_view_t, const type_bridge_cancellation_t *,
+      const type_bridge_iid_t *, const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
       type_bridge_projected_thing_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_entity_get_by_iid;
   type_bridge_status_t (*database_entity_update)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
-      type_bridge_byte_view_t,
+      const type_bridge_iid_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) = &type_bridge_database_entity_update;
   type_bridge_status_t (*database_entity_delete)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
-      type_bridge_byte_view_t, const type_bridge_cancellation_t *,
+      const type_bridge_iid_t *, const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_entity_delete_by_iid;
   type_bridge_status_t (*database_entity_count)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
-      const type_bridge_cancellation_t *, uint64_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, uint64_t *,
       type_bridge_execution_diagnostics_t **) = &type_bridge_database_entity_count;
   type_bridge_status_t (*read_entity_get)(
       const type_bridge_read_transaction_t *,
-      const type_bridge_projected_token_v1_t *, type_bridge_byte_view_t,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_read_transaction_entity_get_by_iid;
   type_bridge_status_t (*read_entity_count)(
       const type_bridge_read_transaction_t *,
       const type_bridge_projected_token_v1_t *,
-      const type_bridge_cancellation_t *, uint64_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, uint64_t *,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_read_transaction_entity_count;
   type_bridge_status_t (*write_entity_insert)(
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_entity_insert;
   type_bridge_status_t (*write_entity_put)(
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_entity_put;
   type_bridge_status_t (*write_entity_get)(
       const type_bridge_write_transaction_t *,
-      const type_bridge_projected_token_v1_t *, type_bridge_byte_view_t,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_entity_get_by_iid;
   type_bridge_status_t (*write_entity_update)(
       const type_bridge_write_transaction_t *,
-      const type_bridge_projected_token_v1_t *, type_bridge_byte_view_t,
+      const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_entity_update;
   type_bridge_status_t (*write_entity_delete)(
       const type_bridge_write_transaction_t *,
-      const type_bridge_projected_token_v1_t *, type_bridge_byte_view_t,
-      const type_bridge_cancellation_t *,
+      const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_entity_delete_by_iid;
   type_bridge_status_t (*write_entity_count)(
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *,
-      const type_bridge_cancellation_t *, uint64_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, uint64_t *,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_entity_count;
   type_bridge_status_t (*database_relation_insert)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_relation_insert;
   type_bridge_status_t (*database_relation_put)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_relation_put;
   type_bridge_status_t (*database_relation_get)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
-      type_bridge_byte_view_t, const type_bridge_cancellation_t *,
+      const type_bridge_iid_t *, const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
       type_bridge_projected_thing_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_relation_get_by_iid;
   type_bridge_status_t (*database_relation_update)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
-      type_bridge_byte_view_t, const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_iid_t *, const type_bridge_projected_create_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_relation_update;
   type_bridge_status_t (*database_relation_delete)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
-      type_bridge_byte_view_t, const type_bridge_cancellation_t *,
+      const type_bridge_iid_t *, const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_relation_delete_by_iid;
   type_bridge_status_t (*database_relation_count)(
       const type_bridge_database_t *, const type_bridge_projected_token_v1_t *,
-      const type_bridge_cancellation_t *, uint64_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, uint64_t *,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_database_relation_count;
   type_bridge_status_t (*read_relation_get)(
       const type_bridge_read_transaction_t *,
-      const type_bridge_projected_token_v1_t *, type_bridge_byte_view_t,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_read_transaction_relation_get_by_iid;
   type_bridge_status_t (*read_relation_count)(
       const type_bridge_read_transaction_t *,
       const type_bridge_projected_token_v1_t *,
-      const type_bridge_cancellation_t *, uint64_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, uint64_t *,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_read_transaction_relation_count;
   type_bridge_status_t (*write_relation_insert)(
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_relation_insert;
   type_bridge_status_t (*write_relation_put)(
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_relation_put;
   type_bridge_status_t (*write_relation_get)(
       const type_bridge_write_transaction_t *,
-      const type_bridge_projected_token_v1_t *, type_bridge_byte_view_t,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_relation_get_by_iid;
   type_bridge_status_t (*write_relation_update)(
       const type_bridge_write_transaction_t *,
-      const type_bridge_projected_token_v1_t *, type_bridge_byte_view_t,
+      const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
       const type_bridge_projected_create_t *,
-      const type_bridge_cancellation_t *, type_bridge_projected_thing_t **,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, type_bridge_projected_batch_result_t **,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_relation_update;
   type_bridge_status_t (*write_relation_delete)(
       const type_bridge_write_transaction_t *,
-      const type_bridge_projected_token_v1_t *, type_bridge_byte_view_t,
-      const type_bridge_cancellation_t *,
+      const type_bridge_projected_token_v1_t *, const type_bridge_iid_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_relation_delete_by_iid;
   type_bridge_status_t (*write_relation_count)(
       const type_bridge_write_transaction_t *,
       const type_bridge_projected_token_v1_t *,
-      const type_bridge_cancellation_t *, uint64_t *,
+      const type_bridge_query_execution_limits_v1_t *, const type_bridge_cancellation_t *, uint64_t *,
       type_bridge_execution_diagnostics_t **) =
       &type_bridge_write_transaction_relation_count;
   (void)runtime_open;
@@ -409,17 +409,17 @@ int main(void) {
       offsetof(type_bridge_runtime_config_v1_t, worker_threads),
       offsetof(type_bridge_runtime_config_v1_t, reserved0),
       offsetof(type_bridge_runtime_config_v1_t, reserved),
-      sizeof(type_bridge_database_config_v1_t),
-      (size_t)TYPE_BRIDGE_ALIGNOF(type_bridge_database_config_v1_t),
-      offsetof(type_bridge_database_config_v1_t, struct_size),
-      offsetof(type_bridge_database_config_v1_t, version),
-      offsetof(type_bridge_database_config_v1_t, address),
-      offsetof(type_bridge_database_config_v1_t, database),
-      offsetof(type_bridge_database_config_v1_t, username),
-      offsetof(type_bridge_database_config_v1_t, password),
-      offsetof(type_bridge_database_config_v1_t, http_port),
-      offsetof(type_bridge_database_config_v1_t, tls_mode),
-      offsetof(type_bridge_database_config_v1_t, reserved));
+      sizeof(type_bridge_database_config_t),
+      (size_t)TYPE_BRIDGE_ALIGNOF(type_bridge_database_config_t),
+      offsetof(type_bridge_database_config_t, struct_size),
+      offsetof(type_bridge_database_config_t, version),
+      offsetof(type_bridge_database_config_t, address),
+      offsetof(type_bridge_database_config_t, database),
+      offsetof(type_bridge_database_config_t, username),
+      offsetof(type_bridge_database_config_t, password),
+      offsetof(type_bridge_database_config_t, http_port),
+      offsetof(type_bridge_database_config_t, tls_mode),
+      offsetof(type_bridge_database_config_t, reserved));
   return 0;
 }
 "#,
@@ -496,7 +496,7 @@ fn read_and_write_transaction_handles_are_not_interchangeable_in_c() {
         r#"#include <typebridge/type_bridge.h>
 void misuse(type_bridge_read_transaction_t **read,
             type_bridge_execution_diagnostics_t **diagnostics) {
-  (void)type_bridge_write_transaction_commit(read, NULL, diagnostics);
+  (void)type_bridge_write_transaction_commit(read, NULL,  NULL, diagnostics);
 }
 "#,
     )

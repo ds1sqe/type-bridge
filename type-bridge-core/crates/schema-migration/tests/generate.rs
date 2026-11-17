@@ -418,6 +418,7 @@ fn closed_backfill_generation_binds_the_exact_head_and_rejects_schema_drift() {
         entity_id("person"),
         AttributeId::new("legacy-name").unwrap(),
         AttributeId::new("display-name").unwrap(),
+        type_bridge_contract::query_plan::TypeMatchMode::Isa,
         BackfillPartition::new(128, AttributeId::new("person-id").unwrap()).unwrap(),
         semantics,
         Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
@@ -969,4 +970,261 @@ fn concurrent_writers_use_one_locked_no_replace_publication() {
                 .to_string_lossy()
                 .ends_with(".tmp"))
     );
+}
+
+#[test]
+fn removed_widened_interfaces_and_maximum_tightening_are_authorable() {
+    use type_bridge_schema_compat::typeql_to_declared;
+    let source_text = "define attribute nick, value string; entity person, owns nick @card(0..), plays friendship:friend; relation friendship, relates friend @card(0..);";
+    let source =
+        typeql_to_declared(DocumentId::new("card-source.tql").unwrap(), source_text).unwrap();
+    let mut capabilities = generation_capabilities();
+    capabilities.insert(CapabilityId::new("schema.redefine").unwrap());
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("example-schema").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        capabilities,
+    );
+    for target_text in [
+        source_text.replace(", owns nick @card(0..)", ""),
+        "define attribute nick, value string; entity person, owns nick @card(0..);".to_owned(),
+    ] {
+        let target =
+            typeql_to_declared(DocumentId::new("card-target.tql").unwrap(), &target_text).unwrap();
+        let migration = generated(
+            &empty_graph(),
+            &request("drop_interface", &source, &target, &context),
+        );
+        assert_eq!(migration.manifest().safety(), SafetyClass::Destructive);
+    }
+    let target = typeql_to_declared(
+        DocumentId::new("card-target.tql").unwrap(),
+        &source_text.replace("owns nick @card(0..)", "owns nick @card(0..2)"),
+    )
+    .unwrap();
+    let migration = generated(
+        &empty_graph(),
+        &request("tighten_max", &source, &target, &context),
+    );
+    assert_eq!(migration.manifest().safety(), SafetyClass::Conditional);
+    assert!(
+        migration
+            .manifest()
+            .steps()
+            .iter()
+            .any(|step| step.as_assertion().is_some())
+    );
+}
+
+#[test]
+fn role_specialization_can_be_authored_initially_and_incrementally() {
+    use type_bridge_schema_compat::typeql_to_declared;
+    let base = "define relation base @abstract, relates source; entity person, plays base:source;";
+    let specialized = "define relation base @abstract, relates source; relation child sub base, relates origin as source; entity person, plays base:source;";
+    let unspecialized = specialized.replace("relates origin as source", "relates origin");
+    let mut capabilities = generation_capabilities();
+    capabilities.insert(CapabilityId::new("schema.redefine").unwrap());
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("example-schema").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        capabilities,
+    );
+    let target =
+        typeql_to_declared(DocumentId::new("specialized.tql").unwrap(), specialized).unwrap();
+    for (name, source) in [
+        ("genesis_role", declared(&[])),
+        (
+            "new_child_role",
+            typeql_to_declared(DocumentId::new("base.tql").unwrap(), base).unwrap(),
+        ),
+        (
+            "existing_child_role",
+            typeql_to_declared(DocumentId::new("child.tql").unwrap(), &unspecialized).unwrap(),
+        ),
+    ] {
+        let migration = generated(&empty_graph(), &request(name, &source, &target, &context));
+        assert_eq!(migration.manifest().safety(), SafetyClass::Conditional);
+        assert_eq!(
+            migration
+                .manifest()
+                .steps()
+                .iter()
+                .any(|step| step.as_assertion().is_some()),
+            name == "existing_child_role"
+        );
+    }
+}
+
+#[test]
+fn functions_with_metadata_add_remove_and_order_body_dependencies() {
+    use type_bridge_schema_compat::typeql_to_declared;
+    let source = declared(&[]);
+    let target = typeql_to_declared(DocumentId::new("functions.tql").unwrap(),
+        "define entity person; fun z_value() -> integer: match let $n = 7; return first $n; fun a_caller() -> integer @doc(\"calls z_value\"): match let $n = z_value(); return first $n;").unwrap();
+    let context = context();
+    let first = generated(
+        &empty_graph(),
+        &request("add_functions", &source, &target, &context),
+    );
+    let preview = render_migration_preview(first.manifest(), &context).unwrap();
+    assert!(preview.find("fun z_value").unwrap() < preview.find("fun a_caller").unwrap());
+    assert!(preview.contains("@doc(\"calls z_value\")"));
+    let graph = MigrationHistoryGraph::from_verified([first.manifest().clone()]).unwrap();
+    let removed = generated(
+        &graph,
+        &request("remove_functions", &source, &source, &context),
+    );
+    assert_eq!(removed.manifest().safety(), SafetyClass::Destructive);
+    let preview = render_migration_preview(removed.manifest(), &context).unwrap();
+    assert!(preview.find("fun a_caller").unwrap() < preview.find("fun z_value").unwrap());
+}
+
+#[test]
+fn function_replacement_and_broken_body_dependencies_refuse_before_publication() {
+    use type_bridge_schema_compat::typeql_to_declared;
+    let empty = declared(&[]);
+    let context = context();
+    let source = typeql_to_declared(
+        DocumentId::new("functions.tql").unwrap(),
+        "define fun a_value() -> integer: match let $n = 7; return first $n;",
+    )
+    .unwrap();
+    let changed = typeql_to_declared(
+        DocumentId::new("changed.tql").unwrap(),
+        "define fun a_value() -> integer: match let $n = 8; return first $n;",
+    )
+    .unwrap();
+    let error = generate_next_migration(
+        &empty_graph(),
+        &request("change", &source, &changed, &context),
+    )
+    .unwrap_err();
+    assert_eq!(error.code().as_str(), "unsupported_function_migration");
+    let missing = typeql_to_declared(
+        DocumentId::new("missing.tql").unwrap(),
+        "define fun a_value() -> integer: match let $n = missing_value(); return first $n;",
+    )
+    .unwrap();
+    let error = generate_next_migration(
+        &empty_graph(),
+        &request("missing", &empty, &missing, &context),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.code().as_str(),
+        "schema_delta_missing_function_reference"
+    );
+}
+
+#[test]
+fn function_metadata_dynamic_reserved_and_invalid_bodies_are_refused() {
+    use type_bridge_schema_compat::typeql_to_declared;
+    let empty = declared(&[]);
+    let context = context();
+    let source = typeql_to_declared(
+        DocumentId::new("source.tql").unwrap(),
+        "define fun a_value() -> integer: match let $n = 7; return first $n;",
+    )
+    .unwrap();
+    let metadata = typeql_to_declared(
+        DocumentId::new("metadata.tql").unwrap(),
+        "define fun a_value() -> integer @doc(\"changed\"): match let $n = 7; return first $n;",
+    )
+    .unwrap();
+    assert_eq!(
+        generate_next_migration(
+            &empty_graph(),
+            &request("metadata", &source, &metadata, &context)
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "unsupported_function_metadata_migration"
+    );
+    for (text, code) in [
+        (
+            "define entity person; fun people($candidate: person) -> { person }: match $candidate isa $kind; return { $candidate };",
+            "migration_dynamic_function_reference",
+        ),
+        (
+            "define fun a_value() -> integer: match $x isa typebridge-internal-migration-control; let $n = 7; return first $n;",
+            "reserved_schema_cross_reference",
+        ),
+    ] {
+        let target = typeql_to_declared(DocumentId::new("body.tql").unwrap(), text).unwrap();
+        assert_eq!(
+            generate_next_migration(
+                &empty_graph(),
+                &request("invalid", &empty, &target, &context)
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+            code
+        );
+    }
+    let function = source
+        .facts()
+        .find_map(|fact| match fact {
+            SchemaFact::Function(function) => Some(function),
+            _ => None,
+        })
+        .unwrap();
+    let target = declared_facts(vec![SchemaFact::Function(
+        type_bridge_contract::schema::FunctionFact::new(
+            function.id().clone(),
+            function.signature().clone(),
+            type_bridge_contract::schema::FunctionBody::new("not TypeQL").unwrap(),
+        ),
+    )]);
+    assert_eq!(
+        generate_next_migration(
+            &empty_graph(),
+            &request("invalid", &empty, &target, &context)
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "invalid_function_body"
+    );
+}
+
+fn administration_fixture_previews() -> Vec<(PathBuf, String)> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../tests/contracts/sdk_conformance/administration/workspace/migrations/v2");
+    let context = ManagedDeltaContext::new(
+        ManagedScopeId::new("administration").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        backfill_context().available_capabilities().clone(),
+    );
+    let graph = discover_verified_migration_chain(&path, &declared(&[]), &context).unwrap();
+    graph
+        .manifests()
+        .map(|(id, manifest)| {
+            (
+                path.join(format!("{}.typeql", id.name().as_str())),
+                render_migration_preview(manifest, &context).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn committed_administration_previews_match_verified_manifests() {
+    for (path, expected) in administration_fixture_previews() {
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            expected,
+            "{} needs canonical preview regeneration; see the administration fixture README",
+            path.display()
+        );
+    }
+}
+
+#[test]
+#[ignore = "rewrites committed review fixtures; run only after reviewing a renderer change"]
+fn regenerate_administration_previews() {
+    for (path, expected) in administration_fixture_previews() {
+        fs::write(path, expected).unwrap();
+    }
 }

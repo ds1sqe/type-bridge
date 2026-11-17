@@ -144,7 +144,7 @@ def test_unsupported_profile_and_cross_profile_fingerprints_are_refused(tmp_path
     contracts = v2.load_contracts()
     unsupported = _reports(v2, contracts, NEXT)
     for report in unsupported.values():
-        report["fixture"]["semantic_profile"] = "typedb-3.11.5/v1"
+        report["fixture"]["semantic_profile"] = "typedb-0.0.0/v1"
     with pytest.raises(v2.ContractError) as rejected:
         v2.compare_reports(_write(v2, tmp_path / "unsupported", unsupported))
     assert rejected.value.code == "semantic_profile_mismatch"
@@ -176,7 +176,7 @@ def test_runner_selects_the_profile_and_exact_server() -> None:
     assert runner.typedb_version(environment) == "3.13.6"
     assert runner.typedb_version({}) == "3.12.3"
     with pytest.raises(runner.RunnerError):
-        runner.lane("typedb-3.11.5/v1", {})
+        runner.lane("typedb-0.0.0/v1", {})
 
 
 def test_proof_fragments_refuse_a_profile_outside_the_matrix() -> None:
@@ -185,7 +185,7 @@ def test_proof_fragments_refuse_a_profile_outside_the_matrix() -> None:
             [],
             expected_binding="python",
             run_nonce="0" * 64,
-            semantic_profile="typedb-3.11.5/v1",
+            semantic_profile="typedb-0.0.0/v1",
         )
     assert rejected.value.code == "semantic_profile_mismatch"
 
@@ -213,7 +213,7 @@ def test_administration_rejects_missing_or_malformed_history_digest(
 
 @pytest.mark.parametrize(
     ("profile", "supported"),
-    [("typedb-3.11.5/v1", "no"), (BASE, "yes"), (NEXT, "yes")],
+    [("typedb-0.0.0/v1", "no"), (BASE, "yes"), (NEXT, "yes")],
 )
 def test_live_fixture_selects_the_models_suite(profile: str, supported: str) -> None:
     script = (CI / "prepare_generated_live_fixture.sh").read_text()
@@ -247,3 +247,87 @@ def test_models_live_profile_gate_admits_the_named_suite_before_schema_io(
 
     with pytest.raises(RuntimeError, match="schema I/O reached"):
         live.sdk_models_data_model_runtime_live(database, generated)
+
+
+@pytest.mark.parametrize(
+    ("profile", "server"), [(BASE, "3.12.3"), (NEXT, "3.13.6"), (NEXT, "3.14.0")]
+)
+def test_explicit_measured_server_selection_is_shared_by_producers_and_runner(
+    profile: str, server: str
+) -> None:
+    environment = {matrix.SEMANTIC_PROFILE_ENV: profile, matrix.EXPECTED_SERVER_ENV: server}
+    assert matrix.requested("queries", environment=environment).live_server_version == server
+    assert runner.lane(None, environment).live_server_version == server
+
+
+def test_explicit_server_selection_refuses_unmeasured_pairs_and_preserves_default() -> None:
+    assert matrix.requested("queries", NEXT, {}).live_server_version == "3.13.6"
+    for profile, server in [(BASE, "3.14.0"), (NEXT, "3.12.3"), (NEXT, "3.14.1"), (NEXT, "")]:
+        with pytest.raises(matrix.ProfileMatrixError, match="server_profile_mismatch"):
+            matrix.requested("queries", profile, {matrix.EXPECTED_SERVER_ENV: server})
+
+
+@pytest.mark.parametrize("server", ["3.13.6", "3.14.0"])
+def test_existing_test_sh_and_ci_server_selection_uses_the_same_guard(server: str) -> None:
+    environment = {matrix.SEMANTIC_PROFILE_ENV: NEXT, "TYPEDB_VERSION": server}
+    assert matrix.requested("queries", environment=environment).live_server_version == server
+    assert runner.lane(None, environment).live_server_version == server
+
+
+@pytest.mark.parametrize("producer", ["projected", "manager"])
+def test_node_live_producers_use_the_exact_measured_server_selection(producer: str) -> None:
+    environments = [
+        {},
+        *[
+            {matrix.SEMANTIC_PROFILE_ENV: profile, matrix.EXPECTED_SERVER_ENV: server}
+            for server, profile in matrix.SERVER_PROFILES.items()
+        ],
+        {matrix.SEMANTIC_PROFILE_ENV: NEXT, "TYPEDB_VERSION": "3.14.0"},
+        {
+            matrix.SEMANTIC_PROFILE_ENV: NEXT,
+            matrix.EXPECTED_SERVER_ENV: "3.14.0",
+            "TYPEDB_VERSION": "3.12.3",
+        },
+        *[
+            {matrix.SEMANTIC_PROFILE_ENV: profile, matrix.EXPECTED_SERVER_ENV: server}
+            for profile, server in [
+                (BASE, "3.14.0"),
+                (NEXT, "3.12.3"),
+                (NEXT, "3.14.1"),
+                (NEXT, ""),
+            ]
+        ],
+    ]
+    expected = []
+    for environment in environments:
+        try:
+            expected.append(matrix.requested("models", environment=environment).live_server_version)
+        except matrix.ProfileMatrixError as error:
+            expected.append(error.code)
+    module = (
+        ROOT
+        / "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance"
+        / f"{producer}_live_check.mjs"
+    )
+    result = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "--eval",
+            """
+const producer = await import(process.argv[1]);
+const versions = JSON.parse(process.argv[3]).map(environment => {
+  try { return producer.profileIdentity(process.argv[2], environment).liveServerVersion; }
+  catch (error) { return error.code; }
+});
+process.stdout.write(JSON.stringify(versions));
+""",
+            module.as_uri(),
+            str(ROOT),
+            json.dumps(environments),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(result.stdout) == expected

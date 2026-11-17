@@ -54,14 +54,8 @@ CARGO_RELEASE_INVENTORY = load_cargo_release_inventory()
 FIRST_PARTY_PACKAGES = tuple(
     package.name for package in CARGO_RELEASE_INVENTORY.first_party_packages
 )
-VENDORED_PACKAGES = {
-    "type-bridge-typedb-protocol-b8": ("3.11.0", MPL_2_LICENSE),
-    "type-bridge-typedb-driver-b8": ("3.11.5", APACHE_2_LICENSE),
-}
-VENDORED_SOURCE_MANIFESTS = {
-    "type-bridge-typedb-protocol-b8": Path("type-bridge-core/vendor/typedb-protocol-b8/Cargo.toml"),
-    "type-bridge-typedb-driver-b8": Path("type-bridge-core/vendor/typedb-driver-b8/Cargo.toml"),
-}
+VENDORED_PACKAGES: dict[str, tuple[str, str]] = {}
+VENDORED_SOURCE_MANIFESTS: dict[str, Path] = {}
 PUBLIC_SOURCE_READMES = {
     package.name: Path("type-bridge-core") / Path(package.manifest).parent / "README.md"
     for package in CARGO_RELEASE_INVENTORY.public_packages
@@ -253,7 +247,7 @@ def expected_normalized_vendor_manifest(
     *,
     label: str,
 ) -> dict[str, Any]:
-    """Model Cargo's exact behavior-relevant normalization for a b8 source manifest."""
+    """Model Cargo's exact behavior-relevant normalization for an immutable source manifest."""
     expected = copy.deepcopy(source_manifest)
     package = expected.get("package")
     if not isinstance(package, dict):
@@ -318,7 +312,7 @@ def validate_vendored_manifest_payload(
     name: str,
     source_manifest_path: Path,
 ) -> None:
-    """Bind both Cargo manifests in a b8 archive to the reviewed repository source."""
+    """Bind both Cargo manifests in an immutable archive to the reviewed repository source."""
     source_body = read_source_manifest(
         source_manifest_path,
         label=f"repository manifest for {name}",

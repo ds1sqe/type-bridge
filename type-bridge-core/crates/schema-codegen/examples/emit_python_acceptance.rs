@@ -51,7 +51,11 @@ fn main() {
         .map(|id| CapabilityId::new(*id).expect("built-in capability ID"))
         .collect();
     let context = ManagedDeltaContext::new(
-        ManagedScopeId::new("python-generated-acceptance").expect("acceptance scope"),
+        ManagedScopeId::new(
+            env::var("TYPE_BRIDGE_ACCEPTANCE_MANAGED_SCOPE")
+                .unwrap_or_else(|_| "python-generated-acceptance".into()),
+        )
+        .expect("acceptance scope"),
         profile,
         available,
     );

@@ -113,7 +113,7 @@ static int equal_view(type_bridge_byte_view_t left, type_bridge_byte_view_t righ
 int main(int argc, char **argv) {
   type_bridge_schema_package_t *package = NULL;
   type_bridge_schema_package_t *foreign_package = NULL;
-  type_bridge_diagnostics_t *package_diagnostics = NULL;
+  type_bridge_execution_diagnostics_t *package_diagnostics = NULL;
   type_bridge_execution_diagnostics_t *diagnostics = NULL;
   type_bridge_canonical_archive_builder_t *builder = NULL;
   type_bridge_canonical_archive_t *verified = NULL;

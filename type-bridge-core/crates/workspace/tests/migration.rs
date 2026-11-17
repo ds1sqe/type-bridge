@@ -17,7 +17,7 @@ use type_bridge_schema_migration::{
     decode_verified_migration_history_bundle, encode_verified_manifest, typedb_3_12_1_profile,
 };
 use type_bridge_workspace::{
-    ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
+    ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationDirectory,
     SchemaSetPath, SecretReference, SecretReferenceService, TypeBridgeConfig,
     TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace,
     TypeBridgeWorkspaceServices, WorkspaceConfigErrorCode, WorkspaceDirectoryAuthority,
@@ -120,7 +120,7 @@ fn load_workspace(
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
         .build(&TypeBridgeConfigServices::new(
             &authority, secrets, extensions,
         ))
@@ -285,7 +285,7 @@ fn workspace_authors_backfill_intent_under_one_directory_lock() {
     workspace.write_generated_migration(&initial).unwrap();
     directory.write(
         "migrations/v2/copy-name.backfill.yaml",
-        "format: typebridge.migration-backfill-intent/v1\ncopy-attribute:\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
+        "format: typebridge.migration-backfill-intent/v2\ncopy-attribute:\n  mode: isa\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
     );
     let authority = workspace.open_migration_directory().unwrap();
     let generated = workspace
@@ -306,7 +306,9 @@ fn workspace_authors_backfill_intent_under_one_directory_lock() {
     let preview =
         fs::read_to_string(directory.0.join("migrations/v2/0002_copy-name.typeql")).unwrap();
     assert!(preview.contains("binding-neutral backfill migration"));
-    assert!(preview.contains("copy-name.backfill.yaml"));
+    assert!(preview.contains("canonical backfill plan:"));
+    assert!(preview.contains("legacy-name") && preview.contains("display-name"));
+    assert_eq!(workspace.migration_plan(&BTreeSet::new()).unwrap().len(), 2);
 }
 
 #[test]
@@ -739,4 +741,347 @@ fn workspace_captures_replayable_deterministic_history_bundle() {
         .expect("captured history replays without workspace files");
     assert_eq!(decoded.entries().len(), 1);
     assert_eq!(decoded.heads(), &[generated.manifest().id().clone()]);
+}
+
+#[test]
+fn data_intents_reject_unknown_duplicate_and_escaping_inputs_before_publication() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let mut available = capabilities();
+    for name in [
+        "query.output.rows",
+        "query.plan",
+        "query.plan.v3",
+        "query.write.insert",
+    ] {
+        available.insert(CapabilityId::new(name).unwrap());
+    }
+    let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(initial) = workspace.migration_make("init").unwrap()
+    else {
+        panic!("initial schema")
+    };
+    workspace.write_generated_migration(&initial).unwrap();
+    let authority = workspace.open_migration_directory().unwrap();
+    for source in [
+        "format: typebridge.migration-data-intent/v1\nid: seed\nforward: {typeql: 'insert $p isa person;'}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {user: derive, typeql: 'insert $p isa person;'}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {user: derive, user: other}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {typeql: 'insert $p isa person;', extra: true}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nid: other\nforward: {typeql: 'insert $p isa person;'}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {plan-file: ../outside.json}\n",
+        "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {typeql: ''}\n",
+    ] {
+        directory.write("migrations/v2/bad.data.yaml", source);
+        assert!(
+            workspace
+                .author_data_migration_in(&authority, "bad", &[PathBuf::from("bad.data.yaml")])
+                .is_err()
+        );
+        assert!(
+            !directory
+                .0
+                .join("migrations/v2/0002_bad.tbmigration.json")
+                .exists()
+        );
+    }
+    let valid = "format: typebridge.migration-data-step-intent/v1\nid: seed\nforward: {typeql: 'insert $p isa person;'}\nreverse: {typeql: 'match $p isa person; delete $p;'}\n";
+    directory.write("migrations/v2/valid.data.yaml", valid);
+    assert!(
+        workspace
+            .author_data_migration_in(&authority, "bad", &[PathBuf::from("../valid.data.yaml")])
+            .is_err()
+    );
+    assert!(
+        workspace
+            .author_data_migration_in(
+                &authority,
+                "duplicate",
+                &[
+                    PathBuf::from("valid.data.yaml"),
+                    PathBuf::from("valid.data.yaml")
+                ]
+            )
+            .is_err()
+    );
+    let generated = workspace
+        .author_data_migration_in(&authority, "seed", &[PathBuf::from("valid.data.yaml")])
+        .unwrap();
+    assert!(generated.manifest().reversible());
+    assert_eq!(generated.manifest().steps().len(), 1);
+    use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+    use type_bridge_contract::query_plan::{
+        InsertThing, Operation, PlanSpec, QueryOutput, QueryPlan, Stage, WriteReturns,
+    };
+    let binding = BindingId::new(0).unwrap();
+    let plan = QueryPlan::new(
+        PlanSpec {
+            bindings: vec![AssertionBinding::new(
+                binding,
+                QueryVariable::new("person").unwrap(),
+            )],
+            inputs: vec![],
+            given_rows: None,
+            operation: Operation::Write {
+                returns: WriteReturns::Matched,
+            },
+            pipeline: vec![Stage::Insert {
+                things: vec![InsertThing {
+                    binding,
+                    type_id: type_bridge_contract::id::TypeId::new(
+                        type_bridge_contract::id::TypeKind::Entity,
+                        "person",
+                    )
+                    .unwrap(),
+                    fields: vec![],
+                    players: vec![],
+                }],
+            }],
+            output: QueryOutput::Rows { columns: vec![] },
+            managed_semantics: initial
+                .manifest()
+                .target_state()
+                .managed_semantic_schema()
+                .clone(),
+            functions: vec![],
+        },
+        initial.manifest().target_schema(),
+    )
+    .unwrap();
+    fs::write(
+        directory.0.join("migrations/v2/seed.plan.json"),
+        plan.canonical_bytes().unwrap(),
+    )
+    .unwrap();
+    directory.write("migrations/v2/plan.data.yaml", "format: typebridge.migration-data-step-intent/v1\nid: planned\nforward: {plan-file: seed.plan.json}\nreverse: {user: undo-seed}\n");
+    let planned = workspace
+        .author_data_migration_in(&authority, "planned", &[PathBuf::from("plan.data.yaml")])
+        .unwrap();
+    let data = planned.manifest().steps()[0].as_data().unwrap();
+    assert_eq!(
+        data.forward(),
+        &type_bridge_contract::migration_data::DataProgram::Plan {
+            plan: Box::new(plan)
+        }
+    );
+    assert!(matches!(
+        data.reverse(),
+        Some(type_bridge_contract::migration_data::DataProgram::User { .. })
+    ));
+}
+
+#[test]
+fn implicit_history_refuses_old_layout_then_replays_the_moved_bytes() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let explicit = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(first) = explicit.migration_make("init").unwrap()
+    else {
+        panic!("initial schema produces a migration");
+    };
+    explicit.write_generated_migration(&first).unwrap();
+    let old_manifest = directory.0.join("migrations/v2/0001_init.tbmigration.json");
+    let bytes = fs::read(&old_manifest).unwrap();
+    let authority = WorkspaceDirectoryAuthority::open(directory.root()).unwrap();
+    let config = TypeBridgeConfig::builder(directory.root())
+        .schema_set(SchemaSetPath::new("schema/schema.yaml").unwrap())
+        .app_label(MigrationAppLabel::new("example").unwrap())
+        .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
+        .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
+        .build(&TypeBridgeConfigServices::new(
+            &authority,
+            &secrets,
+            &extensions,
+        ))
+        .unwrap();
+    let implicit = TypeBridgeWorkspace::from_config(
+        config,
+        &TypeBridgeWorkspaceServices::new(&authority, &secrets, &extensions, &available),
+    )
+    .unwrap();
+    for error in [
+        implicit.open_migration_directory().unwrap_err(),
+        implicit.ensure_migration_directory().unwrap_err(),
+        implicit.migration_make("refused").unwrap_err(),
+    ] {
+        let type_bridge_workspace::TypeBridgeWorkspaceError::Config(error) = error else {
+            panic!("legacy layout must have a typed config diagnostic");
+        };
+        assert_eq!(
+            error.code(),
+            WorkspaceConfigErrorCode::LegacyMigrationDirectory
+        );
+        assert!(error.to_string().contains("mv -n -t migrations/"));
+    }
+    assert_eq!(fs::read(&old_manifest).unwrap(), bytes);
+    for entry in fs::read_dir(directory.0.join("migrations/v2")).unwrap() {
+        let entry = entry.unwrap();
+        fs::rename(
+            entry.path(),
+            directory.0.join("migrations").join(entry.file_name()),
+        )
+        .unwrap();
+    }
+    fs::remove_dir(directory.0.join("migrations/v2")).unwrap();
+    assert_eq!(
+        fs::read(directory.0.join("migrations/0001_init.tbmigration.json")).unwrap(),
+        bytes
+    );
+    assert_eq!(
+        implicit.migration_plan(&Default::default()).unwrap().len(),
+        1
+    );
+    assert!(matches!(
+        implicit.migration_make("noop").unwrap(),
+        MigrationGenerationOutcome::UpToDate
+    ));
+}
+
+#[test]
+fn plan_rechecks_every_review_preview_against_its_manifest() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(initial) = workspace.migration_make("init").unwrap()
+    else {
+        panic!("initial generated")
+    };
+    workspace.write_generated_migration(&initial).unwrap();
+    let path = directory.0.join("migrations/v2/0001_init.typeql");
+    let original = fs::read(&path).unwrap();
+    assert_eq!(workspace.migration_plan(&BTreeSet::new()).unwrap().len(), 1);
+    let applied = BTreeSet::from([initial.manifest().id().clone()]);
+    for replacement in [
+        Some(b"define entity attacker;\n".as_slice()),
+        Some(b"".as_slice()),
+        None,
+    ] {
+        match replacement {
+            Some(bytes) => fs::write(&path, bytes).unwrap(),
+            None => fs::remove_file(&path).unwrap(),
+        }
+        for state in [&BTreeSet::new(), &applied] {
+            let error = workspace.migration_plan(state).unwrap_err();
+            assert_eq!(
+                error.contract().unwrap().code().as_str(),
+                "workspace_migration_preview_mismatch"
+            );
+            assert!(error.to_string().contains("0001_init.typeql"));
+        }
+        fs::write(&path, &original).unwrap();
+        assert!(workspace.migration_plan(&applied).unwrap().is_empty());
+    }
+    #[cfg(unix)]
+    {
+        let outside = directory.0.join("untrusted.typeql");
+        fs::write(&outside, &original).unwrap();
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(outside, path).unwrap();
+        assert!(workspace.migration_plan(&BTreeSet::new()).is_err());
+    }
+}
+
+#[test]
+fn migration_make_retains_unicode_escape_text_in_regex_and_doc() {
+    for (scalar, expected) in [
+        (r"'^\u0024'", r"^\u0024"),
+        (r#""^\u0024""#, "^$"),
+        (r#""^\\u0024""#, r"^\u0024"),
+    ] {
+        let directory = TempDirectory::new();
+        directory.schema(&format!(
+            r"format: typebridge.schema/v2
+attributes:
+  code: {{value: {{type: string, regex: {scalar}}}}}
+entities:
+  item: {{doc: 'D\u0041D', owns: [code]}}
+"
+        ));
+        let secrets = AcceptSecrets(AtomicUsize::new(0));
+        let extensions = AcceptExtensions(AtomicUsize::new(0));
+        let available = capabilities();
+        let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+        let MigrationGenerationOutcome::Generated(generated) =
+            workspace.migration_make("escapes").unwrap()
+        else {
+            panic!("nonempty schema");
+        };
+        workspace.write_generated_migration(&generated).unwrap();
+        let preview =
+            fs::read_to_string(directory.0.join("migrations/v2/0001_escapes.typeql")).unwrap();
+        assert!(
+            preview.contains(&format!("@regex(\"{expected}\")")),
+            "{preview}"
+        );
+        assert!(preview.contains(r#"@doc("D\\u0041D")"#), "{preview}");
+    }
+}
+
+// Windows refuses to rename a directory while the authority holds it open,
+// so the swap this test defends against cannot be staged there.
+#[cfg(unix)]
+#[test]
+fn preview_regeneration_publishes_into_the_retained_directory_after_rename() {
+    let directory = TempDirectory::new();
+    directory.schema("format: typebridge.schema/v2\nentities: {person: {}}\n");
+    let secrets = AcceptSecrets(AtomicUsize::new(0));
+    let extensions = AcceptExtensions(AtomicUsize::new(0));
+    let available = capabilities();
+    let workspace = load_workspace(&directory, &secrets, &extensions, &available);
+    let MigrationGenerationOutcome::Generated(initial) = workspace.migration_make("init").unwrap()
+    else {
+        panic!("initial migration");
+    };
+    workspace.write_generated_migration(&initial).unwrap();
+    let authority = workspace.open_migration_directory().unwrap();
+    let canonical = fs::read(directory.0.join("migrations/v2/0001_init.typeql")).unwrap();
+    directory.write("migrations/v2/0001_init.typeql", "old renderer\n");
+    fs::rename(
+        directory.0.join("migrations/v2"),
+        directory.0.join("migrations/pinned"),
+    )
+    .unwrap();
+    directory.write("migrations/v2/0001_init.typeql", "replacement directory\n");
+    assert_eq!(
+        workspace
+            .migration_regenerate_previews_in(&authority, true)
+            .unwrap(),
+        ["0001_init.typeql"]
+    );
+    assert_eq!(
+        fs::read(directory.0.join("migrations/pinned/0001_init.typeql")).unwrap(),
+        b"old renderer\n"
+    );
+    assert_eq!(
+        workspace
+            .migration_regenerate_previews_in(&authority, false)
+            .unwrap(),
+        ["0001_init.typeql"]
+    );
+    assert_eq!(
+        fs::read(directory.0.join("migrations/pinned/0001_init.typeql")).unwrap(),
+        canonical
+    );
+    assert_eq!(
+        fs::read(directory.0.join("migrations/v2/0001_init.typeql")).unwrap(),
+        b"replacement directory\n"
+    );
+    assert_eq!(
+        fs::read(
+            directory
+                .0
+                .join("migrations/pinned/0001_init.tbmigration.json")
+        )
+        .unwrap(),
+        initial.canonical_bytes()
+    );
 }

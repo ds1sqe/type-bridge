@@ -166,7 +166,7 @@ relations:
 }
 
 #[test]
-fn ordered_collections_are_gated_to_the_3_12_1_semantic_profile() {
+fn ordered_collections_require_a_retained_semantic_profile() {
     let schema = declared(
         r#"format: typebridge.schema/v2
 attributes:
@@ -179,14 +179,14 @@ entities:
     );
     resolve(&schema, &profile()).expect("3.12.1 accepts ordered collections");
 
-    let legacy = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
-    let error = resolve(&schema, &legacy).expect_err("3.11.5 rejects ordered collections");
+    let legacy = SemanticProfileId::new(format!("typedb-3.{}.5/v1", 12 - 1)).unwrap();
+    let error = resolve(&schema, &legacy).expect_err("retired profiles reject schema resolution");
     let diagnostic = error.iter().next().expect("one diagnostic");
     assert_eq!(
         diagnostic.diagnostic().code().as_str(),
-        "ordered_collection_profile_unsupported"
+        "unsupported_semantic_profile"
     );
-    assert!(diagnostic.primary().is_some());
+    assert!(diagnostic.primary().is_none());
 
     let unordered = declared(
         r#"format: typebridge.schema/v2
@@ -196,7 +196,12 @@ entities:
   article: { owns: [tag] }
 "#,
     );
-    resolve(&unordered, &legacy).expect("3.11.5 unordered behavior is preserved");
+    let error =
+        resolve(&unordered, &legacy).expect_err("retired profiles reject unordered schemas too");
+    assert_eq!(
+        error.iter().next().unwrap().diagnostic().code().as_str(),
+        "unsupported_semantic_profile"
+    );
 }
 
 #[test]
@@ -647,4 +652,224 @@ capabilities:
         ]);
     resolve_schema_with_capabilities(&future, &profile(), &explicitly_available)
         .expect("explicitly injected open capability resolves");
+}
+
+#[test]
+fn backslash_values_are_refused_before_provider_writes() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+attributes:
+  path:
+    value:
+      type: string
+      values: ['back\slash']
+"#,
+    );
+    let error = resolve(&schema, &profile()).unwrap_err();
+    let diagnostic = error.iter().next().unwrap();
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "unsupported_values_backslash"
+    );
+    assert!(diagnostic.primary().is_some());
+}
+
+#[test]
+fn specializing_roles_intersect_local_and_parent_cardinality_constraints() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+relations:
+  base:
+    abstract: true
+    relates:
+      source: {card: 1}
+  child:
+    sub: base
+    relates:
+      origin: {as: source}
+"#,
+    );
+    let resolved = resolve(&schema, &profile()).unwrap();
+    let child = TypeId::new(TypeKind::Relation, "child").unwrap();
+    let origin = RoleId::new("child", "origin").unwrap();
+    assert_eq!(
+        resolved.types()[&child].relates()[&origin].cardinality(),
+        type_bridge_contract::value::Cardinality::new(1, Some(1)).unwrap()
+    );
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+relations:
+  base:
+    relates:
+      source: {card: {min: 1, max: 3}}
+  child:
+    sub: base
+    relates:
+      origin: {as: source, card: {min: 0, max: 2}}
+"#,
+    );
+    let resolved = resolve(&schema, &profile()).unwrap();
+    assert_eq!(
+        resolved.types()[&child].relates()[&origin].cardinality(),
+        type_bridge_contract::value::Cardinality::new(1, Some(2)).unwrap()
+    );
+}
+
+#[test]
+fn contradictory_specialization_cardinality_is_source_diagnosed() {
+    let schema = declared(
+        r#"format: typebridge.schema/v2
+relations:
+  base:
+    relates:
+      source: {card: {min: 2, max: 3}}
+  child:
+    sub: base
+    relates:
+      origin: {as: source}
+"#,
+    );
+    let diagnostics = resolve(&schema, &profile()).unwrap_err();
+    let diagnostic = diagnostics.iter().next().unwrap();
+    assert_eq!(
+        diagnostic.diagnostic().code().as_str(),
+        "incompatible_specialization_cardinality"
+    );
+    assert!(diagnostic.primary().is_some());
+}
+
+#[test]
+fn owns_constraints_must_narrow_direct_and_inherited_attribute_constraints() {
+    for (attribute, own) in [
+        (
+            "range: {min: -9223372036854775808, max: 9223372036854775807}",
+            "range: {min: 0}",
+        ),
+        ("range: {min: 0, max: 100}", "range: {min: 0, max: 100}"),
+        ("range: {min: 0, max: 100}", "range: {min: -1, max: 90}"),
+        ("values: [1, 2]", "values: [1, 2, 3]"),
+        ("values: [1, 2]", "values: [1, 2]"),
+    ] {
+        for inherited in [false, true] {
+            let child = if inherited {
+                "  local-score: {sub: score}\n"
+            } else {
+                ""
+            };
+            let label = if inherited { "local-score" } else { "score" };
+            let schema = declared(&format!(
+                "format: typebridge.schema/v2\nattributes:\n  score:\n    value: {{type: integer, {attribute}}}\n{child}entities:\n  person:\n    owns:\n      {label}: {{{own}}}\n"
+            ));
+            let error = resolve(&schema, &profile()).unwrap_err();
+            let diagnostic = error.iter().next().unwrap();
+            assert_eq!(
+                diagnostic.diagnostic().code().as_str(),
+                "owns_constraint_not_narrowing"
+            );
+            assert!(diagnostic.primary().is_some());
+            assert_eq!(diagnostic.related().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn owns_value_narrowing_compares_numeric_values_but_preserves_annotation_identity() {
+    // TypeDB accepts a distinct annotation spelling of signed zero while
+    // still matching the same numeric value; duplicate numeric members fail.
+    for values in ["[0.0]", "[0.0, 1.0]"] {
+        let schema = declared(&format!(
+            "format: typebridge.schema/v2\nattributes:\n  score:\n    value: {{type: double, values: [-0.0, 1.0]}}\nentities:\n  person:\n    owns:\n      score: {{values: {values}}}\n"
+        ));
+        resolve(&schema, &profile()).unwrap();
+    }
+    let schema = declared(
+        "format: typebridge.schema/v2\nattributes:\n  score:\n    value: {type: double, values: [-0.0, 1.0]}\nentities:\n  person:\n    owns:\n      score: {values: [-0.0, 0.0]}\n",
+    );
+    assert_eq!(
+        resolve(&schema, &profile())
+            .unwrap_err()
+            .iter()
+            .next()
+            .unwrap()
+            .diagnostic()
+            .code()
+            .as_str(),
+        "owns_constraint_not_narrowing"
+    );
+}
+
+#[test]
+fn owns_constraints_accept_strict_subsets_and_distinct_conjunctive_regexes() {
+    for (value_type, attribute, own) in [
+        (
+            "integer",
+            "range: {min: 0, max: 100}",
+            "range: {min: 1, max: 99}",
+        ),
+        ("integer", "range: {min: 0}", "range: {min: 1}"),
+        ("integer", "values: [1, 2]", "values: [1]"),
+        ("string", "regex: '^ABC$'", "regex: '.*'"),
+    ] {
+        let schema = declared(&format!(
+            "format: typebridge.schema/v2\nattributes:\n  score:\n    value: {{type: {value_type}, {attribute}}}\nentities:\n  person:\n    owns:\n      score: {{{own}}}\n"
+        ));
+        resolve(&schema, &profile()).unwrap();
+    }
+    let schema = declared(
+        "format: typebridge.schema/v2\nattributes:\n  code: {value: {type: string, regex: '^ABC$'}}\nentities:\n  person:\n    owns:\n      code: {regex: '^ABC$'}\n",
+    );
+    assert_eq!(
+        resolve(&schema, &profile())
+            .unwrap_err()
+            .iter()
+            .next()
+            .unwrap()
+            .diagnostic()
+            .code()
+            .as_str(),
+        "owns_constraint_not_narrowing"
+    );
+}
+
+#[test]
+fn odd_backslash_before_regex_quote_refuses_lossy_provider_export() {
+    for pattern in [r#"a\"b"#, r#"a\\\"b"#] {
+        let schema = declared(&format!(
+            "format: typebridge.schema/v2\nattributes:\n  code: {{value: {{type: string, regex: '{pattern}'}}}}\n"
+        ));
+        let error = resolve(&schema, &profile()).unwrap_err();
+        let diagnostic = error.iter().next().unwrap();
+        assert_eq!(
+            diagnostic.diagnostic().code().as_str(),
+            "unsupported_regex_escaped_quote"
+        );
+        assert!(
+            diagnostic
+                .diagnostic()
+                .to_string()
+                .contains("redundant backslash")
+        );
+        assert!(diagnostic.primary().is_some());
+    }
+    for pattern in [r#"a"b"#, r#"a\\"b"#] {
+        let schema = declared(&format!(
+            "format: typebridge.schema/v2\nattributes:\n  code: {{value: {{type: string, regex: '{pattern}'}}}}\n"
+        ));
+        resolve(&schema, &profile()).unwrap();
+    }
+}
+
+#[test]
+fn equal_owns_value_sets_explain_redundancy_independent_of_order() {
+    for values in ["[a, b]", "[b, a]"] {
+        let schema = declared(&format!(
+            "format: typebridge.schema/v2\nattributes:\n  code: {{value: {{type: string, values: [a, b]}}}}\nentities:\n  item:\n    owns:\n      code: {{values: {values}}}\n"
+        ));
+        let error = resolve(&schema, &profile()).unwrap_err();
+        let diagnostic = error.iter().next().unwrap().diagnostic();
+        assert_eq!(diagnostic.code().as_str(), "owns_constraint_not_narrowing");
+        assert!(diagnostic.message().contains("equal"));
+        assert!(diagnostic.message().contains("redundant"));
+        assert!(diagnostic.message().contains("remove"));
+    }
 }

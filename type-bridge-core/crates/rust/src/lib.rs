@@ -18,15 +18,21 @@ mod entity_codec;
 mod entity_manager;
 pub mod error;
 /// Value-only provider failure vocabulary used by Error::failure.
+/// Diagnostic-only phase timestamps on one execution clock.
+pub use type_bridge_contract::execution_timeline::{
+    ExecutionPhase, ExecutionPhaseStamp, ExecutionTimeline,
+};
 pub use type_bridge_contract::failure;
 pub mod hooks;
+mod manager_target;
 pub mod migration;
 pub mod model;
 pub mod plan;
 mod projected_batch;
 mod projected_codec;
 mod projected_filter;
-mod query;
+pub mod query;
+pub mod raw;
 #[allow(dead_code)]
 mod relation_codec;
 mod relation_manager;
@@ -51,12 +57,15 @@ pub use error::{
 pub use hooks::{
     CrudOperation, HookContext, HookError, HookFuture, LifecycleHook, ModelKind, PreHookResult,
 };
+#[cfg(feature = "typedb")]
+pub use migration::MigrationTransaction;
 pub use migration::{
     MigrationApprovalBuilder, MigrationApprovalSet, MigrationCatalog, MigrationHistoryEntry,
     MigrationPlan, MigrationPreview, MigrationPreviewEntry,
 };
 pub use projected_filter::{
-    ProjectedEntityFilter, ProjectedRelationFilter, ReadEntityManager, ReadRelationManager,
+    ProjectedEntityFilter, ProjectedRelationFilter, ProjectedSubtypeFilter, ReadEntityManager,
+    ReadRelationManager,
 };
 pub use query::{
     Binding, BoundField, BoundRole, Collected, Exact, FieldGroupedQuery, FunctionArgument,
@@ -65,21 +74,20 @@ pub use query::{
     Selectable, SelectedRowSpec, SelectedShape, SelectedSlot, SelectionMode, SingularSelectedShape,
     Subtypes,
 };
+pub use raw::{RawQueryError, RawTransaction};
 pub use relation_manager::{RelationManager, RelationSubtypeManager};
 pub use remote::{ProxyConnectionPolicy, ProxyDatabase, ProxyExchange};
-#[allow(deprecated)]
-pub use remote::{
-    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,
-};
 pub use schema::{Schema, SchemaPackage, Unbound};
 pub use session::{ConnectionOptions, Database, DatabaseCreateOutcome, DatabaseDeleteOutcome};
 #[cfg(feature = "typedb")]
 pub use session::{
     ManagedDatabaseDeleteOutcome, ManagedDatabaseDeletionPlan, ManagedDatabasePairState,
 };
+pub use staged::Transaction;
 pub use transaction::{
     ReadTransaction, TransactionEntityManager, TransactionRelationManager, WriteTransaction,
 };
+pub use type_bridge_contract::id::Iid;
 pub use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 #[cfg(feature = "typedb")]
 pub use type_bridge_orm::DirectConnectionPolicy;
@@ -92,14 +100,10 @@ pub use type_bridge_orm::{
     DEFAULT_PROXY_QUERY_BYTES, DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
     DEFAULT_PROXY_QUERY_GRAPH_NODES, DEFAULT_PROXY_QUERY_ITEMS, DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
     DEFAULT_PROXY_QUERY_STATEMENTS, DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS, ProjectedManagerComparison, QueryExecutionDeadline,
-    QueryExecutionLimitOutOfRange, QueryExecutionLimitsError, QueryExecutionResourceLimits,
+    ProjectedManagerComparison, QueryExecutionDeadline, QueryExecutionLimitOutOfRange,
+    QueryExecutionLimitsError, QueryExecutionResourceLimits, QueryTimeout,
 };
-#[allow(deprecated)]
-pub use type_bridge_orm::{
-    DirectTls, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
-    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS,
-};
+pub use type_bridge_orm::{BatchWriteResult, WriteResult};
 pub use type_bridge_orm::{ProxyEndpoint, TlsPolicy};
 pub use type_bridge_orm_derive::SelectedRow;
 #[cfg(feature = "typedb")]

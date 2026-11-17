@@ -51,7 +51,7 @@ def pyright(path: Path, *, expected_exit: int) -> dict[str, object]:
             "--project",
             str(STAGE / "pyrightconfig.json"),
             str(path),
-            str(STAGE / "generated_v2"),
+            str(STAGE / "generated_package"),
         ],
         expected=expected_exit,
     )
@@ -88,6 +88,8 @@ def check_negative(report: dict[str, object], path: Path) -> None:
 
 
 def main() -> None:
+    if shutil.which("uv") is None or shutil.which("uvx") is None:
+        raise RuntimeError("required tool is unavailable: uv (including uvx)")
     fixtures = [
         HERE / "positive.py",
         HERE / "negative.py",
@@ -103,7 +105,7 @@ def main() -> None:
                 raise AssertionError(f"{fixture.name} contains forbidden typing escape {forbidden}")
     for fixture in (HERE / "positive.py", HERE / "runtime_check.py", DOCUMENTED_EXAMPLES):
         source = fixture.read_text()
-        for forbidden in ("QueryV2Authority", "declared-schema.json", ".read_bytes()"):
+        for forbidden in ("PlanAuthority", "declared-schema.json", ".read_bytes()"):
             if forbidden in source:
                 raise AssertionError(
                     f"{fixture.name} bypasses generated embedded authority with {forbidden}"
@@ -123,7 +125,7 @@ def main() -> None:
         shutil.copy2(HERE / fixture, STAGE / fixture)
     shutil.copy2(DOCUMENTED_EXAMPLES, STAGE / "documented_examples.py")
 
-    command(["maturin", "develop"], cwd=CORE)
+    command(["bash", str(ROOT / "scripts/ci/run_maturin.sh"), "develop"], cwd=CORE)
 
     command(
         [
@@ -138,10 +140,10 @@ def main() -> None:
             "emit_python_acceptance",
             "--",
             str(HERE / "schema.yaml"),
-            str(STAGE / "generated_v2"),
+            str(STAGE / "generated_package"),
         ]
     )
-    shutil.copytree(STAGE / "generated_v2", STAGE / "generated_identical")
+    shutil.copytree(STAGE / "generated_package", STAGE / "generated_identical")
     command(
         [
             "cargo",
@@ -161,6 +163,19 @@ def main() -> None:
     ordered = pyright(STAGE / "generated_ordered", expected_exit=0)
     if ordered["summary"]["errorCount"] != 0:
         raise AssertionError(f"ordered generated package Pyright failed: {ordered}")
+    command(
+        [
+            "uv",
+            "run",
+            "ruff",
+            "check",
+            "--isolated",
+            "--select",
+            "F401",
+            str(STAGE / "generated_ordered" / "_models.py"),
+            str(STAGE / "generated_ordered" / "_models.pyi"),
+        ]
+    )
 
     variant_source = (
         (HERE / "schema.yaml")

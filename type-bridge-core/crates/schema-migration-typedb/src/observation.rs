@@ -15,7 +15,7 @@ use type_bridge_schema_compat::{
     released_typeql_to_declared_lossless_projection,
     released_typeql_to_declared_lossless_projection_with_references,
     released_typeql_to_declared_projection, released_typeql_to_declared_projection_with_references,
-    typeql_to_declared,
+    typeql_to_declared, typeql_to_declared_with_references,
 };
 
 pub use type_bridge_schema_compat::{
@@ -117,6 +117,7 @@ pub(crate) fn partition_typeql_export_lossless(
 pub(crate) fn partition_declared_schema(
     full: DeclaredSchema,
 ) -> Result<PartitionedDeclaredSchema, Diagnostic> {
+    let (full, _) = type_bridge_schema_compat::without_import_control(full)?;
     let mut user = Vec::new();
     let mut internal = Vec::new();
     let mut legacy_control = Vec::new();
@@ -306,7 +307,12 @@ fn parse_authoritative_export(
 ) -> Result<TypeqlDeclaredSchema, Diagnostic> {
     match authority {
         ManagedObservationAuthority::ExactPortable => {
-            released_typeql_to_declared_lossless_projection_with_references(document, export)
+            typeql_to_declared_with_references(document.clone(), export)
+                .or_else(|_| {
+                    released_typeql_to_declared_lossless_projection_with_references(
+                        document, export,
+                    )
+                })
                 .map_err(|_| export_invalid())
         }
         ManagedObservationAuthority::Adopted(expected) => {
@@ -544,6 +550,27 @@ mod tests {
 
     fn export_with_user(user_definables: &str) -> String {
         format!("{MANAGED_FENCE_SCHEMA_TYPEQL}{user_definables}")
+    }
+
+    #[test]
+    fn native_sub_metadata_keeps_its_annotation_subject() {
+        let expected = candidate_state(
+            "define entity person; entity father sub person @doc(\"sub documentation\");",
+        );
+        let export = export_with_user(
+            "entity person; entity father sub person @doc(\"sub documentation\");",
+        );
+        assert_eq!(
+            observe_managed_state_from_export(
+                observation_document(),
+                &export,
+                &available_capabilities(),
+                &expected,
+                &expected
+            )
+            .unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -821,7 +848,7 @@ mod tests {
         let export = export_with_user(
             "entity person;\nfun spies($candidate: person) -> { person }: \
              match $candidate isa person; \
-             $control isa typebridge-internal-v2-migration-control; \
+             $control isa typebridge-internal-migration-control; \
              return { $candidate };\n",
         );
         let candidate = candidate_state("define\nentity person;\n");

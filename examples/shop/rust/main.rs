@@ -19,18 +19,18 @@
 
 use std::sync::Arc;
 
-use models::{Account, AccountType, AppSchema, Item, ItemType, OrderLine, OrderLineType};
+use models::{Account, AccountType, AppSchema, Item, ItemType, OrderLine, OrderLineType, Plan};
 use serde_json::{Map, Value as Json, json};
 use tokio::sync::Barrier;
 use tokio::task::JoinSet;
 use type_bridge::failure::{Failure, Reason};
-use type_bridge::plan::{Expr, Plan, PlanBuilder};
+use type_bridge::plan::{PlanExpr, PlanBuilder};
 use type_bridge::staged::{Pending, PlanAnswer, Transaction, TransactionKind, TransactionOptions};
 use type_bridge::{
     ConnectionOptions, Database, ProxyConnectionPolicy, ProxyDatabase, ProxyEndpoint, Result,
 };
 
-type Built = Plan<AppSchema>;
+type Built = Plan<PlanAnswer>;
 
 /// Three accounts, one given row each.
 fn seed_accounts() -> Result<Built> {
@@ -81,7 +81,7 @@ fn checkout(account_id: &str, order_id: &str, cart: &[(&str, i64)]) -> Result<Bu
     plan.where_(buyer_key.eq(account_id.to_owned()));
 
     let mut lines = Vec::new();
-    let mut total: Option<Expr> = None;
+    let mut total: Option<PlanExpr> = None;
     for &(sku, quantity) in cart {
         let item = plan.exact::<Item>();
         let stock = plan.field(item, ItemType::stock);
@@ -151,7 +151,10 @@ type Steps = &'static [(&'static str, &'static [&'static str])];
 const STEPS: Steps = &[
     ("seed", &["seed_accounts", "seed_items"]),
     ("checkout", &["checkout_a1"]),
-    ("checked_out", &["a1_paid", "book_sold_out", "pens_left", "lines"]),
+    (
+        "checked_out",
+        &["a1_paid", "book_sold_out", "pens_left", "lines"],
+    ),
     ("sold_out", &["checkout_a2"]),
     ("short", &["checkout_short"]),
     ("unchanged", &["mugs_kept", "a2_kept", "lines"]),
@@ -383,16 +386,20 @@ async fn main() -> Result<()> {
     {
         let env =
             |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
-        let options = ConnectionOptions::new(env("TYPEDB_ADDRESS", "localhost:1729"), database)
-            .credentials(
-                env("TYPEDB_USERNAME", "admin"),
-                env("TYPEDB_PASSWORD", "password"),
-            )
+        let mut options = ConnectionOptions::new(env("TYPEDB_ADDRESS", "localhost:1729"), database)
             .http_port(
                 env("TYPEDB_HTTP_PORT", "8000")
                     .parse()
                     .expect("TYPEDB_HTTP_PORT"),
             );
+        if std::env::var_os("TYPEDB_USERNAME").is_some()
+            || std::env::var_os("TYPEDB_PASSWORD").is_some()
+        {
+            options = options.credentials(
+                std::env::var("TYPEDB_USERNAME").unwrap_or_default(),
+                std::env::var("TYPEDB_PASSWORD").unwrap_or_default(),
+            );
+        }
         let db = Database::connect(options)
             .await?
             .with_schema(models::SCHEMA)?;

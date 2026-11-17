@@ -1,154 +1,204 @@
-//! Closed TypeQL lowering for canonical attribute backfill plans.
-//!
-//! These queries are internal provider implementation details. Every label and
-//! batch bound comes from a validated canonical plan; callers cannot supply
-//! TypeQL fragments or alter the fixed conflict and postcondition semantics.
-
+//! Native programs for the closed canonical attribute-backfill operation.
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::migration_assertion::{
+    AssertionBinding, BindingId, QueryVariable, ValueComparator,
+};
 use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
-use type_bridge_core_lib::__internal as tql;
+use type_bridge_contract::query_plan::{
+    AttachItem, DeleteItem, Operation, Pattern, PlanSpec, QueryPlan, Stage, WriteReturns,
+};
+use type_bridge_contract::query_plan::{
+    OrderDirection, OrderTerm, QueryOperand, QueryOutput, QueryPattern, TypeMatchMode,
+};
+use type_bridge_contract::schema::{DeclaredSchema, SchemaFactId};
 use type_bridge_schema_migration::BackfillExecutionDirection;
 
-pub(crate) struct LoweredBackfill<'a> {
-    plan: &'a AttributeBackfillPlan,
-    direction: BackfillExecutionDirection,
+pub(crate) struct NativeBackfill {
+    pub(crate) conflict: Option<QueryPlan>,
+    pub(crate) incomplete: QueryPlan,
+    pub(crate) mutation: QueryPlan,
 }
-
-impl<'a> LoweredBackfill<'a> {
-    pub(crate) const fn new(
-        plan: &'a AttributeBackfillPlan,
+fn id(value: u16) -> BindingId {
+    BindingId::new(value).expect("bounded backfill binding")
+}
+fn invalid(message: &'static str) -> Diagnostic {
+    Diagnostic::new(
+        DiagnosticCategory::InvalidContract,
+        DiagnosticCode::new("migration_typedb_backfill_native_authority").expect("static code"),
+        message,
+    )
+}
+impl NativeBackfill {
+    pub(crate) fn new(
+        plan: &AttributeBackfillPlan,
         direction: BackfillExecutionDirection,
-    ) -> Self {
-        Self { plan, direction }
-    }
-
-    fn source_patterns(
-        &self,
-        with_destination: bool,
-        with_stable: bool,
-    ) -> Result<Vec<tql::Pattern>, tql::TqlError> {
-        let mut constraints = vec![
-            tql::isa(self.plan.owner().label().as_str(), false)?,
-            tql::has(self.plan.source().label().as_str(), tql::var("source")?)?,
+        authority: &DeclaredSchema,
+    ) -> Result<Self, Diagnostic> {
+        let profile = plan
+            .managed_semantics()
+            .as_fingerprint()
+            .semantic_profile()
+            .ok_or_else(|| invalid("backfill requires a semantic profile"))?;
+        let resolved = type_bridge_schema::resolve(authority, profile)
+            .map_err(|_| invalid("backfill planning authority cannot be resolved"))?;
+        let ownership = resolved
+            .types()
+            .get(plan.owner())
+            .and_then(|owner| owner.owns().get(plan.destination()))
+            .ok_or_else(|| invalid("backfill destination has no effective ownership"))?;
+        let SchemaFactId::Owns(field) = ownership.origin().declared() else {
+            return Err(invalid(
+                "backfill destination has no declared ownership origin",
+            ));
+        };
+        let bindings = ["owner", "source", "destination", "stable"]
+            .into_iter()
+            .enumerate()
+            .map(|(n, name)| {
+                Ok(AssertionBinding::new(
+                    id(n as u16),
+                    QueryVariable::new(name)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, Diagnostic>>()?;
+        let has = |attribute, label, mode| QueryPattern::HasType {
+            owner: id(0),
+            attribute: id(attribute),
+            attribute_id: label,
+            mode,
+        };
+        let compare = |comparator| QueryPattern::Value {
+            comparator,
+            left: QueryOperand::Binding { binding: id(2) },
+            right: QueryOperand::Binding { binding: id(1) },
+        };
+        let source = vec![
+            QueryPattern::Isa {
+                binding: id(0),
+                type_id: plan.owner().clone(),
+                include_subtypes: true,
+            },
+            has(1, plan.source().clone(), plan.mode()),
         ];
-        if with_destination {
-            constraints.push(tql::has(
-                self.plan.destination().label().as_str(),
-                tql::var("destination")?,
-            )?);
-        }
-        if with_stable {
-            constraints.push(tql::has(
-                self.plan.partition().stable_attribute().label().as_str(),
-                tql::var("stable")?,
-            )?);
-        }
-        Ok(vec![tql::thing("owner", constraints)?])
-    }
-
-    fn equal_destination(&self) -> Result<Vec<tql::Pattern>, tql::TqlError> {
-        Ok(vec![
-            tql::thing(
-                "owner",
-                vec![tql::has(
-                    self.plan.destination().label().as_str(),
-                    tql::var("destination")?,
-                )?],
-            )?,
-            tql::compare(tql::var("destination")?, "==", tql::var("source")?)?,
-        ])
-    }
-
-    /// Return a bounded witness query for a value that makes execution unsafe.
-    pub(crate) fn conflict_witness(&self) -> Result<Option<String>, tql::TqlError> {
-        if self.direction == BackfillExecutionDirection::Reverse {
-            return Ok(None);
-        }
-        let mut patterns = self.source_patterns(true, false)?;
-        patterns.push(tql::compare(
-            tql::var("destination")?,
-            "!=",
-            tql::var("source")?,
-        )?);
-        Ok(Some(tql::render(&tql::pipeline(vec![
-            tql::match_stage(patterns),
-            tql::limit(1),
-            tql::fetch(vec![(
-                "conflict",
-                tql::fetch_expr(tql::var("destination")?),
-            )])?,
-        ]))?))
-    }
-
-    /// Return a bounded witness query proving the terminal predicate is false.
-    pub(crate) fn incomplete_witness(&self) -> Result<String, tql::TqlError> {
-        let reverse = self.direction == BackfillExecutionDirection::Reverse;
-        let mut patterns = self.source_patterns(reverse, false)?;
-        let value = if reverse {
-            patterns.push(tql::compare(
-                tql::var("destination")?,
-                "==",
-                tql::var("source")?,
-            )?);
-            "destination"
-        } else {
-            patterns.push(tql::not(self.equal_destination()?));
-            "source"
+        let equal = vec![
+            has(2, plan.destination().clone(), plan.mode()),
+            compare(ValueComparator::Equal),
+        ];
+        let build = |patterns: Vec<QueryPattern>, mut tail: Vec<Stage>, operation, columns| {
+            let mut pipeline = vec![Stage::Match {
+                patterns: patterns.into_iter().map(Pattern::from).collect(),
+            }];
+            pipeline.append(&mut tail);
+            QueryPlan::new(
+                PlanSpec {
+                    bindings: bindings.clone(),
+                    inputs: vec![],
+                    given_rows: None,
+                    operation,
+                    pipeline,
+                    output: QueryOutput::Rows { columns },
+                    managed_semantics: plan.managed_semantics().clone(),
+                    functions: vec![],
+                },
+                authority,
+            )
         };
-        tql::render(&tql::pipeline(vec![
-            tql::match_stage(patterns),
-            tql::limit(1),
-            tql::fetch(vec![("incomplete", tql::fetch_expr(tql::var(value)?))])?,
-        ]))
-    }
-
-    /// Return one deterministic bounded mutation pipeline.
-    pub(crate) fn mutation_group(&self) -> Result<String, tql::TqlError> {
-        let reverse = self.direction == BackfillExecutionDirection::Reverse;
-        let mut patterns = self.source_patterns(reverse, true)?;
+        let witness = |patterns, column| {
+            build(
+                patterns,
+                vec![
+                    Stage::Select {
+                        bindings: vec![id(column)],
+                    },
+                    Stage::Limit { rows: 1 },
+                ],
+                Operation::Rows,
+                vec![id(column)],
+            )
+        };
+        let reverse = direction == BackfillExecutionDirection::Reverse;
+        let conflict = if reverse {
+            None
+        } else {
+            let mut patterns = source.clone();
+            patterns.extend([
+                has(2, plan.destination().clone(), plan.mode()),
+                compare(ValueComparator::NotEqual),
+            ]);
+            Some(witness(patterns, 2)?)
+        };
+        let mut unfinished = source;
+        if reverse {
+            unfinished.extend(equal);
+        } else {
+            unfinished.push(QueryPattern::Not { patterns: equal });
+        }
+        let incomplete = witness(unfinished.clone(), if reverse { 2 } else { 1 })?;
+        // Partition-key matching keeps the historical TypeQL `has` semantics.
+        unfinished.push(has(
+            3,
+            plan.partition().stable_attribute().clone(),
+            TypeMatchMode::Isa,
+        ));
         let mutation = if reverse {
-            patterns.push(tql::compare(
-                tql::var("destination")?,
-                "==",
-                tql::var("source")?,
-            )?);
-            tql::delete(vec![tql::delete_has("owner", "destination")?])
+            Stage::Delete {
+                items: vec![DeleteItem::HasValue {
+                    owner: id(0),
+                    field: field.clone(),
+                    value: id(2),
+                }],
+            }
         } else {
-            patterns.push(tql::not(self.equal_destination()?));
-            tql::insert(vec![tql::thing(
-                "owner",
-                vec![tql::has_comparison(
-                    self.plan.destination().label().as_str(),
-                    "==",
-                    tql::var("source")?,
-                )?],
-            )?])
+            Stage::Attach {
+                items: vec![AttachItem::Has {
+                    optional: false,
+                    owner: id(0),
+                    field: field.clone(),
+                    operand: QueryOperand::Binding { binding: id(1) },
+                }],
+            }
         };
-        tql::render(&tql::pipeline(vec![
-            tql::match_stage(patterns),
-            tql::sort_default(&["stable"])?,
-            tql::limit(u64::from(self.plan.partition().batch_rows())),
+        let mutation = build(
+            unfinished,
+            vec![
+                Stage::Sort {
+                    terms: vec![OrderTerm::new(id(3), OrderDirection::Ascending)],
+                },
+                Stage::Limit {
+                    rows: u64::from(plan.partition().batch_rows()),
+                },
+                mutation,
+            ],
+            Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            vec![id(3)],
+        )?;
+        Ok(Self {
+            conflict,
+            incomplete,
             mutation,
-            tql::fetch(vec![(
-                "changed_partition",
-                tql::fetch_expr(tql::var("stable")?),
-            )])?,
-        ]))
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use type_bridge_contract::fingerprint::SemanticProfileId;
-    use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-    use type_bridge_contract::migration_backfill::{BackfillPartition, BackfillReverseProgram};
-    use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
-
-    fn plan() -> AttributeBackfillPlan {
-        AttributeBackfillPlan::new(
+    use type_bridge_contract::{
+        fingerprint::SemanticProfileId,
+        id::{AttributeId, TypeId, TypeKind},
+        migration_backfill::{BackfillPartition, BackfillReverseProgram},
+        schema::DocumentId,
+        schema_fingerprint::ManagedSemanticSchemaFingerprint,
+    };
+    fn fixture() -> (DeclaredSchema, AttributeBackfillPlan) {
+        let schema = type_bridge_schema_compat::typeql_to_declared(DocumentId::new("backfill-test.typeql").unwrap(), "define attribute old-name, value string; attribute display-name, value string; attribute person-id, value string; entity person, owns old-name, owns display-name, owns person-id @key;").unwrap();
+        let plan = AttributeBackfillPlan::new(
             TypeId::new(TypeKind::Entity, "person").unwrap(),
             AttributeId::new("old-name").unwrap(),
             AttributeId::new("display-name").unwrap(),
+            TypeMatchMode::Isa,
             BackfillPartition::new(37, AttributeId::new("person-id").unwrap()).unwrap(),
             ManagedSemanticSchemaFingerprint::compute(
                 SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
@@ -157,36 +207,46 @@ mod tests {
             .unwrap(),
             Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
         )
-        .unwrap()
+        .unwrap();
+        (schema, plan)
     }
-
     #[test]
-    fn forward_lowering_is_closed_bounded_and_idempotent() {
-        let plan = plan();
-        let lowered = LoweredBackfill::new(&plan, BackfillExecutionDirection::Forward);
-        assert!(tql::equivalent(
-            &lowered.conflict_witness().unwrap().unwrap(),
-            "match\n  $owner isa person, has old-name $source, has display-name $destination;\n  $destination != $source;\nlimit 1;\nfetch { \"conflict\": $destination };"
-        ).unwrap());
-        let mutation = lowered.mutation_group().unwrap();
-        assert!(mutation.contains("not { $owner has display-name $destination;"));
-        assert!(mutation.contains("sort $stable; limit 37; insert"));
-        assert!(mutation.contains("$owner has display-name == $source;"));
-    }
-
-    #[test]
-    fn reverse_lowering_removes_only_an_equal_copy() {
-        let plan = plan();
-        let lowered = LoweredBackfill::new(&plan, BackfillExecutionDirection::Reverse);
-        assert!(lowered.conflict_witness().unwrap().is_none());
-        assert!(
-            lowered
-                .incomplete_witness()
-                .unwrap()
-                .contains("$destination == $source;")
-        );
-        let mutation = lowered.mutation_group().unwrap();
-        assert!(mutation.contains("sort $stable; limit 37; delete"));
-        assert!(mutation.contains("has $destination of $owner;"));
+    fn forward_is_bounded_and_reverse_deletes_only_the_equal_bound_value() {
+        let (schema, plan) = fixture();
+        for direction in [
+            BackfillExecutionDirection::Forward,
+            BackfillExecutionDirection::Reverse,
+        ] {
+            let native = NativeBackfill::new(&plan, direction, &schema).unwrap();
+            assert_eq!(native.incomplete.statement_counts(), (1, 0));
+            assert_eq!(native.mutation.statement_counts(), (0, 1));
+            assert!(matches!(
+                native.mutation.pipeline(),
+                [
+                    Stage::Match { .. },
+                    Stage::Sort { .. },
+                    Stage::Limit { rows: 37 },
+                    _
+                ]
+            ));
+            if direction == BackfillExecutionDirection::Reverse {
+                assert!(native.conflict.is_none());
+                assert!(
+                    matches!(native.mutation.pipeline().last(), Some(Stage::Delete { items }) if matches!(items.as_slice(), [DeleteItem::HasValue { value, .. }] if *value == id(2)))
+                );
+                let Stage::Match { patterns } = &native.mutation.pipeline()[0] else {
+                    panic!("match");
+                };
+                assert!(patterns.iter().any(|pattern| matches!(
+                    pattern,
+                    Pattern::Read(QueryPattern::Value {
+                        comparator: ValueComparator::Equal,
+                        ..
+                    })
+                )));
+            } else {
+                assert_eq!(native.conflict.unwrap().statement_counts(), (1, 0));
+            }
+        }
     }
 }

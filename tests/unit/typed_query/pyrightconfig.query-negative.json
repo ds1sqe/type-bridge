@@ -1,9 +1,0 @@
-{
-  "include": [
-    "../type-check-except/test_query_v2_authoring_negative.py"
-  ],
-  "extraPaths": ["../../..", "../../../type-bridge-core/python"],
-  "pythonVersion": "3.12",
-  "typeCheckingMode": "standard",
-  "reportMissingModuleSource": "none"
-}

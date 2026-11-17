@@ -67,7 +67,7 @@ fn generated_rust_observes_administration_administration_controls_and_lifecycle(
     fs::write(
         &generated_manifest,
         manifest.replace(
-            "type-bridge = { version = \"=2.3.3\", default-features = false }",
+            "type-bridge = { version = \"=3.0.0\", default-features = false }",
             &format!(
                 "type-bridge = {{ path = {:?}, default-features = false, features = [\"typedb\"] }}",
                 runtime
@@ -95,7 +95,7 @@ fn generated_rust_observes_administration_administration_controls_and_lifecycle(
         locks::Consumer::AdministrationLive.lock(),
     )
     .expect("consumer lockfile writes");
-    let database = format!("sdk_administration_rust_{}", std::process::id());
+    let database = support::live_database_name("sdk_administration_rust");
     let output = Command::new("cargo")
         .current_dir(&consumer)
         .env("CARGO_TARGET_DIR", support::cargo_target())
@@ -210,9 +210,9 @@ fn generated_rust_observes_administration_administration_controls_and_lifecycle(
     assert_eq!(report["results"][3]["observation"]["catalog_entries"], 4);
     assert_eq!(
         report["results"][3]["observation"]["catalog_fingerprint"],
-        support::sdk_profile_matrix::requested("administration")
-            .expected_history_fingerprint
-            .expect("matrix history fingerprint")
+        support::format2_history_fingerprint(
+            &support::sdk_profile_matrix::requested("administration").semantic_profile
+        )
     );
     let report_path = temporary.path().join("rust-administration-report.json");
     fs::write(

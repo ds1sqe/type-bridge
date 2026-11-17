@@ -13,6 +13,8 @@ from pathlib import Path
 import generated_ordered as generated
 import generated_ordered_foreign as foreign
 
+from type_bridge import Iid
+
 FORMAT = "typebridge.sdk-serialization-provider-free-corpus/v1"
 OPERATIONAL_FORMAT = "typebridge.sdk-serialization-operational-evidence/v1"
 
@@ -84,7 +86,7 @@ def main() -> None:
     person_create_value = person(aliases=[])
     person_create = person_create_value.encode_create()
     person_snapshot_value = person()
-    person_snapshot_value.attach_runtime_iid("0x501")
+    person_snapshot_value.attach_runtime_iid(Iid("0x501"))
     person_snapshot = person_snapshot_value.encode_snapshot()
 
     robot = generated.Robot(
@@ -98,12 +100,12 @@ def main() -> None:
         actor=robot,
         target=person_create_value,
     ).encode_create()
-    event = generated.EventRef("0x700")
+    event = generated.EventRef(Iid("0x700"))
     container = generated.Container(item=[event]).encode_create()
     employment_player = person()
-    employment_player.attach_runtime_iid("0x501")
+    employment_player.attach_runtime_iid(Iid("0x501"))
     employment_value = generated.Employment(employee=employment_player)
-    employment_value.attach_runtime_iid("0x801")
+    employment_value.attach_runtime_iid(Iid("0x801"))
     employment_snapshot = employment_value.encode_snapshot()
     player_reference = event.encode_reference()
 

@@ -49,6 +49,12 @@ const CAP_REPLACE_SUB_ANNOTATION: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[8];
 /// Closed binding-neutral capability vocabulary for generated migration catalogs.
 pub fn migration_runtime_capability_vocabulary() -> Result<CapabilitySet, Diagnostic> {
     let mut capabilities = schema_transition_capability_vocabulary();
+    for capability in type_bridge_contract::query_plan::query_plan_capability_vocabulary()
+        .iter()
+        .cloned()
+    {
+        capabilities.insert(capability);
+    }
     for capability in BUILTIN_SCHEMA_CAPABILITY_IDS {
         capabilities.insert(CapabilityId::new(*capability)?);
     }
@@ -761,7 +767,7 @@ fn cardinality_transition_safety(from: (u64, Option<u64>), to: (u64, Option<u64>
         SafetyClass::FormalOnly
     } else if interval_contains(to, from) {
         SafetyClass::Additive
-    } else if interval_contains(from, to) {
+    } else if interval_contains(from, to) && to.0 > from.0 {
         SafetyClass::BackfillRequired
     } else {
         SafetyClass::Conditional

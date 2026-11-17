@@ -200,7 +200,7 @@ def _token_package_fencing(expected: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_contract() -> ProjectedParityContract:
-    """Load the Projected subset without finalizing the broader V3 authority."""
+    """Load the Projected subset without finalizing the broader staged authority."""
 
     schema_identity, _ = _source_identity(SCHEMA_RELATIVE, "Projected schema")
     journey_identity, journey_raw = _source_identity(JOURNEY_RELATIVE, "Projected journey")

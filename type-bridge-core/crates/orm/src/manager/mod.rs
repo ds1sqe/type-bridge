@@ -7,8 +7,8 @@
 pub mod dynamic;
 pub mod entity_manager;
 pub mod hydration;
-pub mod query_builder;
 pub mod relation_manager;
+pub(crate) mod returning;
 
 pub use dynamic::{DynamicEntityManager, DynamicRelationManager};
 pub use entity_manager::EntityManager;

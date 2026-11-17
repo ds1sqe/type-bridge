@@ -14,8 +14,8 @@ import pytest
 from type_bridge_core import (
     MatchRequestError,
     MatchSessionHandle,
-    QueryV2Authority,
-    QueryV2Error,
+    PlanAuthority,
+    PlanError,
     canonical_enum_spelling,
 )
 
@@ -78,6 +78,6 @@ def test_unknown_enum_value_is_the_golden_sdk_json() -> None:
 
 
 def test_malformed_schema_authority_is_the_golden_contract_json() -> None:
-    with pytest.raises(QueryV2Error) as raised:
-        QueryV2Authority(b"{", "scope", "profile")
+    with pytest.raises(PlanError) as raised:
+        PlanAuthority(b"{", "scope", "profile")
     assert _form(raised.value, CONTRACT_KEYS) == _expected("contract.malformed_canonical_json")

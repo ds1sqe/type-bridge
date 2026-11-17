@@ -118,6 +118,7 @@ fn backfill_partition_must_be_a_historical_owner_key() {
         TypeId::new(TypeKind::Entity, "person").unwrap(),
         AttributeId::new("legacy-name").unwrap(),
         AttributeId::new("display-name").unwrap(),
+        type_bridge_contract::query_plan::TypeMatchMode::Isa,
         BackfillPartition::new(256, AttributeId::new("person-id").unwrap()).unwrap(),
         semantics,
         Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
@@ -223,6 +224,7 @@ fn migration_v1_adds_tagged_backfill_without_changing_old_step_bytes() {
         TypeId::new(TypeKind::Entity, "person").unwrap(),
         AttributeId::new("legacy-name").unwrap(),
         AttributeId::new("display-name").unwrap(),
+        type_bridge_contract::query_plan::TypeMatchMode::Isa,
         BackfillPartition::new(256, AttributeId::new("person-id").unwrap()).unwrap(),
         semantics,
         Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
@@ -964,5 +966,92 @@ fn reordered_assertions_have_a_stable_plan_mismatch_diagnostic() {
             .code()
             .as_str(),
         "migration_manifest_assertion_plan_mismatch"
+    );
+}
+
+#[test]
+fn backfill_authoring_requires_format_two_and_rejects_exact_abstract_sources() {
+    use type_bridge_contract::query_plan::TypeMatchMode;
+    let parent = TypeId::new(TypeKind::Attribute, "legacy-name").unwrap();
+    let child_attribute = TypeId::new(TypeKind::Attribute, "specialised-name").unwrap();
+    let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+    let employee = TypeId::new(TypeKind::Entity, "employee").unwrap();
+    let mut facts = backfill_declared_with_partition_key(true).facts().filter(|fact| !matches!(fact, SchemaFact::Owns(owns) if owns.id().attribute().label().as_str() == "legacy-name")).cloned().collect::<Vec<_>>();
+    facts.extend([
+        SchemaFact::Type(TypeFact::new(child_attribute.clone()).unwrap()),
+        SchemaFact::Type(TypeFact::new(employee.clone()).unwrap()),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(child_attribute, parent.clone()).unwrap(),
+        )),
+        SchemaFact::Sub(SubFact::new(
+            SubFactId::new(employee.clone(), person.clone()).unwrap(),
+        )),
+        SchemaFact::Owns(OwnsFact::new(
+            OwnsFactId::new(employee, AttributeId::new("specialised-name").unwrap()).unwrap(),
+        )),
+        SchemaFact::Annotation(
+            AnnotationFact::new(
+                AnnotationFactId::new(
+                    AnnotationSubjectId::Type(parent),
+                    AnnotationKindId::Abstract,
+                ),
+                SchemaAnnotationValue::Presence,
+            )
+            .unwrap(),
+        ),
+    ]);
+    let source = declared(facts);
+    let context = context_with_capabilities(
+        [
+            type_bridge_contract::capability::CapabilityId::new(COPY_ATTRIBUTE_BACKFILL_CAPABILITY)
+                .unwrap(),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let semantics = managed_schema_state(&source, &context)
+        .unwrap()
+        .managed_semantic_schema()
+        .clone();
+    let make_draft = |plan| {
+        SchemaMigrationDraft::new(
+            migration_id("0001_copy"),
+            vec![],
+            vec![MigrationStep::backfill(MigrationStepId::new("copy").unwrap(), plan).unwrap()],
+        )
+        .unwrap()
+    };
+    for mode in [TypeMatchMode::Isa, TypeMatchMode::IsaExact] {
+        let plan = AttributeBackfillPlan::new(
+            person.clone(),
+            AttributeId::new("legacy-name").unwrap(),
+            AttributeId::new("display-name").unwrap(),
+            mode,
+            BackfillPartition::new(1, AttributeId::new("person-id").unwrap()).unwrap(),
+            semantics.clone(),
+            Some(BackfillReverseProgram::RemoveEqualCopiedDestination),
+        )
+        .unwrap();
+        let result = build_verified_manifest(make_draft(plan), (&source, &context));
+        if mode == TypeMatchMode::Isa {
+            assert!(result.is_ok(), "{result:?}");
+        } else {
+            assert_eq!(
+                result.unwrap_err().code().as_str(),
+                "query_plan_abstract_exact_ownership"
+            );
+        }
+    }
+    let history: Value = serde_json::from_str(include_str!("../../../../tests/contracts/sdk_conformance/administration/workspace/migrations/v2/0003_backfill-display-name.tbmigration.json")).unwrap();
+    let historical = type_bridge_contract::migration_backfill::decode_attribute_backfill_plan(
+        &to_canonical_json(&history["steps"][0]["plan"]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        build_verified_manifest(make_draft(historical), (&source, &context))
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "migration_backfill_historical_authoring"
     );
 }

@@ -335,6 +335,12 @@ winner requires changes to the server, protocol and driver.
 
 ## Using TypeBridge transactions
 
+Generated Python manager insert, put, update and batch-write adapters currently
+retain the GIL through their provider wait and facade materialization. Other
+Python threads cannot run during that wait. Read and raw-query waits release
+the GIL.
+
+
 A TypeBridge staged transaction runs these recipes from typed plans. Staging
 sends nothing; `commit` opens one TypeDB transaction, runs every staged plan
 in order and commits. A failing plan stops the commit and nothing is stored.
@@ -353,10 +359,9 @@ names the order key `order-id`:
 --8<-- "examples/purchase/python/program.py:purchase"
 ```
 
-The `where_` conditions and the two `let_` values are the `match` stage, the
+The `where` conditions and the two `let` values are the `match` stage, the
 two updates one `update` stage, and the insert the purchase. Each `input`
-column takes one value per given `row`. Python spells `where_` and `let_` to
-avoid its keywords.
+column takes one value per given `row`.
 
 The other SDKs build the same plan bytes; the conformance suite compares
 them byte for byte, directly and over the proxy:
@@ -373,7 +378,7 @@ them byte for byte, directly and over the proxy:
     --8<-- "examples/purchase/rust/main.rs:purchase"
     ```
 
-=== "C (ABI 1.7)"
+=== "C (ABI 2.0)"
 
     ```c
     --8<-- "examples/purchase/c/program.c:purchase"
@@ -404,8 +409,9 @@ provider `code`. Values and the conflicting winner are
 | `CommitOutcomeUnknown` | `code` such as `STC1`, `DCT5` or none; `retry_safe` false | The writes may have applied. Reconcile by the operation key before repeating them. |
 
 `failure.retry_safe` is true for every proven rejection: repeating the whole
-transaction cannot apply it twice. It does not promise that a repeat
-succeeds; only a conflict can change on a new snapshot. A rejection while a
+transaction cannot apply it twice. Safe to retry does not mean likely to
+succeed: deterministic type-inference, validation, and constraint rejections
+fail again unchanged. Conflicts can resolve on a new snapshot. A rejection while a
 plan runs, before commit (`phase` `query`, such as `CNT9` for an already
 visible key), is not one of these classes, but it carries the same
 `.failure`.
@@ -430,14 +436,14 @@ many transactions run at once, is the application's policy.
 
 ### The same names in each SDK
 
-| | Python | TypeScript | Rust | C (ABI 1.7) |
+| | Python | TypeScript | Rust | C (ABI 2.0) |
 | --- | --- | --- | --- | --- |
 | Plan builder | `type_bridge.plan.Plan.builder()` | `Plan.builder()` | `type_bridge::plan::Plan::builder()` | `type_bridge_plan_builder_new`, `type_bridge_plan_builder_*` |
 | Direct transaction | `db.staged_transaction("write")` | `db.stagedTransaction("write")` | `db.transaction(TransactionOptions::default().with_kind(TransactionKind::Write))` | `type_bridge_database_transaction(db, TYPE_BRIDGE_TRANSACTION_WRITE, ...)` |
 | Proxy transaction | `proxy.transaction("write")`, `proxy` from the generated package's `connect_proxy(url)` | `await proxy.transaction("write")`, `proxy` from the generated package's `await connectProxy(url)` | `proxy.transaction(options).await`, `proxy` from `ProxyDatabase::connect` | `type_bridge_proxy_connection_transaction` |
 | Stage, commit | `tx.stage(plan)`, `tx.commit()` | `tx.stage(plan)`, `await tx.commit()` | `tx.stage(&plan)`, `tx.commit().await` | `type_bridge_staged_transaction_stage`, `type_bridge_staged_transaction_commit` |
-| Answer | `pending.result()` | `pending.get()` | `pending.get()` | `type_bridge_pending_answer` |
-| Typed failure | `error.failure` | `QueryV2Error.failure` (`ProviderFailure`) | `CommitError.failure` (`type_bridge::failure::Failure`) | `type_bridge_execution_diagnostics_failure_get_v1` |
+| Answer | `pending.result()` | `pending.result()` | `pending.get()` | `type_bridge_pending_answer` |
+| Typed failure | `error.failure` | `PlanError.failure` (`ProviderFailure`) | `CommitError.failure` (`type_bridge::failure::Failure`) | `type_bridge_execution_diagnostics_failure_get_v1` |
 | Conflict | `CommitConflict` | `failure.reason === "conflict"` | `Failure::Rejected { reason: Reason::Conflict { .. }, .. }` | `reason == TYPE_BRIDGE_FAILURE_REASON_CONFLICT` |
 | Retry safe | `failure.retry_safe` | `failure.retry_safe` | `failure.retry_safe()` | `failure.retry_safe` |
 | Unknown outcome | `CommitOutcomeUnknown`; over the proxy `error.code == "commit_outcome_unknown"` | `error.code === "commit_outcome_unknown"` | `error.diagnostic().code().as_str() == "commit_outcome_unknown"` | `TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN` |

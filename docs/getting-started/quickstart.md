@@ -20,7 +20,7 @@ compatibility:
   semantic-profile: typedb-3.13.6/v1
 
 migrations:
-  directory: migrations/v2
+  directory: migrations
   app-label: quickstart
   destructive: require-approval
 
@@ -147,10 +147,10 @@ session = blocking(Person.query(db))
 person = session.exact(Person)
 employment = session.exact(Employment)
 
-employee = employment.role(Employment.employee).connects(person)
+employee = employment.role(Employment.employee).links(person)
 rows = (
     session.query(person, employment)
-    .where(employee, person.field(Person.age).gte(Age(18)))
+    .where(employee, person.field(Person.age).ge(Age(18)))
     .rows(limit=100)
 )
 ```

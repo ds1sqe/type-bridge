@@ -102,7 +102,7 @@ fn collection_mode_is_content_not_fact_identity_and_unordered_stays_omitted() {
 
 #[test]
 fn legacy_unordered_declared_schema_bytes_and_fingerprint_remain_exact() {
-    let legacy = include_bytes!("../../../../tests/fixtures/query-v2-model-remote-declared.json")
+    let legacy = include_bytes!("../../../../tests/fixtures/query-model-remote-declared.json")
         .strip_suffix(b"\n")
         .unwrap();
     let decoded = decode_declared_schema(legacy).unwrap();
@@ -125,7 +125,7 @@ fn legacy_unordered_declared_schema_bytes_and_fingerprint_remain_exact() {
 
 #[test]
 fn explicit_unordered_declared_wire_is_rejected_as_noncanonical() {
-    let legacy = include_bytes!("../../../../tests/fixtures/query-v2-model-remote-declared.json")
+    let legacy = include_bytes!("../../../../tests/fixtures/query-model-remote-declared.json")
         .strip_suffix(b"\n")
         .unwrap();
     let mut value: Value = serde_json::from_slice(legacy).unwrap();

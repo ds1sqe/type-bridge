@@ -41,10 +41,12 @@ async fn main() {
         &setting("DATABASE"),
         &env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned()),
         &env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned()),
-        ConnectOptions {
-            http_port: http_port(),
-            tls: false,
-            server_version: None,
+        {
+            let mut options = ConnectOptions::default();
+            options.http_port = http_port();
+            options.tls = false;
+            options.server_version = None;
+            options
         },
     )
     .await

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from type_bridge_core import ProxyConnection, PyRustDatabase, QueryV2Authority, query_v2_authority
+from type_bridge_core import PlanAuthority, ProxyConnection, PyDatabase, plan_authority
 
 from type_bridge.plan import Matched, Plan, PlanAnswer
 
@@ -37,16 +37,16 @@ def live() -> dict[str, Any]:
     return json.loads((Path(FIXTURE_DIR) / "fixture.json").read_text())
 
 
-def _connect(database: str) -> PyRustDatabase:
-    return PyRustDatabase.connect(
+def _connect(database: str) -> PyDatabase:
+    return PyDatabase.connect(
         os.environ.get("TYPEDB_ADDRESS", "localhost:1730"),
         database,
         http_port=int(os.environ.get("TYPEDB_HTTP_PORT", "8000")),
     )
 
 
-def _authority(live: dict[str, Any]) -> QueryV2Authority:
-    return query_v2_authority(
+def _authority(live: dict[str, Any]) -> PlanAuthority:
+    return plan_authority(
         bytes.fromhex(live["declared_hex"]), live["proxies"]["purchase"]["scope"], live["profile"]
     )
 
@@ -75,7 +75,7 @@ def _role(owner: type[Any], label: str) -> _Token:
     return _Token(owner, {"role": {"declaring_relation": "purchase", "label": label}})
 
 
-def _purchase(authority: QueryV2Authority, order: str) -> Plan:
+def _purchase(authority: PlanAuthority, order: str) -> Plan:
     plan = Plan.builder()
     item = plan.exact(Item)
     buyer = plan.exact(Account)
@@ -87,10 +87,10 @@ def _purchase(authority: QueryV2Authority, order: str) -> Plan:
     stock = plan.field(item, _field(Item, "stock"))
     price = plan.field(item, _field(Item, "price"))
     balance = plan.field(buyer, _field(Account, "balance"))
-    plan.where_(item_key.eq(item_input)).where_(buyer_key.eq(account_input))
-    plan.where_(stock.gt(0)).where_(balance.ge(price))
-    plan.update(item, _field(Item, "stock"), plan.let_("next_stock", stock - 1))
-    plan.update(buyer, _field(Account, "balance"), plan.let_("next_balance", balance - price))
+    plan.where(item_key.eq(item_input)).where(buyer_key.eq(account_input))
+    plan.where(stock.gt(0)).where(balance.ge(price))
+    plan.update(item, _field(Item, "stock"), plan.let("next_stock", stock - 1))
+    plan.update(buyer, _field(Account, "balance"), plan.let("next_balance", balance - price))
     (
         plan.insert(Purchase)
         .field(_field(Purchase, "order-id"), order_input)

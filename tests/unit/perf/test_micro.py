@@ -162,7 +162,6 @@ def test_cli_adds_python_binding_metrics(
     assert [(metric["id"], metric["family"]) for metric in document["metrics"]] == [
         ("micro.core.validate_type_name.simple.instructions", "micro"),
         ("micro.orm.serde_attribute_value.string_roundtrip.instructions", "micro"),
-        ("binding.python.compilation.compile_simple_match", "binding"),
         ("binding.python.validation.validate_single_name", "binding"),
     ]
 

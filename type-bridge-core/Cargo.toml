@@ -12,7 +12,6 @@ members = [
     "crates/cli",
     "crates/c",
     "crates/core",
-    "crates/migration",
     "crates/python",
     "crates/server",
     "crates/typedb-runtime",
@@ -20,11 +19,8 @@ members = [
     "crates/orm-derive",
     "crates/node",
     "crates/rust",
-    "crates/toml-transpiler",
     "crates/perf",
     "crates/perf-stages",
-    "vendor/typedb-protocol-b8",
-    "vendor/typedb-driver-b8",
 ]
 exclude = [
     "vendor/typedb-protocol-b9",
@@ -41,4 +37,4 @@ authors = ["ds1sqe"]
 typeql = "=3.14.0"
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)', 'cfg(coverage)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)', 'cfg(coverage)', 'cfg(type_bridge_test_plan_capture)'] }

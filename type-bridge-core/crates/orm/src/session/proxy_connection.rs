@@ -1,7 +1,7 @@
 //! Built-in HTTP transport for a proxy connection.
 //!
-//! Every binding reaches the standalone server's `/v2/capabilities` and
-//! `/v2/query` routes through this one transport. Callers with their own
+//! Every binding reaches the standalone server's `/v3/capabilities` and
+//! `/v3/staged` routes through this one transport. Callers with their own
 //! route or authentication keep supplying an exchange instead.
 
 use std::fmt;
@@ -98,32 +98,39 @@ impl ProxyHttpTransport {
         })
     }
 
-    /// Fetch the executor's exact capability advertisement.
-    ///
-    /// # Errors
-    ///
-    /// Returns the cancellation or deadline diagnostic, or a provider failure
-    /// when the route cannot be reached or does not answer 200.
-    pub async fn capabilities(
-        &self,
-        deadline: QueryExecutionDeadline,
-        cancellation: &AnswerCancellation,
-    ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
+    /// Create the unchecked exchange used by a single-query raw context.
+    /// It shares endpoint trust and headers, without staged query bounds.
+    pub fn raw_exchange(&self, kind: super::backend::TxType) -> super::raw::RawExchangeFn {
         let client = Arc::clone(&self.client);
-        run(
-            deadline,
-            cancellation,
-            SdkProviderOperation::Connect,
-            move |timeout| client.capabilities(timeout, MAX_REMOTE_ENVELOPE_BYTES),
-        )
-        .await
+        Arc::new(move |request| {
+            let client = Arc::clone(&client);
+            Box::pin(async move {
+                let response =
+                    tokio::task::spawn_blocking(move || client.exchange_raw(&request)).await;
+                match response {
+                    Ok(Ok(response)) => super::raw::proxy_answer(response, kind),
+                    _ => {
+                        let mut error = super::raw::RawQueryError::refusal(
+                            "raw_proxy_transport_failed",
+                            "the raw proxy exchange failed",
+                        );
+                        error.status = 503;
+                        Err(if kind == super::backend::TxType::Read {
+                            error
+                        } else {
+                            error.unknown()
+                        })
+                    }
+                }
+            })
+        })
     }
 
     /// Fetch the executor's staged (`query-remote/v3`) advertisement.
     ///
     /// # Errors
     ///
-    /// As [`Self::capabilities`].
+    /// Returns cancellation, deadline, transport, or non-200 status errors.
     pub async fn staged_capabilities(
         &self,
         deadline: QueryExecutionDeadline,
@@ -143,7 +150,7 @@ impl ProxyHttpTransport {
     ///
     /// # Errors
     ///
-    /// As [`Self::exchange`]; the provider operation is `write`.
+    /// Returns cancellation, deadline, size, or provider errors for `write`.
     pub async fn exchange_staged(
         &self,
         request: Vec<u8>,
@@ -160,31 +167,6 @@ impl ProxyHttpTransport {
         )
         .await
     }
-
-    /// Send one canonical request and return the exact reply bytes, at most
-    /// `max_bytes` of them.
-    ///
-    /// # Errors
-    ///
-    /// Returns the cancellation or deadline diagnostic, a resource-limit
-    /// diagnostic for a reply over `max_bytes`, or a provider failure when the
-    /// route cannot be reached or does not answer 200.
-    pub async fn exchange(
-        &self,
-        request: Vec<u8>,
-        max_bytes: usize,
-        deadline: QueryExecutionDeadline,
-        cancellation: &AnswerCancellation,
-    ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
-        let client = Arc::clone(&self.client);
-        run(
-            deadline,
-            cancellation,
-            SdkProviderOperation::Read,
-            move |timeout| client.exchange(&request, timeout, max_bytes),
-        )
-        .await
-    }
 }
 
 const BLOCKING_GRACE: Duration = Duration::from_secs(1);
@@ -193,28 +175,35 @@ async fn run(
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
     operation: SdkProviderOperation,
-    call: impl FnOnce(Duration) -> Result<Vec<u8>, ProxyHttpError> + Send + 'static,
+    call: impl FnOnce(Option<Duration>) -> Result<Vec<u8>, ProxyHttpError> + Send + 'static,
 ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
-    deadline.check(cancellation)?;
-    // The blocking call gets the remaining budget, plus a grace period so the
-    // deadline below always fires first and reports the interruption, as its
-    // own timeout: the worker thread does not outlive an abandoned
-    // invocation by long.
-    let timeout = Duration::from_millis(deadline.remaining_milliseconds()) + BLOCKING_GRACE;
-    let blocking = tokio::task::spawn_blocking(move || call(timeout));
+    bounded_exchange(deadline, cancellation, async move {
+        // The blocking worker gets a grace period; the invocation deadline wins.
+        let timeout = deadline
+            .remaining_milliseconds()
+            .map(|remaining| Duration::from_millis(remaining).saturating_add(BLOCKING_GRACE));
+        match tokio::task::spawn_blocking(move || call(timeout)).await {
+            Ok(result) => result.map_err(|error| lower(error, operation)),
+            Err(_) => Err(SdkExecutionDiagnostic::internal_failure()),
+        }
+    })
+    .await
+}
+
+pub(crate) async fn bounded_exchange<E: From<SdkExecutionDiagnostic>>(
+    deadline: QueryExecutionDeadline,
+    cancellation: &AnswerCancellation,
+    exchange: impl std::future::Future<Output = Result<Vec<u8>, E>>,
+) -> Result<Vec<u8>, E> {
+    deadline.check(cancellation).map_err(E::from)?;
     let result = tokio::select! {
         biased;
         () = cancellation.cancelled() => None,
-        () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline.instant())) => None,
-        joined = blocking => Some(joined),
+        () = deadline.elapsed() => None,
+        result = exchange => Some(result),
     };
-    deadline.check(cancellation)?;
-    match result {
-        Some(Ok(result)) => result.map_err(|error| lower(error, operation)),
-        Some(Err(_)) => Err(SdkExecutionDiagnostic::internal_failure()),
-        // Unreachable: the check above reports the interruption.
-        None => Err(SdkExecutionDiagnostic::internal_failure()),
-    }
+    deadline.check(cancellation).map_err(E::from)?;
+    result.unwrap_or_else(|| Err(SdkExecutionDiagnostic::internal_failure().into()))
 }
 
 fn lower(error: ProxyHttpError, operation: SdkProviderOperation) -> SdkExecutionDiagnostic {
@@ -260,7 +249,7 @@ mod tests {
 
     fn deadline(milliseconds: u64) -> QueryExecutionDeadline {
         QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits {
-            timeout_milliseconds: milliseconds,
+            timeout_milliseconds: crate::QueryTimeout::from_milliseconds(milliseconds),
             ..QueryExecutionResourceLimits::default()
         })
     }
@@ -293,7 +282,7 @@ mod tests {
         let transport = ProxyHttpTransport::open(&endpoint).unwrap();
 
         let error = transport
-            .exchange(
+            .exchange_staged(
                 b"{}".to_vec(),
                 64,
                 deadline(50),
@@ -310,7 +299,7 @@ mod tests {
             cancel.cancel();
         });
         let error = transport
-            .capabilities(deadline(30_000), &cancellation)
+            .staged_capabilities(deadline(30_000), &cancellation)
             .await
             .unwrap_err();
         assert_eq!(error.code().as_str(), "provider_cancelled");
@@ -325,7 +314,7 @@ mod tests {
         let transport =
             ProxyHttpTransport::open(&ProxyEndpoint::new(format!("http://{address}"))).unwrap();
         let error = transport
-            .capabilities(deadline(30_000), &AnswerCancellation::default())
+            .staged_capabilities(deadline(30_000), &AnswerCancellation::default())
             .await
             .unwrap_err();
         assert_eq!(error.code().as_str(), "provider_operation_failed");

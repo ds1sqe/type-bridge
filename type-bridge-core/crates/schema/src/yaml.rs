@@ -80,7 +80,7 @@ pub(crate) fn parse_document_with_limits(
         let source_span = source_span(&id, &span)?;
 
         match event {
-            Event::Nothing | Event::StreamStart | Event::StreamEnd | Event::DocumentEnd => {}
+            Event::StreamStart | Event::StreamEnd | Event::DocumentEnd => {}
             Event::DocumentStart(_, version) => {
                 document_count += 1;
                 if document_count > 1 {
@@ -146,6 +146,15 @@ pub(crate) fn parse_document_with_limits(
                 });
             }
             Event::MappingEnd => structural.push(StructuralEvent::MappingEnd(source_span)),
+            // Event is non-exhaustive; an event this parser does not model must not be skipped.
+            _ => {
+                return Err(diagnostic(
+                    DiagnosticCategory::InvalidContract,
+                    "yaml_event_not_supported",
+                    "the YAML source contains a construct schema documents do not support",
+                    Some(source_span),
+                ));
+            }
         }
     }
 
@@ -474,7 +483,8 @@ fn comment_placement(placement: Placement) -> CommentPlacement {
     match placement {
         Placement::Above => CommentPlacement::Above,
         Placement::Right => CommentPlacement::Right,
-        Placement::Free => CommentPlacement::Free,
         Placement::Last => CommentPlacement::Last,
+        // Placement is non-exhaustive; an unknown kind has no obvious neighbour.
+        _ => CommentPlacement::Free,
     }
 }

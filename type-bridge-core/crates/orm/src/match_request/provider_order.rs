@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
-use super::ids::FieldId;
-use super::model::{FetchShape, FetchSlot, MatchOperation, MissingOrder};
+use super::ids::{BoundFieldId, FieldId};
+use super::model::{FetchShape, FetchSlot, MatchExpr, MatchOperation, MissingOrder};
 use super::validation::{StableOrderSpec, ValidatedMatchRequest};
 use crate::_descriptor::{OwnedAttributeDescriptor, TypeDescriptorRef};
 use crate::_registry::DescriptorRegistry;
@@ -12,8 +12,8 @@ use crate::_registry::DescriptorRegistry;
 /// Refuse an order the provider statement cannot express.
 ///
 /// The provider windows by sorting, and a sort has no place for a root whose
-/// order field is absent. So a window cannot be ordered by a nullable field,
-/// and missing values cannot be placed first or last. Row, page-root, and
+/// order field is absent. A nullable field therefore needs a predicate that
+/// guarantees its presence; missing values cannot be placed first or last. Row, page-root, and
 /// collection orders are checked in that sequence, so the first offending
 /// term is the one reported.
 pub(crate) fn check_provider_orders(
@@ -21,9 +21,17 @@ pub(crate) fn check_provider_orders(
     validated: &ValidatedMatchRequest,
 ) -> Result<(), MatchError> {
     match &validated.request().operation {
-        MatchOperation::FetchRows { .. } => check_order(registry, validated.stable_order()),
+        MatchOperation::FetchRows { .. } => check_order(
+            registry,
+            validated.stable_order(),
+            validated.request().plan.predicate.as_ref(),
+        ),
         MatchOperation::PageBy { output, .. } => {
-            check_order(registry, validated.stable_order())?;
+            check_order(
+                registry,
+                validated.stable_order(),
+                validated.request().plan.predicate.as_ref(),
+            )?;
             let collected: BTreeSet<_> = output_slots(output)
                 .filter_map(|slot| match slot {
                     FetchSlot::Collect { binding, .. } => Some(*binding),
@@ -32,7 +40,7 @@ pub(crate) fn check_provider_orders(
                 .collect();
             for binding in collected {
                 if let Some(order) = validated.collection_order(binding) {
-                    check_order(registry, order)?;
+                    check_order(registry, order, validated.request().plan.predicate.as_ref())?;
                 }
             }
             Ok(())
@@ -45,7 +53,11 @@ pub(crate) fn check_provider_orders(
     }
 }
 
-fn check_order(registry: &DescriptorRegistry, order: &StableOrderSpec) -> Result<(), MatchError> {
+fn check_order(
+    registry: &DescriptorRegistry,
+    order: &StableOrderSpec,
+    predicate: Option<&MatchExpr>,
+) -> Result<(), MatchError> {
     for term in order.terms() {
         let order = term.order();
         let attribute = owned_attribute(registry, &order.field.field)?;
@@ -53,7 +65,9 @@ fn check_order(registry: &DescriptorRegistry, order: &StableOrderSpec) -> Result
             && attribute
                 .cardinality()
                 .is_none_or(|(minimum, maximum)| minimum >= 1 && maximum == Some(1));
-        if !is_required_scalar {
+        if !is_required_scalar
+            && !predicate.is_some_and(|predicate| requires_field(predicate, &order.field))
+        {
             return Err(MatchError::new(
                 MatchErrorCategory::UnsupportedCapability,
                 "nullable_order_field_unsupported",
@@ -71,6 +85,24 @@ fn check_order(registry: &DescriptorRegistry, order: &StableOrderSpec) -> Result
         }
     }
     Ok(())
+}
+
+fn requires_field(predicate: &MatchExpr, field: &BoundFieldId) -> bool {
+    match predicate {
+        MatchExpr::FieldPresence {
+            field: present,
+            present: true,
+        }
+        | MatchExpr::FieldValue { field: present, .. } => present == field,
+        MatchExpr::FieldComparison { left, right, .. } => left == field || right == field,
+        MatchExpr::And { expressions } => {
+            expressions.iter().any(|term| requires_field(term, field))
+        }
+        MatchExpr::Or { expressions } => {
+            !expressions.is_empty() && expressions.iter().all(|term| requires_field(term, field))
+        }
+        _ => false,
+    }
 }
 
 fn owned_attribute(
@@ -209,6 +241,42 @@ mod tests {
             error.path().segments(),
             [MatchErrorPathSegment::Field(field)] if field.name == "nickname"
         ));
+    }
+
+    #[test]
+    fn nullable_sort_requires_presence_in_every_matching_branch() {
+        let registry = registry();
+        let session = SessionHandle::new(Arc::clone(&registry));
+        let person = session.exact("person").unwrap();
+        let nickname = person.field("nickname").unwrap();
+        let present = nickname.presence(true);
+        let absent = nickname.presence(false);
+        let name = person.field("name").unwrap().presence(true);
+        for (predicate, admitted) in [
+            (present.clone(), true),
+            (present.and(&name).unwrap(), true),
+            (present.or(&present.and(&name).unwrap()).unwrap(), true),
+            (present.or(&name).unwrap(), false),
+            (absent, false),
+            (present.not(), false),
+        ] {
+            let query = session
+                .query(session.positional([person.one()]).unwrap())
+                .unwrap()
+                .where_predicate(predicate)
+                .unwrap();
+            let request = query
+                .validate_fetch_rows(
+                    &[nickname.order(SortDirection::Ascending, MissingOrder::Reject)],
+                    Window {
+                        offset: 0,
+                        limit: 10,
+                    },
+                    RowCardinality::BoundedMany,
+                )
+                .unwrap();
+            assert_eq!(check_provider_orders(&registry, &request).is_ok(), admitted);
+        }
     }
 
     #[test]

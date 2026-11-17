@@ -18,7 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from type_bridge_core import PyRustDatabase
+from type_bridge_core import PyDatabase
 
 from type_bridge.failure import CommitConflict, CommitOutcomeUnknown, CommitRejected
 
@@ -67,7 +67,7 @@ def _export_declared(directory: Path) -> bytes:
 @pytest.fixture(scope="module")
 def base(tmp_path_factory: pytest.TempPathFactory) -> Target:
     assert ADDRESS is not None and HTTP_PORT is not None
-    probe = PyRustDatabase.connect(ADDRESS, "tb_race_probe", http_port=int(HTTP_PORT))
+    probe = PyDatabase.connect(ADDRESS, "tb_race_probe", http_port=int(HTTP_PORT))
     try:
         version = probe.server_version() or ""
     finally:
@@ -78,13 +78,67 @@ def base(tmp_path_factory: pytest.TempPathFactory) -> Target:
     return Target(ADDRESS, int(HTTP_PORT), "", declared, PROFILE)
 
 
+@pytest.fixture(scope="module")
+def manager_stage(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    directory = tmp_path_factory.mktemp("race-models")
+    workspace = directory / "workspace"
+    shutil.copytree(driver.WORKSPACE, workspace)
+    manifest = workspace / "typebridge.yaml"
+    manifest.write_text(
+        manifest.read_text() + "\nbindings:\n  python:\n    output: generated/race_models\n"
+    )
+    cli = os.environ.get("TB_RACE_CLI")
+    command = (
+        [cli]
+        if cli
+        else [
+            "cargo",
+            "run",
+            "--quiet",
+            "--locked",
+            "--manifest-path",
+            str(ROOT / "type-bridge-core/Cargo.toml"),
+            "-p",
+            "type-bridge-cli",
+            "--",
+        ]
+    )
+    subprocess.run([*command, "schema", "generate"], cwd=workspace, check=True)
+    return workspace / "generated"
+
+
+@pytest.mark.parametrize(
+    "mode", ["raw-transaction", "manager-transaction", "manager-explicit", "manager-owned"]
+)
+def test_ordinary_commit_conflicts_keep_the_commit_exception(
+    base: Target, manager_stage: Path, mode: str
+) -> None:
+    tallies = []
+    for number in range(driver.rounds(os.environ)):
+        target = driver.fresh_database(
+            base, mode, ['insert $i isa item, has item-id "I1", has stock 1, has price 40;']
+        )
+        try:
+            outcomes = driver.race(target, mode, manager_stage=manager_stage)
+            tally = driver.tally(outcomes)
+            print(f"{mode} round {number}: {dict(tally)} {outcomes}")
+            assert any(outcome.kind == "committed" for outcome in outcomes), outcomes
+            for outcome in outcomes:
+                if outcome.kind != "committed":
+                    _assert_conflict(outcome)
+            tallies.append(tally)
+        finally:
+            driver.drop_database(target)
+    _contended(tallies, "conflict:STC2")
+
+
 Check = Callable[[list[Outcome], dict[str, int]], None]
 
 
 def _rounds(
     base: Target,
     scenario: str,
-    state: dict[str, Callable[[driver.QueryV2Authority], driver.Plan]],
+    state: dict[str, Callable[[driver.PlanAuthority], driver.Plan]],
     check: Check,
 ) -> list[Counter[str]]:
     """Race `scenario` for every round; check each round; return the tallies."""
@@ -139,7 +193,7 @@ def test_purchase_sells_each_unit_once(base: Target) -> None:
     _contended(tallies, "conflict:STC2")
 
 
-ON_CALL: dict[str, Callable[[driver.QueryV2Authority], driver.Plan]] = {
+ON_CALL: dict[str, Callable[[driver.PlanAuthority], driver.Plan]] = {
     "on_call": lambda a: driver.count_of(a, driver.Doctor, on_call=True),
 }
 

@@ -1,12 +1,14 @@
 //! Shared transaction context for grouping multiple operations.
 
+use std::future::{Future, poll_fn};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::backend::{
-    AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,
-    QueryV2AnswerLimits, TransactionOps, TxType,
+    AnswerConsumer, AnswerLimits, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec,
+    QueryResult, TransactionOps, TxType,
 };
 use super::database::DatabaseExecutionIdentity;
 use crate::_registry::DescriptorRegistry;
@@ -19,10 +21,22 @@ use crate::match_request::{
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
 };
-use type_bridge_core_lib::ast::{
-    TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
-};
 use type_bridge_core_lib::version::Version;
+
+pub(crate) fn ensure_transaction_can_execute(active: TxType, required: TxType) -> Result<()> {
+    let allowed = match required {
+        TxType::Read => matches!(active, TxType::Read | TxType::Write),
+        TxType::Write => active == TxType::Write,
+        TxType::Schema => active == TxType::Schema,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(OrmError::Transaction(format!(
+            "Cannot execute {required:?} operation in {active:?} transaction"
+        )))
+    }
+}
 
 /// Binding-neutral lifecycle state shared by every clone of a transaction context.
 #[doc(hidden)]
@@ -78,12 +92,14 @@ struct TransactionContextInner {
 /// transaction. Call [`commit`](Self::commit) once when all operations
 /// are complete.
 pub struct TransactionContext {
+    owns_lifecycle: bool,
     inner: Arc<Mutex<TransactionContextInner>>,
     tx_type: TxType,
     match_capabilities: CapabilitySet,
     server_version: Option<Version>,
     execution_identity: DatabaseExecutionIdentity,
     answer_limits: Option<QueryExecutionResourceLimits>,
+    query_limits: Option<Arc<type_bridge_contract::limits::QueryLimits>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,60 +113,131 @@ enum MutationLeasePhase {
 ///
 /// Holding the owned guard keeps ordinary queries and lifecycle transitions on
 /// every context clone behind the same mutex for the whole multi-statement
-/// operation. The type deliberately has no public re-export: the first and
-/// only consumer is the common projected batch executor.
+/// operation. The type deliberately has no public re-export: its
+/// consumers are the common projected batch executor and snapshot deletion.
 pub(crate) struct TransactionContextMutationLease {
     inner: OwnedMutexGuard<TransactionContextInner>,
     phase: MutationLeasePhase,
     exact_failure: Option<SdkExecutionDiagnostic>,
+    server_version: Option<Version>,
 }
 
 impl TransactionContextMutationLease {
+    pub(crate) fn prepare_plan(
+        &self,
+        plan: &type_bridge_contract::query_plan::QueryPlan,
+    ) -> Result<super::staged::StagedQuery> {
+        self.check_plan_provider(plan)?;
+        let given = self.server_version.is_some_and(|version| {
+            type_bridge_core_lib::version::check_feature_supported(
+                type_bridge_core_lib::version::Feature::GivenStage,
+                &version,
+            )
+            .is_ok()
+        }) && active_transaction_ref(&self.inner)?.supports_given_rows();
+        if given {
+            crate::query_plan_exec::staged_query(plan, true)
+        } else {
+            crate::query_plan_exec::staged_literal_query(plan)
+        }
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)
+    }
+
+    pub(crate) fn check_plan_provider(
+        &self,
+        plan: &type_bridge_contract::query_plan::QueryPlan,
+    ) -> Result<()> {
+        crate::query_plan_exec::check_provider(plan, self.server_version)
+            .map_err(crate::query_plan_exec::plan_diagnostic_error)
+    }
+
     fn transaction(&mut self) -> Result<&mut (dyn TransactionOps + 'static)> {
         active_transaction(&mut self.inner)
     }
 
-    /// Execute a bounded scalar-`given` prerequisite while retaining the
-    /// exclusive lifecycle fence. This does not arm rollback-only because no
-    /// mutation has yet been dispatched.
-    pub(crate) async fn query_v2_with_rows_bounded(
+    /// Execute the shared capture/delete program without releasing lifecycle ownership.
+    pub(crate) async fn dispatch_plan_counted(
         &mut self,
-        typeql: &str,
-        rows: GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        if self.phase != MutationLeasePhase::PreDispatch {
-            return Err(OrmError::Transaction(
-                "Mutation prerequisites must precede mutation dispatch".into(),
-            ));
+        query: super::staged::StagedQuery,
+        limits: AnswerLimits,
+        validation: Option<&type_bridge_contract::query_plan::QueryPlan>,
+    ) -> Result<(QueryResult, BoundedAnswerStats)> {
+        if query.writes {
+            if self.phase == MutationLeasePhase::Finished {
+                return Err(OrmError::Transaction(
+                    "Completed mutation lease cannot dispatch provider work".into(),
+                ));
+            }
+            self.phase = MutationLeasePhase::PossibleEffect;
         }
-        self.transaction()?
-            .query_v2_with_rows_bounded(typeql, rows, limits, consumer)
-            .await
+        let bounds = limits.answer.clone();
+        super::staged::bounded(
+            &bounds,
+            query.execute_counted(self.transaction()?, limits, validation),
+        )
+        .await
     }
 
-    /// Arm the cancellation-safe poison latch synchronously, then dispatch one
-    /// bounded mutation. Every later provider call remains inside the armed
-    /// lease through complete hydration and output construction.
-    pub(crate) async fn mutate_v2_with_rows_bounded(
+    /// Capture a polymorphic model stack under the same deletion snapshot.
+    pub(crate) async fn execute_plans(
         &mut self,
-        typeql: &str,
-        rows: GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
+        policy: QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+        queries: Option<Vec<super::staged::StagedQuery>>,
+    ) -> Result<(Vec<super::staged::PlanAnswer>, BoundedAnswerStats)> {
+        if self.phase != MutationLeasePhase::PreDispatch {
+            return Err(OrmError::Transaction(
+                "Deletion capture must precede mutation".into(),
+            ));
+        }
+        for plan in plans {
+            crate::query_plan_exec::check_provider(plan, self.server_version)
+                .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+        }
+        let supports_given = self.transaction()?.supports_given_rows();
+        crate::query_plan_exec::execute_plans_counted::<false>(
+            self.transaction()?,
+            supports_given,
+            plans,
+            policy,
+            cancellation,
+            deadline,
+            queries,
+        )
+        .await
+    }
+
+    /// Stream one prepared native batch plan while retaining the mutation fence.
+    pub(crate) async fn dispatch_plan_bounded(
+        &mut self,
+        query: super::staged::StagedQuery,
+        limits: AnswerLimits,
         consumer: &mut dyn AnswerConsumer,
     ) -> Result<BoundedAnswerStats> {
+        if query.snapshot.is_some() {
+            return Err(OrmError::Transaction(
+                "Streaming snapshots use a separate read plan".into(),
+            ));
+        }
         if self.phase == MutationLeasePhase::Finished {
             return Err(OrmError::Transaction(
                 "Completed mutation lease cannot dispatch provider work".into(),
             ));
         }
-        if self.phase == MutationLeasePhase::PreDispatch {
+        if query.writes {
             self.phase = MutationLeasePhase::PossibleEffect;
         }
-        self.transaction()?
-            .query_v2_with_rows_bounded(typeql, rows, limits, consumer)
-            .await
+        let tx = self.transaction()?;
+        tracing::trace!(target: "type_bridge.io", statement = query.redacted_typeql.as_deref().unwrap_or(&query.typeql), "type_bridge.io.provider.statement");
+        match query.rows {
+            Some(rows) => {
+                tx.query_plan_with_rows_bounded(&query.typeql, rows, limits, consumer)
+                    .await
+            }
+            None => tx.query_plan_bounded(&query.typeql, limits, consumer).await,
+        }
     }
 
     /// Retain the first exact redacted failure observed after mutation became
@@ -184,6 +271,85 @@ impl Drop for TransactionContextMutationLease {
 }
 
 impl TransactionContext {
+    fn require_lifecycle_owner(&self) -> Result<()> {
+        if self.owns_lifecycle {
+            Ok(())
+        } else {
+            Err(OrmError::Transaction("Migration callbacks borrow transaction execution; the engine owns commit, rollback and close".into()))
+        }
+    }
+
+    pub(crate) fn is_scoped_borrow(&self) -> bool {
+        !self.owns_lifecycle
+    }
+
+    pub(crate) fn borrowed(mut self) -> Self {
+        self.owns_lifecycle = false;
+        self
+    }
+
+    pub(crate) async fn detach_borrowed(&self) -> Result<super::eager::EagerTransaction> {
+        let mut inner = self.inner.lock().await;
+        let active = inner.state == TransactionContextState::Active;
+        inner.state = TransactionContextState::Closed;
+        let mut transaction = inner.transaction.take().ok_or_else(consumed_error)?;
+        if !active {
+            transaction.close().await?;
+            return Err(OrmError::Transaction(
+                "Migration callback transaction is rollback-only".into(),
+            ));
+        }
+        Ok(transaction)
+    }
+
+    pub(crate) fn detach_borrowed_now(&self) -> Option<super::eager::EagerTransaction> {
+        let mut inner = self.inner.try_lock().ok()?;
+        inner.state = TransactionContextState::Closed;
+        inner.transaction.take()
+    }
+
+    pub(crate) fn abandon_borrowed(&self) {
+        let inner = Arc::clone(&self.inner);
+        // Invalidate escaped handles immediately when no operation owns the
+        // mutex. Otherwise close after that operation releases its lease.
+        let transaction = match inner.try_lock() {
+            Ok(mut state) => {
+                state.state = TransactionContextState::Closed;
+                Some(state.transaction.take())
+            }
+            Err(_) => None,
+        };
+        let close = async move {
+            let transaction = match transaction {
+                Some(transaction) => transaction,
+                None => {
+                    let mut state = inner.lock().await;
+                    state.state = TransactionContextState::Closed;
+                    state.transaction.take()
+                }
+            };
+            if let Some(mut transaction) = transaction {
+                let _ = transaction.close().await;
+            }
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(close);
+        } else {
+            // Drop never waits for an operation holding the context mutex or
+            // for provider cleanup, even outside a Tokio runtime.
+            if let Err(error) = std::thread::Builder::new()
+                .name("migration-transaction-close".into())
+                .spawn(move || match tokio::runtime::Builder::new_current_thread()
+                    .enable_all().build() {
+                    Ok(runtime) => runtime.block_on(close),
+                    Err(error) => tracing::error!(%error, "could not run abandoned migration transaction cleanup"),
+                })
+            {
+                tracing::error!(%error, "could not spawn abandoned migration transaction cleanup");
+            }
+        }
+    }
+
     pub(crate) fn new(
         inner: super::eager::EagerTransaction,
         tx_type: TxType,
@@ -193,6 +359,7 @@ impl TransactionContext {
         answer_limits: Option<QueryExecutionResourceLimits>,
     ) -> Self {
         Self {
+            owns_lifecycle: true,
             inner: Arc::new(Mutex::new(TransactionContextInner {
                 transaction: Some(inner),
                 state: TransactionContextState::Active,
@@ -203,7 +370,31 @@ impl TransactionContext {
             server_version,
             execution_identity,
             answer_limits,
+            query_limits: None,
         }
+    }
+
+    pub(super) fn with_query_limits(
+        mut self,
+        limits: Option<Arc<type_bridge_contract::limits::QueryLimits>>,
+    ) -> Self {
+        self.query_limits = limits;
+        self
+    }
+
+    /// Immutable query policy inherited from the connection.
+    #[must_use]
+    pub fn query_limits(&self) -> type_bridge_contract::limits::QueryLimits {
+        self.query_limits
+            .as_deref()
+            .copied()
+            .unwrap_or(type_bridge_contract::limits::QueryLimits::PLAN)
+    }
+
+    pub(crate) fn shared_query_limits(
+        &self,
+    ) -> Option<&Arc<type_bridge_contract::limits::QueryLimits>> {
+        self.query_limits.as_ref()
     }
 
     pub(crate) const fn execution_identity(&self) -> &DatabaseExecutionIdentity {
@@ -235,6 +426,7 @@ impl TransactionContext {
             inner,
             phase: MutationLeasePhase::PreDispatch,
             exact_failure: None,
+            server_version: self.server_version,
         })
     }
 
@@ -274,36 +466,48 @@ impl TransactionContext {
         tx.query(typeql).await
     }
 
-    /// Execute a canonical provider-answer query for binding-neutral CRUD.
-    #[doc(hidden)]
-    pub(crate) async fn query_canonical(&self, typeql: &str) -> Result<QueryResult> {
-        self.check_schema_annotation_support(typeql)?;
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.query_canonical(typeql).await
-    }
-
-    /// Execute one canonical V2 provider-answer query through the bounded
-    /// streaming seam without consuming this transaction context.
-    ///
-    /// This is the read-only counterpart to the bounded methods on
-    /// [`TransactionContextMutationLease`]. The caller owns the absolute
-    /// deadline and cancellation token and must retain any cumulative
-    /// statement/output accounting around this single provider call.
-    #[doc(hidden)]
-    pub(crate) async fn query_v2_bounded(
+    /// Execute raw TypeQL on this exact transaction and return the ordinary
+    /// raw API's encoded JSON answer. This never changes lifecycle ownership.
+    pub async fn execute_query(
         &self,
         typeql: &str,
-        limits: QueryV2AnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.check_schema_annotation_support(typeql)?;
+    ) -> std::result::Result<Vec<u8>, super::raw::RawQueryError> {
         let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.query_v2_bounded(typeql, limits, consumer).await
+        let tx = active_transaction(&mut guard).map_err(|_| {
+            super::raw::RawQueryError::refusal(
+                "raw_transaction_closed",
+                "transaction is no longer available for raw execution",
+            )
+        })?;
+        tx.query_raw(typeql).await
     }
 
-    /// Lower one trusted v3 plan for this transaction without dispatching
+    /// Stream a prepared read while preserving the caller's transaction lifecycle.
+    pub(crate) async fn dispatch_read_plan_bounded(
+        &self,
+        query: &super::staged::StagedQuery,
+        limits: AnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        if query.writes || query.snapshot.is_some() {
+            return Err(OrmError::Transaction(
+                "Bounded reads cannot dispatch writes or snapshots".into(),
+            ));
+        }
+        self.check_schema_annotation_support(&query.typeql)?;
+        let mut guard = self.inner.lock().await;
+        let tx = active_transaction(&mut guard)?;
+        tracing::trace!(target: "type_bridge.io", statement = query.redacted_typeql.as_deref().unwrap_or(&query.typeql), "type_bridge.io.provider.statement");
+        match query.rows.as_ref() {
+            Some(rows) => {
+                tx.query_plan_with_rows_bounded(&query.typeql, rows.clone(), limits, consumer)
+                    .await
+            }
+            None => tx.query_plan_bounded(&query.typeql, limits, consumer).await,
+        }
+    }
+
+    /// Lower one trusted plan for this transaction without dispatching
     /// it. A failure here means nothing reached the provider.
     ///
     /// Helpers that still run inside an eager transaction use this and
@@ -312,11 +516,17 @@ impl TransactionContext {
     /// without the `given` stage.
     pub(crate) async fn prepare_plan(
         &self,
-        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+        plan: &type_bridge_contract::query_plan::QueryPlan,
     ) -> Result<crate::session::staged::StagedQuery> {
-        let supports_given = self.supports_given_stage().await?;
-        let query = crate::query_plan_exec::staged_query(plan, supports_given)
+        crate::query_plan_exec::check_provider(plan, self.server_version)
             .map_err(plan_diagnostic_error)?;
+        let supports_given = self.supports_given_stage().await?;
+        let query = if supports_given {
+            crate::query_plan_exec::staged_query(plan, true)
+        } else {
+            crate::query_plan_exec::staged_literal_query(plan)
+        }
+        .map_err(plan_diagnostic_error)?;
         self.check_schema_annotation_support(&query.typeql)?;
         Ok(query)
     }
@@ -326,31 +536,56 @@ impl TransactionContext {
         &self,
         query: crate::session::staged::StagedQuery,
     ) -> Result<QueryResult> {
+        if query.snapshot.is_some() {
+            let mut lease = self.acquire_mutation_lease().await?;
+            // Cancellation or failure anywhere in the two-statement operation
+            // leaves the caller-owned transaction unable to commit.
+            lease.phase = MutationLeasePhase::PossibleEffect;
+            let result = query
+                .execute(
+                    lease.transaction()?,
+                    super::backend::AnswerLimits::default(),
+                )
+                .await
+                .and_then(|answer| {
+                    crate::answer_meter::meter_result(&answer, &BoundedAnswerLimits::default())?;
+                    Ok(answer)
+                });
+            return match result {
+                Ok(answer) => {
+                    lease.complete_success();
+                    Ok(answer)
+                }
+                Err(error) => {
+                    lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                        &error,
+                        SdkProviderOperation::Write,
+                    ));
+                    Err(error)
+                }
+            };
+        }
         let mut guard = self.inner.lock().await;
         let tx = active_transaction(&mut guard)?;
-        tx.query_materialized_bounded(
-            &query.typeql,
-            query.rows,
-            BoundedAnswerLimits::default(),
-            query.canonical,
-        )
-        .await
+        let answer = tx
+            .query_materialized_bounded(
+                &query.typeql,
+                query.rows,
+                super::backend::AnswerLimits::default(),
+                query.canonical,
+                query.redacted_typeql.as_deref(),
+            )
+            .await?;
+        crate::answer_meter::meter_result(&answer, &BoundedAnswerLimits::default())?;
+        Ok(answer)
     }
 
     /// Resolve a dispatched plan answer.
     pub(crate) fn resolve_plan(
-        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+        plan: &type_bridge_contract::query_plan::QueryPlan,
         answer: QueryResult,
     ) -> Result<crate::query_plan_exec::PlanAnswer> {
-        crate::query_plan_exec::resolve(plan.operation(), answer).map_err(plan_diagnostic_error)
-    }
-
-    /// Export the schema under this transaction's provider-side schema fence,
-    /// when supported by the backend.
-    pub(crate) async fn schema_snapshot(&self) -> Result<Option<String>> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.schema_snapshot().await
+        crate::query_plan_exec::resolve_plan(plan, answer).map_err(plan_diagnostic_error)
     }
 
     /// Execute a `given`-stage query with input rows on the shared transaction.
@@ -362,19 +597,6 @@ impl TransactionContext {
         let mut guard = self.inner.lock().await;
         let tx = active_transaction(&mut guard)?;
         tx.query_with_rows(typeql, rows).await
-    }
-
-    /// Execute one internal typed selected-row statement without consuming the
-    /// caller-owned transaction context.
-    pub(crate) async fn query_typed_bounded(
-        &self,
-        query: &TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.query_typed_bounded(query, limits, consumer).await
     }
 
     /// Return whether this borrowed transaction can transport canonical given rows.
@@ -396,62 +618,9 @@ impl TransactionContext {
         Ok(server_supported && transport_supported)
     }
 
-    pub(crate) async fn supports_exactly_one_tuple_proof(&self) -> Result<bool> {
-        let guard = self.inner.lock().await;
-        let tx = active_transaction_ref(&guard)?;
-        Ok(tx.supports_exactly_one_tuple_proof())
-    }
-
-    /// Execute one distinct selected-tuple identity scan without consuming this context.
-    pub(crate) async fn query_tuple_typed_bounded(
-        &self,
-        query: &TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.query_tuple_typed_bounded(query, limits, consumer).await
-    }
-
-    /// Execute one complete batched hydration without consuming this context.
-    pub(crate) async fn hydrate_typed_bounded(
-        &self,
-        query: &TypedHydrateThings,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.hydrate_typed_bounded(query, limits, consumer).await
-    }
-
-    /// Execute one typed distinct-root stream without consuming this context.
-    pub(crate) async fn query_root_typed_bounded(
-        &self,
-        query: &TypedRootScan,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.query_root_typed_bounded(query, limits, consumer).await
-    }
-
-    /// Execute one exact batched page re-match without consuming this context.
-    pub(crate) async fn rematch_page_typed_bounded(
-        &self,
-        query: &TypedPageRematch,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.rematch_page_typed_bounded(query, limits, consumer).await
-    }
-
     /// Commit the shared transaction.
     pub async fn commit(&self) -> Result<()> {
+        self.require_lifecycle_owner()?;
         let mut inner = self.inner.lock().await;
         let mut transaction = begin_commit(&mut inner)
             .map_err(CommitOnceError::into_classified)
@@ -472,6 +641,8 @@ impl TransactionContext {
     /// provider-proven abort from an unknown commit outcome without exposing
     /// provider text across their public boundary.
     pub async fn commit_classified(&self) -> std::result::Result<(), ClassifiedCommitError> {
+        self.require_lifecycle_owner()
+            .map_err(ClassifiedCommitError::from)?;
         self.commit_classified_once()
             .await
             .map_err(CommitOnceError::into_classified)
@@ -480,6 +651,9 @@ impl TransactionContext {
     /// Commit with the exact redacted binding-neutral diagnostic contract.
     #[doc(hidden)]
     pub async fn commit_sdk(&self) -> std::result::Result<(), SdkExecutionDiagnostic> {
+        self.require_lifecycle_owner().map_err(|error| {
+            crate::execution_diagnostic::lower_execution_error(error, SdkProviderOperation::Write)
+        })?;
         self.commit_classified_once()
             .await
             .map_err(|error| match error {
@@ -496,6 +670,7 @@ impl TransactionContext {
 
     /// Roll back writes and retain this shared context for more work.
     pub async fn rollback(&self) -> Result<()> {
+        self.require_lifecycle_owner()?;
         let mut inner = self.inner.lock().await;
         let mut transaction = match inner.state {
             TransactionContextState::RolledBack => return Ok(()),
@@ -532,6 +707,7 @@ impl TransactionContext {
 
     /// Close the shared transaction without committing.
     pub async fn close(&self) -> Result<()> {
+        self.require_lifecycle_owner()?;
         let transaction = {
             let mut inner = self.inner.lock().await;
             match inner.state {
@@ -553,6 +729,10 @@ impl TransactionContext {
         transaction.close().await
     }
 
+    pub(crate) fn server_version(&self) -> Option<Version> {
+        self.server_version
+    }
+
     /// The transaction type.
     pub fn tx_type(&self) -> TxType {
         self.tx_type
@@ -566,6 +746,191 @@ impl TransactionContext {
             )?;
         }
         Ok(())
+    }
+
+    /// Execute read plans on Read, Write or Schema contexts, and write plans on
+    /// Write or Schema contexts, under one answer policy and deadline.
+    /// The caller retains transaction ownership.
+    pub fn execute_plans<'a>(
+        &'a self,
+        plans: &'a [type_bridge_contract::query_plan::QueryPlan],
+        limits: &'a QueryExecutionResourceLimits,
+        cancellation: &'a super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> impl std::future::Future<Output = Result<Vec<crate::session::staged::PlanAnswer>>> + 'a
+    {
+        self.execute_plan_stack(
+            crate::query_plan_exec::PlanExecutionStack::Bound(plans),
+            limits,
+            cancellation,
+            deadline,
+        )
+    }
+
+    /// Execute a validated result-reference stack in this context's transaction.
+    /// Invocation IIDs bind to preceding answers without opening a nested
+    /// transaction. Any failure after write dispatch leaves the context rollback-only.
+    pub async fn execute_staged_plans(
+        &self,
+        entries: &[type_bridge_contract::query_remote::StagedPlan],
+        schema: &type_bridge_contract::schema::DeclaredSchema,
+        limits: &QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<Vec<crate::session::staged::PlanAnswer>> {
+        type_bridge_contract::query_remote::validate_staged_result_refs(entries, schema)
+            .map_err(plan_diagnostic_error)?;
+        self.execute_plan_stack(
+            crate::query_plan_exec::PlanExecutionStack::Staged { entries, schema },
+            limits,
+            cancellation,
+            deadline,
+        )
+        .await
+    }
+
+    fn execute_plan_stack(
+        &self,
+        stack: crate::query_plan_exec::PlanExecutionStack<'_>,
+        limits: &QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> impl std::future::Future<Output = Result<Vec<crate::session::staged::PlanAnswer>>> {
+        use tracing::Instrument;
+        let collect = limits.collect_phase_timestamps
+            || self
+                .answer_limits
+                .is_some_and(|policy| policy.collect_phase_timestamps);
+        let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "borrowed");
+        crate::execution_phases::observe_orm(
+            deadline.started(),
+            collect,
+            self.execute_plan_stack_inner(stack, limits, cancellation, deadline),
+        )
+        .instrument(span)
+    }
+
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "avoid duplicate async argument captures in manager futures"
+    )]
+    fn execute_plan_stack_inner(
+        &self,
+        stack: crate::query_plan_exec::PlanExecutionStack<'_>,
+        limits: &QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> impl std::future::Future<Output = Result<Vec<crate::session::staged::PlanAnswer>>> {
+        async move {
+            let writes = stack
+                .plans()
+                .any(type_bridge_contract::query_plan::QueryPlan::writes);
+            if self.tx_type == TxType::Read && writes {
+                return Err(crate::match_request::MatchError::new(
+                    crate::match_request::MatchErrorCategory::InvalidPlan,
+                    "query_plan_read_only",
+                    "one-shot plan execution requires read-only plans",
+                )
+                .into());
+            }
+            for plan in stack.plans() {
+                crate::query_plan_exec::check_provider(plan, self.server_version)
+                    .map_err(plan_diagnostic_error)?;
+            }
+            limits
+                .validate()
+                .map_err(|_| crate::query_plan_exec::invalid_answer_limits())?;
+            let policy = self
+                .answer_limits
+                .map_or(*limits, |ceiling| limits.constrained_by(ceiling));
+            let deadline = deadline.earliest(crate::QueryExecutionDeadline::for_limits(policy));
+            let limits =
+                crate::query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?;
+            if writes {
+                return Box::pin(async move {
+                    let mut inner = super::staged::bounded(&limits.answer, async {
+                        Ok(Arc::clone(&self.inner).lock_owned().await)
+                    })
+                    .await?;
+                    active_transaction(&mut inner)?;
+                    crate::execution_phases::record(
+                        type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
+                    );
+                    let mut lease = TransactionContextMutationLease {
+                        inner,
+                        phase: MutationLeasePhase::PreDispatch,
+                        exact_failure: None,
+                        server_version: self.server_version,
+                    };
+                    let given = lease.transaction()?.supports_given_rows();
+                    let prepared = stack.prepare(given, || {
+                        super::backend::BoundedAnswerReader::new(limits.answer.clone())
+                            .check_before_read()
+                    })?;
+                    // Arm before awaiting provider work; cancellation keeps the context
+                    // rollback-only until the caller explicitly rolls it back.
+                    lease.phase = MutationLeasePhase::PossibleEffect;
+                    crate::execution_phases::record(
+                        type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
+                    );
+                    let result = crate::query_plan_exec::execute_plan_stack_counted::<true>(
+                        lease.transaction()?,
+                        given,
+                        stack,
+                        policy,
+                        cancellation,
+                        deadline,
+                        Some(prepared),
+                    )
+                    .await;
+                    match result {
+                        Ok((answers, _)) => {
+                            crate::execution_phases::record(
+                            type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
+                        );
+                            lease.complete_success();
+                            Ok(answers)
+                        }
+                        Err(error) => {
+                            lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                                &error,
+                                SdkProviderOperation::Write,
+                            ));
+                            Err(error)
+                        }
+                    }
+                })
+                .await;
+            }
+            let mut guard =
+                super::staged::bounded(&limits.answer, async { Ok(self.inner.lock().await) })
+                    .await?;
+            let tx = active_transaction(&mut guard)?;
+            crate::execution_phases::record(
+                type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
+            );
+            crate::execution_phases::record(
+                type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
+            );
+            let supports_given = tx.supports_given_rows();
+            let result = crate::query_plan_exec::execute_plan_stack_counted::<false>(
+                tx,
+                supports_given,
+                stack,
+                policy,
+                cancellation,
+                deadline,
+                None,
+            )
+            .await
+            .map(|(answers, _)| answers);
+            if result.is_ok() {
+                crate::execution_phases::record(
+                    type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
+                );
+            }
+            result
+        }
     }
 
     /// Execute one validated selected-row request without consuming this read context.
@@ -586,7 +951,20 @@ impl TransactionContext {
         limits: MatchExecutionLimits,
     ) -> Result<ValidatedMatchResult> {
         SelectedResultExecutor::new(registry, self.match_capabilities.clone(), limits)
-            .execute_compatible_borrowed(self, validated)
+            .execute_compatible_borrowed(self, validated, false)
+            .await
+    }
+
+    /// Generated manager reads share the selected-row executor while allowing
+    /// read-after-write in a caller-owned write transaction.
+    pub(crate) async fn execute_manager_match_with_limits(
+        &self,
+        registry: &DescriptorRegistry,
+        validated: &ValidatedMatchRequest,
+        limits: MatchExecutionLimits,
+    ) -> Result<ValidatedMatchResult> {
+        SelectedResultExecutor::new(registry, self.match_capabilities.clone(), limits)
+            .execute_compatible_borrowed(self, validated, true)
             .await
     }
 
@@ -594,7 +972,20 @@ impl TransactionContext {
         let mut inner = self.inner.lock().await;
         let mut transaction = begin_commit(&mut inner)?;
 
-        let result = transaction.commit_classified().await;
+        // Only commit dispatch is guarded: a provider panic after dispatch
+        // cannot establish whether the write committed. Enclosing construction
+        // in the future also catches providers that panic before returning it.
+        let commit = async { transaction.commit_classified().await };
+        let mut commit = std::pin::pin!(commit);
+        let result = poll_fn(|cx| {
+            catch_unwind(AssertUnwindSafe(|| commit.as_mut().poll(cx))).unwrap_or_else(|_| {
+                std::task::Poll::Ready(Err(ClassifiedCommitError::Driver {
+                    certainty: crate::error::CommitFailureCertainty::Unknown,
+                    message: "Provider panicked during commit".into(),
+                }))
+            })
+        })
+        .await;
         inner.state = match &result {
             Ok(()) => TransactionContextState::Committed,
             Err(ClassifiedCommitError::Driver {
@@ -676,12 +1067,14 @@ fn transaction_rollback_only_diagnostic() -> SdkExecutionDiagnostic {
 impl Clone for TransactionContext {
     fn clone(&self) -> Self {
         Self {
+            owns_lifecycle: self.owns_lifecycle,
             inner: Arc::clone(&self.inner),
             tx_type: self.tx_type,
             match_capabilities: self.match_capabilities.clone(),
             server_version: self.server_version,
             execution_identity: self.execution_identity.clone(),
             answer_limits: self.answer_limits,
+            query_limits: self.query_limits.clone(),
         }
     }
 }
@@ -689,12 +1082,7 @@ impl Clone for TransactionContext {
 /// A plan that cannot lower or answer is a contract failure, never provider
 /// prose; it keeps its diagnostic code.
 fn plan_diagnostic_error(diagnostic: type_bridge_contract::diagnostic::Diagnostic) -> OrmError {
-    crate::match_request::MatchError::new(
-        crate::match_request::MatchErrorCategory::ResultDecode,
-        diagnostic.code().as_str(),
-        diagnostic.message(),
-    )
-    .into()
+    crate::execution_diagnostic::plan_answer_error(diagnostic)
 }
 
 #[cfg(test)]
@@ -713,10 +1101,14 @@ mod tests {
         DefinitelyAborted,
         Unknown,
         LegacyFailure,
+        Panic,
+        PanicBeforeFuture,
     }
 
     #[derive(Default)]
     struct Calls {
+        closed: Notify,
+        close_thread: std::sync::Mutex<Option<std::thread::ThreadId>>,
         queries: AtomicUsize,
         commits: AtomicUsize,
         classified_commits: AtomicUsize,
@@ -737,12 +1129,34 @@ mod tests {
         commit_gate: Option<Arc<Gate>>,
         rollback_gate: Option<Arc<Gate>>,
         close_gate: Option<Arc<Gate>>,
+        deletion_gate: Option<Arc<Gate>>,
     }
 
     impl TransactionOps for LifecycleTransaction {
-        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult>> {
+        fn query_with_rows(
+            &mut self,
+            typeql: &str,
+            _: GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult>> {
+            self.query(typeql)
+        }
+
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult>> {
             self.calls.queries.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Ok(QueryResult::Ok) })
+            let gate = self.deletion_gate.clone();
+            let deleting = typeql.contains("delete");
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    if deleting {
+                        gate.entered.notify_one();
+                        return pending().await;
+                    }
+                    return Ok(QueryResult::Documents(vec![serde_json::json!({
+                        "_iid":"0x01", "_type":"doctor", "attributes":{"name":"alice", "on-call":true}
+                    })]));
+                }
+                Ok(QueryResult::Ok)
+            })
         }
 
         fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
@@ -755,6 +1169,9 @@ mod tests {
                     pending().await
                 }
                 match result {
+                    CommitResult::Panic | CommitResult::PanicBeforeFuture => {
+                        panic!("private commit panic")
+                    }
                     CommitResult::Success => Ok(()),
                     CommitResult::LegacyFailure
                     | CommitResult::DefinitelyAborted
@@ -769,6 +1186,9 @@ mod tests {
             &mut self,
         ) -> BoxFuture<'_, std::result::Result<(), ClassifiedCommitError>> {
             self.calls.classified_commits.fetch_add(1, Ordering::SeqCst);
+            if matches!(self.commit_result, CommitResult::PanicBeforeFuture) {
+                panic!("private commit construction panic");
+            }
             let result = self.commit_result;
             let gate = self.commit_gate.clone();
             Box::pin(async move {
@@ -777,6 +1197,9 @@ mod tests {
                     pending().await
                 }
                 match result {
+                    CommitResult::Panic | CommitResult::PanicBeforeFuture => {
+                        panic!("private commit panic")
+                    }
                     CommitResult::Success => Ok(()),
                     CommitResult::DefinitelyAborted => Err(ClassifiedCommitError::Driver {
                         certainty: CommitFailureCertainty::DefinitelyAborted,
@@ -812,6 +1235,8 @@ mod tests {
 
         fn close(&mut self) -> BoxFuture<'_, Result<()>> {
             self.calls.closes.fetch_add(1, Ordering::SeqCst);
+            *self.calls.close_thread.lock().unwrap() = Some(std::thread::current().id());
+            self.calls.closed.notify_one();
             let fails = self.close_fails;
             let gate = self.close_gate.clone();
             Box::pin(async move {
@@ -847,6 +1272,7 @@ mod tests {
                     commit_gate,
                     rollback_gate,
                     close_gate,
+                    deletion_gate: None,
                 }),
                 TxType::Write,
                 None,
@@ -862,6 +1288,605 @@ mod tests {
 
     fn active_context() -> (TransactionContext, Arc<Calls>) {
         new_context(CommitResult::Success, false, false, None, None, None)
+    }
+
+    #[tokio::test]
+    async fn callback_context_rejects_lifecycle_and_invalidates_every_clone() {
+        let (context, calls) = active_context();
+        let context = context.borrowed();
+        let escaped = context.clone();
+        assert!(context.commit().await.is_err());
+        assert!(context.commit_classified().await.is_err());
+        assert!(context.commit_sdk().await.is_err());
+        assert!(context.rollback().await.is_err());
+        assert!(context.close().await.is_err());
+        context.query("insert $p isa person;").await.unwrap();
+        let mut restored = context.detach_borrowed().await.unwrap();
+        assert!(escaped.query("insert $p isa person;").await.is_err());
+        restored.query("insert $p isa person;").await.unwrap();
+        restored.commit().await.unwrap();
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.commits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn abandoned_callback_closes_without_committing_and_refuses_escaped_handles() {
+        let (context, calls) = active_context();
+        let context = context.borrowed();
+        context.abandon_borrowed();
+        assert!(context.query("insert $p isa person;").await.is_err());
+        tokio::task::yield_now().await;
+        assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn contended_abandoned_callback_returns_before_the_lock_is_released() {
+        assert_contended_abandonment(false);
+    }
+
+    #[test]
+    fn contended_abandoned_callback_uses_the_current_runtime_without_blocking() {
+        assert_contended_abandonment(true);
+    }
+
+    fn assert_contended_abandonment(enter_runtime: bool) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+        let (context, calls) = active_context();
+        let context = context.borrowed();
+        let lock = context.inner.try_lock().unwrap();
+        let escaped = context.clone();
+        let (returned, received) = std::sync::mpsc::channel();
+        let dropping = std::thread::spawn(move || {
+            let _entered = enter_runtime.then(|| handle.enter());
+            escaped.abandon_borrowed();
+            returned.send(()).unwrap();
+        });
+        let result = received.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 0);
+        drop(lock);
+        dropping.join().unwrap();
+        result.expect("Drop must return while the mutex is still held");
+        runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), calls.closed.notified())
+                .await
+                .unwrap();
+            assert!(context.query("insert $p isa person;").await.is_err());
+        });
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+        if enter_runtime {
+            assert_eq!(
+                *calls.close_thread.lock().unwrap(),
+                Some(std::thread::current().id()),
+                "provider cleanup must run on the original current-thread runtime"
+            );
+        }
+    }
+
+    #[test]
+    fn abandoned_callback_closes_outside_a_tokio_runtime() {
+        let (context, calls) = active_context();
+        let context = context.borrowed();
+        context.abandon_borrowed();
+        assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), calls.closed.notified())
+                .await
+                .unwrap();
+        });
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
+        assert!(
+            runtime
+                .block_on(context.query("insert $p isa person;"))
+                .is_err()
+        );
+    }
+
+    struct PlanTransaction {
+        calls: Arc<Calls>,
+        malformed: bool,
+    }
+
+    impl TransactionOps for PlanTransaction {
+        fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult>> {
+            self.calls.queries.fetch_add(1, Ordering::SeqCst);
+            let malformed = self.malformed;
+            Box::pin(async move {
+                Ok(if malformed {
+                    QueryResult::Ok
+                } else {
+                    QueryResult::Rows(vec![])
+                })
+            })
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
+            self.calls.commits.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
+            self.calls.rollbacks.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn public_write_plan_execution_cannot_admit_an_unproven_optional_relation_seed() {
+        use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+        use type_bridge_contract::migration_assertion::{
+            AssertionBinding, BindingId, QueryVariable, ValueComparator,
+        };
+        use type_bridge_contract::query_plan::{
+            AttachItem, InsertThing, Operation, Pattern, PlanSpec, QueryPlan, Stage, WriteReturns,
+        };
+        use type_bridge_contract::query_plan::{
+            InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
+        };
+        use type_bridge_contract::schema::OwnsFactId;
+        use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+        let id = |value| BindingId::new(value).unwrap();
+        let schema = type_bridge_schema::normalize_documents(&type_bridge_schema::SchemaDocumentSet::parse([(
+            type_bridge_contract::schema::DocumentId::new("public-seed.yaml").unwrap(),
+            "format: typebridge.schema/v2\nattributes:\n  order-id: { value: string }\nentities:\n  account: {}\nrelations:\n  purchase:\n    owns:\n      order-id: { key: true }\n    relates:\n      buyer: { card: { min: 0, max: 1 } }\nplays:\n  account:\n    purchase: [buyer]\n",
+        )]).unwrap()).unwrap();
+        let operand = QueryOperand::Input {
+            column: InputColumnId::new(0),
+        };
+        let lookup = |binding| {
+            vec![
+                QueryPattern::Isa {
+                    binding: id(binding),
+                    type_id: TypeId::new(TypeKind::Entity, "account").unwrap(),
+                    include_subtypes: false,
+                },
+                QueryPattern::Iid {
+                    binding: id(binding),
+                    iid: operand.clone(),
+                },
+            ]
+        };
+        let relation = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        for put in [false, true] {
+            for case in [
+                "guarded",
+                "no_rows",
+                "all_null",
+                "unguarded",
+                "mismatched_guard",
+                "deleted_alias",
+            ] {
+                let thing = InsertThing {
+                    binding: id(1),
+                    type_id: relation.clone(),
+                    fields: vec![(
+                        OwnsFactId::new(relation.clone(), AttributeId::new("order-id").unwrap())
+                            .unwrap(),
+                        QueryOperand::Literal {
+                            value: CanonicalValue::String(CanonicalString::new("seed").unwrap()),
+                        },
+                    )],
+                    players: vec![],
+                };
+                let mut patterns = vec![Pattern::Read(QueryPattern::Try {
+                    patterns: lookup(0),
+                })];
+                if case != "unguarded" {
+                    patterns.push(
+                        QueryPattern::Or {
+                            branches: vec![
+                                vec![QueryPattern::Not {
+                                    patterns: vec![QueryPattern::Value {
+                                        comparator: ValueComparator::Equal,
+                                        left: operand.clone(),
+                                        right: operand.clone(),
+                                    }],
+                                }],
+                                lookup(2),
+                            ],
+                        }
+                        .into(),
+                    );
+                }
+                let mut spec = PlanSpec {
+                    bindings: ["player", "seed", "witness"]
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| {
+                            AssertionBinding::new(
+                                id(u16::try_from(index).unwrap()),
+                                QueryVariable::new(*name).unwrap(),
+                            )
+                        })
+                        .collect(),
+                    inputs: vec![InputColumn::new(
+                        InputColumnId::new(0),
+                        QueryVariable::new("player_iid").unwrap(),
+                        ValueTypeTag::String,
+                        true,
+                    )],
+                    given_rows: if case == "no_rows" {
+                        None
+                    } else {
+                        Some(vec![InputRow::new(vec![if case == "all_null" {
+                            None
+                        } else {
+                            Some(CanonicalValue::String(
+                                CanonicalString::new("0x01").unwrap(),
+                            ))
+                        }])])
+                    },
+                    operation: Operation::Write {
+                        returns: WriteReturns::Rows,
+                    },
+                    pipeline: vec![
+                        Stage::Match { patterns },
+                        if put {
+                            Stage::Put {
+                                include_subtypes: false,
+                                things: vec![thing],
+                            }
+                        } else {
+                            Stage::Insert {
+                                things: vec![thing],
+                            }
+                        },
+                        Stage::Attach {
+                            items: vec![AttachItem::Links {
+                                optional: true,
+                                relation: id(1),
+                                role: RoleId::new("purchase", "buyer").unwrap(),
+                                player: id(0),
+                            }],
+                        },
+                    ],
+                    output: QueryOutput::Rows {
+                        columns: vec![id(1)],
+                    },
+                    managed_semantics: crate::query_plan_exec::race::touch()
+                        .managed_semantics()
+                        .clone(),
+                    functions: vec![],
+                };
+                if case == "mismatched_guard" {
+                    let Stage::Match { patterns } = &mut spec.pipeline[0] else {
+                        unreachable!()
+                    };
+                    let Pattern::Read(QueryPattern::Or { branches }) = &mut patterns[1] else {
+                        unreachable!()
+                    };
+                    let QueryPattern::Iid { iid, .. } = &mut branches[1][1] else {
+                        unreachable!()
+                    };
+                    *iid = QueryOperand::Literal {
+                        value: CanonicalValue::String(CanonicalString::new("0x02").unwrap()),
+                    };
+                }
+                if case == "deleted_alias" {
+                    spec.bindings.push(AssertionBinding::new(
+                        id(3),
+                        QueryVariable::new("deleted_alias").unwrap(),
+                    ));
+                    let Stage::Match { patterns } = &mut spec.pipeline[0] else {
+                        unreachable!()
+                    };
+                    patterns.extend(lookup(3).into_iter().map(Into::into));
+                    spec.pipeline.insert(
+                        1,
+                        Stage::Delete {
+                            items: vec![type_bridge_contract::query_plan::DeleteItem::Thing {
+                                binding: id(3),
+                            }],
+                        },
+                    );
+                }
+                let calls = Arc::new(Calls::default());
+                let context = TransactionContext::new(
+                    super::super::eager::EagerTransaction::new(
+                        Box::new(PlanTransaction {
+                            calls: calls.clone(),
+                            malformed: false,
+                        }),
+                        TxType::Write,
+                        None,
+                    ),
+                    TxType::Write,
+                    CapabilitySet::new(),
+                    None,
+                    DatabaseExecutionIdentity::isolated("public-seed"),
+                    None,
+                );
+                let policy = QueryExecutionResourceLimits::default();
+                let result = async {
+                    // Public execution consumes validated plans; constructing an
+                    // unsafe plan must fail before it can reach that write seam.
+                    let plan = QueryPlan::new(spec, &schema)
+                        .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+                    context
+                        .execute_plans(
+                            &[plan],
+                            &policy,
+                            &crate::AnswerCancellation::default(),
+                            crate::QueryExecutionDeadline::for_limits(policy),
+                        )
+                        .await
+                }
+                .await;
+                if case == "guarded" {
+                    assert!(result.is_ok(), "{result:?}");
+                } else {
+                    let OrmError::Match(error) = result.unwrap_err() else {
+                        panic!("typed seed refusal")
+                    };
+                    assert_eq!(
+                        error.code().as_str(),
+                        "query_plan_insert_relation_players",
+                        "{case}"
+                    );
+                }
+                assert_eq!(
+                    calls.queries.load(Ordering::SeqCst),
+                    usize::from(case == "guarded")
+                );
+                assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 0);
+                assert_eq!(
+                    context.lifecycle_state().await,
+                    TransactionContextState::Active
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn borrowed_write_phases_keep_the_outer_call_clock() {
+        let calls = Arc::new(Calls::default());
+        let context = TransactionContext::new(
+            super::super::eager::EagerTransaction::new(
+                Box::new(PlanTransaction {
+                    calls,
+                    malformed: false,
+                }),
+                TxType::Write,
+                None,
+            ),
+            TxType::Write,
+            CapabilitySet::new(),
+            None,
+            DatabaseExecutionIdentity::isolated("borrowed-write-phases"),
+            None,
+        );
+        let policy = QueryExecutionResourceLimits::default();
+        let cancellation = crate::AnswerCancellation::default();
+        let deadline = crate::QueryExecutionDeadline::for_limits(policy);
+        let (diagnostic, phases) =
+            crate::execution_phases::observe(deadline.started(), true, async {
+                context
+                    .execute_plans(
+                        &[crate::query_plan_exec::race::touch()],
+                        &policy,
+                        &cancellation,
+                        deadline,
+                    )
+                    .await
+                    .unwrap();
+                // Cancellation after execution still belongs to the caller's clock.
+                cancellation.cancel();
+                deadline.check(&cancellation).unwrap_err()
+            })
+            .await;
+        let diagnostic = phases.unwrap().diagnostic(diagnostic);
+        let host = serde_json::to_value(diagnostic.host_json()).unwrap();
+        let stamps = host["details"]["execution_timeline"]["value"]["stamps"]
+            .as_array()
+            .unwrap();
+        let names: Vec<_> = stamps
+            .iter()
+            .map(|stamp| stamp["phase"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "fired",
+                "accepted",
+                "execution_started",
+                "db_write",
+                "before_commit",
+                "failed"
+            ]
+        );
+        assert_eq!(stamps[3]["statement_index"], 0);
+        assert_eq!(stamps.last().unwrap()["failing_phase"], "before_commit");
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn public_plan_execution_preserves_transaction_kind_ownership_and_poison() {
+        for kind in [TxType::Read, TxType::Write, TxType::Schema] {
+            for malformed in [false, true] {
+                let calls = Arc::new(Calls::default());
+                let context = TransactionContext::new(
+                    super::super::eager::EagerTransaction::new(
+                        Box::new(PlanTransaction {
+                            calls: calls.clone(),
+                            malformed,
+                        }),
+                        kind,
+                        None,
+                    ),
+                    kind,
+                    CapabilitySet::new(),
+                    None,
+                    DatabaseExecutionIdentity::isolated("public-plan-context"),
+                    None,
+                );
+                if kind == TxType::Schema {
+                    context.query("define entity next-to-plan;").await.unwrap();
+                }
+                let policy = QueryExecutionResourceLimits::default();
+                let result = context
+                    .execute_plans(
+                        &[crate::query_plan_exec::race::touch()],
+                        &policy,
+                        &crate::AnswerCancellation::default(),
+                        crate::QueryExecutionDeadline::for_limits(policy),
+                    )
+                    .await;
+                assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                if kind == TxType::Read {
+                    let error = result.unwrap_err();
+                    let OrmError::Match(error) = error else {
+                        panic!("typed refusal")
+                    };
+                    assert_eq!(error.code().as_str(), "query_plan_read_only");
+                    assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+                } else if malformed {
+                    assert!(result.is_err());
+                    assert_eq!(
+                        context.lifecycle_state().await,
+                        TransactionContextState::RollbackOnly
+                    );
+                    assert!(context.commit().await.is_err());
+                    context.rollback().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                    assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 1);
+                } else {
+                    assert!(matches!(
+                        result.unwrap().as_slice(),
+                        [super::super::staged::PlanAnswer::Matched(0)]
+                    ));
+                    assert_eq!(
+                        context.lifecycle_state().await,
+                        TransactionContextState::Active
+                    );
+                    context.commit().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 1);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_plan_execution_preserves_transaction_kind_ownership_and_poison() {
+        for kind in [TxType::Read, TxType::Write, TxType::Schema] {
+            for malformed in [false, true] {
+                let calls = Arc::new(Calls::default());
+                let mut transaction = super::super::transaction::OwnedTransaction::from_eager(
+                    super::super::eager::EagerTransaction::new(
+                        Box::new(PlanTransaction {
+                            calls: calls.clone(),
+                            malformed,
+                        }),
+                        kind,
+                        None,
+                    ),
+                );
+                if kind == TxType::Schema {
+                    transaction
+                        .query("define entity next-to-plan;")
+                        .await
+                        .unwrap();
+                }
+                let policy = QueryExecutionResourceLimits::default();
+                let result = transaction
+                    .execute_plans(
+                        &[crate::query_plan_exec::race::touch()],
+                        &policy,
+                        &crate::AnswerCancellation::default(),
+                        crate::QueryExecutionDeadline::for_limits(policy),
+                    )
+                    .await;
+                assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                if kind == TxType::Read {
+                    let OrmError::Match(error) = result.unwrap_err() else {
+                        panic!("typed refusal")
+                    };
+                    assert_eq!(error.code().as_str(), "query_plan_read_only");
+                    assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+                } else if malformed {
+                    assert!(result.is_err());
+                    assert!(transaction.commit().await.is_err());
+                    assert!(transaction.query("match $x isa entity;").await.is_err());
+                    transaction.rollback().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                    assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 1);
+                } else {
+                    assert!(matches!(
+                        result.unwrap().as_slice(),
+                        [super::super::staged::PlanAnswer::Matched(0)]
+                    ));
+                    transaction.commit().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 1);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn eager_plan_execution_preserves_transaction_kind_ownership_and_poison() {
+        for kind in [TxType::Read, TxType::Write, TxType::Schema] {
+            for malformed in [false, true] {
+                let calls = Arc::new(Calls::default());
+                let mut transaction = super::super::eager::EagerTransaction::new(
+                    Box::new(PlanTransaction {
+                        calls: calls.clone(),
+                        malformed,
+                    }),
+                    kind,
+                    None,
+                );
+                if kind == TxType::Schema {
+                    transaction
+                        .query("define entity next-to-plan;")
+                        .await
+                        .unwrap();
+                }
+                let policy = QueryExecutionResourceLimits::default();
+                let result = transaction
+                    .execute_plans(
+                        &[crate::query_plan_exec::race::touch()],
+                        &policy,
+                        &crate::AnswerCancellation::default(),
+                        crate::QueryExecutionDeadline::for_limits(policy),
+                    )
+                    .await;
+                assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                if kind == TxType::Read {
+                    let OrmError::Match(error) = result.unwrap_err() else {
+                        panic!("typed refusal")
+                    };
+                    assert_eq!(error.code().as_str(), "query_plan_read_only");
+                    assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+                } else if malformed {
+                    assert!(result.is_err());
+                    assert!(transaction.commit_classified().await.is_err());
+                    assert!(transaction.query("match $x isa entity;").await.is_err());
+                    transaction.rollback().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                    assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 1);
+                } else {
+                    assert!(matches!(
+                        result.unwrap().as_slice(),
+                        [super::super::staged::PlanAnswer::Matched(0)]
+                    ));
+                    transaction.commit().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 1);
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -950,6 +1975,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commit_panics_are_unknown_and_cannot_redispatch_or_roll_back() {
+        for result in [CommitResult::Panic, CommitResult::PanicBeforeFuture] {
+            let (context, calls) = new_context(result, false, false, None, None, None);
+            let error = context.commit_sdk().await.unwrap_err();
+            assert_eq!(
+                error,
+                SdkExecutionDiagnostic::commit_failure(SdkCommitFailureOutcome::Unknown)
+            );
+            assert_eq!(
+                context.lifecycle_state().await,
+                TransactionContextState::CommitOutcomeUnknown
+            );
+            assert!(context.commit_sdk().await.is_err());
+            assert!(context.rollback().await.is_err());
+            context.close().await.unwrap();
+            assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 1);
+            assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 0);
+            assert_eq!(calls.closes.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
     async fn classified_commit_records_every_terminal_outcome_once() {
         for (result, expected, expected_outcome) in [
             (
@@ -964,6 +2011,11 @@ mod tests {
             ),
             (
                 CommitResult::Unknown,
+                TransactionContextState::CommitOutcomeUnknown,
+                Some(SdkCommitFailureOutcome::Unknown),
+            ),
+            (
+                CommitResult::Panic,
                 TransactionContextState::CommitOutcomeUnknown,
                 Some(SdkCommitFailureOutcome::Unknown),
             ),
@@ -1145,6 +2197,166 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_deletion_snapshot_cannot_commit_its_borrowed_transaction() {
+        let calls = Arc::new(Calls::default());
+        let gate = Arc::new(Gate::default());
+        let context = TransactionContext::new(
+            super::super::eager::EagerTransaction::new(
+                Box::new(LifecycleTransaction {
+                    calls: Arc::clone(&calls),
+                    commit_result: CommitResult::Success,
+                    rollback_fails: false,
+                    close_fails: false,
+                    commit_gate: None,
+                    rollback_gate: None,
+                    close_gate: None,
+                    deletion_gate: Some(Arc::clone(&gate)),
+                }),
+                TxType::Write,
+                None,
+            ),
+            TxType::Write,
+            CapabilitySet::new(),
+            None,
+            DatabaseExecutionIdentity::isolated("snapshot-cancellation-test"),
+            None,
+        );
+        let task = tokio::spawn({
+            let context = context.clone();
+            async move {
+                let plan = crate::query_plan_exec::race::delete_doctors_returning();
+                let query = crate::query_plan_exec::staged_query(&plan, false).unwrap();
+                context.dispatch_plan(query).await
+            }
+        });
+        gate.entered.notified().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::RollbackOnly
+        );
+        assert!(context.commit().await.is_err());
+        assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 0);
+        context.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_deletion_snapshot_poison_latches_the_borrowed_transaction() {
+        let (context, calls) = active_context();
+        let plan = crate::query_plan_exec::race::delete_doctors_returning();
+        let query = crate::query_plan_exec::staged_query(&plan, false).unwrap();
+        assert!(context.dispatch_plan(query).await.is_err());
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::RollbackOnly
+        );
+        assert_eq!(
+            context.rollback_only_cause().await.unwrap().code().as_str(),
+            "query_remote_answer_kind"
+        );
+        assert!(context.commit().await.is_err());
+        assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 0);
+        context.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_reference_graph_is_refused_before_borrowed_provider_io() {
+        use type_bridge_contract::id::{TypeId, TypeKind};
+        use type_bridge_contract::query_plan::PlanBuilder;
+        use type_bridge_contract::query_plan::{InputColumnId, InputRow};
+        use type_bridge_contract::query_remote::StagedResultRef;
+        use type_bridge_contract::value::ValueTypeTag;
+        let (context, calls) = active_context();
+        let schema = crate::query_plan_exec::race::schema();
+        let doctor = TypeId::new(TypeKind::Entity, "doctor").unwrap();
+        let mut builder = PlanBuilder::new();
+        let iid = builder.input("target_iid", ValueTypeTag::String, false);
+        let root = builder.exact(doctor.clone());
+        builder.by_iid_input(root, iid).returning(vec![root]);
+        let entry = builder
+            .build_staged(
+                &schema,
+                crate::query_plan_exec::race::touch()
+                    .managed_semantics()
+                    .clone(),
+                vec![InputRow::new(vec![None])],
+                vec![StagedResultRef {
+                    input: InputColumnId::new(0),
+                    source_plan: 0,
+                    source_column: 0,
+                    expected_types: vec![doctor],
+                }],
+            )
+            .unwrap();
+        let policy = QueryExecutionResourceLimits::default();
+        let error = context
+            .execute_staged_plans(
+                &[entry],
+                &schema,
+                &policy,
+                &crate::AnswerCancellation::default(),
+                crate::QueryExecutionDeadline::for_limits(policy),
+            )
+            .await
+            .unwrap_err();
+        let OrmError::Match(error) = error else {
+            panic!("typed graph refusal")
+        };
+        assert_eq!(error.code().as_str(), "query_stage_result_ref_order");
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
+        assert!(context.rollback_only_cause().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn mutation_lease_refuses_unsafe_provider_plans_before_io() {
+        let (mut context, calls) = active_context();
+        context.server_version = Some(Version::new(3, 12, 3));
+        let plan = crate::query_plan_exec::race::scoped_given_iid("0x10", true, false);
+        let mut lease = context.acquire_mutation_lease().await.unwrap();
+        let error = lease.prepare_plan(&plan).unwrap_err();
+        let OrmError::Match(error) = error else {
+            panic!("typed provider refusal");
+        };
+        assert_eq!(
+            error.code().as_str(),
+            "query_plan_negated_given_iid_unsupported"
+        );
+        // Already lowered queries must not bypass the same check at execution.
+        let query = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+        let policy = QueryExecutionResourceLimits::default();
+        let error = lease
+            .execute_plans(
+                &[plan],
+                policy,
+                &crate::AnswerCancellation::default(),
+                crate::QueryExecutionDeadline::for_limits(policy),
+                Some(vec![query]),
+            )
+            .await
+            .unwrap_err();
+        let OrmError::Match(error) = error else {
+            panic!("typed provider refusal");
+        };
+        assert_eq!(
+            error.code().as_str(),
+            "query_plan_negated_given_iid_unsupported"
+        );
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+        lease.complete_success();
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
+    }
+
+    #[tokio::test]
     async fn mutation_lease_predispatch_drop_and_completed_success_leave_active() {
         let (context, _) = active_context();
         drop(context.acquire_mutation_lease().await.unwrap());
@@ -1244,7 +2456,122 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_v2_read_preserves_active_state_and_checks_control_before_query() {
+    async fn finished_mutation_leases_never_trace_refused_statements() {
+        use tracing::instrument::WithSubscriber;
+        for given in [false, true] {
+            for writes in [false, true] {
+                let (context, calls) = active_context();
+                let mut lease = context.acquire_mutation_lease().await.unwrap();
+                lease.phase = MutationLeasePhase::Finished;
+                let mut query =
+                    super::super::staged::StagedQuery::new("match $x isa thing;", writes);
+                query.rows = given.then(|| GivenRowsSpec {
+                    variables: vec![],
+                    rows: vec![],
+                });
+                let (events, dispatch) = crate::debug::capture_statements();
+                let mut consumer = |_item| Ok(super::super::backend::AnswerControl::Continue);
+                let error = lease
+                    .dispatch_plan_bounded(query, AnswerLimits::default(), &mut consumer)
+                    .with_subscriber(dispatch)
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains("Completed mutation lease"));
+                assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+                assert!(events.lock().unwrap().is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_plan_trace_uses_redacted_regex_once_per_dispatch() {
+        use tracing::instrument::WithSubscriber;
+        use type_bridge_contract::migration_assertion::ValueComparator;
+        for mutation in [false, true] {
+            for given in [false, true] {
+                let plan = crate::query_plan_exec::race::string_read(
+                    ValueComparator::Like,
+                    &["REGEX_SECRET"],
+                );
+                let mut query = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+                if !given {
+                    // Exercise the no-given dispatch with an already-inlined input.
+                    query.typeql = "match $d isa doctor, has name $n; $n like \"REGEX_SECRET\"; fetch { \"name\": $n };".into();
+                    query.redacted_typeql =
+                        Some(query.typeql.replace("REGEX_SECRET", "<input:needle>"));
+                    query.rows = None;
+                }
+                let expected = query.redacted_typeql.clone().unwrap();
+                query.writes = mutation;
+                let (context, calls) = active_context();
+                let (events, dispatch) = crate::debug::capture_statements();
+                async {
+                    let mut consumer = |_item| Ok(super::super::backend::AnswerControl::Continue);
+                    if mutation {
+                        let mut lease = context.acquire_mutation_lease().await.unwrap();
+                        lease
+                            .dispatch_plan_bounded(query, AnswerLimits::default(), &mut consumer)
+                            .await
+                            .unwrap();
+                    } else {
+                        context
+                            .dispatch_read_plan_bounded(
+                                &query,
+                                AnswerLimits::default(),
+                                &mut consumer,
+                            )
+                            .await
+                            .unwrap();
+                    }
+                }
+                .with_subscriber(dispatch)
+                .await;
+                let events = events.lock().unwrap();
+                assert_eq!(*events, [expected]);
+                assert_eq!(events.len(), calls.queries.load(Ordering::SeqCst));
+                assert!(!events[0].contains("REGEX_SECRET"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_native_reads_refuse_writes_without_poisoning_the_context() {
+        let (context, calls) = active_context();
+        let mut consumer = |_item: super::super::backend::AnswerItem| {
+            Ok(super::super::backend::AnswerControl::Continue)
+        };
+        let error = context
+            .dispatch_read_plan_bounded(
+                &super::super::staged::StagedQuery::new("insert $x isa thing;", true),
+                AnswerLimits::default(),
+                &mut consumer,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, OrmError::Transaction(_)));
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+        let stats = context
+            .dispatch_read_plan_bounded(
+                &super::super::staged::StagedQuery::new(
+                    "match $x isa thing; fetch { iid: iid($x) };",
+                    false,
+                )
+                .canonical(),
+                AnswerLimits::default(),
+                &mut consumer,
+            )
+            .await
+            .unwrap();
+        assert_eq!(stats, BoundedAnswerStats::default());
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_plan_read_preserves_active_state_and_checks_control_before_query() {
         let (context, calls) = active_context();
         let mut consumer = |_item: super::super::backend::AnswerItem| {
             Ok(super::super::backend::AnswerControl::Continue)
@@ -1252,14 +2579,19 @@ mod tests {
         let cancellation = super::super::backend::AnswerCancellation::default();
         cancellation.cancel();
         let error = context
-            .query_v2_bounded(
-                "match $x isa thing; fetch { iid: iid($x) };",
-                QueryV2AnswerLimits {
+            .dispatch_read_plan_bounded(
+                &super::super::staged::StagedQuery::new(
+                    "match $x isa thing; fetch { iid: iid($x) };",
+                    false,
+                )
+                .canonical(),
+                AnswerLimits {
                     answer: BoundedAnswerLimits {
                         cancellation,
                         ..BoundedAnswerLimits::default()
                     },
                     max_collection_members: 1,
+                    ..Default::default()
                 },
                 &mut consumer,
             )
@@ -1274,9 +2606,13 @@ mod tests {
         assert!(matches!(error, OrmError::Match(_)));
 
         let stats = context
-            .query_v2_bounded(
-                "match $x isa thing; fetch { iid: iid($x) };",
-                QueryV2AnswerLimits::default(),
+            .dispatch_read_plan_bounded(
+                &super::super::staged::StagedQuery::new(
+                    "match $x isa thing; fetch { iid: iid($x) };",
+                    false,
+                )
+                .canonical(),
+                AnswerLimits::default(),
                 &mut consumer,
             )
             .await

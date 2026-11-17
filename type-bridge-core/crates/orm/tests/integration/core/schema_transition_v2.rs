@@ -252,7 +252,7 @@ async fn low2_relates_specialization_transitions_preserve_existing_data() {
 async fn low3_annotations_add_change_and_remove_on_every_ordinary_subject() {
     let _guard = crate::common::integration_test_guard().await;
     let db = setup_db().await;
-    if !crate::common::rust_binding::server_supports_v2_conformance(&db) {
+    if !crate::common::rust_binding::server_supports_conformance(&db) {
         eprintln!("skipping: V2 annotation transitions require a proven TypeDB 3.12+ server");
         return;
     }
@@ -391,7 +391,7 @@ async fn low3_annotations_add_change_and_remove_on_every_ordinary_subject() {
 async fn low4_sub_annotations_require_atomic_replace_and_rollback_restores_them() {
     let _guard = crate::common::integration_test_guard().await;
     let db = setup_db().await;
-    if !crate::common::rust_binding::server_supports_v2_conformance(&db) {
+    if !crate::common::rust_binding::server_supports_conformance(&db) {
         eprintln!("skipping: sub @doc/@meta annotations require a proven TypeDB 3.12+ server");
         return;
     }
@@ -526,7 +526,7 @@ async fn low4_sub_annotations_require_atomic_replace_and_rollback_restores_them(
 async fn low5_meta_redefine_and_undefine_are_isolated_by_key() {
     let _guard = crate::common::integration_test_guard().await;
     let db = setup_db().await;
-    if !crate::common::rust_binding::server_supports_v2_conformance(&db) {
+    if !crate::common::rust_binding::server_supports_conformance(&db) {
         eprintln!("skipping: @meta key isolation requires a proven TypeDB 3.12+ server");
         return;
     }
@@ -590,7 +590,7 @@ fn single_row_json(result: QueryResult, context: &str) -> String {
 async fn low6_function_metadata_requires_transactional_replacement() {
     let _guard = crate::common::integration_test_guard().await;
     let db = setup_db().await;
-    if !crate::common::rust_binding::server_supports_v2_conformance(&db) {
+    if !crate::common::rust_binding::server_supports_conformance(&db) {
         eprintln!("skipping: function @doc/@meta annotations require a proven TypeDB 3.12+ server");
         return;
     }

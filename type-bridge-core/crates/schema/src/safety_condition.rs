@@ -517,7 +517,15 @@ pub fn derive_safety_conditions_with_domain_index(
     })?;
     validate_exact_transition(operation, source_declared, target_declared)?;
     let semantic = SemanticProfile::resolve(profile.semantic().id())?;
-    let policy = classify_schema_operation_safety(operation);
+    let policy = match operation.undefined_fact() {
+        Some(SchemaFact::Annotation(annotation))
+            if matches!(annotation.id().subject(), AnnotationSubjectId::Function(id)
+            if target_declared.fact(&SchemaFactId::Function(id.clone())).is_none()) =>
+        {
+            SafetyClass::SchemaMetadata
+        }
+        _ => classify_schema_operation_safety(operation),
+    };
     let mut conditions = Vec::new();
 
     match operation.kind() {
@@ -563,8 +571,8 @@ pub fn derive_safety_conditions_with_domain_index(
         )?,
     }
 
-    let condition_free =
-        conditions.is_empty() && is_proven_condition_free_constraint_transition(operation, domain)?;
+    let condition_free = conditions.is_empty()
+        && is_proven_condition_free_constraint_transition(operation, domain, target_declared)?;
     if policy == SafetyClass::Conditional && conditions.is_empty() && !condition_free {
         push_condition(
             &mut conditions,
@@ -640,16 +648,30 @@ fn derive_defined_fact(
             )
         }
         SchemaFact::Sub(_) => Ok(()),
-        SchemaFact::Relates(relates) if relates.specializes().is_some() => push_unresolvable(
-            conditions,
-            operation_index,
-            policy,
-            UnresolvableSafetyReason::RoleSpecializationRequiresBackfill,
-            SafetyConditionUnlock::Backfill,
-            source,
-            target,
-            profile,
-        ),
+        SchemaFact::Relates(relates) if relates.specializes().is_some() => {
+            if source
+                .fact(&SchemaFactId::Type(relates.id().relation().clone()))
+                .is_none()
+                || target
+                    .fact(&SchemaFactId::Type(relates.id().relation().clone()))
+                    .is_none()
+            {
+                Ok(())
+            } else {
+                push_condition(
+                    conditions,
+                    operation_index,
+                    policy,
+                    SafetyCondition::NoInstances {
+                        type_id: relates.id().relation().clone(),
+                        include_subtypes: true,
+                    },
+                    source,
+                    target,
+                    profile,
+                )
+            }
+        }
         _ => Ok(()),
     }
 }
@@ -702,12 +724,14 @@ fn derive_redefinition(
             target,
             profile,
         ),
-        (SchemaFact::Relates(_), SchemaFact::Relates(_)) => push_unresolvable(
+        (SchemaFact::Relates(old), SchemaFact::Relates(_)) => push_condition(
             conditions,
             operation_index,
             policy,
-            UnresolvableSafetyReason::RoleSpecializationRequiresBackfill,
-            SafetyConditionUnlock::Backfill,
+            SafetyCondition::NoInstances {
+                type_id: old.id().relation().clone(),
+                include_subtypes: true,
+            },
             source,
             target,
             profile,
@@ -727,6 +751,15 @@ fn derive_undefined_fact(
     semantic: &SemanticProfile,
     conditions: &mut Vec<RequiredSafetyCondition>,
 ) -> Result<(), Diagnostic> {
+    if let SchemaFact::Annotation(annotation) = fact
+        && target
+            .fact(&crate::delta_dependencies::annotation_subject_id(
+                annotation.id().subject(),
+            ))
+            .is_none()
+    {
+        return Ok(());
+    }
     match fact {
         SchemaFact::Type(type_fact) => push_condition(
             conditions,
@@ -751,16 +784,30 @@ fn derive_undefined_fact(
             semantic,
             conditions,
         ),
-        SchemaFact::Relates(relates) if relates.specializes().is_some() => push_unresolvable(
-            conditions,
-            operation_index,
-            policy,
-            UnresolvableSafetyReason::RoleSpecializationRequiresBackfill,
-            SafetyConditionUnlock::Backfill,
-            source,
-            target,
-            profile,
-        ),
+        SchemaFact::Relates(relates) if relates.specializes().is_some() => {
+            if source
+                .fact(&SchemaFactId::Type(relates.id().relation().clone()))
+                .is_none()
+                || target
+                    .fact(&SchemaFactId::Type(relates.id().relation().clone()))
+                    .is_none()
+            {
+                Ok(())
+            } else {
+                push_condition(
+                    conditions,
+                    operation_index,
+                    policy,
+                    SafetyCondition::NoInstances {
+                        type_id: relates.id().relation().clone(),
+                        include_subtypes: true,
+                    },
+                    source,
+                    target,
+                    profile,
+                )
+            }
+        }
         _ => Ok(()),
     }
 }
@@ -921,9 +968,22 @@ fn derive_annotation_transition(
 fn is_proven_condition_free_constraint_transition(
     operation: &SchemaOperation,
     domain: &SafetyConditionDomainIndex,
+    target: &DeclaredSchema,
 ) -> Result<bool, Diagnostic> {
     if operation.kind() == SchemaOperationKind::Define {
         return Ok(is_proven_condition_free_define(operation, domain));
+    }
+    if let Some(SchemaFact::Relates(relates)) = operation.undefined_fact() {
+        return Ok(target
+            .fact(&SchemaFactId::Type(relates.id().relation().clone()))
+            .is_none());
+    }
+    if let Some(SchemaFact::Annotation(annotation)) = operation.undefined_fact() {
+        return Ok(target
+            .fact(&crate::delta_dependencies::annotation_subject_id(
+                annotation.id().subject(),
+            ))
+            .is_none());
     }
     if operation.kind() != SchemaOperationKind::Redefine {
         return Ok(false);
@@ -958,8 +1018,8 @@ fn is_proven_condition_free_constraint_transition(
 /// exactly-observed source are both data-free. The introducing transaction
 /// group can therefore define the type and its constraints without asserting
 /// over a source domain in which that type does not yet exist. Constraints on
-/// an existing anchor, structs, and specializing-relates facts remain
-/// conservative.
+/// an existing anchor and structs remain conservative. A specializing role
+/// on a new relation is also condition-free.
 fn is_proven_condition_free_define(
     operation: &SchemaOperation,
     domain: &SafetyConditionDomainIndex,
@@ -977,7 +1037,10 @@ fn is_proven_condition_free_define(
                 proven_constraint = true;
             }
             SchemaFact::Relates(relates) if relates.specializes().is_some() => {
-                return false;
+                if domain.source_declares_type(relates.id().relation()) {
+                    return false;
+                }
+                proven_constraint = true;
             }
             SchemaFact::Annotation(annotation)
                 if annotation_subject_is_uninhabited(

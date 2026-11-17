@@ -1,0 +1,144 @@
+{
+  "format": "typebridge.sdk-plan-coverage/v1",
+  "observations": {
+    "cancellation_direct": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "cancellation_remote": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "entity_lifecycle": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "exact_subtypes": {
+      "calls": [
+        "exact_subtypes.exact",
+        "exact_subtypes.subtypes"
+      ],
+      "kind": "native"
+    },
+    "grouped_reducer": {
+      "calls": [
+        "grouped_reducer.binding",
+        "grouped_reducer.field",
+        "grouped_reducer.field_tuple",
+        "grouped_reducer.global"
+      ],
+      "kind": "native"
+    },
+    "hydrated_result": {
+      "calls": [
+        "roles.membership"
+      ],
+      "kind": "native"
+    },
+    "model_values_and_references": {
+      "calls": [
+        "model_values_and_references.person",
+        "roles.membership"
+      ],
+      "kind": "native"
+    },
+    "owner_iid_set": {
+      "calls": [
+        "owner_iid_set.iid_set_keys",
+        "owner_iid_set.optional_present_keys",
+        "owner_iid_set.owner_keys"
+      ],
+      "kind": "native"
+    },
+    "query_resource_lifecycle": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "relation_lifecycle": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "remote_one_exchange": {
+      "calls": [
+        "terminals.one"
+      ],
+      "kind": "native"
+    },
+    "remote_structured_diagnostic": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "resource_limits": {
+      "calls": [],
+      "kind": "answer_gate_auxiliary",
+      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+    },
+    "roles": {
+      "calls": [
+        "roles.membership",
+        "roles.network"
+      ],
+      "kind": "native"
+    },
+    "scalar_boolean": {
+      "calls": [
+        "scalar_boolean.and",
+        "scalar_boolean.field_comparison",
+        "scalar_boolean.not",
+        "scalar_boolean.or"
+      ],
+      "kind": "native"
+    },
+    "scalar_domain": {
+      "calls": [
+        "scalar_domain.rows"
+      ],
+      "kind": "native"
+    },
+    "schema_function": {
+      "calls": [
+        "schema_function.nested",
+        "schema_function.simple"
+      ],
+      "kind": "native"
+    },
+    "selection_shapes": {
+      "calls": [
+        "selection_shapes.named",
+        "selection_shapes.positional"
+      ],
+      "kind": "native"
+    },
+    "structured_query_diagnostic": {
+      "calls": [
+        "structured_query_diagnostic.one"
+      ],
+      "kind": "native"
+    },
+    "terminals": {
+      "calls": [
+        "terminals.count",
+        "terminals.exists",
+        "terminals.first",
+        "terminals.one",
+        "terminals.page",
+        "terminals.rows"
+      ],
+      "kind": "native"
+    },
+    "topology": {
+      "calls": [
+        "topology.cross_join",
+        "topology.reachable"
+      ],
+      "kind": "native"
+    }
+  },
+  "suite": "queries"
+}

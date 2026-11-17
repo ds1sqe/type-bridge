@@ -7,13 +7,9 @@ use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolv
 use type_bridge_schema_codegen::RustEmitter;
 
 use super::*;
-use crate::__codegen::{self, EncodedReference};
+use crate::__codegen::{self, EncodedCreate, IntoEncodedCreate};
 
 const RECORD_ID: &str = r#"{"kind":"entity","label":"record"}"#;
-const BASE_ID: &str = r#"{"kind":"entity","label":"base"}"#;
-const OTHER_ID: &str = r#"{"kind":"entity","label":"other"}"#;
-const LINK_ID: &str = r#"{"kind":"relation","label":"link"}"#;
-const GHOST_ID: &str = r#"{"kind":"entity","label":"ghost"}"#;
 
 const INHERITED: &str = r#"{"attribute":"inherited","owner":{"kind":"entity","label":"base"}}"#;
 const ACTIVE: &str = r#"{"attribute":"active","owner":{"kind":"entity","label":"record"}}"#;
@@ -29,7 +25,6 @@ const UNBOUNDED: &str = r#"{"attribute":"unbounded","owner":{"kind":"entity","la
 const ZONED: &str = r#"{"attribute":"zoned","owner":{"kind":"entity","label":"record"}}"#;
 const OPTIONAL_TEXT: &str =
     r#"{"attribute":"optional-text","owner":{"kind":"entity","label":"record"}}"#;
-const OTHER_ONLY: &str = r#"{"attribute":"other-only","owner":{"kind":"entity","label":"other"}}"#;
 
 #[test]
 fn discovered_entity_labels_use_one_authority_path() {
@@ -166,17 +161,29 @@ fn positive_fields() -> Vec<(&'static str, Vec<EncodedScalar>)> {
     ]
 }
 
-fn positive_create() -> EncodedCreate {
-    EncodedCreate::new(RECORD_ID, positive_fields(), vec![])
-}
-
 fn positive_attributes() -> Vec<(String, AttributeValue)> {
-    lower_encoded_entity_create(
-        &positive_create(),
-        &type_id(TypeKind::Entity, "record"),
-        &fixture(),
-    )
-    .unwrap()
+    vec![
+        ("inherited".into(), AttributeValue::String("parent".into())),
+        ("active".into(), AttributeValue::Boolean(true)),
+        ("amount".into(), AttributeValue::Decimal("123.45".into())),
+        ("bounded".into(), AttributeValue::Decimal("1.5".into())),
+        ("bounded".into(), AttributeValue::Decimal("2.5".into())),
+        ("count".into(), AttributeValue::Long(42)),
+        ("day".into(), AttributeValue::Date("2026-07-28".into())),
+        (
+            "moment".into(),
+            AttributeValue::DateTime("2026-07-28T03:55:00".into()),
+        ),
+        ("ratio".into(), AttributeValue::Double(1.5)),
+        ("span".into(), AttributeValue::Duration("P1D".into())),
+        ("text".into(), AttributeValue::String("child".into())),
+        ("unbounded".into(), AttributeValue::String("first".into())),
+        ("unbounded".into(), AttributeValue::String("second".into())),
+        (
+            "zoned".into(),
+            AttributeValue::DateTimeTZ("2026-07-28T03:55:00Z".into()),
+        ),
+    ]
 }
 
 fn error_code(error: Error) -> (ModelValidationPhase, String, Vec<String>) {
@@ -185,12 +192,6 @@ fn error_code(error: Error) -> (ModelValidationPhase, String, Vec<String>) {
         error.code().unwrap().to_owned(),
         error.path().unwrap().to_vec(),
     )
-}
-
-fn assert_input(error: Error, code: &str) {
-    let (phase, actual, _) = error_code(error);
-    assert_eq!(phase, ModelValidationPhase::Input);
-    assert_eq!(actual, code);
 }
 
 fn assert_hydration(error: Error, code: &str) {
@@ -208,109 +209,9 @@ fn record_row(attributes: Vec<(String, AttributeValue)>) -> DynamicEntityRow {
 }
 
 #[test]
-fn all_domains_optional_absence_sequences_and_inheritance_roundtrip_losslessly() {
+fn all_domains_optional_absence_sequences_and_inheritance_hydrate_losslessly() {
     let installed = fixture();
     let record = type_id(TypeKind::Entity, "record");
-    let lowered = lower_encoded_entity_create(&positive_create(), &record, &installed).unwrap();
-
-    assert!(!lowered.iter().any(|(name, _)| name == "optional-text"));
-    assert_eq!(
-        lowered
-            .iter()
-            .filter(|(name, _)| name == "bounded")
-            .map(|(_, value)| value)
-            .collect::<Vec<_>>(),
-        vec![
-            &AttributeValue::Decimal("1.5".into()),
-            &AttributeValue::Decimal("2.5".into())
-        ]
-    );
-    assert_eq!(
-        lowered
-            .iter()
-            .filter(|(name, _)| name == "unbounded")
-            .map(|(_, value)| value)
-            .collect::<Vec<_>>(),
-        vec![
-            &AttributeValue::String("first".into()),
-            &AttributeValue::String("second".into())
-        ]
-    );
-    for (name, expected) in [
-        ("inherited", vec![AttributeValue::String("parent".into())]),
-        ("active", vec![AttributeValue::Boolean(true)]),
-        ("amount", vec![AttributeValue::Decimal("123.45".into())]),
-        ("count", vec![AttributeValue::Long(42)]),
-        ("day", vec![AttributeValue::Date("2026-07-28".into())]),
-        (
-            "moment",
-            vec![AttributeValue::DateTime("2026-07-28T03:55:00".into())],
-        ),
-        ("ratio", vec![AttributeValue::Double(1.5)]),
-        ("span", vec![AttributeValue::Duration("P1D".into())]),
-        ("text", vec![AttributeValue::String("child".into())]),
-        (
-            "zoned",
-            vec![AttributeValue::DateTimeTZ("2026-07-28T03:55:00Z".into())],
-        ),
-    ] {
-        assert_eq!(
-            lowered
-                .iter()
-                .filter(|(actual, _)| actual == name)
-                .map(|(_, value)| value.clone())
-                .collect::<Vec<_>>(),
-            expected,
-        );
-    }
-
-    let expected_provider_order = installed
-        .projection()
-        .models()
-        .get(&record)
-        .unwrap()
-        .create()
-        .fields()
-        .iter()
-        .flat_map(|field| {
-            let token = installed
-                .projection()
-                .models()
-                .get(&record)
-                .unwrap()
-                .query_tokens()
-                .fields()
-                .get(field.token())
-                .unwrap();
-            lowered
-                .iter()
-                .filter(move |(name, _)| name == token.id().attribute().label().as_str())
-                .map(|(name, _)| name.as_str())
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        lowered
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect::<Vec<_>>(),
-        expected_provider_order,
-    );
-
-    let mut optional_create = positive_fields();
-    optional_create.push((OPTIONAL_TEXT, vec![EncodedScalar::String("present".into())]));
-    let optional_lowered = lower_encoded_entity_create(
-        &EncodedCreate::new(RECORD_ID, optional_create, vec![]),
-        &record,
-        &installed,
-    )
-    .unwrap();
-    assert_eq!(
-        optional_lowered
-            .iter()
-            .find(|(name, _)| name == "optional-text")
-            .map(|(_, value)| value),
-        Some(&AttributeValue::String("present".into())),
-    );
     let mut optional_attributes = positive_attributes();
     optional_attributes.push((
         "optional-text".into(),
@@ -326,7 +227,7 @@ fn all_domains_optional_absence_sequences_and_inheritance_roundtrip_losslessly()
                 && values == &vec![EncodedScalar::String("present".into())])
     );
 
-    let hydrated = hydrate_entity(record_row(lowered), &record, &installed).unwrap();
+    let hydrated = hydrate_entity(record_row(positive_attributes()), &record, &installed).unwrap();
     assert_eq!(hydrated.type_id_json(), RECORD_ID);
     assert_eq!(hydrated.iid(), "0xAbC123");
     assert!(hydrated.roles().is_empty());
@@ -408,190 +309,6 @@ fn all_domains_optional_absence_sequences_and_inheritance_roundtrip_losslessly()
             EncodedScalar::String("first".into()),
             EncodedScalar::String("second".into())
         ]
-    );
-}
-
-#[test]
-fn create_rejects_every_identity_shape_role_cardinality_and_domain_failure() {
-    let installed = fixture();
-    let record = type_id(TypeKind::Entity, "record");
-
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new("{}", positive_fields(), vec![]),
-            &record,
-            &installed,
-        )
-        .unwrap_err(),
-        "invalid_model_identity",
-    );
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(OTHER_ID, positive_fields(), vec![]),
-            &record,
-            &installed,
-        )
-        .unwrap_err(),
-        "wrong_model_identity",
-    );
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(LINK_ID, vec![], vec![]),
-            &type_id(TypeKind::Relation, "link"),
-            &installed,
-        )
-        .unwrap_err(),
-        "wrong_model_kind",
-    );
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(GHOST_ID, vec![], vec![]),
-            &type_id(TypeKind::Entity, "ghost"),
-            &installed,
-        )
-        .unwrap_err(),
-        "model_not_projected",
-    );
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(BASE_ID, vec![], vec![]),
-            &type_id(TypeKind::Entity, "base"),
-            &installed,
-        )
-        .unwrap_err(),
-        "model_not_constructible",
-    );
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(
-                RECORD_ID,
-                positive_fields(),
-                vec![(
-                    "role",
-                    vec![
-                        EncodedReference::try_new(
-                            RECORD_ID,
-                            Some("0x1".into()),
-                            vec![],
-                            &crate::__codegen::ValidationPath::root(),
-                        )
-                        .unwrap(),
-                    ],
-                )],
-            ),
-            &record,
-            &installed,
-        )
-        .unwrap_err(),
-        "entity_roles_not_allowed",
-    );
-
-    let mut missing = positive_fields();
-    missing.retain(|(identity, _)| *identity != TEXT);
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(RECORD_ID, missing, vec![]),
-            &record,
-            &installed,
-        )
-        .unwrap_err(),
-        "missing_field_evidence",
-    );
-    let mut duplicate_identity = positive_fields();
-    duplicate_identity.push((TEXT, vec![EncodedScalar::String("again".into())]));
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(RECORD_ID, duplicate_identity, vec![]),
-            &record,
-            &installed,
-        )
-        .unwrap_err(),
-        "duplicate_field_evidence",
-    );
-    let mut unexpected = positive_fields();
-    unexpected.push(("not-json", vec![]));
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(RECORD_ID, unexpected, vec![]),
-            &record,
-            &installed,
-        )
-        .unwrap_err(),
-        "unexpected_field_evidence",
-    );
-    let mut unrelated = positive_fields();
-    unrelated.push((OTHER_ONLY, vec![EncodedScalar::String("other".into())]));
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(RECORD_ID, unrelated, vec![]),
-            &record,
-            &installed,
-        )
-        .unwrap_err(),
-        "unexpected_field_evidence",
-    );
-    let mut duplicate_scalar = positive_fields();
-    duplicate_scalar
-        .iter_mut()
-        .find(|(identity, _)| *identity == TEXT)
-        .unwrap()
-        .1
-        .push(EncodedScalar::String("again".into()));
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(RECORD_ID, duplicate_scalar, vec![]),
-            &record,
-            &installed,
-        )
-        .unwrap_err(),
-        "duplicate_scalar_evidence",
-    );
-    let mut too_many = positive_fields();
-    too_many
-        .iter_mut()
-        .find(|(identity, _)| *identity == BOUNDED)
-        .unwrap()
-        .1
-        .extend([
-            EncodedScalar::Decimal(Decimal::try_new("3.5").unwrap()),
-            EncodedScalar::Decimal(Decimal::try_new("4.5").unwrap()),
-        ]);
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(RECORD_ID, too_many, vec![]),
-            &record,
-            &installed,
-        )
-        .unwrap_err(),
-        "cardinality_violation",
-    );
-    let mut wrong_domain = positive_fields();
-    wrong_domain
-        .iter_mut()
-        .find(|(identity, _)| *identity == COUNT)
-        .unwrap()
-        .1 = vec![EncodedScalar::String("42".into())];
-    assert_input(
-        lower_encoded_entity_create(
-            &EncodedCreate::new(RECORD_ID, wrong_domain, vec![]),
-            &record,
-            &installed,
-        )
-        .unwrap_err(),
-        "wrong_scalar_domain",
-    );
-}
-
-#[test]
-fn selected_query_tokens_outside_create_are_classified_as_non_create() {
-    assert_eq!(
-        classify_create_membership(true, false),
-        "non_create_field_evidence"
-    );
-    assert_eq!(classify_create_membership(true, true), "accepted");
-    assert_eq!(
-        classify_create_membership(false, false),
-        "unexpected_field_evidence"
     );
 }
 
@@ -752,33 +469,6 @@ fn hydration_rejects_identity_shape_attribute_cardinality_and_domain_failures() 
 }
 
 #[test]
-fn opaque_field_tokens_require_selected_canonical_declaring_identity() {
-    let installed = fixture();
-    let record = type_id(TypeKind::Entity, "record");
-    for identity in [
-        "text",
-        r#"{"owner":{"kind":"entity","label":"record"},"attribute":"text"}"#,
-    ] {
-        let mut fields = positive_fields();
-        fields[0] = (identity, vec![EncodedScalar::String("bad".into())]);
-        let error = lower_encoded_entity_create(
-            &EncodedCreate::new(RECORD_ID, fields, vec![]),
-            &record,
-            &installed,
-        )
-        .unwrap_err();
-        assert_eq!(
-            error_code(error),
-            (
-                ModelValidationPhase::Input,
-                "unexpected_field_evidence".into(),
-                vec!["fields[0]".into()]
-            )
-        );
-    }
-}
-
-#[test]
 fn ambiguity_guard_and_generated_validation_mapping_preserve_stable_evidence() {
     let error = require_unambiguous_provider_attribute("text", 7, 2).unwrap_err();
     assert_eq!(
@@ -801,12 +491,10 @@ fn ambiguity_guard_and_generated_validation_mapping_preserve_stable_evidence() {
         }
     }
 
-    let error = lower_entity_create(
-        RejectedInput,
-        &type_id(TypeKind::Entity, "record"),
-        &fixture(),
-    )
-    .unwrap_err();
+    let error = map_validation_error(
+        RejectedInput.into_encoded_create().unwrap_err(),
+        ModelValidationPhase::Input,
+    );
     assert!(std::error::Error::source(&error).is_some());
     assert_eq!(
         error_code(error),

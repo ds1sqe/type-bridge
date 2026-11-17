@@ -6,16 +6,19 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use super::dynamic::DynamicRelationManager;
+use super::hydration::materialize_relation_row;
+use crate::_dynamic::DynamicAttributeMap;
+use crate::_registry::DescriptorRegistry;
 use crate::_relation::TypeBridgeRelation;
+use crate::WriteResult;
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, TypeKind};
+use crate::plan_builders::bulk_write::WriteKind;
 use crate::query::RelationQuery;
 use crate::session::Database;
-use crate::session::backend::{QueryResult, TxType};
-
-use super::hydration::{extract_count, hydrate_relation};
-use super::query_builder;
+use crate::session::backend::TxType;
 
 /// Generic CRUD manager for a specific relation type.
 ///
@@ -28,24 +31,33 @@ use super::query_builder;
 /// generated `Employment` relation from a consumer package.
 ///
 /// ```ignore
-/// let manager = RelationManager::<Employment>::new(&db);
+/// let manager = RelationManager::<Employment>::from_registry(&db, registry)?;
 /// manager.insert(&mut employment).await?;
 /// let rels = manager.all().await?;
 /// ```
 pub struct RelationManager<'db, R: TypeBridgeRelation> {
     db: &'db Database,
     hooks: HookRunner,
+    dynamic: DynamicRelationManager<'db>,
     _marker: PhantomData<R>,
 }
 
 impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
-    /// Create a new manager for the given database.
-    pub fn new(db: &'db Database) -> Self {
-        Self {
+    /// Create a manager whose operations use native plans and installed registry authority.
+    pub fn from_registry(db: &'db Database, registry: Arc<DescriptorRegistry>) -> Result<Self> {
+        if registry.installed_schema_authority().is_none() {
+            return Err(crate::plan_builders::manager::invalid(
+                "manager_plan_authority_unavailable",
+                "A registry-backed manager requires installed schema authority",
+            ));
+        }
+        let descriptor = registry.relation(R::TYPE_NAME)?;
+        Ok(Self {
             db,
             hooks: HookRunner::new(),
+            dynamic: DynamicRelationManager::from_registry(db, registry, descriptor),
             _marker: PhantomData,
-        }
+        })
     }
 
     /// Register a lifecycle hook.
@@ -57,86 +69,76 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
         self
     }
 
-    /// Insert a relation and return the assigned IID.
+    /// Insert a relation and return every hydrated root.
     ///
-    /// The relation's IID is also set in-place via [`TypeBridgeRelation::set_iid`].
+    /// The input IID is attached only when exactly one root is returned.
     #[tracing::instrument(skip(self, relation), fields(relation_type = R::TYPE_NAME))]
-    pub async fn insert(&self, relation: &mut R) -> Result<String> {
+    pub async fn insert(&self, relation: &mut R) -> Result<WriteResult<R>> {
         if self.hooks.has_hooks() {
-            let mut ctx = HookRunner::build_context(
+            let mut context = HookRunner::build_context(
                 R::TYPE_NAME,
                 TypeKind::Relation,
                 CrudOperation::Insert,
                 relation.to_attribute_values(),
-                relation.iid().map(String::from),
+                relation.iid().map(str::to_owned),
             );
-            self.hooks.run_pre_hooks(&mut ctx).await?;
+            self.hooks.run_pre_hooks(&mut context).await?;
         }
-
-        let typeql = query_builder::build_relation_insert_with_iid::<R>(relation, "$r")?;
-        tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "INSERT RELATION");
-
-        let result = self.db.execute_raw(&typeql, TxType::Write).await?;
-        let iid = match result {
-            QueryResult::Documents(docs) => {
-                let doc = docs.first().ok_or_else(|| OrmError::Hydration {
-                    type_name: R::TYPE_NAME.into(),
-                    message: "Insert returned no documents".into(),
-                })?;
-
-                let iid = doc
-                    .get("iid")
-                    .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
-                    .ok_or_else(|| OrmError::Hydration {
-                        type_name: R::TYPE_NAME.into(),
-                        message: "No IID in insert response".into(),
-                    })?
-                    .to_string();
-
-                relation.set_iid(iid.clone());
-                Ok(iid)
+        let manager = &self.dynamic;
+        let attributes = relation
+            .to_attribute_values()
+            .into_iter()
+            .map(|(name, value)| (name.into(), value))
+            .collect::<DynamicAttributeMap>();
+        let players = relation
+            .to_role_player_refs()
+            .into_iter()
+            .map(|player| crate::_dynamic::DynamicRolePlayerInput {
+                role_name: player.role.into(),
+                player_type_name: player.entity_type_name.into(),
+                iid: player.iid,
+                key: player.key.map(|(name, value)| (name.into(), value)),
+            })
+            .collect::<Vec<_>>();
+        let result = manager
+            .write_mapped(WriteKind::Insert, None, &attributes, &players, |rows| {
+                rows.into_items()
+                    .into_iter()
+                    .map(materialize_relation_row::<R>)
+                    .collect::<Result<Vec<_>>>()
+                    .map(WriteResult::new)
+            })
+            .await?;
+        if let Some(item) = result.item()
+            && let Some(iid) = item.iid()
+        {
+            relation.set_iid(iid.to_owned());
+        }
+        if self.hooks.has_hooks() {
+            for item in result.items() {
+                let context = HookRunner::build_context(
+                    R::TYPE_NAME,
+                    TypeKind::Relation,
+                    CrudOperation::Insert,
+                    item.to_attribute_values(),
+                    item.iid().map(str::to_owned),
+                );
+                self.hooks.run_post_hooks(&context).await;
             }
-            QueryResult::Ok => Err(OrmError::Hydration {
-                type_name: R::TYPE_NAME.into(),
-                message: "Expected Documents from insert+fetch, got Ok".into(),
-            }),
-            QueryResult::Rows(_) => Err(OrmError::Hydration {
-                type_name: R::TYPE_NAME.into(),
-                message: "Expected Documents from insert+fetch, got Rows".into(),
-            }),
-        }?;
-
-        if self.hooks.has_hooks() {
-            let ctx = HookRunner::build_context(
-                R::TYPE_NAME,
-                TypeKind::Relation,
-                CrudOperation::Insert,
-                relation.to_attribute_values(),
-                Some(iid.clone()),
-            );
-            self.hooks.run_post_hooks(&ctx).await;
         }
-
-        Ok(iid)
+        Ok(result)
     }
 
     /// Fetch relations matching the given filters.
     #[tracing::instrument(skip(self, filters), fields(relation_type = R::TYPE_NAME))]
     pub async fn get(&self, filters: &[Filter]) -> Result<Vec<R>> {
-        let typeql = query_builder::build_relation_fetch::<R>(filters, "$r")?;
-        tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "FETCH RELATION");
-
-        let result = self.db.execute_raw(&typeql, TxType::Read).await?;
-        match result {
-            QueryResult::Documents(docs) => {
-                docs.iter().map(|doc| hydrate_relation::<R>(doc)).collect()
-            }
-            QueryResult::Ok => Ok(vec![]),
-            QueryResult::Rows(_) => Err(OrmError::Hydration {
-                type_name: R::TYPE_NAME.into(),
-                message: "Expected Documents from fetch query, got Rows".into(),
-            }),
-        }
+        let manager = &self.dynamic;
+        return manager
+            .get(filters)
+            .await?
+            .into_iter()
+            .map(materialize_relation_row::<R>)
+            .collect();
     }
 
     /// Fetch exactly one relation matching the filters.
@@ -176,9 +178,27 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
             self.hooks.run_pre_hooks(&mut ctx).await?;
         }
 
-        let typeql = query_builder::build_relation_delete::<R>(relation, "$r")?;
-        tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "DELETE RELATION");
-        self.db.execute_raw(&typeql, TxType::Write).await?;
+        let manager = &self.dynamic;
+        manager
+            .delete_identity(
+                relation.iid(),
+                &relation
+                    .to_attribute_values()
+                    .into_iter()
+                    .map(|(name, value)| (name.into(), value))
+                    .collect::<DynamicAttributeMap>(),
+                &relation
+                    .to_role_player_refs()
+                    .into_iter()
+                    .map(|player| crate::_dynamic::DynamicRolePlayerInput {
+                        role_name: player.role.into(),
+                        player_type_name: player.entity_type_name.into(),
+                        iid: player.iid,
+                        key: player.key.map(|(name, value)| (name.into(), value)),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
 
         if self.hooks.has_hooks() {
             let ctx = HookRunner::build_context(
@@ -192,6 +212,113 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
         }
 
         Ok(())
+    }
+
+    /// Delete one instance and return every complete pre-delete snapshot.
+    ///
+    /// Requires [`Self::from_registry`]. Hydration receives the exact `_type`;
+    /// relation snapshots also include `role_players` in `from_document`.
+    pub async fn delete_returning(&self, relation: &R) -> Result<WriteResult<R>> {
+        self.delete_many_returning(std::slice::from_ref(relation))
+            .await
+            .map(WriteResult::new)
+    }
+
+    /// Capture every requested instance before deleting any, preserving input order.
+    ///
+    /// Missing instances are omitted. Duplicate IIDs are refused. Snapshot
+    /// decoding finishes before commit; post-hooks run only after commit succeeds.
+    /// Requires [`Self::from_registry`].
+    pub async fn delete_many_returning(&self, relations: &[R]) -> Result<Vec<R>> {
+        let manager = &self.dynamic;
+        if relations.is_empty() {
+            return Ok(Vec::new());
+        }
+        if self.hooks.has_hooks() {
+            for relation in relations {
+                let mut context = HookRunner::build_context(
+                    R::TYPE_NAME,
+                    TypeKind::Relation,
+                    CrudOperation::Delete,
+                    relation.to_attribute_values(),
+                    relation.iid().map(String::from),
+                );
+                self.hooks.run_pre_hooks(&mut context).await?;
+            }
+        }
+        let tx = self.db.transaction_context(TxType::Write).await?;
+        let manager = manager.in_transaction(tx.clone());
+        let result = async {
+            let materialize = |rows: Vec<crate::_dynamic::DynamicRelationRow>| {
+                rows.into_iter()
+                    .map(materialize_relation_row::<R>)
+                    .collect::<Result<Vec<_>>>()
+            };
+            if let Some(iids) = relations
+                .iter()
+                .map(|relation| relation.iid().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+            {
+                manager.delete_snapshots(&iids, materialize).await
+            } else {
+                let items = relations
+                    .iter()
+                    .map(|relation| {
+                        (
+                            relation.iid().map(str::to_owned),
+                            if relation.iid().is_some() {
+                                vec![]
+                            } else {
+                                relation
+                                    .to_attribute_values()
+                                    .into_iter()
+                                    .map(|(name, value)| (name.into(), value))
+                                    .collect::<DynamicAttributeMap>()
+                            },
+                            if relation.iid().is_some() {
+                                vec![]
+                            } else {
+                                relation
+                                    .to_role_player_refs()
+                                    .into_iter()
+                                    .map(|player| crate::_dynamic::DynamicRolePlayerInput {
+                                        role_name: player.role.into(),
+                                        player_type_name: player.entity_type_name.into(),
+                                        iid: player.iid,
+                                        key: player.key.map(|(name, value)| (name.into(), value)),
+                                    })
+                                    .collect()
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                manager.delete_identity_snapshots(&items, materialize).await
+            }
+        }
+        .await;
+        let snapshots = match result {
+            Ok(snapshots) => {
+                super::returning::commit(&tx).await?;
+                snapshots
+            }
+            Err(error) => {
+                let _ = tx.rollback().await;
+                return Err(error);
+            }
+        };
+        if self.hooks.has_hooks() {
+            for relation in relations {
+                let context = HookRunner::build_context(
+                    R::TYPE_NAME,
+                    TypeKind::Relation,
+                    CrudOperation::Delete,
+                    relation.to_attribute_values(),
+                    relation.iid().map(String::from),
+                );
+                self.hooks.run_post_hooks(&context).await;
+            }
+        }
+        Ok(snapshots)
     }
 
     /// Count all relations of this type.
@@ -215,16 +342,14 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
     ///     .execute().await?;
     /// ```
     pub fn query(&self) -> RelationQuery<'db, R> {
-        RelationQuery::new(self.db)
+        RelationQuery::from_manager(self.dynamic.clone())
     }
 
     /// Count relations matching the given filters.
     #[tracing::instrument(skip(self, filters), fields(relation_type = R::TYPE_NAME))]
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
-        let typeql = query_builder::build_relation_count::<R>(filters, "$r")?;
-        tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "COUNT RELATION");
-        let result = self.db.execute_raw(&typeql, TxType::Read).await?;
-        extract_count(&result)
+        let manager = &self.dynamic;
+        return manager.count_with_filters(filters).await;
     }
 
     /// Insert multiple relations in a single transaction.
@@ -248,37 +373,40 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
         }
 
         let tx = self.db.transaction_context(TxType::Write).await?;
-        let mut iids = Vec::with_capacity(relations.len());
+        let dynamic = self.dynamic.in_transaction(tx.clone());
 
-        for relation in relations.iter_mut() {
-            let typeql = query_builder::build_relation_insert_with_iid::<R>(relation, "$r")?;
-            tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "INSERT RELATION BATCH");
-
-            let result = tx.query(&typeql).await?;
-            match result {
-                QueryResult::Documents(docs) => {
-                    let doc = docs.first().ok_or_else(|| OrmError::Hydration {
-                        type_name: R::TYPE_NAME.into(),
-                        message: "Insert returned no documents".into(),
-                    })?;
-                    let iid = doc
-                        .get("iid")
-                        .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
-                        .ok_or_else(|| OrmError::Hydration {
-                            type_name: R::TYPE_NAME.into(),
-                            message: "No IID in insert response".into(),
-                        })?
-                        .to_string();
-                    relation.set_iid(iid.clone());
-                    iids.push(iid);
-                }
-                _ => {
-                    return Err(OrmError::Hydration {
-                        type_name: R::TYPE_NAME.into(),
-                        message: "Expected Documents from insert+fetch".into(),
-                    });
-                }
+        let manager = &dynamic;
+        let items = relations
+            .iter()
+            .map(|relation| {
+                (
+                    relation
+                        .to_attribute_values()
+                        .into_iter()
+                        .map(|(name, value)| (name.into(), value))
+                        .collect::<DynamicAttributeMap>(),
+                    relation
+                        .to_role_player_refs()
+                        .into_iter()
+                        .map(|player| crate::_dynamic::DynamicRolePlayerInput {
+                            role_name: player.role.into(),
+                            player_type_name: player.entity_type_name.into(),
+                            iid: player.iid,
+                            key: player.key.map(|(name, value)| (name.into(), value)),
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let iids = match manager.insert_many(&items).await {
+            Ok(iids) => iids,
+            Err(error) => {
+                let _ = tx.rollback().await;
+                return Err(error);
             }
+        };
+        for (relation, iid) in relations.iter_mut().zip(&iids) {
+            relation.set_iid(iid.clone());
         }
 
         tx.commit().await?;
@@ -319,10 +447,34 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
         }
 
         let tx = self.db.transaction_context(TxType::Write).await?;
-        for relation in relations {
-            let typeql = query_builder::build_relation_delete::<R>(relation, "$r")?;
-            tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "DELETE RELATION BATCH");
-            tx.query(&typeql).await?;
+        let dynamic = self.dynamic.in_transaction(tx.clone());
+        let manager = &dynamic;
+        let items = relations
+            .iter()
+            .map(|relation| {
+                (
+                    relation.iid().map(str::to_owned),
+                    relation
+                        .to_attribute_values()
+                        .into_iter()
+                        .map(|(name, value)| (name.into(), value))
+                        .collect::<DynamicAttributeMap>(),
+                    relation
+                        .to_role_player_refs()
+                        .into_iter()
+                        .map(|player| crate::_dynamic::DynamicRolePlayerInput {
+                            role_name: player.role.into(),
+                            player_type_name: player.entity_type_name.into(),
+                            iid: player.iid,
+                            key: player.key.map(|(name, value)| (name.into(), value)),
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = manager.delete_many_identities(&items).await {
+            let _ = tx.rollback().await;
+            return Err(error);
         }
         tx.commit().await?;
 

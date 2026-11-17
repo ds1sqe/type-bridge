@@ -15,8 +15,8 @@ filters are combined with AND. See [CRUD](crud.md#filters) for double-underscore
 field names and the explicit `__eq` escape.
 
 For the binding-neutral exact subset, build a canonical manager filter with an
-issued field token and exact projected value. It is immutable and exposes only
-`all`, identity-strict `first`, `count`, and `exists`; joins, roles, ordering,
+issued field token and exact projected value. It is immutable and exposes
+`all`, identity-strict `first`, `count`, `exists`, `update`, and `delete`; joins, roles, ordering,
 pagination, and rich string predicates remain on the typed-query surface below.
 
 ## Owner-aware fields
@@ -36,12 +36,12 @@ rejected before query execution.
 ## Comparison and string predicates
 
 ```python
-adult = age.gte(Age(18))
+adult = age.ge(Age(18))
 not_retired = age.lt(Age(65))
 named_ada = name.eq(Name("Ada"))
 prefix = name.starts_with(Name("A"))
 substring = name.contains(Name("da"))
-pattern = name.regex(Name("^A.*"))
+pattern = name.like(Name("^A.*"))
 ```
 
 Generated fields provide scalar-appropriate predicates. Equality can also
@@ -70,7 +70,7 @@ when operator syntax is inconvenient.
 
 ```python
 employment = session.exact(Employment)
-employee = employment.role(Employment.employee).connects(person)
+employee = employment.role(Employment.employee).links(person)
 
 rows = await session.query(person, employment).where(employee).rows(limit=100)
 ```
@@ -87,34 +87,93 @@ rows = await (
     .rows(
         limit=25,
         offset=50,
-        order_by=(person.field(Person.person_id).asc(),),
+        sort=(person.field(Person.person_id).asc(),),
     )
 )
 ```
 
-Rows are bounded. Ordering uses generated bound fields and explicit missing-
-value policy where needed. `one`, `first`, `rows`, `page_by`, `count_by`, and
+Rows are bounded. Ordering uses generated bound fields with `asc()` or `desc()`.
+Optional order fields must be filtered to present values, for example
+`.where(person.field(Person.age).is_present())`, before sorting by that field.
+Unfiltered optional sorts are refused; null-first and null-last ordering are
+not supported. `one`, `first`, `rows`, `page_by`, `count_by`, and
 `exists_by` share the same immutable query. Each terminal is awaited, on a
 direct or a proxy connection alike (see
 [Typed queries](typed-queries.md#start-a-session)).
 
-## Raw compatibility builder
+For a multi-valued field, each comparison needs a matching value independently.
+A row with tags `"a"` and `"z"` satisfies both `tag == "a"` and `tag == "z"`.
+It also satisfies `tag > "m"` and `tag < "c"` through two different values.
+Managers and typed queries use this same rule for rows, first, count, and
+existence. Requiring one attribute member to satisfy both conditions needs raw
+TypeQL with a shared attribute variable.
 
-The package-root `Query`/`QueryBuilder` facade remains a raw TypeQL builder
-separate from generated immutable queries. Its model helpers accept exact
-installed generated classes:
+String `contains` ignores case. `starts_with` and `ends_with` are case-sensitive.
+
+## Raw TypeQL execution
+
+Never compare an attribute variable with itself (for example, `$x == $x`) in
+raw TypeQL. This crashes TypeDB 3.12.3, 3.13.6 and 3.14.0, including other
+comparison operators. Generic Plan builds refuse that shape before execution;
+raw text cannot be guarded. Use two independent attribute witnesses or remove
+the redundant comparison.
+The upstream report is
+[typedb/typedb#7725](https://github.com/typedb/typedb/issues/7725).
+
+
+Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+to TypeDB as written, and TypeDB's output comes back as it
+answered, in this SDK's native data types. TypeBridge adds no
+validation, rewriting, hydration, hooks, limits or extra
+queries. It runs in read, write and schema transactions and
+accepts any TypeQL, schema-breaking changes included. The caller
+owns its correctness; TypeBridge makes no promise about its
+effects. On a proxy connection it posts to the server's opt-in
+`/v3/raw` endpoint, which is off by default.
+
+Every SDK has the same pair, spelled:
+
+| SDK | Open a raw context | Execute TypeQL |
+| --- | --- | --- |
+| Python | `raw_transaction` | `execute_query` |
+| TypeScript | `rawTransaction` | `executeQuery` |
+| Rust | `raw_transaction` | `execute_query` |
+| C | `type_bridge_database_raw_transaction` or `type_bridge_proxy_connection_raw_transaction` | `type_bridge_raw_transaction_execute_query` |
+
+Direct contexts support several statements in one provider
+transaction. Proxy contexts use the opt-in `/v3/raw` endpoint, which is off
+by default. Use generated typed queries and plan builders when you need
+schema validation and generated results.
+
+The result is the complete HTTP query-answer dictionary; `answers` contains
+its rows or documents. Python integers preserve the provider's full precision.
+Use an explicit raw context to group direct statements:
 
 ```python
-from type_bridge import Query, QueryBuilder
-
-raw = QueryBuilder.match_entity(
-    Person,
-    "$person",
-    person_id=PersonId("ada"),
-).fetch("$person")
-
-manual = Query().match("$person isa person").fetch("$person")
+with db.raw_transaction("write") as tx:
+    tx.execute_query('insert $p isa person, has name "Ada";')
+    tx.execute_query('insert $p isa person, has name "Grace";')
+    tx.rollback()
 ```
 
-It produces query text; it does not recreate schema authority or provide typed
-hydration. Prefer the generated query session for new application queries.
+Clean exit commits unless `commit_on_exit=False` or the caller already completed
+the context. An exception escaping the `with` block closes without committing.
+After a query error, TypeBridge checks whether the provider transaction remains
+open. If it does, catching the error allows further queries and a normal commit.
+If the provider closed it, earlier writes cannot commit: further queries and a
+clean exit's commit raise `raw_transaction_failed` with a definite abort outcome.
+Open a new transaction in that case. Call `rollback()` or set
+`commit_on_exit=False` to discard pending writes.
+
+Measured on TypeDB 3.12.3, 3.13.6 and 3.14.0: a failed `match` leaves both read
+and write transactions open; a later valid query or write succeeds. A failed
+`insert` closes its write transaction, and a failed `define` closes its schema
+transaction. This behavior comes from provider state, rather than transaction
+kind or query-text classification.
+On a proxy connection a raw
+transaction holds one query, because `/v3/raw` runs each request as its own
+transaction. A second query raises `RawQueryError` with code
+`raw_transaction_single_query`; rollback after a proxy write raises
+`raw_transaction_already_committed`. A disabled host raises `raw_disabled`.
+Provider errors retain `code`, `message`, `status`, `provider_code` and
+`commit_outcome`; `commit_outcome_unknown` means durability must be checked.

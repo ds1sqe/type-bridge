@@ -1,13 +1,7 @@
 //! Transaction wrapper for TypeDB operations.
 
-use super::backend::{
-    AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,
-    TransactionOps, TxType,
-};
+use super::backend::{GivenRowsSpec, QueryResult, TransactionOps, TxType};
 use crate::error::{ClassifiedCommitError, Result};
-use type_bridge_core_lib::ast::{
-    TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
-};
 
 /// A single TypeDB transaction.
 ///
@@ -18,8 +12,68 @@ pub struct OwnedTransaction {
 }
 
 impl OwnedTransaction {
+    /// Lend this exact provider transaction to eager typed managers and raw
+    /// queries. The scope owns invalidation; borrowed contexts cannot commit,
+    /// roll back or close. Call `finish` before resuming engine execution.
+    #[doc(hidden)]
+    pub(crate) fn borrow_context<'a>(
+        &'a mut self,
+        database: &super::database::Database,
+    ) -> BorrowedTransactionContext<'a> {
+        let context = database
+            .context_from_owned(self.inner.take_for_borrow())
+            .borrowed();
+        BorrowedTransactionContext {
+            owner: self,
+            context,
+            finished: false,
+        }
+    }
+
+    /// Lend a write transaction only after proving its active migration fence.
+    /// The scope and held lease must match in this same provider transaction.
+    pub async fn borrow_migration_context<'a>(
+        &'a mut self,
+        database: &super::database::Database,
+        scope: &type_bridge_contract::managed_scope::ManagedScopeId,
+        fence: u64,
+        holder: &str,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<BorrowedTransactionContext<'a>> {
+        if self.tx_type() != TxType::Write {
+            return Err(crate::OrmError::Transaction(
+                "migration callback requires a Write transaction".into(),
+            ));
+        }
+        super::legacy_writer::require_migration_callback_fence(
+            self,
+            scope,
+            fence,
+            holder,
+            cancellation,
+            deadline,
+        )
+        .await?;
+        Ok(self.borrow_context(database))
+    }
+
     pub(crate) fn from_eager(inner: super::eager::EagerTransaction) -> Self {
         Self { inner }
+    }
+
+    /// Execute read plans on Read, Write or Schema transactions, and write
+    /// plans on Write or Schema transactions, without changing ownership.
+    pub async fn execute_plans(
+        &mut self,
+        plans: &[type_bridge_contract::query_plan::QueryPlan],
+        limits: &crate::QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<Vec<super::staged::PlanAnswer>> {
+        self.inner
+            .execute_plans(plans, limits, cancellation, deadline)
+            .await
     }
 
     /// Execute a TypeQL query within this transaction.
@@ -48,70 +102,6 @@ impl OwnedTransaction {
         rows: GivenRowsSpec,
     ) -> Result<QueryResult> {
         self.inner.query_with_rows(typeql, rows).await
-    }
-
-    /// Execute one internal typed selected-row statement with bounded reading.
-    pub(crate) async fn query_typed_bounded(
-        &mut self,
-        query: &TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.inner
-            .query_typed_bounded(query, limits, consumer)
-            .await
-    }
-
-    pub(crate) fn supports_exactly_one_tuple_proof(&self) -> Result<bool> {
-        self.inner.supports_exactly_one_tuple_proof()
-    }
-
-    /// Execute one internal distinct selected-tuple identity scan.
-    pub(crate) async fn query_tuple_typed_bounded(
-        &mut self,
-        query: &TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.inner
-            .query_tuple_typed_bounded(query, limits, consumer)
-            .await
-    }
-
-    /// Execute one internal complete batched selected-thing hydration.
-    pub(crate) async fn hydrate_typed_bounded(
-        &mut self,
-        query: &TypedHydrateThings,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.inner
-            .hydrate_typed_bounded(query, limits, consumer)
-            .await
-    }
-
-    /// Execute one internal typed distinct-root stream.
-    pub(crate) async fn query_root_typed_bounded(
-        &mut self,
-        query: &TypedRootScan,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.inner
-            .query_root_typed_bounded(query, limits, consumer)
-            .await
-    }
-
-    /// Execute one internal exact batched page re-match/hydration.
-    pub(crate) async fn rematch_page_typed_bounded(
-        &mut self,
-        query: &TypedPageRematch,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        self.inner
-            .rematch_page_typed_bounded(query, limits, consumer)
-            .await
     }
 
     /// Commit this transaction.
@@ -147,9 +137,35 @@ impl OwnedTransaction {
     }
 }
 
-/// Released eager transaction name, retained until 3.0.
-#[deprecated(
-    since = "2.3.0",
-    note = "Use OwnedTransaction; staged Transaction takes the session-level name in 3.0"
-)]
-pub type Transaction = OwnedTransaction;
+/// Engine-owned scope for a callback's temporary transaction context.
+#[doc(hidden)]
+pub struct BorrowedTransactionContext<'a> {
+    owner: &'a mut OwnedTransaction,
+    context: super::context::TransactionContext,
+    finished: bool,
+}
+impl BorrowedTransactionContext<'_> {
+    /// Shared execution only; lifecycle calls are refused by the context.
+    pub fn context(&self) -> &super::context::TransactionContext {
+        &self.context
+    }
+
+    /// Invalidate all callback handles and return the same transaction to its owner.
+    pub async fn finish(mut self) -> Result<()> {
+        self.owner.inner = self.context.detach_borrowed().await?;
+        self.finished = true;
+        Ok(())
+    }
+}
+impl Drop for BorrowedTransactionContext<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            if let Some(mut transaction) = self.context.detach_borrowed_now() {
+                transaction.latch_rollback_only();
+                self.owner.inner = transaction;
+            } else {
+                self.context.abandon_borrowed();
+            }
+        }
+    }
+}

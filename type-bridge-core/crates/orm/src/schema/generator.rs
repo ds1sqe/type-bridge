@@ -46,18 +46,6 @@ fn player_parent<'a>(info: &'a SchemaInfo, player: &str) -> Option<&'a str> {
         })
 }
 
-/// Generate a schema using checked official-AST construction.
-///
-/// Invalid structured inputs return an empty string. Use
-/// [`try_generate_define_block`] to retain the typed diagnostic.
-#[deprecated(
-    since = "2.3.0",
-    note = "use try_generate_define_block; removed in 3.0"
-)]
-pub fn generate_define_block(info: &SchemaInfo) -> String {
-    try_generate_define_block(info).unwrap_or_default()
-}
-
 /// Build and render a schema with typed construction errors.
 pub fn try_generate_define_block(info: &SchemaInfo) -> Result<String, super::error::SchemaError> {
     let result = (|| -> Result<String, tql::TqlError> {
@@ -354,37 +342,6 @@ fn typedb_value_type(value_type: &ValueType) -> &'static str {
     }
 }
 
-/// Render a cardinality annotation. Invalid bounds return an empty string.
-#[deprecated(
-    since = "2.3.0",
-    note = "use checked core schema builders; removed in 3.0"
-)]
-pub fn card_annotation(min: u32, max: Option<u32>) -> String {
-    tql::schema_card(u64::from(min), max.map(u64::from))
-        .map(|value| tql::render_schema_annotations(&[value]))
-        .unwrap_or_default()
-}
-/// Render an attribute definition. Invalid structured inputs return an empty string.
-#[deprecated(
-    since = "2.3.0",
-    note = "use checked core schema builders; removed in 3.0"
-)]
-pub fn attribute_definition(attribute: &AttributeSchemaEntry) -> String {
-    attribute_node(attribute, true)
-        .and_then(tql::render_schema_definition)
-        .unwrap_or_default()
-}
-/// Render attribute constraints without head documentation annotations.
-#[deprecated(
-    since = "2.3.0",
-    note = "use checked core schema builders; removed in 3.0"
-)]
-pub fn attribute_constraint_definition(attribute: &AttributeSchemaEntry) -> String {
-    attribute_node(attribute, false)
-        .and_then(tql::render_schema_definition)
-        .unwrap_or_default()
-}
-
 /// Topological sort: parents before children, deterministic order within each level.
 ///
 /// Only keys of `map` appear in the result; a parent naming a type outside
@@ -430,7 +387,6 @@ where
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::_attribute::ValueType;
@@ -443,7 +399,7 @@ mod tests {
     #[test]
     fn empty_schema_produces_define_only() {
         let info = SchemaInfo::default();
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert_eq!(result, "define");
     }
 
@@ -459,7 +415,7 @@ mod tests {
             AttributeSchemaEntry::new("age", ValueType::Long),
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(result.contains("attribute age, value integer;"));
         assert!(result.contains("attribute name, value string;"));
         // age before name (alphabetical)
@@ -485,7 +441,7 @@ mod tests {
         info.attributes.insert("age".into(), age);
         info.attributes.insert("language".into(), language);
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
 
         assert!(
             result.contains(r#"attribute email, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");"#)
@@ -505,7 +461,7 @@ mod tests {
         attr.parent_type = Some("base-id".into());
         info.attributes.insert("child-id".into(), attr);
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
 
         assert!(result.contains("attribute child-id @abstract, sub base-id, value string;"));
         assert!(!result.contains("attribute child-id, sub base-id @abstract"));
@@ -538,7 +494,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(result.contains("entity person,"));
         assert!(result.contains("owns name @key;"));
     }
@@ -576,7 +532,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(result.contains("owns name @key,"));
         assert!(result.contains("owns age;"));
     }
@@ -618,7 +574,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(result.contains("relation employment,"));
         assert!(result.contains("relates employee,"));
         assert!(result.contains("relates employer,"));
@@ -650,7 +606,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(result.contains("owns tag @card(2..5);"));
     }
 
@@ -677,7 +633,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(result.contains("owns email @unique;"));
     }
 
@@ -704,7 +660,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("entity animal @abstract,"),
             "should have @abstract: {result}"
@@ -764,7 +720,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("entity dog, sub animal,"),
             "should have sub clause: {result}"
@@ -799,7 +755,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
 
         assert!(result.contains("entity mammal @abstract, sub animal;"));
         assert!(!result.contains("entity mammal, sub animal @abstract"));
@@ -835,7 +791,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         let mammal_pos = result.find("entity mammal").unwrap();
         let cat_pos = result.find("entity cat").unwrap();
         assert!(
@@ -863,7 +819,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
 
         assert!(result.contains("entity person, sub animal;"), "{result}");
         assert!(!result.contains("entity animal"), "{result}");
@@ -886,7 +842,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
 
         assert!(
             result.contains("relation part-time-employment, sub employment;"),
@@ -947,7 +903,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         // "dog" section should have "owns breed" but NOT "owns name" (inherited)
         let dog_section_start = result.find("entity dog").unwrap();
         let dog_section = &result[dog_section_start..];
@@ -1011,7 +967,7 @@ mod tests {
             },
         );
 
-        let emitted = generate_define_block(&info);
+        let emitted = try_generate_define_block(&info).unwrap();
         assert!(
             emitted.contains("entity child, sub base, owns tag[] @card(0..3);"),
             "the distinct drop must remain an explicit subtype redeclaration: {emitted}"
@@ -1040,7 +996,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("relation connection @abstract,"),
             "should have @abstract: {result}"
@@ -1081,7 +1037,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("relation employment, sub connection,"),
             "should have sub clause: {result}"
@@ -1118,7 +1074,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
 
         assert!(result.contains("relation interaction @abstract, sub connection;"));
         assert!(!result.contains("relation interaction, sub connection @abstract"));
@@ -1152,7 +1108,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         // "relates friend" should appear only once
         let count = result.matches("relates friend").count();
         assert_eq!(count, 1, "should deduplicate role names: {result}");
@@ -1194,7 +1150,7 @@ mod tests {
         ];
         let info = SchemaInfo::from_descriptors(&descriptors);
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
 
         assert_eq!(
             result,
@@ -1240,7 +1196,7 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         let parsed: SchemaInfo = serde_json::from_str(&json).unwrap();
 
-        let result = generate_define_block(&parsed);
+        let result = try_generate_define_block(&parsed).unwrap();
 
         assert_eq!(
             result,
@@ -1285,7 +1241,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("player, plays r:role @card(0..1);"),
             "expected plays @card annotation, got:\n{result}"
@@ -1326,7 +1282,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         // Assert full line, not just contains — no trailing @card
         assert!(
             result.contains("person, plays employment:employee;"),
@@ -1372,7 +1328,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("relates employee @card(1..1)"),
             "expected relates @card(1..1), got:\n{result}"
@@ -1421,7 +1377,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("b, plays a:role @card(1..1);"),
             "expected relation-as-player plays @card, got:\n{result}"
@@ -1465,7 +1421,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("thing, plays r:slot @card(0..);"),
             "expected @card(0..), got:\n{result}"
@@ -1517,7 +1473,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         let count = result
             .matches("person, plays friendship:friend @card(0..5);")
             .count();
@@ -1604,7 +1560,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("relates author as contributor"),
             "specializing role must emit 'as contributor': {result}"
@@ -1659,7 +1615,7 @@ mod tests {
             },
         );
 
-        let emitted = generate_define_block(&info);
+        let emitted = try_generate_define_block(&info).unwrap();
         assert_eq!(
             emitted,
             concat!(
@@ -1702,7 +1658,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("relates participant @abstract"),
             "abstract role must include @abstract annotation: {result}"
@@ -1762,7 +1718,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("relates worker as assignee @abstract @card(0..1)"),
             "combined role must match canon exactly: {result}"
@@ -1820,7 +1776,7 @@ mod tests {
             },
         );
 
-        let emitted = generate_define_block(&info);
+        let emitted = try_generate_define_block(&info).unwrap();
         // Parse the emitted block back through the core schema parser.
         let parsed = SchemaInfo::from_typeql(&emitted).expect("round-trip parse failed");
 
@@ -1870,7 +1826,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("owns tag[]"),
             "ordered attr must emit [] marker: {result}"
@@ -1901,7 +1857,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("owns nickname[] @distinct @card(0..3)"),
             "ordered distinct attr must match canon exactly: {result}"
@@ -1931,7 +1887,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("relates member[]"),
             "ordered role must emit [] marker: {result}"
@@ -1962,7 +1918,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result.contains("relates member @abstract @distinct"),
             "distinct role must emit @abstract @distinct in order: {result}"
@@ -2014,7 +1970,7 @@ mod tests {
             },
         );
 
-        let emitted = generate_define_block(&info);
+        let emitted = try_generate_define_block(&info).unwrap();
         let parsed = SchemaInfo::from_typeql(&emitted).expect("list-owns round-trip parse failed");
 
         let person = parsed
@@ -2074,7 +2030,7 @@ mod tests {
             },
         );
 
-        let emitted = generate_define_block(&info);
+        let emitted = try_generate_define_block(&info).unwrap();
         let parsed = SchemaInfo::from_typeql(&emitted).expect("list-role round-trip parse failed");
 
         let feed = parsed
@@ -2215,7 +2171,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(result.contains(
             "entity person @doc(\"an individual client\") @meta(\"icon\", \"silhouette.png\");"
         ));
@@ -2250,7 +2206,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(result.contains("entity child @doc(\"d\"), sub base;"));
     }
 
@@ -2262,7 +2218,7 @@ mod tests {
         attr.meta.insert("pii".into(), "true".into());
         info.attributes.insert("name".into(), attr);
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(result.contains(
             "attribute name @doc(\"a personal name\") @meta(\"pii\", \"true\"), value string;"
         ));
@@ -2295,7 +2251,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(
             result
                 .contains("owns name @key @doc(\"full legal name\") @meta(\"column\", \"name\");")
@@ -2329,7 +2285,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         assert!(result.contains("relation friendship @doc(\"a mutual bond\"),"));
         assert!(result.contains(
             "relates friend @card(0..2) @doc(\"one side of the bond\") @meta(\"endpoint\", \"true\");"
@@ -2352,7 +2308,7 @@ mod tests {
             },
         );
 
-        let result = generate_define_block(&info);
+        let result = try_generate_define_block(&info).unwrap();
         // Emitted exactly as TypeDB's export renders escapes.
         assert!(result.contains(
             "entity escbox @doc(\"line1\\nline2 with \\\"quotes\\\" and back\\\\slash\");"
@@ -2363,7 +2319,7 @@ mod tests {
     fn from_typeql_to_define_round_trips_annotations() {
         let source = "define\n\nattribute name @doc(\"a personal name\") @meta(\"pii\", \"true\"), value string;\n\nentity person @doc(\"an individual\"),\n    owns name @key @doc(\"full name\") @meta(\"column\", \"name\");\n";
         let info = SchemaInfo::from_typeql(source).expect("parse");
-        let regenerated = generate_define_block(&info);
+        let regenerated = try_generate_define_block(&info).unwrap();
         assert_eq!(
             typeql::parse_query(&regenerated).unwrap(),
             typeql::parse_query(&typeql::parse_query(source).unwrap().to_string()).unwrap()

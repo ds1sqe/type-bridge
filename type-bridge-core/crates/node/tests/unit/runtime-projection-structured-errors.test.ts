@@ -3,11 +3,11 @@ import test from "node:test";
 
 import {
   createRustDatabaseFromNative,
-  QueryV2Error,
-  type NativeRustDatabase,
-  type NativeRustTransactionContext,
-  type RustDatabase,
-  type RustTransactionContext,
+  PlanError,
+  type NativeDatabase,
+  type NativeTransactionContext,
+  type Database,
+  type TransactionContext,
 } from "../../typescript/index.js";
 import {
   InstalledRuntimeProjection,
@@ -15,9 +15,9 @@ import {
   type RuntimeProjectionConnection,
 } from "../../typescript/runtime-projection.js";
 import {
-  isRegisteredRustConnection,
-  registerRustDatabaseHandle,
-  registerRustTransactionHandle,
+  isRegisteredConnection,
+  registerDatabaseHandle,
+  registerTransactionHandle,
   rustDatabaseHandle,
 } from "../../typescript/runtime-handles.js";
 
@@ -28,10 +28,10 @@ test("package-owned native databases are registered and retain idempotent close"
       closed = true;
     },
     isConnected: (): boolean => !closed,
-  } as NativeRustDatabase;
+  } as NativeDatabase;
   const database = createRustDatabaseFromNative(native);
 
-  assert.equal(isRegisteredRustConnection(database), true);
+  assert.equal(isRegisteredConnection(database), true);
   assert.equal(rustDatabaseHandle(database), native);
   assert.equal(database.isConnected(), true);
   database.close();
@@ -44,7 +44,7 @@ const nativeDiagnostic = Object.freeze({
   category: "cardinality",
   sdk_category: "invalid_input",
   query_category: "cardinality",
-  code: "query_v2_expected_one",
+  code: "query_expected_one",
   message: "the query returned more than one row",
   path: [{ kind: "operation" }],
   details: { actual: { kind: "count", value: "2" } },
@@ -56,7 +56,7 @@ function throwNativeDiagnostic(): never {
 
 test("generated manager calls preserve structured SDK diagnostics", () => {
   assert.throws(() => projectedManagerNativeCall(throwNativeDiagnostic), (error: unknown) => {
-    assert.ok(error instanceof QueryV2Error);
+    assert.ok(error instanceof PlanError);
     assert.equal(error.category, nativeDiagnostic.category);
     assert.equal(error.sdkCategory, nativeDiagnostic.sdk_category);
     assert.equal(error.queryCategory, nativeDiagnostic.query_category);
@@ -105,12 +105,12 @@ function directExecutionFixture(): {
 }
 
 test("direct generated terminals project native diagnostics for both ownership paths", async () => {
-  const database = {} as RustDatabase;
-  registerRustDatabaseHandle(database, {} as NativeRustDatabase);
-  const transaction = {} as RustTransactionContext;
-  registerRustTransactionHandle(
+  const database = {} as Database;
+  registerDatabaseHandle(database, {} as NativeDatabase);
+  const transaction = {} as TransactionContext;
+  registerTransactionHandle(
     transaction,
-    {} as NativeRustTransactionContext,
+    {} as NativeTransactionContext,
   );
   const { projection, query } = directExecutionFixture();
   const root = {} as never;
@@ -153,7 +153,7 @@ test("direct generated terminals project native diagnostics for both ownership p
   ] as const) {
     for (const [terminal, invoke] of calls) {
       await assert.rejects(invoke(connection), (error: unknown) => {
-        assert.ok(error instanceof QueryV2Error, `${ownership} ${terminal}`);
+        assert.ok(error instanceof PlanError, `${ownership} ${terminal}`);
         assert.equal(error.category, nativeDiagnostic.category);
         assert.equal(error.sdkCategory, nativeDiagnostic.sdk_category);
         assert.equal(error.queryCategory, nativeDiagnostic.query_category);

@@ -11,16 +11,11 @@ async fn official_ast_corpus_data_stages_execute_live() {
         .parse()
         .unwrap();
     let database_name = format!("tb_ast_corpus_{}", std::process::id());
-    let db = Database::connect_with_options(
-        &address,
-        &database_name,
-        "admin",
-        "password",
-        ConnectOptions {
-            http_port,
-            ..Default::default()
-        },
-    )
+    let db = Database::connect_with_options(&address, &database_name, "admin", "password", {
+        let mut options = ConnectOptions::default();
+        options.http_port = http_port;
+        options
+    })
     .await
     .unwrap();
     db.create_database().await.unwrap();

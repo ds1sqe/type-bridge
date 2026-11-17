@@ -373,7 +373,7 @@ def write_surface_consumer(
     *,
     inventory: CargoReleaseInventory,
 ) -> Path:
-    """Write a consumer with exact registry dependencies on all 17 first-party crates."""
+    """Write a consumer with exact registry dependencies on all 15 first-party crates."""
     dependencies = [
         f"{json.dumps(package.name)} = {json.dumps('=' + package.version)}"
         for package in inventory.first_party_packages
@@ -594,7 +594,7 @@ def validate_server_features(
     metadata: Mapping[str, Any],
     *,
     version: str,
-    expected_v2: bool,
+    expected_transport: bool,
 ) -> None:
     """Require the server feature probe to exclude every TypeDB band."""
     server = _resolved_package(metadata, name="type-bridge-server", version=version)
@@ -609,23 +609,23 @@ def validate_server_features(
     if len(matches) != 1 or not isinstance(matches[0].get("features"), list):
         raise ExternalConsumerError("Cargo server feature resolution is ambiguous")
     features = set(matches[0]["features"])
-    forbidden = {"default", "typedb", "band8", "band9"} & features
+    forbidden = {"default", "typedb", "band9"} & features
     if forbidden:
         raise ExternalConsumerError(
             f"Cargo server isolated feature probe activated forbidden features: {sorted(forbidden)!r}"
         )
-    if ("v2-query" in features) is not expected_v2:
+    if ("axum-transport" in features) is not expected_transport:
         raise ExternalConsumerError(
-            f"Cargo server v2-query feature resolution drifted: actual={sorted(features)!r}"
+            f"Cargo server axum-transport feature resolution drifted: actual={sorted(features)!r}"
         )
 
 
 def write_surface_source(root: Path, library_names: Mapping[str, str]) -> None:
     """Touch every first-party public crate root from external Rust source."""
     names = sorted(library_names.values())
-    if len(names) != 17 or len(set(names)) != 17:
+    if len(names) != 15 or len(set(names)) != 15:
         raise ExternalConsumerError(
-            f"surface consumer requires 17 unique crate roots: actual={names!r}"
+            f"surface consumer requires 16 unique crate roots: actual={names!r}"
         )
     lines = ["#![allow(unused_imports)]", ""]
     lines.extend(f"use ::{name} as _;" for name in names)
@@ -772,9 +772,9 @@ def validate_external_consumers(
         )
 
         server = extracted["type-bridge-server"]
-        for label, features, expected_v2 in (
+        for label, features, expected_transport in (
             ("server-no-default", (), False),
-            ("server-v2-only", ("v2-query",), True),
+            ("server-transport-only", ("axum-transport",), True),
         ):
             consumer_root = work_root / label
             manifest = write_server_consumer(
@@ -798,7 +798,7 @@ def validate_external_consumers(
             validate_server_features(
                 metadata,
                 version=inventory.release_version,
-                expected_v2=expected_v2,
+                expected_transport=expected_transport,
             )
             _cargo_check(
                 manifest,

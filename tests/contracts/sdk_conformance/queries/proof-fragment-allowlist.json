@@ -7,7 +7,7 @@
         "id": "python.generated_remote_acceptance",
         "sources": [
           "type-bridge-core/crates/python/src/match_runtime.rs",
-          "type-bridge-core/crates/python/src/query_v2_model_remote_runtime.rs",
+          "type-bridge-core/crates/python/src/plan_model_remote_runtime.rs",
           "type-bridge-core/crates/schema-codegen/src/python/query.py",
           "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py"
         ],
@@ -32,7 +32,7 @@
         "id": "node.generated_remote_acceptance",
         "sources": [
           "type-bridge-core/crates/node/src/match_runtime.rs",
-          "type-bridge-core/crates/node/src/query_v2_model_remote_runtime.rs",
+          "type-bridge-core/crates/node/src/plan_model_remote_runtime.rs",
           "type-bridge-core/crates/node/typescript/native.ts",
           "type-bridge-core/crates/node/typescript/runtime-projection.ts",
           "type-bridge-core/crates/schema-codegen/src/typescript/runtime.ts",

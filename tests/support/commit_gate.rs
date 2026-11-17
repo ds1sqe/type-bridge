@@ -130,10 +130,6 @@ impl TransactionOps for GatedTransaction {
         self.inner.supports_given_rows()
     }
 
-    fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
-        self.inner.schema_snapshot()
-    }
-
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
         self.inner.query(typeql)
     }
@@ -168,11 +164,12 @@ impl TransactionOps for GatedTransaction {
         &'a mut self,
         typeql: &'a str,
         rows: Option<GivenRowsSpec>,
-        limits: BoundedAnswerLimits,
+        limits: type_bridge_orm::session::backend::AnswerLimits,
         canonical: bool,
+        statement_display: Option<&'a str>,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         self.inner
-            .query_materialized_bounded(typeql, rows, limits, canonical)
+            .query_materialized_bounded(typeql, rows, limits, canonical, statement_display)
     }
 
     fn query_bounded<'a>(

@@ -24,6 +24,31 @@ pub struct SdkProfile {
 }
 
 impl SdkProfile {
+    /// Apply the shared explicit measured-server selection for a live producer.
+    pub fn selected_server(mut self) -> Self {
+        if let Ok(server) = std::env::var("TYPE_BRIDGE_EXPECTED_SERVER_VERSION")
+            .or_else(|_| std::env::var("TYPEDB_VERSION"))
+        {
+            let output = std::process::Command::new("python3")
+                .arg(repository_root().join("scripts/ci/sdk_profile_matrix.py"))
+                .args([
+                    "--check-server-profile",
+                    &self.semantic_profile,
+                    "--expected-server",
+                    &server,
+                ])
+                .output()
+                .expect("shared server/profile guard runs");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            self.live_server_version = server;
+        }
+        self
+    }
+
     /// Fail unless `detected` is this profile's exact live server.
     pub fn require_server_version(&self, detected: Option<&str>) {
         assert_eq!(
@@ -109,5 +134,5 @@ pub fn requested_from(root: &Path, suite: &str, requested: Option<&str>) -> SdkP
 /// The entry a producer of `{suite}` reports targets in this process.
 pub fn requested(suite: &str) -> SdkProfile {
     let environment = std::env::var(SEMANTIC_PROFILE_ENV).ok();
-    requested_from(&repository_root(), suite, environment.as_deref())
+    requested_from(&repository_root(), suite, environment.as_deref()).selected_server()
 }

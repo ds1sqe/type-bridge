@@ -10,7 +10,16 @@ use type_bridge_contract::sdk_diagnostic::{
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AllocationSite {
+    RawTransactionHandle,
+    RawResultHandle,
+    IidHandle,
+    ManagerFilterHandle,
+    ManagerResultHandle,
+    ManagerFilterIids,
+    CrudWriteResultHandle,
     ProjectedValueHandle,
+    PlanViewStorage,
+    PlanRowsResultHandle,
     ProjectedReferenceHandle,
     ProjectedCreateHandle,
     ProjectedThingHandle,
@@ -78,6 +87,7 @@ pub(crate) enum AllocationSite {
     CanonicalRecordEncodeBytes,
     CanonicalArchiveEncodeBytes,
     CanonicalArchiveHandle,
+    QueryStagedPendingHandle,
 }
 
 #[derive(Clone, Copy, Debug)]

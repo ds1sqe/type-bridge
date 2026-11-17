@@ -7,8 +7,9 @@ use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_workspace::{MAX_BACKFILL_INTENT_BYTES, parse_backfill_intent};
 
-const VALID: &str = r#"format: typebridge.migration-backfill-intent/v1
+const VALID: &str = r#"format: typebridge.migration-backfill-intent/v2
 copy-attribute:
+  mode: isa
   owner-kind: entity
   owner: person
   source: legacy-name
@@ -120,4 +121,24 @@ fn rejects_open_ended_or_executable_escape_hatches() {
             "workspace_backfill_intent_unknown_field"
         );
     }
+}
+
+#[test]
+fn new_authoring_requires_format_two_and_an_explicit_mode() {
+    let old = VALID.replace("/v2", "/v1").replace("  mode: isa\n", "");
+    assert_eq!(
+        error_code(&parse(old.as_bytes()).unwrap_err()),
+        "workspace_backfill_intent_historical_format"
+    );
+    let missing = VALID.replace("  mode: isa\n", "");
+    assert_eq!(
+        error_code(&parse(missing.as_bytes()).unwrap_err()),
+        "workspace_backfill_intent_mode_required"
+    );
+    let exact = parse(VALID.replace("mode: isa", "mode: isa!").as_bytes()).unwrap();
+    assert_eq!(exact.format().get(), 2);
+    assert_eq!(
+        exact.mode(),
+        type_bridge_contract::query_plan::TypeMatchMode::IsaExact
+    );
 }

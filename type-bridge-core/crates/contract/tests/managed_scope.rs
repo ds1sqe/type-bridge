@@ -45,12 +45,12 @@ fn semantic_profiles_have_fixed_content_bytes_and_separate_digests() {
         "ac7e4d41e9123690a302ca8d25ae20dd6fb44a6cde078d2ac155d2b2056d7308",
     );
 
-    let previous_id = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
+    let previous_id = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
     let previous = SemanticProfile::resolve(&previous_id).unwrap();
     let previous = SemanticProfileFingerprint::compute(&previous).unwrap();
     assert_eq!(
         previous.as_fingerprint().digest().to_hex(),
-        "1c299a36c24aa21cd7989d254dc09fc6d8913776b08f9bb71db44f54520920d4",
+        "4c6420b8f04f41f45e0f22157037ebdc1fbff65400e6e8294fb25da0780d1ec6",
     );
     assert_ne!(fingerprint, previous);
 }

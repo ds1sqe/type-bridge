@@ -1,31 +1,36 @@
+import { ownedByteSnapshot } from "./owned-bytes.js";
+export type { TimeoutMilliseconds } from "./timeouts.js";
+import { normalizeTimeoutMilliseconds, type TimeoutMilliseconds } from "./timeouts.js";
+import { RawTransaction, rawNativeCall, rawNativePromise, type NativeRawTransaction, type RawValue } from "./raw-query.js";
+export { RawQueryError, RawTransaction, type RawValue } from "./raw-query.js";
 import { loadNative } from "./native.js";
 import type { QueryLimits } from "./runtime-projection.js";
-import type { NativeStagedTransaction } from "./native.js";
+import type { NativeStagedTransaction, NativeQueryLimits } from "./native.js";
 import {
   StagedTransaction,
   type StagedTransactionKind,
+  type StagedTransactionOptions,
 } from "./staged-transaction.js";
 import {
-  queryV2AuthorityHandle,
-  queryV2NativeCall,
-  queryV2NativePromise,
-  registerQueryV2AuthorityHandle,
-  type NativeQueryV2Authority,
-  type NativeQueryV2BuilderRuntime,
-} from "./query-v2-internals.js";
+  planAuthorityHandle,
+  planNativeCall,
+  planNativePromise,
+  registerPlanAuthorityHandle,
+  type NativePlanAuthority,
+} from "./plan-internals.js";
 import {
-  registerRustDatabaseHandle,
-  registerRustTransactionHandle,
+  registerDatabaseHandle,
+  registerTransactionHandle,
   rustDatabaseHandle,
 } from "./runtime-handles.js";
 
-export { QueryV2Error } from "./query-v2-internals.js";
+export { PlanError } from "./plan-internals.js";
 export type {
   ProviderFailure,
-  QueryV2ErrorCategory,
-  QueryV2ErrorDetail,
-  QueryV2ErrorPathSegment,
-} from "./query-v2-internals.js";
+  PlanErrorCategory,
+  PlanErrorDetail,
+  PlanErrorPathSegment,
+} from "./plan-internals.js";
 
 export type ValueType =
   | "string"
@@ -50,110 +55,6 @@ export type AttributeValue =
   | { value_type: "datetime-tz"; value: string }
   | { value_type: "decimal"; value: string }
   | { value_type: "duration"; value: string };
-
-export type AttributeInput = Record<
-  string,
-  AttributeValue | AttributeValue[] | null | undefined
->;
-
-export interface FilterInput {
-  attr_name: string;
-  operator?: string;
-  value: AttributeValue;
-}
-
-export interface AggregateInput {
-  result_key: string;
-  function: string;
-  attr_name?: string | null;
-}
-
-export type RuntimeAttributeValue =
-  | { String: string }
-  | { Long: string }
-  | { Double: number }
-  | { Boolean: boolean }
-  | { Date: string }
-  | { DateTime: string }
-  | { DateTimeTZ: string }
-  | { Decimal: string }
-  | { Duration: string };
-
-export {
-  AggregateSpec,
-  BooleanExpr,
-  ComparisonExpr,
-  NotExpr,
-  QueryExpr,
-  SortExpr,
-  TypedGroupByQuery,
-  TypedQuery,
-  TypedQueryError,
-  agg,
-  type QueryGroupField,
-} from "./query.js";
-
-export interface DynamicEntityRow {
-  iid: string | null;
-  type_name: string | null;
-  attributes: [string, RuntimeAttributeValue][];
-}
-
-export interface DynamicRolePlayer {
-  role_name: string;
-  player_iid: string | null;
-  player_type_name: string | null;
-  attributes: [string, unknown][];
-}
-
-export interface DynamicRelationRow extends DynamicEntityRow {
-  role_players: DynamicRolePlayer[];
-}
-
-/** Wire shape accepted by the separately retained V1 query facade. */
-export type DynamicComparisonOp =
-  | "eq"
-  | "neq"
-  | "gt"
-  | "gte"
-  | "lt"
-  | "lte"
-  | "contains"
-  | "like"
-  | "starts_with"
-  | "ends_with";
-
-export type DynamicExpr =
-  | {
-      kind: "compare";
-      attr_name: string;
-      operator: DynamicComparisonOp;
-      value: AttributeValue;
-    }
-  | { kind: "iid"; iid: string }
-  | { kind: "is_null"; attr_name: string; is_null: boolean }
-  | { kind: "and"; exprs: DynamicExpr[] }
-  | { kind: "or"; exprs: DynamicExpr[] }
-  | { kind: "not"; expr: DynamicExpr }
-  | { kind: "role_player"; role_name: string; expr: DynamicExpr };
-
-export type DynamicSortDir = "Asc" | "Desc";
-
-export type DynamicSort =
-  | { kind: "attribute"; attr_name: string; direction: DynamicSortDir }
-  | {
-      kind: "role_player_attribute";
-      role_name: string;
-      attr_name: string;
-      direction: DynamicSortDir;
-    };
-
-export interface DynamicQuerySpec {
-  expr?: DynamicExpr[];
-  sort?: DynamicSort[];
-  limit?: number | null;
-  offset?: number | null;
-}
 
 export function string(value: string): AttributeValue {
   return { value_type: "string", value };
@@ -206,36 +107,38 @@ export function duration(value: string): AttributeValue {
   return { value_type: "duration", value };
 }
 
-export interface NativeRustDatabase {
+export interface NativeDatabase {
+  rawTransaction(kind: TransactionType): Promise<NativeRawTransaction>;
+  executeQuery(query: string, kind: TransactionType): Promise<RawValue>;
   isConnected(): boolean;
   close(): void;
   databaseName(): string;
   databaseExists(): boolean;
-  databaseExistsControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): boolean;
+  databaseExistsControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): boolean;
   createDatabase(): void;
-  createDatabaseControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): void;
+  createDatabaseControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): void;
   createDatabaseOutcome(): DatabaseCreateOutcome;
-  createDatabaseOutcomeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): DatabaseCreateOutcome;
+  createDatabaseOutcomeControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): DatabaseCreateOutcome;
   deleteDatabase(): void;
   deleteDatabaseOutcome(): DatabaseDeleteOutcome;
   inspectDatabasePair(): ManagedDatabasePairState;
-  inspectDatabasePairControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabasePairState;
+  inspectDatabasePairControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabasePairState;
   planDatabaseDelete(): NativeManagedDatabaseDeletionPlan;
-  planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
+  planDatabaseDeleteControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
   resetDatabase(): void;
-  transaction(transactionType?: TransactionType): NativeRustTransactionContext;
-  stagedTransaction(kind?: string): NativeStagedTransaction;
+  transaction(transactionType?: TransactionType): NativeTransactionContext;
+  stagedTransaction(kind?: string, timeoutMilliseconds?: bigint, collectPhaseTimestamps?: boolean): NativeStagedTransaction;
 }
 
 export interface NativeManagedDatabaseDeletionPlan {
   inspectedState(): ManagedDatabasePairState;
   execute(): ManagedDatabaseDeleteOutcome;
-  executeControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabaseDeleteOutcome;
+  executeControlled(timeoutMilliseconds?: bigint | null, cancellation?: NativeMigrationCancellation | null): ManagedDatabaseDeleteOutcome;
   close(): void;
 }
 
 export interface AdministrationExecutionOptions {
-  timeoutMilliseconds?: number;
+  timeoutMilliseconds?: TimeoutMilliseconds;
   cancellation?: MigrationCancellation;
 }
 
@@ -245,7 +148,8 @@ export type ManagedDatabasePairState =
   | "absent"
   | "standalone_managed"
   | "owned_pair"
-  | "owned_journal_orphan";
+  | "owned_journal_orphan"
+  | "import_pending";
 export type ManagedDatabaseDeleteOutcome =
   | "already_absent"
   | "deleted_standalone_managed"
@@ -303,14 +207,14 @@ interface NativeMigrationApprovalSet {
 
 interface NativeMigrationPlan {
   readonly executionAuthorized: boolean;
-  execute(database: NativeRustDatabase, holder: string): MigrationExecutionReport;
+  execute(database: NativeDatabase, holder: string): Promise<MigrationExecutionReport>;
   executeControlled(
-    database: NativeRustDatabase,
+    database: NativeDatabase,
     holder: string,
-    timeoutMilliseconds?: number | null,
+    timeoutMilliseconds?: bigint | null,
     resources?: NativeMigrationExecutionResources | null,
     cancellation?: NativeMigrationCancellation | null,
-  ): MigrationExecutionReport;
+  ): Promise<MigrationExecutionReport>;
 }
 
 interface NativeMigrationCancellation {
@@ -333,13 +237,14 @@ interface NativeMigrationPreview {
 }
 
 interface NativeMigrationCatalog {
+  register(stepId: string, forward: (tx: NativeTransactionContext) => Promise<void>, reverse?: (tx: NativeTransactionContext) => Promise<void>): void;
   readonly length: number;
   fingerprintJson(): string;
   isEmpty(): boolean;
   heads(): MigrationIdentity[];
   entry(index: number): MigrationHistoryEntry | null;
-  verify(database: NativeRustDatabase): MigrationVerificationReport;
-  appliedMigrations(database: NativeRustDatabase): MigrationIdentity[];
+  verify(database: NativeDatabase): MigrationVerificationReport;
+  appliedMigrations(database: NativeDatabase): MigrationIdentity[];
   previewApply(
     applied: MigrationIdentity[],
     targets?: MigrationIdentity[] | null,
@@ -384,58 +289,24 @@ export interface MigrationBackfillObservation {
   readonly transactionGroups: number;
 }
 
-export interface NativeRustTransactionContext {
-  queryJson(query: string): string;
+export interface NativeTransactionContext {
+  executeQuery(query: string): Promise<RawValue>;
   commit(): void;
   rollback(): void;
   close(): void;
   transactionType(): TransactionType;
 }
 
-interface NativePendingQueryV2Remote {
-  requestBytes(): Uint8Array;
-  decodeReply(response: Uint8Array): Promise<string>;
-}
-
-export interface PendingQueryV2Remote {
-  requestBytes(): Uint8Array;
-  decodeReply(response: Uint8Array): Promise<string>;
-}
-
-interface NativeQueryV2Runtime {
-  queryV2Authority(
+interface NativePlanAuthorityRuntime {
+  planAuthority(
     declaredSchema: Uint8Array,
     scope: string,
     profile: string,
-  ): NativeQueryV2Authority;
-  queryV2AuthorityFromSchemaAuthority(
+  ): NativePlanAuthority;
+  planAuthorityFromSchemaAuthority(
     schemaAuthorityJson: string,
     semanticFingerprintJson: string,
-  ): NativeQueryV2Authority;
-  queryV2QueryOnlyAuthority(
-    database: NativeRustDatabase,
-    declaredSchema: Uint8Array,
-    scope: string,
-    profile: string,
-  ): NativeQueryV2Authority;
-  queryV2ExecuteLocal(
-    database: NativeRustDatabase,
-    authority: NativeQueryV2Authority,
-    plan: Uint8Array,
-    invocationJson: string,
-    deadlineMs?: bigint | null,
-  ): Promise<string>;
-  queryV2RemoteCapabilities(advertisement: Uint8Array): string[];
-  queryV2PrepareRemote(
-    authority: NativeQueryV2Authority,
-    plan: Uint8Array,
-    invocationJson: string,
-    advertisement: Uint8Array,
-    maxItems: bigint,
-    maxBytes: bigint,
-    maxCollectionMembers: bigint,
-    deadlineMs?: bigint | null,
-  ): NativePendingQueryV2Remote;
+  ): NativePlanAuthority;
 }
 
 export interface NativeRuntime {
@@ -467,25 +338,44 @@ export interface NativeRuntime {
     serverVersion?: string | null,
     tlsEnabled?: boolean | null,
     tlsRootCa?: string | null,
-  ): NativeRustDatabase;
+    queryLimits?: NativeQueryLimits | null,
+  ): NativeDatabase;
 }
 
 /** Package-private native contract used by retained runtime entry points. */
 export interface NativeModule
   extends NativeRuntime,
-    NativeQueryV2Runtime,
-    NativeQueryV2BuilderRuntime {}
+    NativePlanAuthorityRuntime {
+  validateIid(value: string): string;
+}
 
-export interface RustDatabaseConnectOptions {
+/** A validated provider Thing IID; a plain string is not an Iid. */
+export class Iid {
+  readonly #value: string;
+
+  constructor(value: string) {
+    this.#value = planNativeCall(() => loadNative().validateIid(value));
+    Object.freeze(this);
+  }
+
+  toString(): string { return this.#value; }
+  toJSON(): string { return this.#value; }
+  equals(other: unknown): boolean {
+    return other instanceof Iid && this.#value === other.#value;
+  }
+}
+
+export interface DatabaseConnectOptions {
   username?: string | null;
   password?: string | null;
   httpPort?: number;
   serverVersion?: string | null;
   tlsEnabled?: boolean;
   tlsRootCa?: string;
+  queryLimits?: QueryLimits;
 }
 
-export interface EnsureDatabaseOptions extends RustDatabaseConnectOptions {}
+export interface EnsureDatabaseOptions extends DatabaseConnectOptions {}
 
 export class MigrationApprovalSet {
   readonly #native: NativeMigrationApprovalSet;
@@ -496,7 +386,7 @@ export class MigrationApprovalSet {
   }
 
   get length(): number {
-    return this.#native.length;
+    return planNativeCall(() => this.#native.length);
   }
 
   /** @internal */
@@ -514,11 +404,11 @@ export class MigrationApprovalBuilder {
   }
 
   approve(index: number): void {
-    this.#native.approve(index);
+    planNativeCall(() => this.#native.approve(index));
   }
 
   finish(): MigrationApprovalSet {
-    return new MigrationApprovalSet(this.#native.finish());
+    return new MigrationApprovalSet(planNativeCall(() => this.#native.finish()));
   }
 }
 
@@ -531,29 +421,29 @@ export class MigrationPlan {
   }
 
   get executionAuthorized(): boolean {
-    return this.#native.executionAuthorized;
+    return planNativeCall(() => this.#native.executionAuthorized);
   }
 
-  execute(database: RustDatabase, holder: string): MigrationExecutionReport {
-    return this.#native.execute(preparedV2DatabaseHandle(database), holder);
+  async execute(database: Database, holder: string): Promise<MigrationExecutionReport> {
+    return planNativePromise(planNativeCall(() => this.#native.execute(planDatabaseHandle(database), holder)));
   }
 
-  executeControlled(
-    database: RustDatabase,
+  async executeControlled(
+    database: Database,
     holder: string,
     options: {
-      timeoutMilliseconds?: number;
+      timeoutMilliseconds?: TimeoutMilliseconds;
       resources?: MigrationExecutionResources;
       cancellation?: MigrationCancellation;
     } = {},
-  ): MigrationExecutionReport {
-    return this.#native.executeControlled(
-      preparedV2DatabaseHandle(database),
+  ): Promise<MigrationExecutionReport> {
+    return planNativePromise(planNativeCall(() => this.#native.executeControlled(
+      planDatabaseHandle(database),
       holder,
-      options.timeoutMilliseconds,
+      normalizeTimeoutMilliseconds(options.timeoutMilliseconds),
       options.resources?.nativeHandle(),
       options.cancellation?.nativeHandle(),
-    );
+    )));
   }
 }
 
@@ -562,15 +452,15 @@ export class MigrationCancellation {
 
   constructor() {
     const Native = loadNative().NodeMigrationCancellation as new () => NativeMigrationCancellation;
-    this.#native = new Native();
+    this.#native = planNativeCall(() => new Native());
   }
 
   cancel(): void {
-    this.#native.cancel();
+    planNativeCall(() => this.#native.cancel());
   }
 
   get cancelled(): boolean {
-    return this.#native.cancelled;
+    return planNativeCall(() => this.#native.cancelled);
   }
 
   /** @internal */
@@ -587,15 +477,15 @@ export class MigrationExecutionResources {
       transactionGroups: number,
       backfillObservations: number,
     ) => NativeMigrationExecutionResources;
-    this.#native = new Native(transactionGroups, backfillObservations);
+    this.#native = planNativeCall(() => new Native(transactionGroups, backfillObservations));
   }
 
   get transactionGroups(): number {
-    return this.#native.transactionGroups;
+    return planNativeCall(() => this.#native.transactionGroups);
   }
 
   get backfillObservations(): number {
-    return this.#native.backfillObservations;
+    return planNativeCall(() => this.#native.backfillObservations);
   }
 
   /** @internal */
@@ -613,27 +503,27 @@ export class MigrationPreview {
   }
 
   get direction(): "apply" | "rollback" {
-    return this.#native.direction;
+    return planNativeCall(() => this.#native.direction);
   }
 
   get executionAuthorized(): boolean {
-    return this.#native.executionAuthorized;
+    return planNativeCall(() => this.#native.executionAuthorized);
   }
 
   migrationCount(): number {
-    return this.#native.migrationCount();
+    return planNativeCall(() => this.#native.migrationCount());
   }
 
   migration(index: number): MigrationPreviewEntry | null {
-    return this.#native.migration(index);
+    return planNativeCall(() => this.#native.migration(index));
   }
 
   approvalBuilder(): MigrationApprovalBuilder {
-    return new MigrationApprovalBuilder(this.#native.approvalBuilder());
+    return new MigrationApprovalBuilder(planNativeCall(() => this.#native.approvalBuilder()));
   }
 
   authorize(approvals: MigrationApprovalSet): MigrationPlan {
-    return new MigrationPlan(this.#native.authorize(approvals.nativeHandle()));
+    return new MigrationPlan(planNativeCall(() => this.#native.authorize(approvals.nativeHandle())));
   }
 }
 
@@ -645,32 +535,39 @@ export class MigrationCatalog {
     this.#native = native;
   }
 
+  /** Register async user code before creating a migration preview. */
+  register(stepId: string, forward: (tx: MigrationTransaction) => Promise<void>, reverse?: (tx: MigrationTransaction) => Promise<void>): void {
+    planNativeCall(() => this.#native.register(stepId,
+      (tx) => forward(createMigrationTransaction(tx)),
+      reverse ? (tx) => reverse(createMigrationTransaction(tx)) : undefined));
+  }
+
   get length(): number {
-    return this.#native.length;
+    return planNativeCall(() => this.#native.length);
   }
 
   fingerprintJson(): string {
-    return this.#native.fingerprintJson();
+    return planNativeCall(() => this.#native.fingerprintJson());
   }
 
   isEmpty(): boolean {
-    return this.#native.isEmpty();
+    return planNativeCall(() => this.#native.isEmpty());
   }
 
   heads(): MigrationIdentity[] {
-    return this.#native.heads();
+    return planNativeCall(() => this.#native.heads());
   }
 
   entry(index: number): MigrationHistoryEntry | null {
-    return this.#native.entry(index);
+    return planNativeCall(() => this.#native.entry(index));
   }
 
-  verify(database: RustDatabase): MigrationVerificationReport {
-    return this.#native.verify(preparedV2DatabaseHandle(database));
+  verify(database: Database): MigrationVerificationReport {
+    return planNativeCall(() => this.#native.verify(planDatabaseHandle(database)));
   }
 
-  appliedMigrations(database: RustDatabase): MigrationIdentity[] {
-    return this.#native.appliedMigrations(preparedV2DatabaseHandle(database));
+  appliedMigrations(database: Database): MigrationIdentity[] {
+    return planNativeCall(() => this.#native.appliedMigrations(planDatabaseHandle(database)));
   }
 
   previewApply(
@@ -678,7 +575,7 @@ export class MigrationCatalog {
     targets?: MigrationIdentity[],
   ): MigrationPreview {
     return new MigrationPreview(
-      this.#native.previewApply(applied, targets ?? null),
+      planNativeCall(() => this.#native.previewApply(applied, targets ?? null)),
     );
   }
 
@@ -686,7 +583,7 @@ export class MigrationCatalog {
     applied: MigrationIdentity[],
     removals: MigrationIdentity[],
   ): MigrationPreview {
-    return new MigrationPreview(this.#native.previewRollback(applied, removals));
+    return new MigrationPreview(planNativeCall(() => this.#native.previewRollback(applied, removals)));
   }
 }
 
@@ -694,9 +591,12 @@ export function openMigrationCatalog(
   schemaAuthority: Uint8Array,
   historyBundle: Uint8Array,
 ): MigrationCatalog {
-  return new MigrationCatalog(
-    loadNative().openMigrationCatalog(schemaAuthority, historyBundle),
-  );
+  return planNativeCall(() => new MigrationCatalog(
+    loadNative().openMigrationCatalog(
+      ownedByteSnapshot(schemaAuthority, loadNative().MAX_CANONICAL_BYTES),
+      ownedByteSnapshot(historyBundle, loadNative().MAX_REMOTE_ENVELOPE_BYTES),
+    ),
+  ));
 }
 
 export function ensureDatabase(
@@ -705,7 +605,7 @@ export function ensureDatabase(
   options?: EnsureDatabaseOptions,
 ): void {
   validateConnectionTransport(options ?? {});
-  loadNative().ensureRustDatabase(
+  planNativeCall(() => loadNative().ensureRustDatabase(
     address,
     database,
     options?.username ?? null,
@@ -714,18 +614,18 @@ export function ensureDatabase(
     options?.serverVersion ?? null,
     options?.tlsEnabled ?? null,
     options?.tlsRootCa ?? null,
-  );
+  ));
 }
 
-/** Opaque declared-schema authority for prepared V2 plan execution. */
-export class QueryV2Authority {
+/** Opaque declared-schema authority for staged plan execution. */
+export class PlanAuthority {
   readonly #brand = undefined;
 
   constructor(declaredSchema: Uint8Array, scope: string, profile: string) {
-    registerQueryV2AuthorityHandle(
+    registerPlanAuthorityHandle(
       this,
-      queryV2NativeCall(() =>
-        loadNative().queryV2Authority(declaredSchema, scope, profile),
+      planNativeCall(() =>
+        loadNative().planAuthority(declaredSchema, scope, profile),
       ),
     );
   }
@@ -734,146 +634,70 @@ export class QueryV2Authority {
    * Derive an authority over the same schema whose plans are authored,
    * decoded, and validated under `queryLimits`.
    */
-  withQueryLimits(queryLimits: QueryLimits): QueryV2Authority {
-    const native = queryV2AuthorityHandle(this);
+  withQueryLimits(queryLimits: QueryLimits): PlanAuthority {
+    const native = planAuthorityHandle(this);
     if (native === undefined) {
       throw new TypeError("query authority is not installed by this package");
     }
     const authority = Object.create(
-      QueryV2Authority.prototype,
-    ) as QueryV2Authority;
-    registerQueryV2AuthorityHandle(
+      PlanAuthority.prototype,
+    ) as PlanAuthority;
+    registerPlanAuthorityHandle(
       authority,
-      queryV2NativeCall(() => native.withQueryLimits(queryLimits.nativeHandle())),
+      planNativeCall(() => native.withQueryLimits(queryLimits.nativeHandle())),
     );
     return authority;
   }
 
-  static queryOnly(
-    database: RustDatabase,
-    declaredSchema: Uint8Array,
-    scope: string,
-    profile: string,
-  ): QueryV2Authority {
-    const authority = Object.create(
-      QueryV2Authority.prototype,
-    ) as QueryV2Authority;
-    registerQueryV2AuthorityHandle(
-      authority,
-      queryV2NativeCall(() =>
-        loadNative().queryV2QueryOnlyAuthority(
-          preparedV2DatabaseHandle(database),
-          declaredSchema,
-          scope,
-          profile,
-        ),
-      ),
-    );
-    return authority;
-  }
 }
 
-export interface QueryV2RemoteLimits {
-  readonly maxItems: bigint;
-  readonly maxBytes: bigint;
-  readonly maxCollectionMembers: bigint;
-  readonly deadlineMs?: bigint | null;
-}
-
-function preparedV2DatabaseHandle(database: RustDatabase): NativeRustDatabase {
+function planDatabaseHandle(database: Database): NativeDatabase {
   const native = rustDatabaseHandle(database);
   if (native === undefined) {
     throw new TypeError(
-      "queryV2ExecuteLocal requires a type-bridge RustDatabase",
+      "plan authority requires a type-bridge Database",
     );
   }
   return native;
 }
 
-function preparedV2AuthorityHandle(
-  authority: QueryV2Authority,
-): NativeQueryV2Authority {
-  const native = queryV2AuthorityHandle(authority);
-  if (native === undefined) {
-    throw new TypeError(
-      "prepared V2 execution requires a type-bridge QueryV2Authority",
-    );
+export class Database {
+  /** Open an eager raw transaction. The caller commits, rolls back or closes it. */
+  async rawTransaction(kind: TransactionType = "read"): Promise<RawTransaction> {
+    return new RawTransaction(await rawNativePromise(rawNativeCall(() => this.#native.rawTransaction(kind))));
   }
-  return native;
-}
 
-export function queryV2ExecuteLocal(
-  database: RustDatabase,
-  authority: QueryV2Authority,
-  plan: Uint8Array,
-  invocationJson: string,
-  deadlineMs?: bigint | null,
-): Promise<string> {
-  return queryV2NativePromise(
-    queryV2NativeCall(() =>
-      loadNative().queryV2ExecuteLocal(
-        preparedV2DatabaseHandle(database),
-        preparedV2AuthorityHandle(authority),
-        plan,
-        invocationJson,
-        deadlineMs,
-      ),
-    ),
-  );
-}
+  /**
+   * Raw, unchecked TypeQL: the escape hatch. The TypeQL text is sent
+   * to TypeDB as written, and TypeDB's output comes back as it
+   * answered, in this SDK's native data types. TypeBridge adds no
+   * validation, rewriting, hydration, hooks, limits or extra
+   * queries. It runs in read, write and schema transactions and
+   * accepts any TypeQL, schema-breaking changes included. The caller
+   * owns its correctness; TypeBridge makes no promise about its
+   * effects. On a proxy connection it posts to the server's opt-in
+   * `/v3/raw` endpoint, which is off by default.
+   *
+   * Integer tokens outside the JavaScript safe range become bigint; safe integers and doubles stay number.
+   */
+  executeQuery(query: string, kind: TransactionType = "read"): Promise<RawValue> {
+    return rawNativePromise(rawNativeCall(() => this.#native.executeQuery(query, kind)));
+  }
 
-export function queryV2RemoteCapabilities(
-  advertisement: Uint8Array,
-): readonly string[] {
-  return queryV2NativeCall(() =>
-    loadNative().queryV2RemoteCapabilities(advertisement),
-  );
-}
+  readonly #native: NativeDatabase;
 
-export function queryV2PrepareRemote(
-  authority: QueryV2Authority,
-  plan: Uint8Array,
-  invocationJson: string,
-  advertisement: Uint8Array,
-  limits: QueryV2RemoteLimits,
-): PendingQueryV2Remote {
-  const pending = queryV2NativeCall(() =>
-    loadNative().queryV2PrepareRemote(
-      preparedV2AuthorityHandle(authority),
-      plan,
-      invocationJson,
-      advertisement,
-      limits.maxItems,
-      limits.maxBytes,
-      limits.maxCollectionMembers,
-      limits.deadlineMs,
-    ),
-  );
-  return Object.freeze({
-    requestBytes: (): Uint8Array =>
-      queryV2NativeCall(() => new Uint8Array(pending.requestBytes())),
-    decodeReply: (response: Uint8Array): Promise<string> =>
-      queryV2NativePromise(
-        queryV2NativeCall(() => pending.decodeReply(response)),
-      ),
-  });
-}
-
-export class RustDatabase {
-  readonly #native: NativeRustDatabase;
-
-  private constructor(native: NativeRustDatabase) {
+  private constructor(native: NativeDatabase) {
     this.#native = native;
-    registerRustDatabaseHandle(this, native);
+    registerDatabaseHandle(this, native);
   }
 
   static connect(
     address: string,
     databaseName: string,
-    options: RustDatabaseConnectOptions = {},
-  ): RustDatabase {
+    options: DatabaseConnectOptions = {},
+  ): Database {
     validateConnectionTransport(options);
-    const native = loadNative().connectRustDatabase(
+    const native = planNativeCall(() => loadNative().connectRustDatabase(
       address,
       databaseName,
       options.username ?? null,
@@ -882,79 +706,80 @@ export class RustDatabase {
       options.serverVersion ?? null,
       options.tlsEnabled ?? null,
       options.tlsRootCa ?? null,
-    );
-    return new RustDatabase(native);
+      options.queryLimits?.nativeHandle(),
+    ));
+    return new Database(native);
   }
 
   isConnected(): boolean {
-    return this.#native.isConnected();
+    return planNativeCall(() => this.#native.isConnected());
   }
 
   close(): void {
-    this.#native.close();
+    planNativeCall(() => this.#native.close());
   }
 
   databaseName(): string {
-    return this.#native.databaseName();
+    return planNativeCall(() => this.#native.databaseName());
   }
 
   databaseExists(): boolean {
-    return this.#native.databaseExists();
+    return planNativeCall(() => this.#native.databaseExists());
   }
 
   databaseExistsControlled(options: AdministrationExecutionOptions = {}): boolean {
-    return this.#native.databaseExistsControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+    return planNativeCall(() => this.#native.databaseExistsControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle()));
   }
 
   createDatabase(): void {
-    this.#native.createDatabase();
+    planNativeCall(() => this.#native.createDatabase());
   }
 
   createDatabaseControlled(options: AdministrationExecutionOptions = {}): void {
-    this.#native.createDatabaseControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+    planNativeCall(() => this.#native.createDatabaseControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle()));
   }
 
   createDatabaseOutcome(): DatabaseCreateOutcome {
-    return this.#native.createDatabaseOutcome();
+    return planNativeCall(() => this.#native.createDatabaseOutcome());
   }
 
   createDatabaseOutcomeControlled(options: AdministrationExecutionOptions = {}): DatabaseCreateOutcome {
-    return this.#native.createDatabaseOutcomeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+    return planNativeCall(() => this.#native.createDatabaseOutcomeControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle()));
   }
 
   deleteDatabase(): void {
-    this.#native.deleteDatabase();
+    planNativeCall(() => this.#native.deleteDatabase());
   }
 
   deleteDatabaseOutcome(): DatabaseDeleteOutcome {
-    return this.#native.deleteDatabaseOutcome();
+    return planNativeCall(() => this.#native.deleteDatabaseOutcome());
   }
 
   inspectDatabasePair(): ManagedDatabasePairState {
-    return this.#native.inspectDatabasePair();
+    return planNativeCall(() => this.#native.inspectDatabasePair());
   }
 
   inspectDatabasePairControlled(options: AdministrationExecutionOptions = {}): ManagedDatabasePairState {
-    return this.#native.inspectDatabasePairControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+    return planNativeCall(() => this.#native.inspectDatabasePairControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle()));
   }
 
   planDatabaseDelete(): ManagedDatabaseDeletionPlan {
-    return new ManagedDatabaseDeletionPlan(this.#native.planDatabaseDelete());
+    return new ManagedDatabaseDeletionPlan(planNativeCall(() => this.#native.planDatabaseDelete()));
   }
 
   planDatabaseDeleteControlled(options: AdministrationExecutionOptions = {}): ManagedDatabaseDeletionPlan {
-    return new ManagedDatabaseDeletionPlan(this.#native.planDatabaseDeleteControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle()));
+    return new ManagedDatabaseDeletionPlan(planNativeCall(() => this.#native.planDatabaseDeleteControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle())));
   }
 
   resetDatabase(): void {
-    this.#native.resetDatabase();
+    planNativeCall(() => this.#native.resetDatabase());
   }
 
   transaction(
     transactionType: TransactionType = "read",
-  ): RustTransactionContext {
+  ): TransactionContext {
     return createRustTransactionContext(
-      this.#native.transaction(transactionType),
+      planNativeCall(() => this.#native.transaction(transactionType)),
     );
   }
 
@@ -963,9 +788,9 @@ export class RustDatabase {
    * omitted kind is inferred from the staged writes. Stage plans from
    * `PlanBuilder`; TypeScript never commits implicitly.
    */
-  stagedTransaction(kind?: StagedTransactionKind): StagedTransaction {
+  stagedTransaction(kind?: StagedTransactionKind, options: import("./staged-transaction.js").StagedTransactionOptions = {}): StagedTransaction {
     return new StagedTransaction(
-      queryV2NativeCall(() => this.#native.stagedTransaction(kind)),
+      planNativeCall(() => this.#native.stagedTransaction(kind, normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.collectPhaseTimestamps)),
     );
   }
 }
@@ -979,80 +804,103 @@ export class ManagedDatabaseDeletionPlan {
   }
 
   inspectedState(): ManagedDatabasePairState {
-    return this.#native.inspectedState();
+    return planNativeCall(() => this.#native.inspectedState());
   }
 
   execute(): ManagedDatabaseDeleteOutcome {
-    return this.#native.execute();
+    return planNativeCall(() => this.#native.execute());
   }
 
   executeControlled(options: AdministrationExecutionOptions = {}): ManagedDatabaseDeleteOutcome {
-    return this.#native.executeControlled(options.timeoutMilliseconds, options.cancellation?.nativeHandle());
+    return planNativeCall(() => this.#native.executeControlled(normalizeTimeoutMilliseconds(options.timeoutMilliseconds), options.cancellation?.nativeHandle()));
   }
 
   close(): void {
-    this.#native.close();
+    planNativeCall(() => this.#native.close());
   }
 }
 
 /** @internal Wrap a generated-package-owned native database handle. */
 export function createRustDatabaseFromNative(
-  native: NativeRustDatabase,
-): RustDatabase {
-  const Constructor = RustDatabase as unknown as new (
-    native: NativeRustDatabase,
-  ) => RustDatabase;
+  native: NativeDatabase,
+): Database {
+  const Constructor = Database as unknown as new (
+    native: NativeDatabase,
+  ) => Database;
   return new Constructor(native);
 }
 
-const TRANSACTION_CONSTRUCTOR = Symbol("RustTransactionContext");
+const MIGRATION_TRANSACTION_CONSTRUCTOR = Symbol("MigrationTransaction");
 
-export class RustTransactionContext {
-  readonly #native: NativeRustTransactionContext;
+/** Callback-scoped managers, typed queries and raw TypeQL on the engine transaction. */
+export class MigrationTransaction {
+  readonly #native: NativeTransactionContext;
+
+  private constructor(native: NativeTransactionContext, token: typeof MIGRATION_TRANSACTION_CONSTRUCTOR) {
+    if (token !== MIGRATION_TRANSACTION_CONSTRUCTOR) {
+      throw new TypeError("MigrationTransaction values are created by migration callbacks");
+    }
+    this.#native = native;
+    registerTransactionHandle(this, native);
+  }
+
+  executeQuery(query: string): Promise<RawValue> {
+    return rawNativePromise(rawNativeCall(() => this.#native.executeQuery(query)));
+  }
+}
+
+function createMigrationTransaction(native: NativeTransactionContext): MigrationTransaction {
+  const Constructor = MigrationTransaction as unknown as new (
+    native: NativeTransactionContext,
+    token: typeof MIGRATION_TRANSACTION_CONSTRUCTOR,
+  ) => MigrationTransaction;
+  return new Constructor(native, MIGRATION_TRANSACTION_CONSTRUCTOR);
+}
+
+const TRANSACTION_CONSTRUCTOR = Symbol("TransactionContext");
+
+export class TransactionContext {
+  readonly #native: NativeTransactionContext;
 
   private constructor(
-    native: NativeRustTransactionContext,
+    native: NativeTransactionContext,
     token: typeof TRANSACTION_CONSTRUCTOR,
   ) {
     if (token !== TRANSACTION_CONSTRUCTOR) {
       throw new TypeError(
-        "RustTransactionContext values are created by RustDatabase.transaction()",
+        "TransactionContext values are created by Database.transaction()",
       );
     }
     this.#native = native;
-    registerRustTransactionHandle(this, native);
-  }
-
-  query(query: string): unknown[] {
-    return queryV2NativeCall(() => parseJson(this.#native.queryJson(query)));
+    registerTransactionHandle(this, native);
   }
 
   commit(): void {
-    queryV2NativeCall(() => this.#native.commit());
+    planNativeCall(() => this.#native.commit());
   }
 
   /** Roll back writes and keep this transaction usable. */
   rollback(): void {
-    this.#native.rollback();
+    planNativeCall(() => this.#native.rollback());
   }
 
   close(): void {
-    this.#native.close();
+    planNativeCall(() => this.#native.close());
   }
 
   transactionType(): TransactionType {
-    return this.#native.transactionType();
+    return planNativeCall(() => this.#native.transactionType());
   }
 }
 
 function createRustTransactionContext(
-  native: NativeRustTransactionContext,
-): RustTransactionContext {
-  const TransactionContext = RustTransactionContext as unknown as new (
-    native: NativeRustTransactionContext,
+  native: NativeTransactionContext,
+): TransactionContext {
+  const Constructor = TransactionContext as unknown as new (
+    native: NativeTransactionContext,
     token: typeof TRANSACTION_CONSTRUCTOR,
-  ) => RustTransactionContext;
-  return new TransactionContext(native, TRANSACTION_CONSTRUCTOR);
+  ) => TransactionContext;
+  return new Constructor(native, TRANSACTION_CONSTRUCTOR);
 }
 
 function parseJson<T>(value: string): T {
@@ -1060,7 +908,7 @@ function parseJson<T>(value: string): T {
 }
 
 function validateConnectionTransport(
-  options: Pick<RustDatabaseConnectOptions, "tlsEnabled" | "tlsRootCa">,
+  options: Pick<DatabaseConnectOptions, "tlsEnabled" | "tlsRootCa">,
 ): void {
   for (const key in options) {
     const normalized = key.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
@@ -1096,25 +944,56 @@ function validateConnectionTransport(
 }
 
 export {
-  PendingPlanAnswer,
+  Pending,
   StagedTransaction,
   type PlanAnswer,
   type StagedTransactionKind,
+  type StagedTransactionOptions,
 } from "./staged-transaction.js";
 export {
   Plan,
   PlanBuilder,
   PlanCondition,
+  PlanCondition as Condition,
   PlanExpr,
   PlanInput,
   PlanInputValue,
   PlanNewThing,
+  PlanRecording,
+  PlanTemplate,
+  Handle,
+  planFieldToken,
+  planMatch,
+  planInsert,
+  planInsertMany,
   PlanThing,
   PlanValue,
+  type PlanExplanation,
   type PlanFieldToken,
   type PlanLiteral,
   type PlanModelToken,
   type PlanOperand,
   type PlanRoleToken,
   type PlanValueType,
+  Matched,
+  type FieldToken,
+  type PlanModelAuthoring,
+  type PlanOptions,
+  StagedPlan,
+  type StagedResultRef,
 } from "./plan.js";
+
+/** Metadata from Rust plan execution; transported input values are omitted. */
+export interface DebugEvent {
+  readonly name: string;
+  readonly target: string;
+  readonly level: string;
+  readonly fields: Readonly<Record<string, string | number | boolean>>;
+}
+/** Forward Rust debug records to the host logger; null disables forwarding. */
+export function setDebugListener(listener: ((event: DebugEvent) => void) | null): void {
+  loadNative().setDebugListener(listener === null ? null : (json) => listener(JSON.parse(json) as DebugEvent));
+}
+export { Expr, Value } from "./plan-values.js";
+
+export type { BatchWriteResult, WriteResult } from "./runtime-projection.js";

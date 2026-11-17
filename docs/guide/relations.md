@@ -37,14 +37,21 @@ plays:
 Relates-side cardinality constrains players on one relation instance. Plays-side
 cardinality constrains how often a player participates in that role.
 
+An unordered role is a set: a repeated player counts once toward its
+relates-side cardinality. Insert, put, batch put, and update normalize equivalent
+player references before checking that cardinality. Model normalization keeps
+positions and repetitions in ordered roles; `distinct: true` rejects repetitions.
+Supported TypeDB providers currently refuse writes with populated ordered roles.
+
 ## Construct and write a generated relation
 
 ```python
 from app_models import Company, CompanyId, Employment, Person, PersonId, Since
 from datetime import date
 
-ada = Person.manager(db).put(Person(person_id=PersonId("ada")))
-acme = Company.manager(db).put(Company(company_id=CompanyId("acme")))
+ada = Person.manager(db).put(Person(person_id=PersonId("ada"))).item
+acme = Company.manager(db).put(Company(company_id=CompanyId("acme"))).item
+assert ada is not None and acme is not None
 
 employment = Employment(
     employee=ada,
@@ -65,7 +72,7 @@ session = Employment.query(db)
 person = session.exact(Person)
 employment = session.exact(Employment)
 
-employee = employment.role(Employment.employee).connects(person)
+employee = employment.role(Employment.employee).links(person)
 rows = await session.query(person, employment).where(employee).rows(limit=100)
 ```
 
@@ -88,7 +95,15 @@ relations:
 
 `as` specializes a parent role. Generated constructors expose the effective
 child role, while exact/subtype queries preserve the canonical declaring-role
-identity required by TypeDB.
+identity required by TypeDB. Specialization is supported in the first
+migration and when adding new relation types. Changing specialization on an
+existing relation uses a no-instances assertion, including its subtypes;
+populated relations require an explicit data migration before that change.
+A specializing role must satisfy both its local cardinality (including the
+default) and the parent's cardinality. Generated create inputs use their
+intersection, so an inherited minimum of one makes the specializing player
+required even when the child omits `card`.
+
 
 Ordered/list roles are declared with the Split-YAML ordering facts supported by
 the selected semantic profile. Provider capability checks remain authoritative;

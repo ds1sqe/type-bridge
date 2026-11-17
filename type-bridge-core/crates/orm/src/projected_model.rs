@@ -4,7 +4,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN};
 use type_bridge_contract::projection::{
@@ -37,7 +36,7 @@ pub(crate) struct ProjectionBrand {
 }
 
 #[derive(Eq, PartialEq)]
-struct ProjectedDatabaseOrigin(DatabaseExecutionIdentity);
+struct ProjectedDatabaseOrigin(DatabaseExecutionIdentity, bool);
 
 impl std::fmt::Debug for ProjectedDatabaseOrigin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -50,11 +49,19 @@ impl std::fmt::Debug for ProjectedDatabaseOrigin {
 /// Bindings cannot construct or inspect this value. Its debug form is
 /// permanently redacted and its private, non-serializable payload is shared so
 /// bindings can retain it cheaply without exposing an identity token. It
-/// exists only to preserve same-database reference fencing across complete or
-/// reference hydration and a later relation write.
+/// preserves same-database reference fencing and deleted-snapshot status
+/// across facade reconstruction and later writes.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct ProjectedReferenceOrigin(Arc<ProjectedDatabaseOrigin>);
+
+impl ProjectedReferenceOrigin {
+    /// Whether the retained value is a deleted root snapshot.
+    #[must_use]
+    pub fn is_deleted(&self) -> bool {
+        self.0.1
+    }
+}
 
 impl std::fmt::Debug for ProjectedReferenceOrigin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -429,6 +436,7 @@ impl ProjectedReference {
             keys,
             Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
                 database_identity,
+                false,
             )))),
         )
     }
@@ -440,6 +448,13 @@ impl ProjectedReference {
         keys: Vec<(OwnsFactId, ProjectedAttributeValue)>,
         database_origin: Option<ProjectedReferenceOrigin>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
+        if database_origin.as_ref().is_some_and(|origin| origin.0.1) {
+            return Err(invalid_input(
+                "thing_deleted",
+                "A deleted snapshot cannot be used as a live reference",
+                type_path(&type_id),
+            ));
+        }
         let model = require_projected_thing_model(installed, &type_id)?;
         if model.reference_read().target_name().is_none() {
             return Err(invalid_input(
@@ -466,6 +481,8 @@ impl ProjectedReference {
                 argument_path(&type_id, "iid"),
             ));
         }
+
+        let iid = iid.map(|iid| iid.to_ascii_lowercase());
 
         let reference_keys = model
             .reference_read()
@@ -1034,13 +1051,16 @@ impl ProjectedCreateBudget {
             )
         })?;
         let total = start_index.saturating_add(references.len());
-        enforce_incremental_max_cardinality(
-            role_path(&self.type_id, role_id),
-            role.multiplicity(),
-            total,
-            "role_cardinality_violation",
-            "The projected role violates its exact cardinality",
-        )?;
+        // Unordered cardinality is checked after set normalization at completion.
+        if !token.multiplicity().collection_mode().is_unordered() {
+            enforce_incremental_max_cardinality(
+                role_path(&self.type_id, role_id),
+                role.multiplicity(),
+                total,
+                "role_cardinality_violation",
+                "The projected role violates its exact cardinality",
+            )?;
+        }
         let mut candidate = self.budget;
         for (offset, reference) in references.enumerate() {
             let index = start_index.saturating_add(offset);
@@ -1195,6 +1215,7 @@ pub struct ProjectedCreate {
     roles: BTreeMap<RoleId, Vec<ProjectedReference>>,
     present_roles: BTreeSet<RoleId>,
     size: ProjectedSize,
+    unsupported_ordered_member: Option<SdkDiagnosticPathSegment>,
 }
 
 impl ProjectedCreate {
@@ -1218,12 +1239,26 @@ impl ProjectedCreate {
             collect_unique_fields(&type_id, fields, &mut budget, ValidationOrigin::Input)?;
         let supplied_roles =
             collect_unique_roles(&type_id, roles, &mut budget, ValidationOrigin::Input)?;
-        let (fields, present_fields) =
-            validate_create_fields(installed, &type_id, model, supplied_fields, &mut budget)?;
-        let (roles, present_roles) =
-            validate_create_roles(installed, &type_id, model, supplied_roles, &mut budget)?;
+        let mut unsupported_ordered_member = None;
+        let (fields, present_fields) = validate_create_fields(
+            installed,
+            &type_id,
+            model,
+            supplied_fields,
+            &mut budget,
+            &mut unsupported_ordered_member,
+        )?;
+        let (roles, present_roles) = validate_create_roles(
+            installed,
+            &type_id,
+            model,
+            supplied_roles,
+            &mut budget,
+            &mut unsupported_ordered_member,
+        )?;
         let size = budget.finish();
         Ok(Self {
+            unsupported_ordered_member,
             brand: ProjectionBrand::from_installed(installed),
             type_id,
             fields,
@@ -1232,6 +1267,24 @@ impl ProjectedCreate {
             present_roles,
             size,
         })
+    }
+
+    /// All measured providers reject nonempty lists; keep this refusal before IO.
+    #[doc(hidden)]
+    pub fn validate_native_write(&self) -> Result<(), SdkExecutionDiagnostic> {
+        if let Some(member) = &self.unsupported_ordered_member {
+            return Err(with_path(
+                SdkExecutionDiagnostic::unsupported_capability(
+                    sdk_code("query_plan_ordered_collection_unsupported"),
+                    sdk_message("Supported TypeDB providers do not implement ordered list DML"),
+                ),
+                vec![
+                    SdkDiagnosticPathSegment::Type(self.type_id.clone()),
+                    member.clone(),
+                ],
+            ));
+        }
+        Ok(())
     }
 
     /// Return the exact projected model type.
@@ -1378,6 +1431,7 @@ impl ProjectedThing {
             roles,
             Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
                 database_identity,
+                false,
             )))),
         )
     }
@@ -1468,6 +1522,27 @@ impl ProjectedThing {
     #[must_use]
     pub const fn resource_measure(&self) -> ProjectedResourceMeasure {
         ProjectedResourceMeasure(self.size)
+    }
+
+    /// Whether this value is a snapshot of a deleted thing.
+    #[must_use]
+    pub fn is_deleted(&self) -> bool {
+        self.database_origin
+            .as_ref()
+            .is_some_and(|origin| origin.0.1)
+    }
+
+    pub(crate) fn mark_deleted(&mut self) -> Result<(), SdkExecutionDiagnostic> {
+        let origin = self
+            .database_origin
+            .as_ref()
+            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+        // Replace only the root's carrier; surviving role players stay live.
+        self.database_origin = Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
+            origin.0.0.clone(),
+            true,
+        ))));
+        Ok(())
     }
 
     /// Derive an exact nonrecursive reference while preserving database origin.
@@ -1616,6 +1691,7 @@ fn validate_create_fields(
     model: &ModelProjection,
     mut supplied: BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
     budget: &mut ProjectedBudget,
+    unsupported_ordered_member: &mut Option<SdkDiagnosticPathSegment>,
 ) -> Result<PresentFields, SdkExecutionDiagnostic> {
     let allowed = model
         .create()
@@ -1667,6 +1743,12 @@ fn validate_create_fields(
             budget,
             ValidationOrigin::Input,
         )?;
+        if unsupported_ordered_member.is_none()
+            && !values.is_empty()
+            && !token.multiplicity().collection_mode().is_unordered()
+        {
+            *unsupported_ordered_member = Some(SdkDiagnosticPathSegment::Field(field_id.clone()));
+        }
         output.insert(field_id.clone(), values);
     }
     Ok((output, present_fields))
@@ -1804,6 +1886,7 @@ fn validate_create_roles(
     model: &ModelProjection,
     mut supplied: BTreeMap<RoleId, Vec<ProjectedReference>>,
     budget: &mut ProjectedBudget,
+    unsupported_ordered_member: &mut Option<SdkDiagnosticPathSegment>,
 ) -> Result<PresentReferenceRoles, SdkExecutionDiagnostic> {
     let allowed = model.create().roles().keys().collect::<BTreeSet<_>>();
     if let Some(role_id) = supplied.keys().find(|role_id| !allowed.contains(role_id)) {
@@ -1826,14 +1909,7 @@ fn validate_create_roles(
                 role_path(type_id, role_id),
             )?;
         }
-        let references = present.unwrap_or_default();
-        enforce_role_cardinality(
-            type_id,
-            role_id,
-            role.multiplicity(),
-            references.len(),
-            ValidationOrigin::Input,
-        )?;
+        let mut references = present.unwrap_or_default();
         let token = model.query_tokens().roles().get(role_id).ok_or_else(|| {
             integrity(
                 "projected_role_token_missing",
@@ -1865,6 +1941,31 @@ fn validate_create_roles(
                 ));
             }
         }
+        if token.multiplicity().collection_mode().is_unordered() {
+            // Validate and charge every supplied reference before set normalization.
+            let mut unique: Vec<ProjectedReference> = Vec::with_capacity(references.len());
+            for (index, mut reference) in references.into_iter().enumerate() {
+                let mut insert_at = unique.len();
+                while let Some(slot) = unique
+                    .iter()
+                    .position(|previous| same_projected_player(installed, previous, &reference))
+                {
+                    let path = indexed_player_path(type_id, role_id, index, reference.type_id());
+                    let previous = unique.remove(slot);
+                    reference = merge_projected_player(installed, &previous, reference, path)?;
+                    insert_at = insert_at.min(slot);
+                }
+                unique.insert(insert_at.min(unique.len()), reference);
+            }
+            references = unique;
+        }
+        enforce_role_cardinality(
+            type_id,
+            role_id,
+            role.multiplicity(),
+            references.len(),
+            ValidationOrigin::Input,
+        )?;
         if token
             .annotations()
             .keys()
@@ -1884,7 +1985,20 @@ fn validate_create_roles(
                 duplicate_index,
             ));
         }
+        if unsupported_ordered_member.is_none()
+            && !references.is_empty()
+            && !token.multiplicity().collection_mode().is_unordered()
+        {
+            *unsupported_ordered_member = Some(SdkDiagnosticPathSegment::Role(role_id.clone()));
+        }
         output.insert(role_id.clone(), references);
+    }
+    if type_id.kind() == TypeKind::Relation && output.values().all(Vec::is_empty) {
+        return Err(invalid_input(
+            "relation_requires_player",
+            "A relation requires at least one player to survive commit",
+            type_path(type_id),
+        ));
     }
     Ok((output, present_roles))
 }
@@ -2005,7 +2119,7 @@ fn validate_role_player_database_origin(
     path: Vec<SdkDiagnosticPathSegment>,
 ) -> Result<(), SdkExecutionDiagnostic> {
     match (thing_origin, player_origin) {
-        (Some(expected), Some(actual)) if expected.0 == actual.0 => Ok(()),
+        (Some(expected), Some(actual)) if expected.0.0 == actual.0.0 => Ok(()),
         (Some(_), None) => Err(integrity(
             "hydrated_role_player_database_origin_missing",
             "A database-bound hydrated role player is missing its opaque database origin",
@@ -2272,6 +2386,86 @@ fn canonical_scalar_equal(left: &CanonicalValue, right: &CanonicalValue) -> bool
     left == right || left.semantic_cmp_same_domain(right) == Some(Ordering::Equal)
 }
 
+fn same_projected_player(
+    installed: &InstalledRuntimeProjection,
+    left: &ProjectedReference,
+    right: &ProjectedReference,
+) -> bool {
+    if let (Some(left), Some(right)) = (&left.iid, &right.iid)
+        && left.eq_ignore_ascii_case(right)
+    {
+        return true;
+    }
+    (is_same_or_subtype(installed, &left.type_id, &right.type_id)
+        || is_same_or_subtype(installed, &right.type_id, &left.type_id))
+        && left.keys.iter().any(|(field, value)| {
+            right.keys.iter().any(|(other, candidate)| {
+                field.attribute() == other.attribute()
+                    && canonical_scalar_equal(value.value(), candidate.value())
+            })
+        })
+}
+
+fn merge_projected_player(
+    installed: &InstalledRuntimeProjection,
+    left: &ProjectedReference,
+    right: ProjectedReference,
+    path: Vec<SdkDiagnosticPathSegment>,
+) -> Result<ProjectedReference, SdkExecutionDiagnostic> {
+    if let (Some(left), Some(right)) = (&left.iid, &right.iid)
+        && !left.eq_ignore_ascii_case(right)
+    {
+        return Err(invalid_input(
+            "reference_identity_mismatch",
+            "Equivalent player keys identify conflicting IIDs",
+            path,
+        ));
+    }
+    let type_id = if is_same_or_subtype(installed, &left.type_id, &right.type_id) {
+        left.type_id.clone()
+    } else if is_same_or_subtype(installed, &right.type_id, &left.type_id) {
+        right.type_id.clone()
+    } else {
+        return Err(invalid_input(
+            "role_player_not_accepted",
+            "Repeated player references require compatible types",
+            path,
+        ));
+    };
+    if let (Some(left), Some(right)) = (&left.database_origin, &right.database_origin)
+        && left.0 != right.0
+    {
+        return Err(invalid_input(
+            "reference_database_mismatch",
+            "Repeated player references belong to different databases",
+            path,
+        ));
+    }
+    let mut keys: BTreeMap<OwnsFactId, ProjectedAttributeValue> = BTreeMap::new();
+    for (field, value) in left.keys.iter().chain(&right.keys) {
+        let field =
+            OwnsFactId::new(type_id.clone(), field.attribute().clone()).expect("thing ownership");
+        if let Some(previous) = keys.get(&field) {
+            if !canonical_scalar_equal(previous.value(), value.value()) {
+                return Err(invalid_input(
+                    "duplicate_reference_key",
+                    "Repeated player references have conflicting key evidence",
+                    path,
+                ));
+            }
+        } else {
+            keys.insert(field, value.clone());
+        }
+    }
+    ProjectedReference::try_new_with_origin(
+        installed,
+        type_id,
+        left.iid.clone().or(right.iid),
+        keys.into_iter().collect(),
+        left.database_origin.clone().or(right.database_origin),
+    )
+}
+
 fn first_projected_reference_duplicate(
     references: &[ProjectedReference],
 ) -> Option<(usize, usize)> {
@@ -2450,7 +2644,8 @@ fn cardinality_diagnostic(
 }
 
 fn canonical_value_bytes(value: &CanonicalValue) -> Result<usize, SdkExecutionDiagnostic> {
-    to_canonical_json(value)
+    // Canonical scalars are already admitted; measurement must retain their explicit codec policy.
+    serde_json::to_vec(value)
         .map(|bytes| bytes.len())
         .map_err(|_| {
             integrity(
@@ -2764,6 +2959,36 @@ pub(crate) mod tests {
     use type_bridge_contract::value::{CanonicalDouble, CanonicalString};
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
+    #[test]
+    fn scalar_measurement_matches_canonical_bytes_without_reapplying_default_limits() {
+        for value in [
+            CanonicalValue::String(CanonicalString::new("한\n\"\\").unwrap()),
+            CanonicalValue::Long(i64::MAX),
+            CanonicalValue::Double(CanonicalDouble::new(-0.0).unwrap()),
+            CanonicalValue::Boolean(true),
+        ] {
+            assert_eq!(
+                canonical_value_bytes(&value).unwrap(),
+                type_bridge_contract::codec::to_canonical_json(&value)
+                    .unwrap()
+                    .len()
+            );
+        }
+        let limits = type_bridge_contract::limits::CodecLimits {
+            max_string_bytes: 2 * 1024 * 1024,
+            ..Default::default()
+        };
+        let value = CanonicalValue::String(
+            CanonicalString::new_with_limits("x".repeat(1024 * 1024 + 1), limits).unwrap(),
+        );
+        assert_eq!(
+            canonical_value_bytes(&value).unwrap(),
+            type_bridge_contract::codec::to_canonical_json_with_limits(&value, limits)
+                .unwrap()
+                .len()
+        );
+    }
+
     const ORIGIN_SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:
   identifier: { value: string }
@@ -2805,6 +3030,68 @@ plays:
             .with_declared_schema_identity(declared_identity)
     }
 
+    #[test]
+    fn unordered_key_evidence_cannot_bridge_two_different_iids() {
+        let schema = ORIGIN_SCHEMA
+            .replace(
+                "attributes:\n",
+                "attributes:\n  secondary: { value: string }\n",
+            )
+            .replace(
+                "      identifier: { key: true }",
+                "      identifier: { key: true }\n      secondary: { key: true }",
+            )
+            .replace("friend: { card: 1 }", "friend: { card: { min: 0 } }");
+        let documents =
+            SchemaDocumentSet::parse([(DocumentId::new("bridge.yaml").unwrap(), schema.as_str())])
+                .unwrap();
+        let resolved = resolve(
+            &normalize_documents(&documents).unwrap(),
+            &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+        )
+        .unwrap();
+        let installed = InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Rust,
+                &ProjectionConfig::rust(),
+                &[ProjectionHandler::rust_v1()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let key = |name: &str| {
+            (
+                OwnsFactId::new(person.clone(), AttributeId::new(name).unwrap()).unwrap(),
+                ProjectedAttributeValue::try_new(
+                    &installed,
+                    TypeId::new(TypeKind::Attribute, name).unwrap(),
+                    CanonicalValue::String(CanonicalString::new(name).unwrap()),
+                )
+                .unwrap(),
+            )
+        };
+        let reference = |iid: Option<&str>, keys| {
+            ProjectedReference::try_new(&installed, person.clone(), iid.map(str::to_owned), keys)
+                .unwrap()
+        };
+        let references = vec![
+            reference(Some("0x1"), vec![key("identifier")]),
+            reference(Some("0x2"), vec![key("secondary")]),
+            reference(Some("0x1"), vec![key("identifier"), key("secondary")]),
+        ];
+        let error = ProjectedCreate::try_new(
+            &installed,
+            TypeId::new(TypeKind::Relation, "friendship").unwrap(),
+            vec![],
+            vec![(RoleId::new("friendship", "friend").unwrap(), references)],
+        )
+        .unwrap_err();
+        assert_eq!(error.code().as_str(), "reference_identity_mismatch");
+    }
+
     fn origin_complete_player(
         installed: &InstalledRuntimeProjection,
         reference: ProjectedReference,
@@ -2838,6 +3125,113 @@ plays:
             vec![(identifier, vec![identifier_value])],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn unordered_role_repeated_reference_counts_as_one_player() {
+        let installed = origin_projection();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let friendship = TypeId::new(TypeKind::Relation, "friendship").unwrap();
+        let friend = RoleId::new("friendship", "friend").unwrap();
+        let reference =
+            ProjectedReference::try_new(&installed, person, Some("0x1234".to_owned()), vec![])
+                .unwrap();
+        let create = ProjectedCreate::try_new(
+            &installed,
+            friendship,
+            vec![],
+            vec![(friend.clone(), vec![reference.clone(), reference])],
+        )
+        .unwrap();
+        assert_eq!(create.roles()[&friend].len(), 1);
+    }
+
+    #[test]
+    fn unordered_player_identity_merges_evidence_without_losing_origin_or_keys() {
+        let installed = origin_projection();
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let friendship = TypeId::new(TypeKind::Relation, "friendship").unwrap();
+        let friend = RoleId::new("friendship", "friend").unwrap();
+        let key = OwnsFactId::new(person.clone(), AttributeId::new("identifier").unwrap()).unwrap();
+        let value = |text: &str| {
+            ProjectedAttributeValue::try_new(
+                &installed,
+                TypeId::new(TypeKind::Attribute, "identifier").unwrap(),
+                CanonicalValue::String(CanonicalString::new(text).unwrap()),
+            )
+            .unwrap()
+        };
+        let reference = |iid: Option<&str>, text: &str| {
+            ProjectedReference::try_new(
+                &installed,
+                person.clone(),
+                iid.map(str::to_owned),
+                vec![(key.clone(), value(text))],
+            )
+            .unwrap()
+        };
+        let create = |references| {
+            ProjectedCreate::try_new(
+                &installed,
+                friendship.clone(),
+                vec![],
+                vec![(friend.clone(), references)],
+            )
+        };
+        let identity = DatabaseExecutionIdentity::isolated("same-player");
+        let bound = ProjectedReference::try_new_for_database(
+            &installed,
+            person.clone(),
+            Some("0x1".into()),
+            vec![(key.clone(), value("ada"))],
+            identity.clone(),
+        )
+        .unwrap();
+        let plain =
+            ProjectedReference::try_new(&installed, person.clone(), Some("0x1".into()), vec![])
+                .unwrap();
+        let normalized = create(vec![plain, bound.clone(), reference(None, "ada")]).unwrap();
+        let players = &normalized.roles()[&friend];
+        assert_eq!(players.len(), 1);
+        assert_eq!(players[0].iid(), Some("0x1"));
+        assert_eq!(players[0].keys()[&key].value(), value("ada").value());
+        assert_eq!(players[0].database_origin.as_ref().unwrap().0.0, identity);
+        assert_eq!(
+            create(vec![bound.clone(), reference(Some("0x1"), "bob")])
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "duplicate_reference_key"
+        );
+        let mixed_case = create(vec![
+            reference(Some("0xAbCd"), "same"),
+            reference(Some("0xaBcD"), "same"),
+        ])
+        .unwrap();
+        assert_eq!(mixed_case.roles()[&friend].len(), 1);
+        assert_eq!(mixed_case.roles()[&friend][0].iid(), Some("0xabcd"));
+        assert_eq!(
+            create(vec![
+                reference(Some("0x1"), "ada"),
+                reference(Some("0x2"), "ada")
+            ])
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "reference_identity_mismatch"
+        );
+        let foreign = ProjectedReference::try_new_for_database(
+            &installed,
+            person,
+            Some("0x1".into()),
+            vec![],
+            DatabaseExecutionIdentity::isolated("foreign-player"),
+        )
+        .unwrap();
+        assert_eq!(
+            create(vec![bound, foreign]).unwrap_err().code().as_str(),
+            "reference_database_mismatch"
+        );
     }
 
     #[test]
@@ -3006,11 +3400,14 @@ plays:
                 .unwrap();
         let mut role_budget = ProjectedCreateBudget::try_new(&installed, &friendship).unwrap();
         let before = role_budget.budget.finish();
-        let diagnostic = role_budget
+        role_budget
             .try_add_role_references(&installed, &friend, 0, [&reference, &reference].into_iter())
-            .unwrap_err();
-        assert_eq!(diagnostic.code().as_str(), "role_cardinality_violation");
-        assert_eq!(role_budget.budget.finish(), before);
+            .unwrap();
+        assert_eq!(
+            role_budget.budget.finish().members,
+            before.members + 2 * reference.size.members
+        );
+        let mut role_budget = ProjectedCreateBudget::try_new(&installed, &friendship).unwrap();
 
         let mut wrong_player = reference.clone();
         wrong_player.type_id = friendship.clone();
@@ -3053,13 +3450,81 @@ plays:
     }
 
     #[test]
+    fn deleted_relation_carrier_preserves_surviving_players_and_refuses_root_references() {
+        let installed = origin_projection();
+        let identity = DatabaseExecutionIdentity::isolated("deleted-relation");
+        let player = origin_complete_player(
+            &installed,
+            ProjectedReference::try_new_for_database(
+                &installed,
+                TypeId::new(TypeKind::Entity, "person").unwrap(),
+                Some("0x1".into()),
+                vec![],
+                identity.clone(),
+            )
+            .unwrap(),
+        );
+        let relation = TypeId::new(TypeKind::Relation, "friendship").unwrap();
+        let roles = vec![(
+            RoleId::new("friendship", "friend").unwrap(),
+            vec![player.clone()],
+        )];
+        let mut snapshot = ProjectedThing::try_new_for_database(
+            &installed,
+            relation.clone(),
+            "0x10".into(),
+            vec![],
+            roles.clone(),
+            identity,
+        )
+        .unwrap();
+        let live_copy = snapshot.clone();
+        snapshot.mark_deleted().unwrap();
+        assert!(snapshot.is_deleted());
+        assert!(!live_copy.is_deleted());
+        let restored = ProjectedThing::try_new_with_origin_carrier(
+            &installed,
+            relation.clone(),
+            "0x10".into(),
+            vec![],
+            roles,
+            snapshot.origin_carrier(),
+        )
+        .unwrap();
+        assert!(restored.is_deleted());
+        assert_eq!(
+            restored
+                .try_to_reference(&installed)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "thing_deleted"
+        );
+        assert_eq!(
+            ProjectedReference::try_new_with_origin_carrier(
+                &installed,
+                relation,
+                Some("0x10".into()),
+                vec![],
+                snapshot.origin_carrier(),
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "thing_deleted"
+        );
+        assert!(!player.reference().origin_carrier().unwrap().0.1);
+    }
+
+    #[test]
     fn hydrated_database_origins_are_coherent_and_redacted() {
         let identity = DatabaseExecutionIdentity::isolated("projected-model-a");
         let matching =
-            ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity.clone())));
-        let same = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity)));
+            ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity.clone(), false)));
+        let same = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity, false)));
         let different = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
             DatabaseExecutionIdentity::isolated("projected-model-a"),
+            false,
         )));
 
         validate_role_player_database_origin(Some(&matching), Some(&same), Vec::new()).unwrap();

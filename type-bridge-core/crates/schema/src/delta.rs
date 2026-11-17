@@ -1,6 +1,7 @@
 //! Pure managed-schema diff, replay, and inversion.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use type_bridge_contract::id::FunctionId;
 
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
@@ -11,7 +12,9 @@ use type_bridge_contract::schema::{
     SchemaOperation, SchemaOperationKind, SourceSpan, SourcedSchemaFact,
 };
 
-use crate::delta_dependencies::{FactDependencyGraph, plan_schema_operations};
+use crate::delta_dependencies::{
+    FactDependencyGraph, plan_schema_operations_with_function_dependencies,
+};
 use crate::{
     ManagedSchemaScope, managed_declared_identity_fingerprint, managed_semantic_schema_fingerprint,
     resolve_schema_with_capabilities,
@@ -115,9 +118,20 @@ pub fn diff_managed(
     target: &DeclaredSchema,
     context: &ManagedDeltaContext,
 ) -> Result<SchemaDelta, DeltaError> {
+    diff_managed_with_function_dependencies(source, target, context, &BTreeMap::new())
+}
+
+/// Internal migration seam: use independently parsed function-body dependencies.
+pub fn diff_managed_with_function_dependencies(
+    source: &DeclaredSchema,
+    target: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+    dependencies: &BTreeMap<FunctionId, BTreeSet<SchemaFactId>>,
+) -> Result<SchemaDelta, DeltaError> {
     let source_state = managed_schema_state(source, context)?;
     let target_state = managed_schema_state(target, context)?;
-    let operations = plan_schema_operations(source, target)?;
+    let operations =
+        plan_schema_operations_with_function_dependencies(source, target, dependencies)?;
     Ok(SchemaDelta::new(
         PatchFormatVersion::V1,
         source_state,
@@ -132,6 +146,16 @@ pub fn apply_delta(
     delta: &SchemaDelta,
     context: &ManagedDeltaContext,
 ) -> Result<DeclaredSchema, DeltaError> {
+    apply_delta_with_function_dependencies(source, delta, context, &BTreeMap::new())
+}
+
+/// Internal migration seam: validate replay against independently parsed dependencies.
+pub fn apply_delta_with_function_dependencies(
+    source: &DeclaredSchema,
+    delta: &SchemaDelta,
+    context: &ManagedDeltaContext,
+    dependencies: &BTreeMap<FunctionId, BTreeSet<SchemaFactId>>,
+) -> Result<DeclaredSchema, DeltaError> {
     delta
         .required_capabilities()
         .ensure_supported_by(context.available_capabilities())?;
@@ -144,7 +168,7 @@ pub fn apply_delta(
         .into());
     }
 
-    let (facts, spans) = replay(source, delta.operations())?;
+    let (facts, spans) = replay(source, delta.operations(), dependencies)?;
     let sourced = facts
         .into_iter()
         .map(|(id, fact)| {
@@ -198,6 +222,7 @@ type ReplayedFacts = (
 fn replay(
     source: &DeclaredSchema,
     operations: &[SchemaOperation],
+    dependencies: &BTreeMap<FunctionId, BTreeSet<SchemaFactId>>,
 ) -> Result<ReplayedFacts, DeltaError> {
     let mut facts = BTreeMap::new();
     let mut spans = BTreeMap::new();
@@ -214,7 +239,7 @@ fn replay(
     }
 
     for (operation_index, operation) in operations.iter().enumerate() {
-        reject_opaque_function(operation)?;
+        reject_opaque_function(operation, dependencies)?;
         match operation.kind() {
             SchemaOperationKind::Define => {
                 let definitions = operation
@@ -235,7 +260,7 @@ fn replay(
                     facts.insert(id.clone(), fact.clone());
                     spans.insert(id, synthetic_span(operation_index, fact_index)?);
                 }
-                validate_inventory(&facts)?;
+                validate_inventory(&facts, dependencies)?;
             }
             SchemaOperationKind::Redefine => {
                 let expected = operation
@@ -254,7 +279,7 @@ fn replay(
                 }
                 facts.insert(id.clone(), replacement.clone());
                 spans.insert(id, synthetic_span(operation_index, 0)?);
-                validate_inventory(&facts)?;
+                validate_inventory(&facts, dependencies)?;
             }
             SchemaOperationKind::Undefine => {
                 let expected = operation
@@ -268,7 +293,10 @@ fn replay(
                     )
                     .into());
                 }
-                let graph = FactDependencyGraph::from_facts(facts.values())?;
+                let graph = FactDependencyGraph::from_facts_with_function_dependencies(
+                    facts.values(),
+                    dependencies,
+                )?;
                 if let Some(dependents) = graph.dependents(&id)
                     && let Some(survivor) = dependents
                         .iter()
@@ -285,17 +313,24 @@ fn replay(
             }
         }
     }
-    validate_inventory(&facts)?;
+    validate_inventory(&facts, dependencies)?;
     Ok((facts, spans))
 }
 
-fn validate_inventory(facts: &BTreeMap<SchemaFactId, SchemaFact>) -> Result<(), DeltaError> {
-    let graph = FactDependencyGraph::from_facts(facts.values())?;
+fn validate_inventory(
+    facts: &BTreeMap<SchemaFactId, SchemaFact>,
+    dependencies: &BTreeMap<FunctionId, BTreeSet<SchemaFactId>>,
+) -> Result<(), DeltaError> {
+    let graph =
+        FactDependencyGraph::from_facts_with_function_dependencies(facts.values(), dependencies)?;
     graph.validate_complete()?;
     Ok(())
 }
 
-fn reject_opaque_function(operation: &SchemaOperation) -> Result<(), DeltaError> {
+fn reject_opaque_function(
+    operation: &SchemaOperation,
+    dependencies: &BTreeMap<FunctionId, BTreeSet<SchemaFactId>>,
+) -> Result<(), DeltaError> {
     let contains_function = operation
         .defined_facts()
         .into_iter()
@@ -303,11 +338,12 @@ fn reject_opaque_function(operation: &SchemaOperation) -> Result<(), DeltaError>
         .chain(operation.expected_fact())
         .chain(operation.replacement_fact())
         .chain(operation.undefined_fact())
-        .any(|fact| matches!(fact, SchemaFact::Function(_)));
+        .any(|fact| matches!(fact, SchemaFact::Function(function)
+            if operation.kind() == SchemaOperationKind::Redefine || !dependencies.contains_key(function.id())));
     if contains_function {
         return Err(failure(
             "unsupported_function_migration",
-            "automatic migration of opaque function bodies is unsupported",
+            "function body replacement is unsupported; remove the function in one migration and add it in the next",
         )
         .into());
     }

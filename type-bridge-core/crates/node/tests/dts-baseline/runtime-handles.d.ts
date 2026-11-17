@@ -1,11 +1,11 @@
-import type { NativeRustDatabase, NativeRustTransactionContext, RustDatabase, RustTransactionContext } from "./index.js";
+import type { NativeDatabase, NativeTransactionContext, Database, TransactionContext, MigrationTransaction } from "./index.js";
 /** @internal Reject structurally forged execution connections. */
-export declare function isRegisteredRustConnection(connection: unknown): connection is RustDatabase | RustTransactionContext;
+export declare function isRegisteredConnection(connection: unknown): connection is Database | TransactionContext | MigrationTransaction;
 /** @internal Retain an opaque native database handle. */
-export declare function registerRustDatabaseHandle(database: RustDatabase, native: NativeRustDatabase): void;
+export declare function registerDatabaseHandle(database: Database, native: NativeDatabase): void;
 /** @internal Retain an opaque borrowed transaction handle. */
-export declare function registerRustTransactionHandle(transaction: RustTransactionContext, native: NativeRustTransactionContext): void;
+export declare function registerTransactionHandle(transaction: TransactionContext | MigrationTransaction, native: NativeTransactionContext): void;
 /** @internal Resolve database ownership for generated execution. */
-export declare function rustDatabaseHandle(connection: RustDatabase | RustTransactionContext): NativeRustDatabase | undefined;
+export declare function rustDatabaseHandle(connection: Database | TransactionContext | MigrationTransaction): NativeDatabase | undefined;
 /** @internal Resolve borrowed transaction ownership for generated execution. */
-export declare function rustTransactionHandle(connection: RustDatabase | RustTransactionContext): NativeRustTransactionContext | undefined;
+export declare function rustTransactionHandle(connection: Database | TransactionContext | MigrationTransaction): NativeTransactionContext | undefined;

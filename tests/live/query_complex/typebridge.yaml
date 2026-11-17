@@ -1,0 +1,15 @@
+format: typebridge.workspace/v1
+schema:
+  root: schema-set.yaml
+  ownership: exclusive
+  managed-scope: complex-query
+compatibility:
+  semantic-profile: typedb-3.13.6/v1
+migrations:
+  directory: migrations
+  app-label: complex
+bindings:
+  python: { output: generated/python/complex_models }
+  typescript: { output: generated/typescript }
+  rust: { output: generated/rust }
+  c: { output: generated/c }

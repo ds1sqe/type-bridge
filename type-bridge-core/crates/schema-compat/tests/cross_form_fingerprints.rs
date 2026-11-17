@@ -1,13 +1,12 @@
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, semantic_schema_fingerprint};
-use type_bridge_schema_compat::{toml_to_declared, typeql_to_declared};
+use type_bridge_schema_compat::typeql_to_declared;
 
 const SCHEMA_YAML: &str = include_str!("fixtures/cross_form/schema.yaml");
 const SCHEMA_TYPEQL: &str = include_str!("fixtures/cross_form/schema.tql");
 const LEGACY_YAML: &str = include_str!("fixtures/cross_form/legacy.yaml");
 const LEGACY_TYPEQL: &str = include_str!("fixtures/cross_form/legacy.tql");
-const LEGACY_TOML: &str = include_str!("fixtures/cross_form/legacy.toml");
 
 fn document_id(path: &str) -> DocumentId {
     DocumentId::new(path).expect("fixture document identifier is valid")
@@ -47,13 +46,10 @@ fn yaml_and_typeql_share_fingerprints_across_the_supported_schema_overlap() {
 }
 
 #[test]
-fn yaml_typeql_and_legacy_toml_share_both_fingerprint_domains() {
+fn yaml_and_typeql_share_both_legacy_fingerprint_domains() {
     let yaml = yaml_to_declared("schema/legacy-overlap.yaml", LEGACY_YAML);
     let typeql = typeql_to_declared(document_id("schema/legacy-overlap.tql"), LEGACY_TYPEQL)
         .expect("legacy-overlap TypeQL fixture adapts");
-    let toml = toml_to_declared(document_id("generated/legacy-overlap.tql"), LEGACY_TOML)
-        .expect("legacy TOML fixture adapts");
 
     assert_equal_fingerprints("YAML versus TypeQL", &yaml, &typeql);
-    assert_equal_fingerprints("YAML versus converted TOML", &yaml, &toml);
 }

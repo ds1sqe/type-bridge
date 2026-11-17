@@ -13,7 +13,7 @@ from type_bridge_core import (
     _QueryDescriptorRegistry,
 )
 
-from tests.unit.query.test_query_v2_remote_runtime import (
+from tests.unit.query.remote_fixture import (
     PLAN_CAPABILITIES,
     _advertisement,
     _authority,
@@ -84,8 +84,8 @@ def test_public_named_page_matches_the_rust_and_node_golden() -> None:
     person = session.exact("person")
     company = session.exact("company")
     employment = session.exact("employment")
-    person_order = person.field("name").order("ascending", "reject")
-    company_order = company.field("name").order("ascending", "reject")
+    person_order = person.field("name").order("ascending")
+    company_order = company.field("name").order("ascending")
     companies = company.collect().distinct(True).order_by(company_order)
     shape = session.named(["person", "companies"], [person.one(), companies])
     connected = (

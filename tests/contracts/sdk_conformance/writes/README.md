@@ -16,9 +16,11 @@ proxy.
   transaction, a put (doctor D2, created since none matches), an update that
   answers rows (`Write{returns}`: D2 goes on call, its name is returned), an
   insert whose relation players are the item and account the same write
-  inserts (purchase R1), and a delete (purchase O1). `after` reads them back.
+  inserts (purchase R1), and a delete (purchase O1). `read_back` then fetches
+  R1 with both required players and checks its exact type, order id and player
+  keys from the committed document; `after` checks the remaining state.
 - `expected.json`: the canonical bytes of every plan (hex), every answer as
-  `[kind, value]` (rows report their count, exists 0 or 1), the provider state
+  `[kind, value]` (rows/documents report their count, exists 0 or 1), the provider state
   and the proxy's commit outcomes.
 
 `constraints/` inserts a doctor twice; the key rejects the second commit with
@@ -59,3 +61,7 @@ proxy per binding. It publishes `reports/<binding>.json`
 `sdk_writes_compare.py` requires every report to equal `expected.json`, which
 `schema-codegen`'s `rust_plan_builder` tests tie to the hand-built golden
 purchase.
+
+For a shared local server, `TB_SDK_WRITES_DATABASE_PREFIX` selects the fixture's
+owned database prefix and `TB_STAGED_PROXY_PORT_BASE` selects four sequential
+proxy ports instead of random ports. The fixture drops its databases on exit.

@@ -1,4 +1,6 @@
+import { Iid } from "@type-bridge/node";
 import {
+  type BatchWriteResult,
   Identifier,
   Membership,
   Person,
@@ -11,9 +13,9 @@ import {
   type ProjectedModelFilter,
   type ProjectedModelManager,
 } from "./generated_ordered/src/index.js";
-import type { RustDatabase } from "@type-bridge/node";
+import type { Database } from "@type-bridge/node";
 
-declare const database: RustDatabase;
+declare const database: Database;
 
 const first = Person.create({
   identifier: Identifier.create("first"),
@@ -39,26 +41,26 @@ const personManager: OrderedProjectedModelManager<Person, typeof Person.typeKey>
   personToken.manager(database);
 const legacyPersonManager: ProjectedModelManager<Person> = personManager;
 
-const insertedPeople: readonly Person[] = personManager.insertMany([
+const insertedPeople: BatchWriteResult<Person> = personManager.insertMany([
   first,
   second,
 ] as const);
-const putPeople: readonly Person[] = personManager.putMany([
+const putPeople: BatchWriteResult<Person> = personManager.putMany([
   first,
   second,
 ] as const);
 const personUpdates = [
-  ["0xa1", first],
-  ["0xa2", second],
+  [new Iid("0xa1"), first],
+  [new Iid("0xa2"), second],
 ] as const satisfies readonly ProjectedBatchUpdate<Person>[];
-const updatedPeople: readonly Person[] = personManager.updateMany(personUpdates);
-personManager.deleteMany(["0xa1", "0xa2"] as const);
+const updatedPeople: BatchWriteResult<Person> = personManager.updateMany(personUpdates);
+personManager.deleteMany([new Iid("0xa1"), new Iid("0xa2")] as const);
 
 const filtered: OrderedProjectedModelManager<Person> = personManager.filter({
   score__gte: Score.create(1n),
 });
-const filteredUpdates: readonly Person[] = filtered.updateMany(personUpdates);
-filtered.deleteMany(["0xa1"] as const);
+const filteredUpdates: BatchWriteResult<Person> = filtered.updateMany(personUpdates);
+filtered.deleteMany([new Iid("0xa1")] as const);
 
 const comparison: ProjectedManagerComparison = "gte";
 const canonicalFilter: ProjectedModelFilter<Person, typeof Person.typeKey> =
@@ -78,20 +80,20 @@ const membershipManager: OrderedProjectedModelManager<
   typeof Membership.typeKey
 > =
   Membership.manager(database);
-const insertedMemberships: readonly Membership[] =
+const insertedMemberships: BatchWriteResult<Membership> =
   membershipManager.insertMany([membership] as const);
-const putMemberships: readonly Membership[] =
+const putMemberships: BatchWriteResult<Membership> =
   membershipManager.putMany([membership] as const);
 const membershipUpdates = [
-  ["0xb1", membership],
+  [new Iid("0xb1"), membership],
 ] as const satisfies readonly ProjectedBatchUpdate<Membership>[];
-const updatedMemberships: readonly Membership[] =
+const updatedMemberships: BatchWriteResult<Membership> =
   membershipManager.updateMany(membershipUpdates);
-membershipManager.deleteMany(["0xb1"] as const);
+membershipManager.deleteMany([new Iid("0xb1")] as const);
 
-const emptyPeople: readonly Person[] = personManager.insertMany([]);
-const emptyPuts: readonly Person[] = personManager.putMany([]);
-const emptyUpdates: readonly Person[] = personManager.updateMany([]);
+const emptyPeople: BatchWriteResult<Person> = personManager.insertMany([]);
+const emptyPuts: BatchWriteResult<Person> = personManager.putMany([]);
+const emptyUpdates: BatchWriteResult<Person> = personManager.updateMany([]);
 personManager.deleteMany([]);
 
 void legacyPersonManager;
@@ -109,3 +111,10 @@ void updatedMemberships;
 void emptyPeople;
 void emptyPuts;
 void emptyUpdates;
+
+const batchCount: number = insertedPeople.count;
+const batchIndexes: readonly number[] = insertedPeople.inputIndexes;
+const batchItems: readonly Person[] = insertedPeople.items;
+void batchCount;
+void batchIndexes;
+void batchItems;

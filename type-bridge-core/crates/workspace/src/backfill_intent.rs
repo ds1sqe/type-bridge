@@ -10,6 +10,8 @@ use type_bridge_schema::{ManagedDeltaContext, SchemaDocument, YamlMapping, YamlN
 
 /// Exact format identifier for the first closed backfill-intent YAML wire.
 pub const TYPEBRIDGE_BACKFILL_INTENT_V1: &str = "typebridge.migration-backfill-intent/v1";
+/// Current authoring format, requiring explicit TypeQL attribute matching.
+pub const TYPEBRIDGE_BACKFILL_INTENT_V2: &str = "typebridge.migration-backfill-intent/v2";
 /// Maximum bytes accepted for one source backfill intent.
 pub const MAX_BACKFILL_INTENT_BYTES: usize = 64 * 1024;
 
@@ -38,13 +40,23 @@ pub fn parse_backfill_intent(
     let document = SchemaDocument::parse(document, source)?;
     let root = document.root();
     require_keys(root, &["format", "copy-attribute"])?;
-    if scalar(required(root, "format")?, "format")? != TYPEBRIDGE_BACKFILL_INTENT_V1 {
+    let format = scalar(required(root, "format")?, "format")?;
+    if format == TYPEBRIDGE_BACKFILL_INTENT_V1 {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "workspace_backfill_intent_historical_format",
+            "format 1 is historical only; author format 2 with explicit mode isa or isa!",
+        )
+        .into());
+    }
+    if format != TYPEBRIDGE_BACKFILL_INTENT_V2 {
         return Err(invalid("format", "workspace_backfill_intent_format").into());
     }
     let operation = mapping(required(root, "copy-attribute")?, "copy-attribute")?;
     require_keys(
         operation,
         &[
+            "mode",
             "owner-kind",
             "owner",
             "source",
@@ -54,6 +66,15 @@ pub fn parse_backfill_intent(
             "reverse",
         ],
     )?;
+    let mode_node = required(operation, "mode").map_err(|_| {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "workspace_backfill_intent_mode_required",
+            "copy-attribute requires explicit mode isa or isa!",
+        )
+    })?;
+    let mode =
+        type_bridge_contract::query_plan::TypeMatchMode::from_typeql(scalar(mode_node, "mode")?)?;
     let owner_kind = match scalar(required(operation, "owner-kind")?, "owner-kind")? {
         "entity" => TypeKind::Entity,
         "relation" => TypeKind::Relation,
@@ -84,6 +105,7 @@ pub fn parse_backfill_intent(
         owner,
         source,
         destination,
+        mode,
         BackfillPartition::new(batch_rows, partition_key)?,
         semantics,
         reverse,

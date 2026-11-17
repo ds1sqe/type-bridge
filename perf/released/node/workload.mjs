@@ -8,7 +8,7 @@
  *
  * The same six ops as perf/released/python/workload.py, on the generated
  * `Item.manager(db)` of the package `--models` names (compiled, with a
- * `dist/index.js`), on a `RustDatabase`:
+ * `dist/index.js`), on a `Database` (`RustDatabase` in 2.x):
  *
  * - insert_one: `insert` one item;
  * - fetch_by_key: `filter({ itemId }).first()` of one of 1,000 items;
@@ -139,31 +139,59 @@ function run(m, db, skip, iterations, warmup) {
   return samples;
 }
 
+/** The item schema in one schema transaction, in the version's raw TypeQL call. */
+async function defineSchema(db) {
+  // 3.0 moved raw TypeQL from the transaction to `Database.executeQuery`.
+  if (typeof db.executeQuery === "function") {
+    await db.executeQuery(SCHEMA, "schema");
+    return;
+  }
+  const tx = db.transaction("schema");
+  try {
+    tx.query(SCHEMA);
+    tx.commit();
+  } catch (error) {
+    // An open schema transaction would block the database delete.
+    tx.close();
+    throw error;
+  }
+}
+
 async function main() {
   const options = parse(process.argv.slice(2));
   const models = await import(pathToFileURL(path.join(options.models, "dist", "index.js")).href);
   const require = createRequire(path.join(options.models, "package.json"));
   const nodePackage = require.resolve("@type-bridge/node");
-  const { RustDatabase } = require(nodePackage);
+  const mod = require(nodePackage);
+  // The same workload serves 2.x (RustDatabase) and 3.0 (Database).
+  const DatabaseClass = mod.Database ?? mod.RustDatabase;
+  if (!DatabaseClass) throw new Error("Node SDK exports no supported database constructor");
   const manifest = JSON.parse(
     fs.readFileSync(path.join(nodePackage.split(`${path.sep}dist${path.sep}`)[0], "package.json")),
   );
   const env = process.env;
-  const db = RustDatabase.connect(env.TYPEDB_ADDRESS || "localhost:1729", options.database, {
+  const db = DatabaseClass.connect(env.TYPEDB_ADDRESS || "localhost:1729", options.database, {
     username: env.TYPEDB_USERNAME || "admin",
     password: env.TYPEDB_PASSWORD || "password",
     httpPort: Number(env.TYPEDB_HTTP_PORT || "8000"),
   });
   let samples;
+  let failed = true;
   try {
     if (!db.databaseExists()) db.createDatabase();
-    const tx = db.transaction("schema");
-    tx.query(SCHEMA);
-    tx.commit();
+    await defineSchema(db);
     samples = run(models, db, options.skip, options.iterations, options.warmup);
+    failed = false;
   } finally {
-    if (db.databaseExists()) db.deleteDatabase();
-    db.close();
+    try {
+      if (db.databaseExists()) db.deleteDatabase();
+    } catch (error) {
+      // A cleanup failure must not replace the workload's own error.
+      if (!failed) throw error;
+      console.error(`cleanup: ${error.message}`);
+    } finally {
+      db.close();
+    }
   }
   const report = {
     format: FORMAT,

@@ -8,14 +8,15 @@ use type_bridge_contract::fingerprint::{
 };
 use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
-    AnnotationKindId, AnnotationSubjectId, CollectionMode, DeclaredIdentityFingerprint,
-    DeclaredSchema, FunctionFact, InterfaceKind, OwnsFact, OwnsFactId, PlaysFact, PlaysFactId,
-    RelatesFact, SchemaAnnotationValue, SchemaDiagnostics, SchemaFact, SchemaFactId,
-    SemanticProfile, SemanticSchemaFingerprint, StructFact, StructField, SubFactId, ValueFactId,
+    AnnotationFactId, AnnotationKindId, AnnotationSubjectId, CollectionMode,
+    DeclaredIdentityFingerprint, DeclaredSchema, FunctionFact, InterfaceKind, OwnsFact, OwnsFactId,
+    PlaysFact, PlaysFactId, RelatesFact, SchemaAnnotationValue, SchemaDiagnostics, SchemaFact,
+    SchemaFactId, SemanticProfile, SemanticSchemaFingerprint, SourceSpan, StructFact, StructField,
+    SubFactId, ValueFactId,
 };
 use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 
-use crate::semantic::{semantic_schema_fingerprint, validate_collection_profile};
+use crate::semantic::semantic_schema_fingerprint;
 
 /// Direct-fact identity plus the inheritance path used to derive an effective entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -558,9 +559,14 @@ pub struct ResolvedSchema {
     structs: BTreeMap<StructId, ResolvedStruct>,
     descriptor_index: DescriptorIndex,
     dependency_graph: SchemaDependencyGraph,
+    ownership_sources: BTreeMap<OwnsFactId, SourceSpan>,
 }
 
 impl ResolvedSchema {
+    pub(crate) fn ownership_source(&self, id: &OwnsFactId) -> Option<&SourceSpan> {
+        self.ownership_sources.get(id)
+    }
+
     /// Return the unchanged direct-declaration identity.
     #[must_use]
     pub const fn declared_identity_fingerprint(&self) -> &DeclaredIdentityFingerprint {
@@ -663,10 +669,40 @@ pub fn resolve_schema_with_capabilities(
             type_bridge_contract::schema::SchemaDiagnostic::new(diagnostic, None),
         )
     })?;
-    validate_collection_profile(declared, profile_id)?;
+    for fact in declared.facts() {
+        if let SchemaFact::Annotation(annotation) = fact
+            && let SchemaAnnotationValue::Regex(pattern) = annotation.value()
+            && pattern.as_str().match_indices('"').any(|(offset, _)| {
+                pattern.as_str()[..offset]
+                    .bytes()
+                    .rev()
+                    .take_while(|byte| *byte == b'\\')
+                    .count()
+                    % 2
+                    == 1
+            })
+        {
+            return Err(source_error(
+                declared,
+                &fact.id(),
+                "unsupported_regex_escaped_quote",
+                "supported TypeDB lines export a regex with an odd backslash before a double quote as an invalid literal, preventing post-commit observation; write the quote without the redundant backslash (a double quote needs no escape in a regex)",
+            ));
+        }
+        if let SchemaFact::Annotation(annotation) = fact
+            && let SchemaAnnotationValue::Values(values) = annotation.value()
+            && values.iter().any(|value| matches!(value,
+                type_bridge_contract::value::CanonicalValue::String(text) if text.as_str().contains('\\')))
+        {
+            return Err(source_error(declared, &fact.id(),
+                "unsupported_values_backslash",
+                "TypeDB cannot losslessly export a string @values entry containing a backslash"));
+        }
+    }
     let index = DirectIndex::build(declared)?;
     let parents = validate_parents(declared, &index)?;
     validate_inheritance_cycles(declared, &index.types, &parents)?;
+    validate_owns_value_constraints(declared, &index, &parents)?;
 
     let mut order = index.types.iter().cloned().collect::<Vec<_>>();
     order.sort_by_key(|id| (ancestor_chain(id, &parents).len(), id.clone()));
@@ -764,6 +800,8 @@ pub fn resolve_schema_with_capabilities(
             let annotations =
                 annotations_for(&index, AnnotationSubjectId::Relates(relates.id().clone()));
             let mut replaced_roles = BTreeSet::new();
+            let mut effective_cardinality =
+                cardinality(&annotations, &profile, InterfaceKind::Relates);
             if let Some(specialized) = relates.specializes() {
                 let replaced_role = resolved
                     .relates
@@ -794,6 +832,15 @@ pub fn resolve_schema_with_capabilities(
                         "effective parent-role collection mode is declared here",
                     ));
                 }
+                let inherited = replaced.cardinality;
+                let maximum = match (effective_cardinality.max(), inherited.max()) {
+                    (Some(local), Some(parent)) => Some(local.min(parent)),
+                    (local, parent) => local.or(parent),
+                };
+                effective_cardinality = Cardinality::new(effective_cardinality.min().max(inherited.min()), maximum)
+                    .map_err(|_| source_error(declared, &SchemaFactId::Relates(relates.id().clone()),
+                        "incompatible_specialization_cardinality",
+                        "specializing and parent role cardinality constraints have no common interval"))?;
                 let replaced = resolved
                     .relates
                     .remove(&replaced_role)
@@ -805,7 +852,7 @@ pub fn resolve_schema_with_capabilities(
                 id: EffectiveRelatesId::new(id.clone(), relates.id().role().clone()),
                 origin: ResolutionOrigin::direct(SchemaFactId::Relates(relates.id().clone())),
                 collection_mode: relates.collection_mode(),
-                cardinality: cardinality(&annotations, &profile, InterfaceKind::Relates),
+                cardinality: effective_cardinality,
                 is_abstract: annotations.contains_key(&AnnotationKindId::Abstract),
                 annotations,
                 replaced_roles,
@@ -880,6 +927,16 @@ pub fn resolve_schema_with_capabilities(
         structs,
         descriptor_index,
         dependency_graph,
+        ownership_sources: declared
+            .facts()
+            .filter_map(|fact| match fact {
+                SchemaFact::Owns(owns) => declared
+                    .source(&fact.id())
+                    .cloned()
+                    .map(|span| (owns.id().clone(), span)),
+                _ => None,
+            })
+            .collect(),
     })
 }
 
@@ -1010,6 +1067,100 @@ fn ancestor_chain(id: &TypeId, parents: &BTreeMap<TypeId, TypeId>) -> Vec<TypeId
         current = parent;
     }
     ancestors
+}
+
+// TypeDB compares each owns constraint with every inherited attribute constraint
+// of the same kind. Different regexes are conjunctive; it does not prove regex
+// containment, but rejects repeated identical constraints as redundant.
+fn validate_owns_value_constraints(
+    declared: &DeclaredSchema,
+    index: &DirectIndex,
+    parents: &BTreeMap<TypeId, TypeId>,
+) -> Result<(), SchemaDiagnostics> {
+    use std::cmp::Ordering;
+    for owns in index.owns.values().flatten() {
+        let subject = AnnotationSubjectId::Owns(owns.id().clone());
+        let local = annotations_for(index, subject.clone());
+        let attribute = TypeId::new(TypeKind::Attribute, owns.id().attribute().label().as_str())
+            .map_err(no_source)?;
+        for ancestor in
+            std::iter::once(attribute.clone()).chain(ancestor_chain(&attribute, parents))
+        {
+            let id = AttributeId::new(ancestor.label().as_str()).map_err(no_source)?;
+            let Some((_, value_id)) = index.values.get(&id) else {
+                continue;
+            };
+            let inherited_subject = AnnotationSubjectId::Value(value_id.clone());
+            for (kind, inherited) in annotations_for(index, inherited_subject.clone()) {
+                let Some(own) = local.get(&kind) else {
+                    continue;
+                };
+                let narrows = match (own, &inherited) {
+                    (SchemaAnnotationValue::Range(own), SchemaAnnotationValue::Range(parent)) => {
+                        let lower = match (own.lower(), parent.lower()) {
+                            (_, None) => true,
+                            (Some(own), Some(parent)) => matches!(
+                                own.semantic_cmp_same_domain(parent),
+                                Some(Ordering::Equal | Ordering::Greater)
+                            ),
+                            (None, Some(_)) => false,
+                        };
+                        let upper = match (own.upper(), parent.upper()) {
+                            (_, None) => true,
+                            (Some(own), Some(parent)) => matches!(
+                                own.semantic_cmp_same_domain(parent),
+                                Some(Ordering::Equal | Ordering::Less)
+                            ),
+                            (None, Some(_)) => false,
+                        };
+                        lower && upper && own != parent
+                    }
+                    (SchemaAnnotationValue::Values(own), SchemaAnnotationValue::Values(parent)) => {
+                        let mut matched = BTreeSet::new();
+                        own != parent
+                            && own.iter().all(|value| {
+                                parent
+                                    .iter()
+                                    .position(|candidate| {
+                                        candidate == value
+                                            || candidate.semantic_cmp_same_domain(value)
+                                                == Some(Ordering::Equal)
+                                    })
+                                    .is_some_and(|index| matched.insert(index))
+                            })
+                    }
+                    (SchemaAnnotationValue::Regex(own), SchemaAnnotationValue::Regex(parent)) => {
+                        own != parent
+                    }
+                    _ => continue,
+                };
+                if !narrows {
+                    let message = if matches!((own, &inherited),
+                        (SchemaAnnotationValue::Values(own), SchemaAnnotationValue::Values(parent)) if own == parent)
+                    {
+                        "owns-level values equal the attribute-level values; this constraint is redundant regardless of order; remove the owns-level values"
+                    } else {
+                        "ownership range and values must strictly narrow the attribute constraint; an ownership regex must differ from the attribute regex"
+                    };
+                    return Err(collection_mode_conflict(
+                        declared,
+                        &SchemaFactId::Annotation(AnnotationFactId::new(
+                            subject.clone(),
+                            kind.clone(),
+                        )),
+                        &SchemaFactId::Annotation(AnnotationFactId::new(
+                            inherited_subject.clone(),
+                            kind,
+                        )),
+                        "owns_constraint_not_narrowing",
+                        message,
+                        "attribute constraint is declared here",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn empty_resolved_type(id: TypeId) -> ResolvedType {

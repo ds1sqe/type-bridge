@@ -18,8 +18,4 @@ pub enum SchemaError {
         /// Description of the conflict.
         message: String,
     },
-
-    /// Schema sync to database failed.
-    #[error("Schema sync error: {0}")]
-    Sync(String),
 }

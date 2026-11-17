@@ -1,6 +1,4 @@
 //! Honest, comparison-only shadowing of the frozen V1 schema parser.
-
-#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
@@ -13,7 +11,7 @@ use type_bridge_contract::schema::{
     SemanticSchemaFingerprint, TypeReference,
 };
 use type_bridge_contract::value::{CanonicalValue, Cardinality as V2Cardinality, ValueTypeTag};
-use type_bridge_core_lib::_parser as parser;
+use type_bridge_core_lib::__internal::archive;
 use type_bridge_core_lib::_schema::{
     Cardinality as V1Cardinality, FunctionType as V1Function, OwnedAttribute, PlayedRole, RoleSpec,
     SchemaError, StructType as V1Struct, TypeSchema,
@@ -463,7 +461,7 @@ pub fn v1_shadow_report(
         V1ShadowInternalError::new("shadow_document_id_invalid", diagnostic.to_string())
     })?;
 
-    let v1_direct_result = parser::parse_typeql(typeql);
+    let v1_direct_result = archive::parse_unresolved(typeql);
     let v1_direct = match &v1_direct_result {
         Ok(schema) => accepted_v1(schema),
         Err(error) => rejected_v1(error),
@@ -472,7 +470,7 @@ pub fn v1_shadow_report(
     let semantic_profile = SemanticProfile::resolve(profile).map_err(|diagnostic| {
         V1ShadowInternalError::new("shadow_semantic_profile_invalid", diagnostic.to_string())
     })?;
-    let v1_effective_result = TypeSchema::from_typeql(typeql);
+    let v1_effective_result = type_bridge_core_lib::__internal::archive::parse_resolved(typeql);
     let v1_effective_projection = v1_effective_result
         .as_ref()
         .ok()

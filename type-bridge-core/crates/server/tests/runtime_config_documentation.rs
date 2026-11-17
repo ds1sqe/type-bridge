@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_schema::decode_schema_authority;
-use type_bridge_server::config::{OutboundTlsMode, RuntimeServerConfig, V2AuthorityMode};
+use type_bridge_server::config::{OutboundTlsMode, RuntimeServerConfig, StagedAuthorityMode};
 
 #[test]
 fn documented_runtime_config_is_executable() {
@@ -13,12 +13,11 @@ fn documented_runtime_config_is_executable() {
     assert_eq!(config.server.host, "0.0.0.0");
     assert_eq!(config.server.port, 8080);
     assert_eq!(config.typedb.database(), "my_database");
-    assert_eq!(config.schema.source_file, "schema.tql");
     assert_eq!(config.interceptors.enabled, ["audit-log"]);
-    assert!(config.v2.enabled);
-    assert_eq!(config.v2.schema_authority_file, "schema-authority.json");
+    assert!(config.staged.enabled);
+    assert_eq!(config.staged.schema_authority_file, "schema-authority.json");
     let authority = decode_schema_authority(
-        config.v2_schema_authority_bytes().unwrap().unwrap(),
+        config.staged_schema_authority_bytes().unwrap().unwrap(),
         &CapabilitySet::new(),
     )
     .expect("documented source-free authority is canonical and verified");
@@ -27,7 +26,7 @@ fn documented_runtime_config_is_executable() {
         authority.semantic_profile().id().as_str(),
         "typedb-3.12.1/v1"
     );
-    assert_eq!(config.v2.authority_mode, V2AuthorityMode::Managed);
+    assert_eq!(config.staged.authority_mode, StagedAuthorityMode::Managed);
     let audit_log = config.interceptors.audit_log.unwrap();
     assert_eq!(audit_log.output, "file");
     assert_eq!(audit_log.file_path, "/var/log/audit.jsonl");

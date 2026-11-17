@@ -1,5 +1,0 @@
-[attributes.name]
-value = "string"
-
-[entities.person]
-owns = ["name"]

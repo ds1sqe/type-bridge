@@ -12,11 +12,12 @@ use type_bridge_query::ValidatedMigrationAssertionPlan;
 use type_bridge_schema_migration::{
     AppliedRecord, BackfillCompletionEvidence, BackfillEventRecord, BackfillExecutionCounts,
     BackfillExecutionDirection, BackfillExecutionFuture, BackfillRecoveryObservation,
-    ExecutionFence, ExecutionFuture, ExecutionScope, GroupCommitFuture, GroupEventRecord,
-    GroupJournalEventKind, JournalEntry, JournalSequence, LeaseHolderId, MigrationExecutionJournal,
-    MigrationExecutionProvider, MigrationLease, MigrationLeaseStore, OpenPlanRecord,
-    OpenRollbackPlanRecord, PlanRecord, PreparedMigrationGroup, RollbackPlanRecord,
-    RollbackStepEventRecord, RolledBackRecord, StatementUnit, active_applied_entries,
+    DataStepDirection, DataStepEventRecord, ExecutionFence, ExecutionFuture, ExecutionScope,
+    GroupCommitFuture, GroupEventRecord, GroupJournalEventKind, JournalEntry, JournalSequence,
+    LeaseHolderId, MigrationExecutionJournal, MigrationExecutionProvider, MigrationLease,
+    MigrationLeaseStore, OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord,
+    PreparedMigrationGroup, RollbackPlanRecord, RollbackStepEventRecord, RolledBackRecord,
+    StatementUnit, active_applied_entries,
 };
 
 #[derive(Default)]
@@ -26,6 +27,9 @@ pub struct CoordinatorStoreState {
     pub rolled_back: Vec<JournalEntry<RolledBackRecord>>,
     pub events: Vec<JournalEntry<GroupEventRecord>>,
     pub backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
+    pub data_events: Vec<JournalEntry<DataStepEventRecord>>,
+    pub fail_data_event_once: Option<GroupJournalEventKind>,
+    pub data_event_audit: Vec<GroupJournalEventKind>,
     pub backfill_event_audit: Vec<GroupJournalEventKind>,
     pub event_audit: Vec<GroupJournalEventKind>,
     pub rollback_events: Vec<JournalEntry<RollbackStepEventRecord>>,
@@ -145,6 +149,24 @@ impl MigrationExecutionJournal for CoordinatorStore {
             Ok(entry)
         })
     }
+    fn record_data_event<'a>(
+        &'a self,
+        lease: &'a MigrationLease,
+        record: DataStepEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<DataStepEventRecord>> {
+        Box::pin(async move {
+            let mut state = self.state.lock().expect("coordinator store");
+            Self::checked(&mut state, lease)?;
+            if state.fail_data_event_once == Some(record.kind()) {
+                state.fail_data_event_once = None;
+                return Err(test_diagnostic("coordinator_data_checkpoint_failed"));
+            }
+            let entry = JournalEntry::from_store(Self::sequence(&mut state)?, record);
+            state.data_event_audit.push(entry.record().kind());
+            state.data_events.push(entry.clone());
+            Ok(entry)
+        })
+    }
 
     fn record_applied<'a>(
         &'a self,
@@ -172,6 +194,7 @@ impl MigrationExecutionJournal for CoordinatorStore {
                 state.open = None;
                 state.events.clear();
                 state.backfill_events.clear();
+                state.data_events.clear();
             }
             Ok(entry)
         })
@@ -198,7 +221,7 @@ impl MigrationExecutionJournal for CoordinatorStore {
             let Some(open) = state.open.clone() else {
                 return Ok(None);
             };
-            Ok(Some(OpenPlanRecord::from_store_with_backfills(
+            Ok(Some(OpenPlanRecord::from_store_with_data_events(
                 open,
                 state.events.clone(),
                 state
@@ -207,6 +230,12 @@ impl MigrationExecutionJournal for CoordinatorStore {
                     .filter(|event| {
                         event.record().direction() == BackfillExecutionDirection::Forward
                     })
+                    .cloned()
+                    .collect(),
+                state
+                    .data_events
+                    .iter()
+                    .filter(|entry| entry.record().direction() == DataStepDirection::Forward)
                     .cloned()
                     .collect(),
             )?))
@@ -285,6 +314,7 @@ impl MigrationExecutionJournal for CoordinatorStore {
                 state.open_rollback = None;
                 state.rollback_events.clear();
                 state.backfill_events.clear();
+                state.data_events.clear();
             }
             Ok(entry)
         })
@@ -311,7 +341,7 @@ impl MigrationExecutionJournal for CoordinatorStore {
             let Some(open) = state.open_rollback.clone() else {
                 return Ok(None);
             };
-            Ok(Some(OpenRollbackPlanRecord::from_store_with_backfills(
+            Ok(Some(OpenRollbackPlanRecord::from_store_with_data_events(
                 open,
                 state.rollback_events.clone(),
                 state
@@ -320,6 +350,12 @@ impl MigrationExecutionJournal for CoordinatorStore {
                     .filter(|event| {
                         event.record().direction() == BackfillExecutionDirection::Reverse
                     })
+                    .cloned()
+                    .collect(),
+                state
+                    .data_events
+                    .iter()
+                    .filter(|entry| entry.record().direction() == DataStepDirection::Reverse)
                     .cloned()
                     .collect(),
             )?))

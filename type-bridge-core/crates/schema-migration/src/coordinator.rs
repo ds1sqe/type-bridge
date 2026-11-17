@@ -1,5 +1,9 @@
 //! Provider-neutral fenced execution of verified migration apply plans.
 
+mod data;
+use crate::{DataStepDirection, VerifiedSchemaMigrationManifest};
+use type_bridge_contract::migration_data::DataStep;
+
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -148,6 +152,55 @@ pub trait PreparedMigrationGroup: Send {
 
 /// Provider seam for exact managed-state observation and group transactions.
 pub trait MigrationExecutionProvider: Send + Sync {
+    /// Validate all callback registrations and programs before any write lease.
+    fn validate_data_step(
+        &self,
+        _step: &DataStep,
+        _direction: DataStepDirection,
+    ) -> Result<(), Diagnostic> {
+        Err(failure(
+            DiagnosticCategory::UnsupportedCapability,
+            "migration_data_provider_required",
+            "provider does not support atomic data steps",
+        ))
+    }
+    /// Observe whether the marker proves this direction is complete.
+    fn observe_data_step<'a>(
+        &'a self,
+        _lease: &'a MigrationLease,
+        _manifest: &'a VerifiedSchemaMigrationManifest,
+        _step: &'a DataStep,
+        _direction: DataStepDirection,
+    ) -> ExecutionFuture<'a, bool> {
+        Box::pin(async {
+            Err(failure(
+                DiagnosticCategory::UnsupportedCapability,
+                "migration_data_provider_required",
+                "provider does not support atomic data markers",
+            ))
+        })
+    }
+    /// Execute one program and its marker change in the same fenced transaction.
+    fn execute_data_step<'a>(
+        &'a self,
+        _lease: &'a MigrationLease,
+        _manifest: &'a VerifiedSchemaMigrationManifest,
+        _step: &'a DataStep,
+        _direction: DataStepDirection,
+        _control: &'a MigrationExecutionControl,
+    ) -> GroupCommitFuture<'a> {
+        Box::pin(async {
+            Err(GroupCommitFailure::new(
+                GroupCommitCertainty::DefinitelyAborted,
+                failure(
+                    DiagnosticCategory::UnsupportedCapability,
+                    "migration_data_provider_required",
+                    "provider does not support atomic data steps",
+                ),
+            ))
+        })
+    }
+
     /// Return the exact capabilities negotiated by this execution provider.
     fn available_capabilities(&self) -> &CapabilitySet;
 
@@ -584,11 +637,22 @@ where
             "backfill execution requires the closed provider backfill transaction seam",
         ));
     }
+    for migration in plan.migrations() {
+        for step in migration
+            .steps()
+            .iter()
+            .filter_map(|step| step.step().as_data())
+        {
+            provider.validate_data_step(step, DataStepDirection::Forward)?;
+        }
+    }
     let transaction_groups = plan
         .migrations()
         .iter()
         .try_fold(0usize, |count, migration| {
-            count.checked_add(migration.transaction_groups().len())
+            count.checked_add(
+                migration.transaction_groups().len() + migration.data_step_indices().len(),
+            )
         })
         .ok_or_else(execution_group_limit)?;
     if transaction_groups > control.resources().transaction_groups() {
@@ -623,6 +687,22 @@ where
     let mut backfill_observations = Vec::new();
 
     if open.is_none() {
+        if plan
+            .migrations()
+            .iter()
+            .flat_map(|migration| migration.steps())
+            .any(|step| {
+                step.step()
+                    .as_backfill()
+                    .is_some_and(|(_, backfill)| backfill.format().get() == 1)
+            })
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_backfill_historical_execution_requires_open_plan",
+                "format-1 backfill execution requires an exact interrupted open plan; regenerate new work with explicit isa or isa! mode (format 2)",
+            ));
+        }
         let source = plan
             .source_state()
             .expect("non-empty plan has source state");
@@ -643,7 +723,14 @@ where
             continue;
         }
         let snapshot = open.as_ref();
-        let mut backfills = migration.backfill_step_indices().iter().copied().peekable();
+        let mut data_positions: Vec<_> = migration
+            .backfill_step_indices()
+            .iter()
+            .chain(migration.data_step_indices())
+            .copied()
+            .collect();
+        data_positions.sort_unstable();
+        let mut backfills = data_positions.into_iter().peekable();
         for group in migration.transaction_groups() {
             control.check()?;
             while backfills
@@ -651,6 +738,21 @@ where
                 .is_some_and(|step_index| *step_index < group.first_step_index())
             {
                 let step_index = backfills.next().expect("peeked backfill position");
+                if let Some(step) = migration.steps()[step_index].step().as_data() {
+                    data::execute(
+                        store,
+                        provider,
+                        lease,
+                        migration.manifest(),
+                        step,
+                        DataStepDirection::Forward,
+                        snapshot.map_or(&[], |open| open.data_events()),
+                        control,
+                    )
+                    .await?;
+                    continue;
+                }
+
                 match execute_apply_backfill(
                     store, provider, lease, migration, step_index, snapshot, control,
                 )
@@ -883,6 +985,21 @@ where
         }
         for step_index in backfills {
             control.check()?;
+            if let Some(step) = migration.steps()[step_index].step().as_data() {
+                data::execute(
+                    store,
+                    provider,
+                    lease,
+                    migration.manifest(),
+                    step,
+                    DataStepDirection::Forward,
+                    snapshot.map_or(&[], |open| open.data_events()),
+                    control,
+                )
+                .await?;
+                continue;
+            }
+
             match execute_apply_backfill(
                 store, provider, lease, migration, step_index, snapshot, control,
             )
@@ -1261,6 +1378,9 @@ where
         ));
     }
     for rollback in plan.rollbacks() {
+        for step in rollback.data_steps() {
+            provider.validate_data_step(step, DataStepDirection::Reverse)?;
+        }
         for step in rollback.steps() {
             rollback
                 .reverse_delta(step)?
@@ -1373,6 +1493,21 @@ where
         for (operation_index, operation) in rollback.operations().iter().enumerate() {
             control.check()?;
             let step_index = match operation {
+                crate::VerifiedMigrationRollbackOperation::Data(index) => {
+                    data::execute(
+                        store,
+                        provider,
+                        lease,
+                        rollback.manifest(),
+                        &rollback.data_steps()[*index],
+                        DataStepDirection::Reverse,
+                        snapshot.map_or(&[], |open| open.data_events()),
+                        control,
+                    )
+                    .await?;
+                    continue;
+                }
+
                 crate::VerifiedMigrationRollbackOperation::Backfill(_) => {
                     match execute_rollback_backfill(
                         store,
@@ -1977,6 +2112,12 @@ fn validate_open_rollback_plan(
         ));
     }
 
+    data::validate(
+        lease,
+        open.data_events(),
+        plan.rollbacks().iter().map(|rollback| rollback.manifest()),
+        DataStepDirection::Reverse,
+    )?;
     for event in open.events() {
         let record = event.record();
         let manifest_index = plan
@@ -2071,6 +2212,16 @@ fn validate_open_rollback_plan(
         let mut all_complete = true;
         for (operation_index, operation) in rollback.operations().iter().enumerate() {
             let transitions: Vec<(GroupJournalEventKind, ExecutionFence)> = match operation {
+                crate::VerifiedMigrationRollbackOperation::Data(index) => data::events(
+                    open.data_events(),
+                    rollback.manifest(),
+                    &rollback.data_steps()[*index],
+                    DataStepDirection::Reverse,
+                )
+                .iter()
+                .map(|event| (event.kind(), event.fence()))
+                .collect(),
+
                 crate::VerifiedMigrationRollbackOperation::SchemaDelta(step_index) => {
                     rollback_step_events(open, rollback, *step_index)
                         .iter()
@@ -2118,6 +2269,14 @@ fn validate_open_rollback_plan(
                 .iter()
                 .enumerate()
                 .any(|(operation_index, operation)| match operation {
+                    crate::VerifiedMigrationRollbackOperation::Data(index) => !data::events(
+                        open.data_events(),
+                        rollback.manifest(),
+                        &rollback.data_steps()[*index],
+                        DataStepDirection::Reverse,
+                    )
+                    .is_empty(),
+
                     crate::VerifiedMigrationRollbackOperation::SchemaDelta(step_index) => {
                         !rollback_step_events(open, rollback, *step_index).is_empty()
                     }
@@ -2263,6 +2422,14 @@ fn validate_open_plan(
         ));
     }
 
+    data::validate(
+        lease,
+        open.data_events(),
+        plan.migrations()
+            .iter()
+            .map(|migration| migration.manifest()),
+        DataStepDirection::Forward,
+    )?;
     for event in open.events() {
         let record = event.record();
         let migration_index = plan
@@ -2386,6 +2553,23 @@ fn validate_open_plan(
                         .collect(),
                 )
             }))
+            .chain(migration.data_step_indices().iter().map(|index| {
+                (
+                    *index,
+                    data::events(
+                        open.data_events(),
+                        migration.manifest(),
+                        migration.steps()[*index]
+                            .step()
+                            .as_data()
+                            .expect("verified data step"),
+                        DataStepDirection::Forward,
+                    )
+                    .iter()
+                    .map(|event| (event.kind(), event.fence()))
+                    .collect(),
+                )
+            }))
             .collect();
         operations.sort_by_key(|(position, _)| *position);
         for (_, transitions) in operations {
@@ -2426,7 +2610,11 @@ fn validate_open_plan(
                 .any(|group| !group_events(open, migration, group).is_empty())
                 || migration.backfill_step_indices().iter().any(|step_index| {
                     !apply_backfill_events(open, migration, *step_index).is_empty()
-                }))
+                })
+                || open
+                    .data_events()
+                    .iter()
+                    .any(|entry| entry.record().migration_id() == migration.manifest().id()))
         {
             return Err(failure(
                 DiagnosticCategory::Integrity,

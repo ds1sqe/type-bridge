@@ -458,6 +458,12 @@ pub trait IntoEncodedScalar {
     fn into_encoded_scalar(&self) -> EncodedScalar;
 }
 
+impl IntoEncodedScalar for crate::Iid {
+    fn into_encoded_scalar(&self) -> EncodedScalar {
+        EncodedScalar::String(self.as_str().to_owned())
+    }
+}
+
 impl IntoEncodedScalar for String {
     fn into_encoded_scalar(&self) -> EncodedScalar {
         EncodedScalar::String(self.clone())
@@ -538,10 +544,13 @@ pub trait QueryValued: IntoEncodedScalar {
 /// A generated attribute wrapper that can materialize a validated grouped
 /// query key from its canonical scalar evidence.
 #[doc(hidden)]
-pub trait GroupedQueryValue: QueryValued + Sized {
+pub trait GroupedQueryValue: QueryValued + Sized + 'static {
     fn from_group_scalar(value: EncodedScalar) -> Result<Self, ValidationError>;
 }
 
+impl QueryValued for crate::Iid {
+    type Domain = String;
+}
 impl QueryValued for String {
     type Domain = String;
 }
@@ -583,7 +592,7 @@ pub enum ThingKind {
 }
 
 /// A sealed generated schema model associated with its schema marker `S`.
-pub trait Model: sealed::Sealed {
+pub trait Model: sealed::Sealed + 'static {
     /// The generated schema that owns this model.
     type Schema: Schema;
     /// Canonical JSON identity for the projected schema type.
@@ -908,6 +917,14 @@ pub struct ReferenceOrigin {
 }
 
 impl ReferenceOrigin {
+    /// Whether this generated value retains a deleted root snapshot.
+    #[must_use]
+    pub fn deleted(&self) -> bool {
+        self.projected
+            .as_ref()
+            .is_some_and(|origin| origin.is_deleted())
+    }
+
     #[must_use]
     pub(crate) const fn from_projected(
         origin: Option<type_bridge_orm::ProjectedReferenceOrigin>,

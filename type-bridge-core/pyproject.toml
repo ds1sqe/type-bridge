@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "type-bridge-core"
-version = "2.3.3"
+version = "3.0.0"
 description = "Shared Rust semantic engine for the TypeBridge application toolkit"
 requires-python = ">=3.12,<3.15"
 license = { text = "MIT" }
@@ -29,7 +29,8 @@ include = [
     # Cargo metadata resolves optional path dependencies even when their feature
     # is disabled. Maturin 1.14 no longer discovers this crate automatically.
     { path = "crates/orm-derive/**/*", format = "sdist" },
-    # The perf-stages feature's optional stage-timing crate, for the same reason.
+    # Keep the optional stage-timing sources in the sdist; Maturin packages
+    # perf-stages as a workspace member with its generated license projection.
     { path = "crates/perf-stages/**/*", format = "sdist" },
 ]
 exclude = [

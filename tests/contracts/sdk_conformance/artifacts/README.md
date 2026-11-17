@@ -29,7 +29,7 @@ surface through the corresponding public consumer.
 `queries/`, `models/`, `administration/`, `serialization/`, and `artifacts/`,
 each with `python.json`, `node.json`, `rust.json`, and `c.json`. Promotion
 retains these below `reports/` in its evidence archive. The released C example
-package prefix remains `tb_sdkv3` until the separate release-record update.
+package prefix is `tb_sdk` for the 3.0 ABI 2.0 release.
 
 This suite grants no release, publication, registry, tag or public-support
 authority. Those decisions remain governed by the C release contract.

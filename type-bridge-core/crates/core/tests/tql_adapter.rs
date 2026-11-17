@@ -482,3 +482,19 @@ fn expression_fragments_and_tagged_queries_share_render_guards() {
     assert!(tql::equivalent(&tagged, "match entity $t;").unwrap());
     assert!(tql::render_commented(&query, "first\ninsert $x isa person;").is_err());
 }
+
+#[test]
+fn nullable_given_header_keeps_required_columns_required() {
+    let query = tql::pipeline(vec![
+        tql::given_nullable(&[
+            ("ordinal", ValueTypeTag::Long, false),
+            ("text", ValueTypeTag::String, true),
+            ("flag", ValueTypeTag::Boolean, false),
+        ])
+        .unwrap(),
+    ]);
+    assert_eq!(
+        tql::render(&query).unwrap(),
+        "given $ordinal: integer, $text: string?, $flag: boolean;"
+    );
+}

@@ -7,13 +7,19 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CORE = resolve(HERE, "../../../..");
 const ROOT = resolve(CORE, "..");
 const STAGE = resolve(CORE, "target/schema-codegen-typescript-acceptance");
-const GENERATED = resolve(STAGE, "generated_v2");
+const GENERATED = resolve(STAGE, "generated_package");
 const BLOCKERS = resolve(STAGE, "generated_blockers");
 const ORDERED = resolve(STAGE, "generated_ordered");
+const PLAN_IDIOMS = resolve(STAGE, "generated_plan_idioms");
+const PLAN_NAMES = resolve(STAGE, "generated_plan_names");
 const FOREIGN = resolve(STAGE, "generated_foreign");
 const PROJECTED = resolve(STAGE, "generated_projected");
 const PROJECTED_FOREIGN = resolve(STAGE, "generated_projected_foreign");
 const NODE_PACKAGE = resolve(CORE, "crates/node");
+const TSC = resolve(NODE_PACKAGE, "node_modules/.bin/tsc");
+if (!existsSync(TSC)) {
+  throw new Error(`required tsc is unavailable: ${TSC}; run npm ci in ${NODE_PACKAGE}`);
+}
 const DOCUMENTED_EXAMPLES = resolve(
   ROOT,
   "tests/contracts/typed_query/typescript/documented_examples.ts",
@@ -63,13 +69,13 @@ for (const fixture of [
   "runtime_check.mjs",
 ]) {
   const source = readFileSync(resolve(HERE, fixture), "utf8");
-  for (const forbidden of ["QueryV2Authority", "declared-schema.json", "readFileSync"]) {
+  for (const forbidden of ["PlanAuthority", "declared-schema.json", "readFileSync"]) {
     if (source.includes(forbidden)) {
       throw new Error(`${fixture} bypasses generated embedded authority with ${forbidden}`);
     }
   }
 }
-for (const forbidden of ["QueryV2Authority", "declared-schema.json", "readFileSync"]) {
+for (const forbidden of ["PlanAuthority", "declared-schema.json", "readFileSync"]) {
   if (readFileSync(DOCUMENTED_EXAMPLES, "utf8").includes(forbidden)) {
     throw new Error(`documented_examples.ts bypasses generated embedded authority with ${forbidden}`);
   }
@@ -109,6 +115,11 @@ command("cargo", [
   resolve(HERE, "schema-ordered.yaml"),
   ORDERED,
 ]);
+command("cargo", ["run", "--quiet", "--manifest-path", resolve(CORE, "Cargo.toml"), "--package", "type-bridge-schema-codegen", "--example", "emit_typescript_acceptance", "--", resolve(HERE, "../acceptance/schema-plan-idioms.yaml"), PLAN_IDIOMS]);
+command("cargo", ["run", "--quiet", "--manifest-path", resolve(CORE, "Cargo.toml"), "--package", "type-bridge-schema-codegen", "--example", "emit_typescript_acceptance", "--", resolve(HERE, "schema-plan-names.yaml"), PLAN_NAMES], ROOT, {
+  ...process.env,
+  TYPE_BRIDGE_ACCEPTANCE_TYPE_NAMES: JSON.stringify([[{ kind: "attribute", label: "set" }, "Setting"]]),
+});
 const schemaPath = resolve(HERE, "../acceptance/schema.yaml");
 const schemaSource = readFileSync(schemaPath, "utf8");
 const foreignSource = schemaSource.replace(
@@ -187,39 +198,36 @@ command("cargo", [
 });
 mkdirSync(resolve(STAGE, "node_modules/@type-bridge"), { recursive: true });
 symlinkSync(NODE_PACKAGE, resolve(STAGE, "node_modules/@type-bridge/node"), "dir");
-command("tsc", ["--project", resolve(BLOCKERS, "tsconfig.json")]);
-command("tsc", ["--project", resolve(GENERATED, "tsconfig.json")]);
-command("tsc", ["--project", resolve(ORDERED, "tsconfig.json")]);
-command("tsc", ["--project", resolve(FOREIGN, "tsconfig.json")]);
-command("tsc", ["--project", resolve(PROJECTED, "tsconfig.json")]);
-command("tsc", ["--project", resolve(PROJECTED_FOREIGN, "tsconfig.json")]);
+command(TSC, ["--project", resolve(BLOCKERS, "tsconfig.json")]);
+command(TSC, ["--project", resolve(GENERATED, "tsconfig.json")]);
+command(TSC, ["--project", resolve(ORDERED, "tsconfig.json")]);
+command(TSC, ["--project", resolve(PLAN_IDIOMS, "tsconfig.json")]);
+command(TSC, ["--project", resolve(PLAN_NAMES, "tsconfig.json")]);
+command(TSC, ["--project", resolve(FOREIGN, "tsconfig.json")]);
+command(TSC, ["--project", resolve(PROJECTED, "tsconfig.json")]);
+command(TSC, ["--project", resolve(PROJECTED_FOREIGN, "tsconfig.json")]);
 
 const unorderedRuntimeDts = readFileSync(resolve(GENERATED, "dist/runtime.d.ts"), "utf8");
 const unorderedModelsDts = readFileSync(resolve(GENERATED, "dist/models.d.ts"), "utf8");
 const orderedRuntimeDts = readFileSync(resolve(ORDERED, "dist/runtime.d.ts"), "utf8");
 const orderedModelsDts = readFileSync(resolve(ORDERED, "dist/models.d.ts"), "utf8");
-for (const successorName of [
-  "ProjectedBatchUpdate",
-  "OrderedProjectedModelManager",
-  "OrderedModelToken",
+for (const [kind, runtimeDts, modelsDts] of [
+  ["unordered", unorderedRuntimeDts, unorderedModelsDts],
+  ["ordered", orderedRuntimeDts, orderedModelsDts],
 ]) {
-  if (unorderedRuntimeDts.includes(successorName) || unorderedModelsDts.includes(successorName)) {
-    throw new Error(`unordered declarations expose ordered successor ${successorName}`);
+  for (const nativeName of ["ProjectedBatchUpdate", "OrderedProjectedModelManager", "OrderedModelToken"]) {
+    if (!runtimeDts.includes(nativeName)) {
+      throw new Error(`${kind} runtime declaration omits ${nativeName}`);
+    }
   }
-  if (!orderedRuntimeDts.includes(successorName)) {
-    throw new Error(`ordered runtime declaration omits ${successorName}`);
+  for (const method of ["updateMany", "deleteMany"]) {
+    if (!runtimeDts.includes(`${method}(`)) {
+      throw new Error(`${kind} runtime declaration omits ${method}`);
+    }
   }
-}
-for (const method of ["updateMany", "deleteMany"]) {
-  if (unorderedRuntimeDts.includes(`${method}(`)) {
-    throw new Error(`unordered declarations expose ordered successor ${method}`);
+  if (!modelsDts.includes("OrderedModelToken as ModelToken")) {
+    throw new Error(`${kind} model declarations lose the native token alias`);
   }
-  if (!orderedRuntimeDts.includes(`${method}(`)) {
-    throw new Error(`ordered runtime declaration omits ${method}`);
-  }
-}
-if (!orderedModelsDts.includes("OrderedModelToken as ModelToken")) {
-  throw new Error("ordered model declarations lose the successor token alias");
 }
 
 for (const fixture of [
@@ -231,6 +239,9 @@ for (const fixture of [
   "blockers_check.mjs",
   "runtime_check.mjs",
   "authority_rejection_check.mjs",
+  "plan_idioms_positive.ts",
+  "plan_idioms_negative.ts",
+  "plan_idioms_check.mjs",
   "projected_parity_check.mjs",
 ]) {
   copyFileSync(resolve(HERE, fixture), resolve(STAGE, fixture));
@@ -258,16 +269,21 @@ writeFileSync(
       "ordered_batch_positive.ts",
       "ordered_batch_negative.ts",
       "documented_examples.ts",
-      "generated_v2/src/**/*.ts",
+      "plan_idioms_positive.ts",
+      "plan_idioms_negative.ts",
+      "generated_plan_idioms/src/**/*.ts",
+      "generated_plan_names/src/**/*.ts",
+      "generated_package/src/**/*.ts",
       "generated_ordered/src/**/*.ts",
       "generated_foreign/src/**/*.ts",
     ],
   }, null, 2)}\n`,
 );
-command("tsc", ["--project", resolve(STAGE, "tsconfig.json")]);
+command(TSC, ["--project", resolve(STAGE, "tsconfig.json")]);
 command("node", [resolve(STAGE, "authority_rejection_check.mjs")]);
 command("node", [resolve(STAGE, "blockers_check.mjs")]);
 command("node", [resolve(STAGE, "runtime_check.mjs")]);
+command("node", [resolve(STAGE, "plan_idioms_check.mjs")]);
 const externalProjectedReport = process.env.TYPE_BRIDGE_PROJECTED_PARITY_REPORT;
 const projectedReport = externalProjectedReport ?? resolve(STAGE, "projected-node-report.json");
 if (externalProjectedReport !== undefined && (!isAbsolute(projectedReport) || existsSync(projectedReport))) {

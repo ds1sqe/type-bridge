@@ -1,8 +1,5 @@
-define
-attribute display-name;
+define attribute display-name;
 
-define
-display-name value string;
+define display-name, value string;
 
-define
-person owns display-name;
+define person, owns display-name;

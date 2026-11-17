@@ -5,9 +5,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use sha2::{Digest as _, Sha256};
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
@@ -21,31 +20,18 @@ use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId,
     TypeFact,
 };
-use type_bridge_migration::{
-    AppliedMigrationRecord, LEGACY_CUTOVER_SENTINEL_APP_LABEL, LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
-    LEGACY_CUTOVER_SENTINEL_NAME, LEGACY_WRITER_CUTOVER_MESSAGE, LegacyAdoptionMetadata,
-    LegacySchemaEffect, MigrationDependencySpec, MigrationRunRecord, MigrationStateStore,
-    TypeDbStateStore, migration_file_checksum,
-};
-use type_bridge_orm::session::backend::QueryResult;
-use type_bridge_orm::{
-    ConnectOptions, Database, TxType, require_legacy_writer_open_in_transaction,
-};
+use type_bridge_orm::{ConnectOptions, Database, TxType};
 use type_bridge_query::{MigrationAssertionValidationContext, lower_condition_to_plan};
 use type_bridge_schema::{
     ManagedDeltaContext, SafetyClass, SafetyDerivationProfile, derive_safety_conditions,
     diff_managed, inverse_delta, managed_schema_state, resolve,
 };
-use type_bridge_schema_compat::{
-    ADOPTED_GENESIS_FILE_NAME, LEGACY_LEDGER_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL,
-    released_typeql_to_declared_projection, typeql_to_declared,
-};
+use type_bridge_schema_compat::{MANAGED_FENCE_SCHEMA_TYPEQL, typeql_to_declared};
 use type_bridge_schema_migration::{
-    LeaseHolderId, LegacyAppliedSetDigest, LegacyMigrationChecksum, LegacyMigrationReference,
-    MigrationApplyApproval, MigrationApplyTarget, MigrationDriftFinding, MigrationExecutionOutcome,
-    MigrationRollbackOutcome, MigrationSafetyPolicy, SchemaLoweringBinding, SchemaMigrationDraft,
-    VerifiedSchemaMigrationManifest, build_legacy_frontier_bridge, build_verified_manifest,
-    encode_verified_manifest, schema_lowering_profile_binding,
+    LeaseHolderId, MigrationApplyApproval, MigrationApplyTarget, MigrationDriftFinding,
+    MigrationExecutionOutcome, MigrationRollbackOutcome, MigrationSafetyPolicy,
+    SchemaLoweringBinding, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
+    build_verified_manifest, encode_verified_manifest, schema_lowering_profile_binding,
 };
 use type_bridge_schema_migration_typedb::{
     MigrationDirectoryApplyError, MigrationDirectoryApplyOutcome,
@@ -53,72 +39,10 @@ use type_bridge_schema_migration_typedb::{
     execution_capability_vocabulary,
 };
 
-fn write_legacy_migration(
-    directory: &Path,
-    app_label: &str,
-    name: &str,
-    python_source: &str,
-    dependencies: Vec<(&str, &str)>,
-    schema_typeql: &str,
-) -> String {
-    let checksum = migration_file_checksum(python_source);
-    fs::write(directory.join(format!("{name}.py")), python_source)
-        .expect("write legacy python source");
-    let dependencies = dependencies
-        .into_iter()
-        .map(|(app_label, migration_name)| MigrationDependencySpec {
-            app_label: app_label.to_owned(),
-            migration_name: migration_name.to_owned(),
-        })
-        .collect::<Vec<_>>();
-    let schema_hash = Sha256::digest(schema_typeql.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let source_sha256 = Sha256::digest(python_source.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let archive = LegacyAdoptionMetadata::new(
-        app_label,
-        name,
-        dependencies,
-        checksum.clone(),
-        source_sha256,
-        LegacySchemaEffect::Snapshot,
-        MigrationDependencySpec {
-            app_label: app_label.to_owned(),
-            migration_name: name.to_owned(),
-        },
-        schema_hash.clone(),
-    )
-    .expect("legacy adoption metadata");
-    fs::write(
-        directory.join(format!("{name}.adoption.json")),
-        serde_json::to_vec(&archive).expect("adoption metadata encoding"),
-    )
-    .expect("write adoption metadata");
-    let snapshot = directory.join("snapshots/v0001");
-    fs::create_dir_all(&snapshot).expect("create snapshot directory");
-    fs::write(snapshot.join("schema.tql"), schema_typeql).expect("write snapshot schema");
-    fs::write(
-        snapshot.join("snapshot.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "version": "v0001",
-            "source_migration": name,
-            "schema_hash": schema_hash,
-            "file_hashes": {"schema.tql": schema_hash},
-        }))
-        .expect("snapshot manifest encoding"),
-    )
-    .expect("write snapshot manifest");
-    checksum
-}
-
 fn connection() -> (String, String, String, String, ConnectOptions) {
     let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_owned());
     let database = env::var("TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE")
-        .unwrap_or_else(|_| "type_bridge_v2_apply_runner".to_owned());
+        .unwrap_or_else(|_| "type_bridge_apply_runner".to_owned());
     let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
     let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
     let mut options = ConnectOptions::default();
@@ -136,6 +60,7 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
         .as_nanos();
     let managed_name = format!("{database}_{}_{unique:x}", std::process::id());
     let journal_name = derived_journal_database_name(&managed_name);
+    eprintln!("isolated migration pair: {managed_name}, {journal_name}");
     type_bridge_orm::ensure_database_exists(&address, &managed_name, &username, &password, options)
         .await
         .expect("create isolated managed database");
@@ -155,74 +80,6 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
     support::assert_live_server(&managed);
     support::assert_live_server(&journal);
     (managed, journal)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
-async fn legacy_writer_fence_survives_a_live_struct_valued_schema_export_on_3_12_3() {
-    let (managed, journal) = databases().await;
-    let fingerprint = "0000000000000000000000000000000000000000000000000000000000000000";
-    let mut schema = managed
-        .schema_transaction()
-        .await
-        .expect("open isolated schema transaction");
-    schema
-        .query(MANAGED_FENCE_SCHEMA_TYPEQL)
-        .await
-        .expect("install exact managed fence schema");
-    schema
-        .query(LEGACY_LEDGER_SCHEMA_TYPEQL)
-        .await
-        .expect("install exact frozen ledger schema");
-    schema
-        .query(
-            "define\n\
-             struct writer-fence-payload: field value string;\n\
-             attribute writer-fence-payload-attr, value writer-fence-payload;",
-        )
-        .await
-        .expect("install structured user value");
-    schema.commit().await.expect("commit structured schema");
-
-    let mut rows = managed
-        .write_transaction()
-        .await
-        .expect("open isolated writer-authority transaction");
-    rows.query(
-        "insert $control isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-control-scope \"live-structured-scope\", has typebridge-internal-v2-lease-fence \"1\", has typebridge-internal-v2-lease-state \"free\";",
-    )
-    .await
-    .expect("insert exact managed control");
-    rows.query(&format!(
-        "insert $anchor isa typebridge-internal-v2-legacy-cutover, has typebridge-internal-v2-legacy-cutover-key \"typebridge-legacy-cutover-anchor/v1\", has typebridge-internal-v2-legacy-cutover-scope \"live-structured-scope\", has typebridge-internal-v2-legacy-cutover-fingerprint \"{fingerprint}\";"
-    ))
-    .await
-    .expect("insert exact cutover anchor");
-    rows.query(&format!(
-        "insert $sentinel isa type_bridge_migration, has migration_id \"type_bridge_v2_internal:__legacy_writer_cutover__\", has migration_app_label \"type_bridge_v2_internal\", has migration_name \"__legacy_writer_cutover__\", has migration_applied_at 1970-01-01T00:00:00.000000000, has migration_checksum \"{fingerprint}\";"
-    ))
-    .await
-    .expect("insert exact cutover sentinel");
-    rows.commit().await.expect("commit writer authority");
-
-    let schema_manager = type_bridge_orm::_schema::SchemaManager::new(managed.as_ref());
-    let error = schema_manager
-        .sync_schema(true, false)
-        .await
-        .expect_err("the exported structured value must not reopen the V1 writer");
-    assert!(
-        error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
-        "{error}"
-    );
-
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
-    journal
-        .delete_database()
-        .await
-        .expect("delete isolated journal database");
 }
 
 struct TempDirectory(PathBuf);
@@ -505,14 +362,14 @@ async fn runner_applies_discovered_chain_incrementally_on_3_12_3() {
         "{error}"
     );
 
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -635,14 +492,14 @@ async fn runner_rejects_fresh_list_projection_drift_before_target_or_checkpoint_
     let final_export = managed.schema_text().await.expect("final export");
     assert!(final_export.contains("entity company"), "{final_export}");
 
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -775,391 +632,14 @@ async fn runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3() {
     let export = managed.schema_text().await.expect("post-reapply export");
     assert!(export.contains("entity company"), "{export}");
 
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal
         .delete_database()
         .await
         .expect("delete isolated journal database");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
-async fn legacy_writer_allows_reserved_label_collisions_without_frozen_capabilities_on_3_12_3() {
-    let (managed, journal) = databases().await;
-    let collision_schema = r#"define
-attribute typebridge-internal-v2-control-scope, value string;
-attribute typebridge-internal-v2-lease-holder, value string;
-attribute typebridge-internal-v2-lease-fence, value string;
-attribute typebridge-internal-v2-lease-state, value string;
-attribute typebridge-internal-v2-legacy-cutover-key, value string;
-attribute typebridge-internal-v2-legacy-cutover-scope, value string;
-attribute typebridge-internal-v2-legacy-cutover-fingerprint, value string;
-entity typebridge-internal-v2-migration-control;
-entity typebridge-internal-v2-legacy-cutover;
-"#;
-    let mut setup = managed
-        .schema_transaction()
-        .await
-        .expect("open collision schema transaction");
-    setup
-        .query(collision_schema)
-        .await
-        .expect("install every reserved label without frozen ownership capabilities");
-    setup.commit().await.expect("commit collision schema");
-
-    let writer = managed
-        .transaction_context(TxType::Schema)
-        .await
-        .expect("open released writer transaction");
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        require_legacy_writer_open_in_transaction(&writer),
-    )
-    .await
-    .expect("schema-fenced export must not deadlock an open schema transaction")
-    .expect("labels without exact capabilities must not activate the V2 fence");
-    writer
-        .query("define entity compatibility-proof;")
-        .await
-        .expect("execute legitimate released schema write");
-    writer.commit().await.expect("commit released schema write");
-
-    let export = managed.schema_text().await.expect("read collision export");
-    assert!(export.contains("entity compatibility-proof"), "{export}");
-
     managed
         .delete_database()
         .await
         .expect("delete isolated managed database");
-    journal
-        .delete_database()
-        .await
-        .expect("delete isolated journal database");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
-async fn runner_imports_a_completed_legacy_frontier_on_3_12_3() {
-    let (managed, journal) = databases().await;
-    let context = context();
-
-    // The completed legacy history includes released list semantics absent
-    // from the portable V2 fact graph. Seed its on-disk pair, applied-ledger
-    // record, and exact migrated user schema as a real v1 database carries them.
-    let legacy_root = TempDirectory::new();
-    let legacy_directory = legacy_root.path().join("example");
-    fs::create_dir(&legacy_directory).expect("create app-labelled legacy directory");
-    let adopted_genesis = "define\nattribute tag, value string;\n\
-                           entity person, owns tag[] @distinct;\n";
-    let checksum = write_legacy_migration(
-        &legacy_directory,
-        "example",
-        "0001_initial",
-        "class Migration:\n    operations = []\n",
-        Vec::new(),
-        adopted_genesis,
-    );
-    let state_store = TypeDbStateStore::new(Arc::clone(&managed));
-    state_store
-        .ensure_schema()
-        .await
-        .expect("install the legacy ledger schema");
-    state_store
-        .record_applied(AppliedMigrationRecord {
-            app_label: "example".to_owned(),
-            name: "0001_initial".to_owned(),
-            checksum: checksum.clone(),
-            applied_at: None,
-        })
-        .await
-        .expect("seed the legacy applied ledger");
-    let mut transaction = managed
-        .schema_transaction()
-        .await
-        .expect("open legacy schema transaction");
-    transaction
-        .query(adopted_genesis)
-        .await
-        .expect("replay the legacy migration effect");
-    transaction.commit().await.expect("commit legacy schema");
-
-    // Canonical side: the bridge records the loaded frontier and verifies
-    // against the reconstructed legacy head; ordinary work chains onto it.
-    let head = released_typeql_to_declared_projection(
-        DocumentId::new("live-adopted-list-head.typeql").expect("document id"),
-        adopted_genesis,
-    )
-    .expect("portable adopted head");
-    let with_company = released_typeql_to_declared_projection(
-        DocumentId::new("live-adopted-list-company.typeql").expect("document id"),
-        "define\nattribute tag, value string;\n\
-         entity person, owns tag[] @distinct;\nentity company;\n",
-    )
-    .expect("portable post-adoption target");
-    let legacy_frontier = vec![LegacyMigrationReference::new(
-        type_bridge_contract::migration::MigrationId::from_components(
-            MigrationAppLabel::new("example").expect("legacy app label"),
-            MigrationName::new("0001_initial").expect("legacy name"),
-        ),
-        LegacyMigrationChecksum::new(checksum.clone()).expect("legacy checksum"),
-    )];
-    let legacy_applied_set = LegacyAppliedSetDigest::compute(legacy_frontier.clone())
-        .expect("legacy applied set digest");
-    let bridge = build_legacy_frontier_bridge(
-        migration_id("0000_legacy_frontier"),
-        legacy_frontier,
-        legacy_applied_set,
-        &head,
-        &context,
-    )
-    .expect("legacy frontier bridge");
-    let follow = manifest_with_derived_assertions(
-        "0001_company",
-        vec![bridge.id().clone()],
-        &head,
-        &with_company,
-        &context,
-    );
-    let canonical_directory = TempDirectory::new();
-    fs::write(
-        canonical_directory.path().join(ADOPTED_GENESIS_FILE_NAME),
-        adopted_genesis,
-    )
-    .expect("write adopted genesis authority");
-    write_manifest(canonical_directory.path(), &bridge);
-    write_manifest(canonical_directory.path(), &follow);
-
-    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
-    let runner = TypeDbMigrationRunner::new(
-        Arc::clone(&managed),
-        Arc::clone(&journal),
-        head,
-        context,
-        lowering,
-        MigrationSafetyPolicy::default_policy(),
-    );
-    let holder = LeaseHolderId::new("legacy-import").expect("holder");
-
-    let outcome = runner
-        .import_legacy_frontier(&legacy_directory, canonical_directory.path(), &holder)
-        .await
-        .expect("import the completed legacy frontier");
-    assert!(matches!(
-        outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
-    ));
-
-    // The cutover pair is durable and exactly fingerprint-bound. Archival
-    // readers continue to expose the frozen ledger, including the V2-only row,
-    // while every legacy writer surface rejects before mutation.
-    let applied_after_cutover = state_store
-        .load_applied()
-        .await
-        .expect("read the adopted legacy ledger");
-    let sentinel = applied_after_cutover
-        .iter()
-        .find(|record| {
-            record.app_label == LEGACY_CUTOVER_SENTINEL_APP_LABEL
-                && record.name == LEGACY_CUTOVER_SENTINEL_NAME
-        })
-        .expect("exact V2 cutover sentinel");
-    assert_eq!(
-        sentinel.applied_at.as_deref(),
-        Some(LEGACY_CUTOVER_SENTINEL_APPLIED_AT),
-        "TypeDB must return the fixed timestamp byte-for-byte"
-    );
-    assert_eq!(sentinel.checksum.len(), 64);
-    assert!(
-        sentinel
-            .checksum
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    );
-
-    let mut cutover_read = managed
-        .read_transaction()
-        .await
-        .expect("open cutover-pair read snapshot");
-    let anchor_result = cutover_read
-        .query(
-            "match $anchor isa typebridge-internal-v2-legacy-cutover, has typebridge-internal-v2-legacy-cutover-fingerprint $fingerprint; fetch { \"fingerprint\": $fingerprint };",
-        )
-        .await
-        .expect("read managed cutover anchor");
-    cutover_read.close().await.expect("close cutover read");
-    let (QueryResult::Documents(anchor_docs) | QueryResult::Rows(anchor_docs)) = anchor_result
-    else {
-        panic!("cutover anchor fetch must return documents");
-    };
-    let anchor_fingerprint = anchor_docs
-        .first()
-        .and_then(|document| document.get("fingerprint"))
-        .and_then(|value| value.get("value").unwrap_or(value).as_str())
-        .expect("anchor fingerprint scalar");
-    assert_eq!(sentinel.checksum, anchor_fingerprint);
-    assert!(
-        state_store
-            .load_runs()
-            .await
-            .expect("read adopted run log")
-            .is_empty()
-    );
-
-    for rejected in [
-        state_store.ensure_schema().await,
-        state_store
-            .record_applied(AppliedMigrationRecord {
-                app_label: "example".to_owned(),
-                name: "9999_must_not_write".to_owned(),
-                checksum: "blocked".to_owned(),
-                applied_at: None,
-            })
-            .await,
-        state_store
-            .record_unapplied("example", "0001_initial")
-            .await,
-        state_store
-            .record_run(MigrationRunRecord {
-                run_id: "blocked-run".to_owned(),
-                app_label: "example".to_owned(),
-                name: "0001_initial".to_owned(),
-                checksum: checksum.clone(),
-                direction: "apply".to_owned(),
-                status: "started".to_owned(),
-                started_at: "1970-01-01T00:00:00.000000".to_owned(),
-                finished_at: None,
-                error: None,
-                executor_ip: None,
-                executor_mac: None,
-            })
-            .await,
-    ] {
-        let error = rejected.expect_err("legacy writer must remain closed");
-        assert!(
-            error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
-            "{error}"
-        );
-    }
-    let released_schema_manager = type_bridge_orm::_schema::SchemaManager::new(managed.as_ref());
-    let schema_error = released_schema_manager
-        .sync_schema(true, false)
-        .await
-        .expect_err("the released Rust SchemaManager must share the permanent cutover fence");
-    assert!(
-        schema_error
-            .to_string()
-            .contains(LEGACY_WRITER_CUTOVER_MESSAGE),
-        "{schema_error}"
-    );
-    assert_eq!(
-        state_store
-            .load_applied()
-            .await
-            .expect("ledger remains readable after rejected writes"),
-        applied_after_cutover
-    );
-
-    let outcome = runner
-        .import_legacy_frontier(&legacy_directory, canonical_directory.path(), &holder)
-        .await
-        .expect("repeat import on a bridged ledger");
-    assert!(matches!(outcome, MigrationDirectoryApplyOutcome::UpToDate));
-
-    // Ordinary canonical work proceeds from the imported basis.
-    let outcome = runner
-        .apply(
-            canonical_directory.path(),
-            &MigrationApplyTarget::DefaultHead,
-            &holder,
-            &[],
-        )
-        .await
-        .expect("apply the post-bridge migration");
-    assert!(matches!(
-        outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
-    ));
-    let export = managed.schema_text().await.expect("post-import export");
-    assert!(export.contains("entity company"), "{export}");
-    assert!(export.contains("owns tag[]"), "{export}");
-    assert!(export.contains("@distinct"), "{export}");
-
-    // Mutating the legacy source breaks byte-for-byte continuity: the
-    // checked v1 loader rejects the directory before any provider write.
-    fs::write(
-        legacy_directory.join("0001_initial.py"),
-        "class Migration:\n    operations = [\"changed\"]\n",
-    )
-    .expect("mutate legacy python source");
-    let drifted = runner
-        .import_legacy_frontier(&legacy_directory, canonical_directory.path(), &holder)
-        .await
-        .expect_err("a drifted legacy file must not import");
-    assert!(
-        drifted
-            .to_string()
-            .contains("legacy migration directory failed the checked adoption loader"),
-        "{drifted}"
-    );
-
-    // A valid post-cutover user function may mention the managed partition in
-    // its body. Presence-only writer fencing must still inspect the canonical
-    // rows; the stricter query/adoption authority remains unchanged.
-    let mut extension = managed
-        .schema_transaction()
-        .await
-        .expect("open post-cutover function transaction");
-    extension
-        .query(
-            r#"define
-fun compatibility-writer-probe($candidate: person) -> { person }:
-  match
-    $candidate isa person;
-    $control isa typebridge-internal-v2-migration-control;
-  return { $candidate };
-"#,
-        )
-        .await
-        .expect("install valid function referencing managed control");
-    extension
-        .commit()
-        .await
-        .expect("commit post-cutover function");
-    let writer = managed
-        .transaction_context(TxType::Schema)
-        .await
-        .expect("open released writer after function extension");
-    let error = tokio::time::timeout(
-        Duration::from_secs(10),
-        require_legacy_writer_open_in_transaction(&writer),
-    )
-    .await
-    .expect("function-bearing schema export must not deadlock")
-    .expect_err("the function body must not reopen the released writer");
-    assert!(
-        error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
-        "{error}"
-    );
-    writer
-        .rollback()
-        .await
-        .expect("roll back rejected released writer transaction");
-    writer
-        .close()
-        .await
-        .expect("release rejected writer before deleting its database");
-
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
-    journal
-        .delete_database()
-        .await
-        .expect("delete isolated journal database");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1212,7 +692,7 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_3() {
     };
     assert_eq!(
         diagnostic.code().as_str(),
-        "migration_typedb_journal_control_schema_absent",
+        "migration_journal_import_pending",
     );
 
     let outcome = runner
@@ -1279,12 +759,2077 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_3() {
     assert_eq!(recorded, second.target_state().managed_semantic_schema());
     assert_ne!(observed, recorded);
 
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
     journal
         .delete_database()
         .await
         .expect("delete isolated journal database");
+    managed
+        .delete_database()
+        .await
+        .expect("delete isolated managed database");
+}
+
+#[path = "../../../../tests/support/adopted_history.rs"]
+mod adopted_history;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_applies_a_completed_legacy_frontier() {
+    let (managed, journal) = databases().await;
+    let context = context();
+    let source = "define\nattribute tag, value string;\nentity person, owns tag[] @distinct;\n";
+    let head = type_bridge_schema_compat::parse_adopted_genesis(
+        DocumentId::new("head.typeql").unwrap(),
+        source,
+    )
+    .unwrap();
+    let target = type_bridge_schema_compat::parse_adopted_genesis(
+        DocumentId::new("target.typeql").unwrap(),
+        &format!("{source}entity company;\n"),
+    )
+    .unwrap();
+    let bridge = adopted_history::bridge(&context, source);
+    adopted_history::seed(&managed, &journal, &context, &bridge, source).await;
+    // An interrupted importer may have installed the new schema without
+    // publishing its mirror; the next apply must still import it.
+    managed
+        .execute_raw(MANAGED_FENCE_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let old = managed.derived_legacy_journal_database();
+    let copied_query = "match $r isa typebridge-internal-migration-journal, has typebridge-internal-record-sequence \"1\", has typebridge-internal-record-payload $p, has typebridge-internal-record-payload-digest $d; fetch { \"payload\": $p, \"digest\": $d };";
+    let old_query = copied_query.replace("typebridge-internal-", "typebridge-internal-v2-");
+    let before = old.execute_raw(&old_query, TxType::Read).await.unwrap();
+    let directory = TempDirectory::new();
+    fs::write(directory.path().join("adopted-genesis.typeql"), source).unwrap();
+    write_manifest(directory.path(), &bridge);
+    write_manifest(
+        directory.path(),
+        &manifest_with_derived_assertions(
+            "0001_company",
+            vec![bridge.id().clone()],
+            &head,
+            &target,
+            &context,
+        ),
+    );
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        head,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("completed-adoption").unwrap();
+    let outcome = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::UpToDate
+    ));
+    let export = managed.schema_text().await.unwrap();
+    assert!(export.contains("entity company"), "{export}");
+    assert!(export.contains("owns tag[]"), "{export}");
+    assert!(export.contains("@distinct"), "{export}");
+    adopted_history::assert_released_writers_fenced(&managed).await;
+    let copied = journal
+        .execute_raw(copied_query, TxType::Read)
+        .await
+        .unwrap();
+    assert_eq!(
+        format!("{before:?}"),
+        format!("{copied:?}"),
+        "copied payload and digest bytes must be unchanged"
+    );
+    let untouched = old.execute_raw(&old_query, TxType::Read).await.unwrap();
+    assert_eq!(format!("{before:?}"), format!("{untouched:?}"));
+    // Once imported, the old applied ledger is no longer an execution dependency.
+    managed
+        .execute_raw(
+            "match $r isa type_bridge_migration; delete $r;",
+            TxType::Write,
+        )
+        .await
+        .unwrap();
+    runner.verify(directory.path(), None).await.unwrap();
+    // A restarted old runner is detected without reading its applied ledger.
+    // A record edit is detected even when the old sequence counter is unchanged.
+    old.execute_raw(
+        "match $r isa typebridge-internal-v2-migration-journal; delete $r;",
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    let error = runner.verify(directory.path(), None).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("migration_old_writer_after_import"),
+        "{error}"
+    );
+    old.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn atomic_typeql_data_step_applies_once_reverses_and_reapplies() {
+    atomic_data_round_trip(0, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn atomic_plan_data_step_applies_once_reverses_and_reapplies() {
+    atomic_data_round_trip(1, false).await;
+}
+
+fn entity_data_programs(
+    schema: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+    label: &str,
+) -> (
+    type_bridge_contract::migration_data::DataProgram,
+    type_bridge_contract::migration_data::DataProgram,
+) {
+    use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+    use type_bridge_contract::migration_data::DataProgram;
+    use type_bridge_contract::query_plan::{
+        DeleteItem, InsertThing, Operation, PlanSpec, QueryOutput, QueryPattern, QueryPlan, Stage,
+        WriteReturns,
+    };
+    let binding = BindingId::new(0).unwrap();
+    let semantics = managed_schema_state(schema, context)
+        .unwrap()
+        .managed_semantic_schema()
+        .clone();
+    let build = |pipeline| {
+        QueryPlan::new(
+            PlanSpec {
+                bindings: vec![AssertionBinding::new(
+                    binding,
+                    QueryVariable::new("person").unwrap(),
+                )],
+                inputs: vec![],
+                given_rows: None,
+                operation: Operation::Write {
+                    returns: WriteReturns::Matched,
+                },
+                pipeline,
+                output: QueryOutput::Rows { columns: vec![] },
+                managed_semantics: semantics.clone(),
+                functions: vec![],
+            },
+            schema,
+        )
+        .unwrap()
+    };
+    let forward = build(vec![Stage::Insert {
+        things: vec![InsertThing {
+            binding,
+            type_id: entity_id(label),
+            fields: vec![],
+            players: vec![],
+        }],
+    }]);
+    let reverse = build(vec![
+        Stage::Match {
+            patterns: vec![
+                QueryPattern::Isa {
+                    binding,
+                    type_id: entity_id(label),
+                    include_subtypes: false,
+                }
+                .into(),
+            ],
+        },
+        Stage::Delete {
+            items: vec![DeleteItem::Thing { binding }],
+        },
+    ]);
+    (
+        DataProgram::Plan {
+            plan: Box::new(forward),
+        },
+        DataProgram::Plan {
+            plan: Box::new(reverse),
+        },
+    )
+}
+
+async fn atomic_data_round_trip(program_kind: u8, checkpoint_gap: bool) {
+    use type_bridge_contract::migration_data::{DataProgram, DataStep};
+    let (managed, journal) = databases().await;
+    let context = context();
+    let empty = declared_facts(vec![]);
+    let schema = declared_facts(vec![type_fact("data-person")]);
+    let first = manifest_with_derived_assertions("0001_schema", vec![], &empty, &schema, &context);
+    let (forward, reverse) = if program_kind == 1 {
+        entity_data_programs(&schema, &context, "data-person")
+    } else if (2..=4).contains(&program_kind) {
+        let user = DataProgram::User {
+            step_id: MigrationStepId::new("seed-person").unwrap(),
+        };
+        (user.clone(), user)
+    } else {
+        (
+            DataProgram::Typeql {
+                text: "insert $p isa data-person;".into(),
+            },
+            DataProgram::Typeql {
+                text: "match $p isa data-person; delete $p;".into(),
+            },
+        )
+    };
+    let step = DataStep::new(
+        MigrationStepId::new("seed-person").unwrap(),
+        forward,
+        (program_kind != 5).then_some(reverse),
+    )
+    .unwrap();
+    let data = build_verified_manifest(
+        SchemaMigrationDraft::new(
+            migration_id("0002_data"),
+            vec![first.id().clone()],
+            vec![MigrationStep::Data(step)],
+        )
+        .unwrap(),
+        (&schema, &context),
+    )
+    .unwrap();
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &first);
+    write_manifest(directory.path(), &data);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        empty,
+        context.clone(),
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let mut users = type_bridge_schema_migration_typedb::MigrationUserSteps::default();
+    let escaped = Arc::new(std::sync::Mutex::new(None));
+    let attempted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    if (2..=4).contains(&program_kind) {
+        let inject_failure = program_kind == 2 || program_kind == 4;
+        let escaped = Arc::clone(&escaped);
+        let attempted = Arc::clone(&attempted);
+        users.register_with_reverse(MigrationStepId::new("seed-person").unwrap(),
+            move |tx| {
+                let escaped = Arc::clone(&escaped);
+                let attempted = Arc::clone(&attempted);
+                async move {
+                    assert!(tx.commit().await.is_err());
+                    assert!(tx.rollback().await.is_err());
+                    assert!(tx.close().await.is_err());
+                    *escaped.lock().unwrap() = Some(tx.clone());
+                    tx.execute_query("insert $p isa data-person;").await.unwrap();
+                    if attempted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 && inject_failure {
+                        assert_ne!(program_kind, 4, "injected callback panic");
+                        return Err(type_bridge_contract::diagnostic::Diagnostic::new(
+                            type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+                            type_bridge_contract::diagnostic::DiagnosticCode::new("injected_callback_error").unwrap(),
+                            "failure after data write"));
+                    }
+                    Ok(())
+                }
+            },
+            |tx| async move {
+                tx.execute_query("match $p isa data-person; delete $p;").await.unwrap();
+                Ok(())
+            }).unwrap();
+    }
+    let runner = runner.with_user_steps(users);
+    let holder = LeaseHolderId::new("data-runner").unwrap();
+    let approval = MigrationApplyApproval::for_manifest(&data).unwrap();
+    if checkpoint_gap {
+        use type_bridge_schema_migration::{
+            MigrationExecutionJournal, MigrationExecutionProvider, MigrationLeaseStore,
+        };
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::Explicit(BTreeSet::from([first.id().clone()])),
+                &holder,
+                &[],
+            )
+            .await
+            .unwrap();
+        let graph = type_bridge_schema_migration::MigrationHistoryGraph::from_verified([
+            first.clone(),
+            data.clone(),
+        ])
+        .unwrap();
+        let plan = type_bridge_schema_migration::build_verified_migration_apply_plan(
+            &graph,
+            &BTreeSet::from([first.id().clone()]),
+            &MigrationApplyTarget::DefaultHead,
+            &context,
+            &SchemaLoweringBinding::for_context(&context).unwrap(),
+            &MigrationSafetyPolicy::default_policy(),
+            std::slice::from_ref(&approval),
+        )
+        .unwrap();
+        let binding = type_bridge_schema_migration_typedb::TypeDbExecutionBinding::new(
+            Arc::clone(&managed),
+            Arc::clone(&journal),
+            context.clone(),
+        )
+        .unwrap();
+        let catalog = type_bridge_schema_migration_typedb::VerifiedMigrationCatalog::new(
+            graph.manifests().map(|(_, manifest)| manifest),
+        )
+        .unwrap();
+        let store =
+            type_bridge_schema_migration_typedb::TypeDbMigrationStore::new(&binding, catalog)
+                .unwrap()
+                .bind_plan(&plan)
+                .unwrap();
+        let provider = type_bridge_schema_migration_typedb::TypeDbMigrationProvider::new(
+            &binding,
+            plan.schema_authorities(),
+        )
+        .unwrap();
+        let lease = store
+            .acquire(
+                &type_bridge_schema_migration::ExecutionScope::new(context.scope_id().clone()),
+                &holder,
+            )
+            .await
+            .unwrap();
+        let source = plan.source_state().unwrap();
+        let observed = provider
+            .observe_managed_state(&lease, source, source)
+            .await
+            .unwrap();
+        let record = type_bridge_schema_migration::PlanRecord::from_verified_plan(
+            &lease,
+            &plan,
+            &[first.id().clone()],
+            &observed,
+        )
+        .unwrap();
+        store.begin_plan(&lease, record).await.unwrap();
+        let step = data.steps()[0].as_data().unwrap();
+        let event = type_bridge_schema_migration::DataStepEventRecord::new(
+            &lease,
+            &data,
+            step,
+            type_bridge_schema_migration::DataStepDirection::Forward,
+            type_bridge_schema_migration::GroupJournalEventKind::BeforeCommit,
+        )
+        .unwrap();
+        store.record_data_event(&lease, event).await.unwrap();
+        if program_kind == 3 {
+            let cancellation = type_bridge_schema_migration::MigrationCancellation::default();
+            let signal = cancellation.clone();
+            let mut callbacks = type_bridge_schema_migration_typedb::MigrationUserSteps::default();
+            let escaped = Arc::new(std::sync::Mutex::new(None));
+            let retained = Arc::clone(&escaped);
+            callbacks
+                .register(MigrationStepId::new("seed-person").unwrap(), move |tx| {
+                    let signal = signal.clone();
+                    let retained = Arc::clone(&retained);
+                    async move {
+                        *retained.lock().unwrap() = Some(tx.clone());
+                        tx.execute_query("insert $p isa data-person;")
+                            .await
+                            .unwrap();
+                        signal.cancel();
+                        std::future::pending().await
+                    }
+                })
+                .unwrap();
+            let provider = provider.with_user_steps(callbacks);
+            let control = type_bridge_schema_migration::MigrationExecutionControl::new(
+                cancellation,
+                None,
+                Default::default(),
+            );
+            let failure = provider
+                .execute_data_step(
+                    &lease,
+                    &data,
+                    step,
+                    type_bridge_schema_migration::DataStepDirection::Forward,
+                    &control,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                failure.certainty(),
+                type_bridge_schema_migration::GroupCommitCertainty::DefinitelyAborted
+            );
+            assert_eq!(
+                failure.diagnostic().code().as_str(),
+                "migration_execution_cancelled"
+            );
+            let saved = escaped.lock().unwrap().take().unwrap();
+            assert!(saved.query("insert $p isa data-person;").await.is_err());
+            let event = type_bridge_schema_migration::DataStepEventRecord::new(
+                &lease,
+                &data,
+                step,
+                type_bridge_schema_migration::DataStepDirection::Forward,
+                type_bridge_schema_migration::GroupJournalEventKind::DefinitelyAborted,
+            )
+            .unwrap();
+            store.record_data_event(&lease, event).await.unwrap();
+        } else {
+            provider
+                .execute_data_step(
+                    &lease,
+                    &data,
+                    step,
+                    type_bridge_schema_migration::DataStepDirection::Forward,
+                    &type_bridge_schema_migration::MigrationExecutionControl::default(),
+                )
+                .await
+                .unwrap();
+        }
+        // Stop at the real durability boundary: data and marker committed,
+        // but no Committed event or applied record was ever written.
+        store.release(&lease).await.unwrap();
+    }
+    if program_kind == 2 || program_kind == 4 {
+        let error = runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                std::slice::from_ref(&approval),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(if program_kind == 4 {
+                "migration_user_step_panicked"
+            } else {
+                "injected_callback_error"
+            }),
+            "{error}"
+        );
+        let saved = escaped.lock().unwrap().take().unwrap();
+        assert!(saved.query("insert $p isa data-person;").await.is_err());
+        let rows = managed
+            .execute_raw(
+                "match $p isa data-person; fetch { \"iid\": iid($p) };",
+                TxType::Read,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(rows, type_bridge_orm::session::backend::QueryResult::Documents(rows) if rows.is_empty())
+        );
+    }
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            std::slice::from_ref(&approval),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                std::slice::from_ref(&approval)
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::UpToDate
+    ));
+    let count = |rows: type_bridge_orm::session::backend::QueryResult| match rows {
+        type_bridge_orm::session::backend::QueryResult::Documents(rows)
+        | type_bridge_orm::session::backend::QueryResult::Rows(rows) => rows.len(),
+        other => panic!("unexpected answer {other:?}"),
+    };
+    let query = "match $p isa data-person; fetch { \"iid\": iid($p) };";
+    assert_eq!(
+        count(managed.execute_raw(query, TxType::Read).await.unwrap()),
+        1
+    );
+    if program_kind == 5 {
+        let control_query = "match $c isa typebridge-internal-migration-control, has typebridge-internal-lease-fence $f, has typebridge-internal-next-sequence $n; fetch { \"fence\": $f, \"next\": $n };";
+        let before = journal
+            .execute_raw(control_query, TxType::Read)
+            .await
+            .unwrap();
+        let error = runner
+            .rollback(
+                directory.path(),
+                &BTreeSet::from([data.id().clone()]),
+                &holder,
+                &[],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("migration_rollback_irreversible_data"),
+            "{error}"
+        );
+        let after = journal
+            .execute_raw(control_query, TxType::Read)
+            .await
+            .unwrap();
+        assert_eq!(format!("{before:?}"), format!("{after:?}"));
+        assert_eq!(
+            count(managed.execute_raw(query, TxType::Read).await.unwrap()),
+            1
+        );
+        journal.delete_database().await.unwrap();
+        managed.delete_database().await.unwrap();
+        return;
+    }
+    let reverse = MigrationApplyApproval::for_rollback(&data, SafetyClass::Opaque).unwrap();
+    runner
+        .rollback(
+            directory.path(),
+            &BTreeSet::from([data.id().clone()]),
+            &holder,
+            &[reverse],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        count(managed.execute_raw(query, TxType::Read).await.unwrap()),
+        0
+    );
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[approval],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        count(managed.execute_raw(query, TxType::Read).await.unwrap()),
+        1
+    );
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn unregistered_user_step_refuses_before_any_control_write() {
+    use type_bridge_contract::migration_data::{DataProgram, DataStep};
+    let (managed, journal) = databases().await;
+    let context = context();
+    let empty = declared_facts(vec![]);
+    let schema = declared_facts(vec![type_fact("data-person")]);
+    let first = manifest_with_derived_assertions("0001_schema", vec![], &empty, &schema, &context);
+    let data = build_verified_manifest(
+        SchemaMigrationDraft::new(
+            migration_id("0002_user"),
+            vec![first.id().clone()],
+            vec![MigrationStep::Data(
+                DataStep::new(
+                    MigrationStepId::new("derive").unwrap(),
+                    DataProgram::User {
+                        step_id: MigrationStepId::new("derive-person").unwrap(),
+                    },
+                    None,
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap(),
+        (&schema, &context),
+    )
+    .unwrap();
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &first);
+    write_manifest(directory.path(), &data);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        empty,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let before_managed = managed.schema_text().await.unwrap();
+    let before_journal = journal.schema_text().await.unwrap();
+    let holder = LeaseHolderId::new("unregistered-user").unwrap();
+    let error = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[MigrationApplyApproval::for_manifest(&data).unwrap()],
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("migration_user_step_unregistered"),
+        "{error}"
+    );
+    assert_eq!(managed.schema_text().await.unwrap(), before_managed);
+    assert_eq!(journal.schema_text().await.unwrap(), before_journal);
+    // A user program outside the selected closure does not block schema apply.
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::Explicit(BTreeSet::from([first.id().clone()])),
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn atomic_user_callback_rolls_back_errors_and_reverses() {
+    atomic_data_round_trip(2, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn committed_data_marker_repairs_missing_journal_checkpoint_live() {
+    atomic_data_round_trip(0, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn cancelled_user_callback_rolls_back_and_invalidates_handles_live() {
+    atomic_data_round_trip(3, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn panicking_user_callback_rolls_back_before_retry_live() {
+    atomic_data_round_trip(4, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn irreversible_data_refuses_rollback_before_lease_write_live() {
+    atomic_data_round_trip(5, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn mixed_data_history_recovers_after_a_retired_rollback_prefix() {
+    use type_bridge_contract::migration_data::{DataProgram, DataStep};
+    let (managed, journal) = databases().await;
+    let context = context();
+    let empty = declared_facts(vec![]);
+    let schema = declared_facts(vec![
+        type_fact("data-a"),
+        type_fact("data-b"),
+        type_fact("data-c"),
+    ]);
+    let first = manifest_with_derived_assertions("0001_schema", vec![], &empty, &schema, &context);
+    let user = DataProgram::User {
+        step_id: MigrationStepId::new("derive-a").unwrap(),
+    };
+    let plan = entity_data_programs(&schema, &context, "data-c");
+    let programs = [
+        ("0002_user", user.clone(), user),
+        (
+            "0003_typeql",
+            DataProgram::Typeql {
+                text: "insert $p isa data-b;".into(),
+            },
+            DataProgram::Typeql {
+                text: "match $p isa data-b; delete $p;".into(),
+            },
+        ),
+        ("0004_plan", plan.0, plan.1),
+    ];
+    let mut manifests = vec![first];
+    for (name, forward, reverse) in programs {
+        let step = DataStep::new(
+            MigrationStepId::new("derive").unwrap(),
+            forward,
+            Some(reverse),
+        )
+        .unwrap();
+        manifests.push(
+            build_verified_manifest(
+                SchemaMigrationDraft::new(
+                    migration_id(name),
+                    vec![manifests.last().unwrap().id().clone()],
+                    vec![MigrationStep::Data(step)],
+                )
+                .unwrap(),
+                (&schema, &context),
+            )
+            .unwrap(),
+        );
+    }
+    let directory = TempDirectory::new();
+    for manifest in &manifests {
+        write_manifest(directory.path(), manifest);
+    }
+    let forward = manifests[1..]
+        .iter()
+        .map(|manifest| MigrationApplyApproval::for_manifest(manifest).unwrap())
+        .collect::<Vec<_>>();
+    let reverse = manifests[1..]
+        .iter()
+        .map(|manifest| {
+            MigrationApplyApproval::for_rollback(manifest, SafetyClass::Opaque).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let removals = manifests[1..]
+        .iter()
+        .map(|manifest| manifest.id().clone())
+        .collect();
+    let reverse_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reverse_attempt = Arc::clone(&reverse_calls);
+    let mut users = type_bridge_schema_migration_typedb::MigrationUserSteps::default();
+    users
+        .register_with_reverse(
+            MigrationStepId::new("derive-a").unwrap(),
+            |tx| async move {
+                tx.execute_query("insert $p isa data-a;").await.unwrap();
+                Ok(())
+            },
+            move |tx| {
+                let attempts = Arc::clone(&reverse_attempt);
+                async move {
+                    tx.execute_query("match $p isa data-a; delete $p;")
+                        .await
+                        .unwrap();
+                    if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        return Err(type_bridge_contract::diagnostic::Diagnostic::new(
+                            type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+                            type_bridge_contract::diagnostic::DiagnosticCode::new(
+                                "injected_reverse_error",
+                            )
+                            .unwrap(),
+                            "failure after reverse write",
+                        ));
+                    }
+                    Ok(())
+                }
+            },
+        )
+        .unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        empty,
+        context.clone(),
+        SchemaLoweringBinding::for_context(&context).unwrap(),
+        MigrationSafetyPolicy::default_policy(),
+    )
+    .with_user_steps(users);
+    let holder = LeaseHolderId::new("mixed-data").unwrap();
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &forward,
+        )
+        .await
+        .unwrap();
+    let error = runner
+        .rollback(directory.path(), &removals, &holder, &reverse)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("injected_reverse_error"),
+        "{error}"
+    );
+    for (label, expected) in [("data-a", 1), ("data-b", 0), ("data-c", 0)] {
+        let result = managed
+            .execute_raw(
+                &format!("match $p isa {label}; fetch {{ \"iid\": iid($p) }};"),
+                TxType::Read,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, type_bridge_orm::session::backend::QueryResult::Documents(rows) if rows.len() == expected)
+        );
+    }
+    runner
+        .rollback(directory.path(), &removals, &holder, &reverse)
+        .await
+        .unwrap();
+    assert_eq!(reverse_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &forward,
+        )
+        .await
+        .unwrap();
+    for label in ["data-a", "data-b", "data-c"] {
+        let result = managed
+            .execute_raw(
+                &format!("match $p isa {label}; fetch {{ \"iid\": iid($p) }};"),
+                TxType::Read,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, type_bridge_orm::session::backend::QueryResult::Documents(rows) if rows.len() == 1)
+        );
+    }
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB server"]
+async fn catalog_import_checks_adoption_evidence_before_any_new_journal_write() {
+    use type_bridge_schema_migration::{
+        MigrationCatalog, VerifiedMigrationHistoryBundle, discover_verified_migration_chain,
+        encode_verified_migration_history_bundle,
+    };
+    use type_bridge_schema_migration_typedb::{
+        ManagedDatabasePairAdministrator, ManagedDatabasePairCreateOutcome,
+        ManagedDatabasePairState, execute_catalog_apply_plan_controlled,
+    };
+    for mismatch in [
+        None,
+        Some("anchor"),
+        Some("sentinel"),
+        Some("applied-set"),
+        Some("bridge"),
+    ] {
+        let (managed, journal) = databases().await;
+        journal.delete_database().await.unwrap();
+        let context = context();
+        let source = "define entity person;\n";
+        let head = type_bridge_schema_compat::parse_adopted_genesis(
+            DocumentId::new("catalog-adopted.typeql").unwrap(),
+            source,
+        )
+        .unwrap();
+        let target = type_bridge_schema_compat::parse_adopted_genesis(
+            DocumentId::new("catalog-target.typeql").unwrap(),
+            "define entity person; entity company;\n",
+        )
+        .unwrap();
+        let bridge = adopted_history::bridge(&context, source);
+        adopted_history::seed(&managed, &journal, &context, &bridge, source).await;
+        let old = managed.derived_legacy_journal_database();
+        let administrator = ManagedDatabasePairAdministrator::new(
+            Arc::clone(&managed),
+            Arc::clone(&journal),
+            context.scope_id().clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            administrator.inspect().await.unwrap(),
+            ManagedDatabasePairState::ImportPending
+        );
+        assert_eq!(
+            administrator.create_database_outcome().await.unwrap(),
+            ManagedDatabasePairCreateOutcome::AlreadyExists
+        );
+        let mut tx = managed.read_transaction().await.unwrap();
+        type_bridge_orm::plan_authority::verify_import_pending_query_control_scope(
+            &mut tx,
+            context.scope_id(),
+            false,
+            None,
+            &type_bridge_orm::session::backend::AnswerCancellation::default(),
+        )
+        .await
+        .unwrap();
+        tx.close().await.unwrap();
+        let tamper = match mismatch {
+            Some("anchor") => Some((
+                managed.as_ref(),
+                "match $a isa typebridge-internal-v2-legacy-cutover; delete $a;",
+            )),
+            Some("sentinel") => Some((
+                managed.as_ref(),
+                "match $a isa type_bridge_migration, has migration_name \"__legacy_writer_cutover__\"; delete $a;",
+            )),
+            Some("applied-set") => Some((
+                managed.as_ref(),
+                "match $a isa type_bridge_migration, has migration_name \"0001_initial\", has migration_checksum $checksum; delete has $checksum of $a; insert $a has migration_checksum \"2222222222222222\";",
+            )),
+            Some("bridge") => Some((
+                &old,
+                "match $a isa typebridge-internal-v2-migration-journal; delete $a;",
+            )),
+            None => None,
+            _ => unreachable!(),
+        };
+        if let Some((database, query)) = tamper {
+            database.execute_raw(query, TxType::Write).await.unwrap();
+        }
+        let directory = TempDirectory::new();
+        write_manifest(directory.path(), &bridge);
+        write_manifest(
+            directory.path(),
+            &manifest_with_derived_assertions(
+                "0001_company",
+                vec![bridge.id().clone()],
+                &head,
+                &target,
+                &context,
+            ),
+        );
+        let graph = discover_verified_migration_chain(directory.path(), &head, &context).unwrap();
+        let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
+        let catalog = MigrationCatalog::open(
+            &encode_verified_migration_history_bundle(&bundle).unwrap(),
+            &context,
+        )
+        .unwrap();
+        let plan = catalog
+            .authorize_apply(
+                &BTreeSet::from([bridge.id().clone()]),
+                &MigrationApplyTarget::DefaultHead,
+                &MigrationSafetyPolicy::default_policy(),
+                &[],
+            )
+            .unwrap();
+        let result = execute_catalog_apply_plan_controlled(
+            Arc::clone(&managed),
+            &catalog,
+            &LeaseHolderId::new("sdk-first-import").unwrap(),
+            &plan,
+            &type_bridge_schema_migration::MigrationExecutionControl::default(),
+        )
+        .await;
+        if let Some(mismatch) = mismatch {
+            let error = result.expect_err(mismatch);
+            assert_eq!(
+                error.code().as_str(),
+                "migration_journal_import_invalid",
+                "{mismatch}: {error}"
+            );
+            assert!(
+                !journal.database_exists().await.unwrap(),
+                "{mismatch} wrote a new journal"
+            );
+        } else {
+            assert!(matches!(
+                result.unwrap(),
+                MigrationExecutionOutcome::Applied { .. }
+            ));
+            assert_eq!(
+                administrator.inspect().await.unwrap(),
+                ManagedDatabasePairState::OwnedPair
+            );
+            assert!(
+                managed
+                    .schema_text()
+                    .await
+                    .unwrap()
+                    .contains("entity company")
+            );
+            managed
+                .execute_raw(
+                    "match $row isa type_bridge_migration; delete $row;",
+                    TxType::Write,
+                )
+                .await
+                .unwrap();
+            let next_target = type_bridge_schema_compat::parse_adopted_genesis(
+                DocumentId::new("catalog-next.typeql").unwrap(),
+                "define entity person; entity company; entity project;\n",
+            )
+            .unwrap();
+            write_manifest(
+                directory.path(),
+                &manifest_with_derived_assertions(
+                    "0002_project",
+                    vec![migration_id("0001_company")],
+                    &target,
+                    &next_target,
+                    &context,
+                ),
+            );
+            let graph =
+                discover_verified_migration_chain(directory.path(), &head, &context).unwrap();
+            let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph).unwrap();
+            let catalog = MigrationCatalog::open(
+                &encode_verified_migration_history_bundle(&bundle).unwrap(),
+                &context,
+            )
+            .unwrap();
+            let applied = type_bridge_schema_migration_typedb::load_catalog_applied_migrations(
+                Arc::clone(&managed),
+                &catalog,
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+            let repeat = catalog
+                .authorize_apply(
+                    &applied,
+                    &MigrationApplyTarget::DefaultHead,
+                    &MigrationSafetyPolicy::default_policy(),
+                    &[],
+                )
+                .unwrap();
+            let repeated = execute_catalog_apply_plan_controlled(
+                Arc::clone(&managed),
+                &catalog,
+                &LeaseHolderId::new("sdk-after-import").unwrap(),
+                &repeat,
+                &type_bridge_schema_migration::MigrationExecutionControl::default(),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                repeated,
+                MigrationExecutionOutcome::Applied { .. }
+            ));
+        }
+        administrator
+            .plan_delete()
+            .await
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+        assert!(!old.database_exists().await.unwrap());
+        assert!(!managed.database_exists().await.unwrap());
+        assert!(!journal.database_exists().await.unwrap());
+        administrator.create_database_outcome().await.unwrap();
+        assert_eq!(
+            administrator.inspect().await.unwrap(),
+            ManagedDatabasePairState::StandaloneManaged
+        );
+        managed.delete_database().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_regex_escapes_round_trip_and_accept_matching_data() {
+    let (managed, journal) = databases().await;
+    let context = context();
+    let genesis = declared_facts(Vec::new());
+    let target = typeql_to_declared(
+        DocumentId::new("regex.tql").unwrap(),
+        r#"define attribute code, value string @regex("^[A-Z]{2}\d+$");
+        attribute ref, value string;
+        entity item, owns code, owns ref @regex("^\w+\.\w+$");"#,
+    )
+    .unwrap();
+    let manifest =
+        manifest_with_derived_assertions("0001_regex", vec![], &genesis, &target, &context);
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &manifest);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-regex").unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query(r#"insert $x isa item, has code "AB12", has ref "abc.def";"#)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::UpToDate
+    ));
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn refused_plans_close_and_stuck_plans_can_be_abandoned_safely() {
+    use type_bridge_schema_migration::{
+        ExecutionScope, GroupEventRecord, GroupJournalEventKind, MigrationDirectory,
+        MigrationExecutionJournal, MigrationLeaseStore, PlanRecord,
+        build_verified_migration_apply_plan,
+    };
+    use type_bridge_schema_migration_typedb::{
+        TypeDbExecutionBinding, TypeDbMigrationStore, VerifiedMigrationCatalog,
+    };
+    let (managed, journal) = databases().await;
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let base = declared_facts(vec![type_fact("person")]);
+    let abstract_target = typeql_to_declared(
+        DocumentId::new("abstract.tql").unwrap(),
+        "define entity person @abstract;",
+    )
+    .unwrap();
+    let next = declared_facts(vec![type_fact("person"), type_fact("company")]);
+    let first = manifest_with_derived_assertions("0001_base", vec![], &genesis, &base, &context);
+    let refused = manifest_with_derived_assertions(
+        "0002_abstract",
+        vec![first.id().clone()],
+        &base,
+        &abstract_target,
+        &context,
+    );
+    let second = manifest_with_derived_assertions(
+        "0002_company",
+        vec![first.id().clone()],
+        &base,
+        &next,
+        &context,
+    );
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &first);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context.clone(),
+        lowering.clone(),
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-refused-plan").unwrap();
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("insert $p isa person;").await.unwrap();
+    tx.commit().await.unwrap();
+    write_manifest(directory.path(), &refused);
+    let error = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("migration_typedb_assertion_failed"),
+        "{error}"
+    );
+    let report = runner.verify(directory.path(), None).await.unwrap();
+    assert!(!format!("{:?}", report.findings()).contains("migration_typedb_open_plan"));
+    fs::remove_file(directory.path().join("0002_abstract.tbmigration.json")).unwrap();
+    write_manifest(directory.path(), &second);
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("insert $c isa company;").await.unwrap();
+    tx.commit().await.unwrap();
+    let reverse_approval =
+        MigrationApplyApproval::for_rollback(&second, SafetyClass::Destructive).unwrap();
+    let refusal = runner
+        .rollback(
+            directory.path(),
+            &BTreeSet::from([second.id().clone()]),
+            &holder,
+            &[reverse_approval],
+        )
+        .await;
+    assert!(!matches!(
+        refusal,
+        Ok(MigrationDirectoryRollbackOutcome::Executed(
+            MigrationRollbackOutcome::RolledBack { .. }
+        ))
+    ));
+    assert!(
+        !format!(
+            "{:?}",
+            runner
+                .verify(directory.path(), None)
+                .await
+                .unwrap()
+                .findings()
+        )
+        .contains("migration_typedb_open_plan")
+    );
+    let third_target = declared_facts(vec![
+        type_fact("person"),
+        type_fact("company"),
+        type_fact("other"),
+    ]);
+    let third = manifest_with_derived_assertions(
+        "0003_other",
+        vec![second.id().clone()],
+        &next,
+        &third_target,
+        &context,
+    );
+    write_manifest(directory.path(), &third);
+    // Simulate a historical refusal: persist the plan without executing any group.
+    let graph = runner.discover(directory.path()).unwrap();
+    let basis = BTreeSet::from([first.id().clone(), second.id().clone()]);
+    let plan = build_verified_migration_apply_plan(
+        &graph,
+        &basis,
+        &MigrationApplyTarget::DefaultHead,
+        &context,
+        &lowering,
+        &MigrationSafetyPolicy::default_policy(),
+        &[],
+    )
+    .unwrap();
+    let binding =
+        TypeDbExecutionBinding::new(Arc::clone(&managed), Arc::clone(&journal), context.clone())
+            .unwrap();
+    let catalog =
+        VerifiedMigrationCatalog::new(graph.manifests().map(|(_, manifest)| manifest)).unwrap();
+    let store = TypeDbMigrationStore::new(&binding, catalog)
+        .unwrap()
+        .bind_plan(&plan)
+        .unwrap();
+    let scope = ExecutionScope::new(context.scope_id().clone());
+    let lease = store.acquire(&scope, &holder).await.unwrap();
+    let record = PlanRecord::from_verified_plan(
+        &lease,
+        &plan,
+        plan.applied_migrations(),
+        plan.source_state().unwrap(),
+    )
+    .unwrap();
+    store.begin_plan(&lease, record).await.unwrap();
+    store.release(&lease).await.unwrap();
+    let report = runner.verify(directory.path(), None).await.unwrap();
+    assert!(format!("{:?}", report.findings()).contains("migration_typedb_open_plan"));
+    let capability = MigrationDirectory::open_ambient(directory.path()).unwrap();
+    assert!(runner.abandon_plan_in(&capability, &holder).await.unwrap());
+    assert!(!runner.abandon_plan_in(&capability, &holder).await.unwrap());
+    // Unknown commit evidence is preserved even when the live schema looks unchanged.
+    let lease = store.acquire(&scope, &holder).await.unwrap();
+    store
+        .begin_plan(
+            &lease,
+            PlanRecord::from_verified_plan(
+                &lease,
+                &plan,
+                plan.applied_migrations(),
+                plan.source_state().unwrap(),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let migration = &plan.migrations()[0];
+    let group = &migration.transaction_groups()[0];
+    store
+        .record_group_event(
+            &lease,
+            GroupEventRecord::new(
+                &lease,
+                migration,
+                group,
+                GroupJournalEventKind::BeforeCommit,
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    store
+        .record_group_event(
+            &lease,
+            GroupEventRecord::new(
+                &lease,
+                migration,
+                group,
+                GroupJournalEventKind::CommitOutcomeUnknown,
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    store.release(&lease).await.unwrap();
+    let error = runner
+        .abandon_plan_in(&capability, &holder)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("migration_typedb_abandon_plan_unsafe"),
+        "{error}"
+    );
+    // Restore exact history and let normal recovery prove source and execute once.
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_tightens_maximum_and_removes_widened_interfaces() {
+    let (managed, journal) = databases().await;
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let source_text = "define attribute nick, value string; entity person, owns nick @card(0..), plays friendship:friend; relation friendship, relates friend @card(0..);";
+    let source =
+        typeql_to_declared(DocumentId::new("card-source.tql").unwrap(), source_text).unwrap();
+    let tightened = typeql_to_declared(
+        DocumentId::new("card-tightened.tql").unwrap(),
+        &source_text.replace("owns nick @card(0..)", "owns nick @card(0..2)"),
+    )
+    .unwrap();
+    let target = typeql_to_declared(
+        DocumentId::new("card-target.tql").unwrap(),
+        "define attribute nick, value string; entity person;",
+    )
+    .unwrap();
+    let first = manifest_with_derived_assertions("0001_cards", vec![], &genesis, &source, &context);
+    let second = manifest_with_derived_assertions(
+        "0002_tighten",
+        vec![first.id().clone()],
+        &source,
+        &tightened,
+        &context,
+    );
+    let third = manifest_with_derived_assertions(
+        "0003_drop",
+        vec![second.id().clone()],
+        &tightened,
+        &target,
+        &context,
+    );
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &first);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-card").unwrap();
+    runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("insert $a isa person, has nick \"a\", has nick \"b\"; $b isa person; $r isa friendship, links (friend: $a, friend: $b);").await.unwrap();
+    tx.commit().await.unwrap();
+    write_manifest(directory.path(), &second);
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("match $r isa friendship; delete $r;")
+        .await
+        .unwrap();
+    tx.query("match $p isa person; delete $p;").await.unwrap();
+    tx.commit().await.unwrap();
+    write_manifest(directory.path(), &third);
+    let approval = MigrationApplyApproval::for_manifest(&third).unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[approval]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_migrates_role_specialization_in_first_and_later_migrations() {
+    let (managed, journal) = databases().await;
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let initial = "define relation base @abstract, relates source; relation initial-link sub base, relates origin as source; relation later-link sub base, relates local;";
+    let added = format!("{initial} relation added-link sub base, relates added-origin as source;");
+    let changed = added.replace("relates local;", "relates local as source;");
+    let first_target =
+        typeql_to_declared(DocumentId::new("role-first.tql").unwrap(), initial).unwrap();
+    let second_target =
+        typeql_to_declared(DocumentId::new("role-added.tql").unwrap(), &added).unwrap();
+    let third_target =
+        typeql_to_declared(DocumentId::new("role-changed.tql").unwrap(), &changed).unwrap();
+    let first = manifest_with_derived_assertions(
+        "0001_specialization",
+        vec![],
+        &genesis,
+        &first_target,
+        &context,
+    );
+    let second = manifest_with_derived_assertions(
+        "0002_specialization",
+        vec![first.id().clone()],
+        &first_target,
+        &second_target,
+        &context,
+    );
+    let graph = type_bridge_schema_migration::MigrationHistoryGraph::from_verified([
+        first.clone(),
+        second.clone(),
+    ])
+    .unwrap();
+    let generated = type_bridge_schema_migration::generate_next_migration(
+        &graph,
+        &type_bridge_schema_migration::MigrationGenerationRequest {
+            app_label: "live-runner",
+            base_name: "specialization",
+            genesis_source: &genesis,
+            desired: &third_target,
+            context: &context,
+        },
+    )
+    .unwrap();
+    let type_bridge_schema_migration::MigrationGenerationOutcome::Generated(generated) = generated
+    else {
+        panic!("expected specialization migration")
+    };
+    let third = generated.manifest().clone();
+    let directory = TempDirectory::new();
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-specialization").unwrap();
+    for migration in [&first, &second, &third] {
+        write_manifest(directory.path(), migration);
+        assert!(matches!(
+            runner
+                .apply(
+                    directory.path(),
+                    &MigrationApplyTarget::DefaultHead,
+                    &holder,
+                    &[]
+                )
+                .await
+                .unwrap(),
+            MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+        ));
+        assert!(
+            runner
+                .verify(directory.path(), None)
+                .await
+                .unwrap()
+                .is_clean()
+        );
+    }
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_adds_executes_observes_and_removes_functions_with_metadata() {
+    use type_bridge_schema_migration::{
+        MigrationGenerationOutcome, MigrationGenerationRequest, MigrationHistoryGraph,
+        generate_next_migration,
+    };
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let target = typeql_to_declared(DocumentId::new("functions.tql").unwrap(),
+        "define fun z_value() -> integer: match let $n = 7; return first $n; fun a_caller() -> integer @doc(\"calls z_value\"): match let $n = z_value(); return first $n;").unwrap();
+    let MigrationGenerationOutcome::Generated(first) = generate_next_migration(
+        &MigrationHistoryGraph::from_verified([]).unwrap(),
+        &MigrationGenerationRequest {
+            app_label: "live-runner",
+            base_name: "functions",
+            genesis_source: &genesis,
+            desired: &target,
+            context: &context,
+        },
+    )
+    .unwrap() else {
+        panic!("function migration")
+    };
+    let graph = MigrationHistoryGraph::from_verified([first.manifest().clone()]).unwrap();
+    let MigrationGenerationOutcome::Generated(second) = generate_next_migration(
+        &graph,
+        &MigrationGenerationRequest {
+            app_label: "live-runner",
+            base_name: "remove_functions",
+            genesis_source: &genesis,
+            desired: &genesis,
+            context: &context,
+        },
+    )
+    .unwrap() else {
+        panic!("function removal")
+    };
+    let (managed, journal) = databases().await;
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), first.manifest());
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-functions").unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    let mut tx = managed.read_transaction().await.unwrap();
+    let result = tx
+        .query("match let $answer = a_caller(); fetch { \"answer\": $answer };")
+        .await
+        .unwrap();
+    let type_bridge_orm::session::backend::QueryResult::Documents(documents) = result else {
+        panic!("function fetch documents")
+    };
+    assert_eq!(documents, vec![serde_json::json!({"answer": 7})]);
+    tx.close().await.unwrap();
+    write_manifest(directory.path(), second.manifest());
+    let approval = MigrationApplyApproval::for_manifest(second.manifest()).unwrap();
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[approval]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_applies_split_yaml_reference_fixture_as_first_migration() {
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let documents = type_bridge_schema::SchemaDocumentSet::parse([(
+        DocumentId::new("reference-fixture.yaml").unwrap(),
+        include_str!("../../../../docs/fixtures/split-yaml-v1/schema/fixture.yaml"),
+    )])
+    .unwrap();
+    let target = type_bridge_schema::normalize_documents(&documents).unwrap();
+    let migration =
+        manifest_with_derived_assertions("0001_reference", vec![], &genesis, &target, &context);
+    let (managed, journal) = databases().await;
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &migration);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-reference-fixture").unwrap();
+    let outcome = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+        ),
+        "{outcome:?}"
+    );
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn specializing_role_requires_its_inherited_player() {
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let target = typeql_to_declared(DocumentId::new("required-specialization.tql").unwrap(),
+        "define relation base @abstract, relates source @card(1); relation child sub base, relates origin as source; entity person, plays child:origin;").unwrap();
+    let migration =
+        manifest_with_derived_assertions("0001_required_role", vec![], &genesis, &target, &context);
+    let (managed, journal) = databases().await;
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &migration);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("live-required-role").unwrap();
+    let outcome = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+        ),
+        "{outcome:?}"
+    );
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("insert $r isa child;").await.unwrap();
+    let error = tx.commit().await.unwrap_err();
+    assert!(error.to_string().contains("CNT5"), "{error}");
+    tx.close().await.unwrap();
+    let mut tx = managed.write_transaction().await.unwrap();
+    tx.query("insert $p isa person; $r isa child, links (origin: $p);")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    tx.close().await.unwrap();
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_applies_strictly_narrowed_ownership_constraints() {
+    let context = context();
+    let genesis = declared_facts(vec![]);
+    let target = typeql_to_declared(DocumentId::new("narrowed-owns.tql").unwrap(),
+        "define attribute score, value integer @range(0..100); attribute choice, value integer @values(1, 2, 3); attribute code, value string @regex(\"^[A-Z]+$\"); entity person, owns score @range(10..90), owns choice @values(1, 2), owns code @regex(\"^ABC$\");").unwrap();
+    let migration =
+        manifest_with_derived_assertions("0001_narrowed", vec![], &genesis, &target, &context);
+    let (managed, journal) = databases().await;
+    let directory = TempDirectory::new();
+    write_manifest(directory.path(), &migration);
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        genesis,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let outcome = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &LeaseHolderId::new("live-narrowed-owns").unwrap(),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+        ),
+        "{outcome:?}"
+    );
+    managed
+        .execute_raw(
+            "insert $p isa person, has score 50, has choice 2, has code \"ABC\";",
+            TxType::Write,
+        )
+        .await
+        .unwrap();
+    for query in [
+        "insert $p isa person, has score 5;",
+        "insert $p isa person, has choice 3;",
+        "insert $p isa person, has code \"ABCD\";",
+    ] {
+        assert!(
+            managed.execute_raw(query, TxType::Write).await.is_err(),
+            "accepted {query}"
+        );
+    }
+    assert!(
+        runner
+            .verify(directory.path(), None)
+            .await
+            .unwrap()
+            .is_clean()
+    );
+    journal.delete_database().await.unwrap();
+    managed.delete_database().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn killed_schema_group_resumes_before_or_after_commit() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    use type_bridge_schema_migration::{
+        ExecutionScope, GroupEventRecord, GroupJournalEventKind, MigrationExecutionJournal,
+        MigrationExecutionProvider, MigrationLeaseStore, PlanRecord,
+        build_verified_migration_apply_plan,
+    };
+    use type_bridge_schema_migration_typedb::{
+        TypeDbExecutionBinding, TypeDbMigrationProvider, TypeDbMigrationStore,
+        VerifiedMigrationCatalog,
+    };
+
+    // The child uses the real provider/store and stops at an exact durable boundary.
+    // Killing it leaves neither a Rust drop nor a lease-release cleanup path.
+    if let Ok(mode) = env::var("TYPE_BRIDGE_KILL_GROUP_CHILD") {
+        let (address, _, username, password, options) = connection();
+        let name = env::var("TYPE_BRIDGE_KILL_GROUP_DATABASE").unwrap();
+        let managed = Arc::new(
+            Database::connect_with_options(&address, &name, &username, &password, options)
+                .await
+                .unwrap(),
+        );
+        let journal = Arc::new(
+            Database::connect_with_options(
+                &address,
+                &derived_journal_database_name(&name),
+                &username,
+                &password,
+                options,
+            )
+            .await
+            .unwrap(),
+        );
+        let context = context();
+        let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+        let policy = MigrationSafetyPolicy::default_policy();
+        let runner = TypeDbMigrationRunner::new(
+            Arc::clone(&managed),
+            Arc::clone(&journal),
+            declared_facts(vec![]),
+            context.clone(),
+            lowering.clone(),
+            policy.clone(),
+        );
+        let directory = env::var("TYPE_BRIDGE_KILL_GROUP_DIRECTORY").unwrap();
+        let graph = runner.discover(Path::new(&directory)).unwrap();
+        let plan = build_verified_migration_apply_plan(
+            &graph,
+            &BTreeSet::new(),
+            &MigrationApplyTarget::DefaultHead,
+            &context,
+            &lowering,
+            &policy,
+            &[],
+        )
+        .unwrap();
+        let binding = TypeDbExecutionBinding::new(managed, journal, context.clone()).unwrap();
+        let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m)).unwrap();
+        let store = TypeDbMigrationStore::new(&binding, catalog)
+            .unwrap()
+            .bind_plan(&plan)
+            .unwrap();
+        store.ensure_control_schema().await.unwrap();
+        let provider = TypeDbMigrationProvider::new(&binding, plan.schema_authorities()).unwrap();
+        let lease = store
+            .acquire(
+                &ExecutionScope::new(context.scope_id().clone()),
+                &LeaseHolderId::new("killed-schema-child").unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .begin_plan(
+                &lease,
+                PlanRecord::from_verified_plan(
+                    &lease,
+                    &plan,
+                    plan.applied_migrations(),
+                    plan.source_state().unwrap(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let migration = &plan.migrations()[0];
+        let group = &migration.transaction_groups()[0];
+        let step = &migration.steps()[group.end_step_index() - 1];
+        let delta = step.step().as_schema_delta().unwrap().delta();
+        let mut transaction = provider
+            .prepare_group(&lease, delta.source(), delta.target())
+            .await
+            .unwrap();
+        for unit in step.lowering().unwrap().units() {
+            transaction.execute_statement_unit(unit).await.unwrap();
+        }
+        store
+            .record_group_event(
+                &lease,
+                GroupEventRecord::new(
+                    &lease,
+                    migration,
+                    group,
+                    GroupJournalEventKind::BeforeCommit,
+                    None,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        if mode == "after" {
+            transaction.commit(&lease).await.unwrap();
+        }
+        fs::write(env::var("TYPE_BRIDGE_KILL_GROUP_READY").unwrap(), "ready").unwrap();
+        std::future::pending::<()>().await;
+        unreachable!();
+    }
+
+    for (mode, count) in [("after", 1), ("after", 2), ("before", 1)] {
+        let (managed, journal) = databases().await;
+        let context = context();
+        let genesis = declared_facts(vec![]);
+        let first_target = declared_facts(vec![type_fact("person")]);
+        let first = manifest_with_derived_assertions(
+            "0001_first",
+            vec![],
+            &genesis,
+            &first_target,
+            &context,
+        );
+        let directory = TempDirectory::new();
+        write_manifest(directory.path(), &first);
+        if count == 2 {
+            let target = declared_facts(vec![type_fact("person"), type_fact("company")]);
+            write_manifest(
+                directory.path(),
+                &manifest_with_derived_assertions(
+                    "0002_second",
+                    vec![first.id().clone()],
+                    &first_target,
+                    &target,
+                    &context,
+                ),
+            );
+        }
+        let ready = directory.path().join("child-ready");
+        let child_log = fs::File::create(directory.path().join("child.log")).unwrap();
+        let mut child = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "killed_schema_group_resumes_before_or_after_commit",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("TYPE_BRIDGE_KILL_GROUP_CHILD", mode)
+            .env("TYPE_BRIDGE_KILL_GROUP_DATABASE", managed.database_name())
+            .env("TYPE_BRIDGE_KILL_GROUP_DIRECTORY", directory.path())
+            .env("TYPE_BRIDGE_KILL_GROUP_READY", &ready)
+            .stdout(Stdio::from(child_log.try_clone().unwrap()))
+            .stderr(Stdio::from(child_log))
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while !ready.exists() && Instant::now() < deadline && child.try_wait().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let reached_boundary = ready.exists();
+        let _ = child.kill();
+        let status = child.wait().unwrap();
+        let runner = TypeDbMigrationRunner::new(
+            Arc::clone(&managed),
+            Arc::clone(&journal),
+            genesis,
+            context.clone(),
+            SchemaLoweringBinding::for_context(&context).unwrap(),
+            MigrationSafetyPolicy::default_policy(),
+        );
+        let resumed = runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &LeaseHolderId::new("resume-killed-schema").unwrap(),
+                &[],
+            )
+            .await;
+        let verified = runner.verify(directory.path(), None).await;
+        journal.delete_database().await.unwrap();
+        managed.delete_database().await.unwrap();
+        assert!(
+            reached_boundary,
+            "child did not reach {mode}: {}",
+            fs::read_to_string(directory.path().join("child.log")).unwrap()
+        );
+        assert_eq!(status.signal(), Some(9), "real SIGKILL");
+        assert!(
+            matches!(
+                resumed,
+                Ok(MigrationDirectoryApplyOutcome::Executed(
+                    MigrationExecutionOutcome::Applied { .. }
+                ))
+            ),
+            "{mode}/{count}: {resumed:?}"
+        );
+        assert!(verified.unwrap().is_clean(), "resumed history is coherent");
+    }
 }

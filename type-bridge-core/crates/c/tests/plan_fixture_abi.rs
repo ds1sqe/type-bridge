@@ -1,7 +1,7 @@
 //! Every contract `query-plan/v3` fixture decodes through the C ABI and
 //! reproduces its canonical bytes. The fixtures, their manifest and the
 //! declared schema are the contract tests' data files under
-//! `tests/contracts/plan_v3`, shared without Rust code.
+//! `tests/contracts/plan`, shared without Rust code.
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
@@ -20,7 +20,7 @@ mod temp;
 use temp::TempDirectory;
 
 unsafe extern "C" {
-    fn type_bridge_plan_v3_decode(
+    fn type_bridge_plan_decode(
         schema: *const u8,
         schema_len: usize,
         plan: *const u8,
@@ -28,7 +28,7 @@ unsafe extern "C" {
         out_plan: *mut *mut c_void,
         out_diagnostics: *mut *mut c_void,
     ) -> TypeBridgeStatus;
-    fn type_bridge_plan_v3_canonical_bytes(
+    fn type_bridge_plan_canonical_bytes(
         plan: *const c_void,
         buffer: *mut u8,
         capacity: usize,
@@ -39,9 +39,9 @@ unsafe extern "C" {
 
 fn fixture_directory() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../tests/contracts/plan_v3")
+        .join("../../../tests/contracts/plan")
         .canonicalize()
-        .expect("the contract plan-v3 fixtures exist")
+        .expect("the contract plan fixtures exist")
 }
 
 /// The fixtures the manifest lists (it maps each name to the plan's
@@ -70,7 +70,7 @@ fn every_contract_plan_fixture_round_trips_through_the_c_abi() {
         let mut diagnostics = ptr::null_mut();
         // SAFETY: both buffers and both output slots live for the call.
         let status = unsafe {
-            type_bridge_plan_v3_decode(
+            type_bridge_plan_decode(
                 schema.as_ptr(),
                 schema.len(),
                 bytes.as_ptr(),
@@ -85,7 +85,7 @@ fn every_contract_plan_fixture_round_trips_through_the_c_abi() {
         let mut length = 0;
         // SAFETY: a live plan and a buffer of `echo.len()` bytes.
         let status = unsafe {
-            type_bridge_plan_v3_canonical_bytes(plan, echo.as_mut_ptr(), echo.len(), &mut length)
+            type_bridge_plan_canonical_bytes(plan, echo.as_mut_ptr(), echo.len(), &mut length)
         };
         assert_eq!(status, TypeBridgeStatus::Ok, "{name} re-encodes");
         assert_eq!(length, bytes.len(), "{name} keeps its length");
@@ -138,14 +138,14 @@ int main(int argc, char **argv) {
     type_bridge_plan_t *plan = NULL;
     type_bridge_execution_diagnostics_t *diagnostics = NULL;
     if (bytes == NULL) return 3;
-    if (type_bridge_plan_v3_decode(schema, schema_length, bytes, length, &plan,
+    if (type_bridge_plan_decode(schema, schema_length, bytes, length, &plan,
                                    &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
       fprintf(stderr, "decode failed: %s\n", argv[index]);
       return 4;
     }
     echo = (uint8_t *)malloc(length);
     if (echo == NULL ||
-        type_bridge_plan_v3_canonical_bytes(plan, echo, length, &echoed) !=
+        type_bridge_plan_canonical_bytes(plan, echo, length, &echoed) !=
             TYPE_BRIDGE_STATUS_OK ||
         echoed != length || memcmp(echo, bytes, length) != 0) {
       fprintf(stderr, "bytes differ: %s\n", argv[index]);

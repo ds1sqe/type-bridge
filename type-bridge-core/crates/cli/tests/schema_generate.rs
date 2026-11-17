@@ -106,11 +106,11 @@ fn documented_examples_complete_the_unchanged_offline_journey() {
         }
     }
     assert!(
-        root.join("migrations/v2/0001_initial.tbmigration.json")
+        root.join("migrations/0001_initial.tbmigration.json")
             .is_file(),
         "migration make did not create the configured absent directory and manifest",
     );
-    assert!(root.join("migrations/v2/0001_initial.typeql").is_file());
+    assert!(root.join("migrations/0001_initial.typeql").is_file());
 }
 
 #[test]
@@ -612,4 +612,286 @@ fn schema_generate_rejects_hostile_c_target_before_publishing_any_new_output() {
         !root.join("generated/schema-authority.json").exists(),
         "schema authority was published despite an earlier batch rejection",
     );
+}
+
+#[test]
+fn structs_refuse_migration_authoring_and_migration_enabled_schema_check() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    fs::write(root.join("schema/model.yaml"), "format: typebridge.schema/v2\nstructs:\n  stats:\n    fields: [{name: wins, type: integer}]\n").unwrap();
+    let manifest = "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: struct-check\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: structs\nenvironments:\n  dev:\n    database: unused\n    uri: localhost:1730\n    migrate: 'false'\n    credential:\n      username: env:UNRESOLVED_USERNAME\n      password: env:UNRESOLVED_PASSWORD\n";
+    fs::write(root.join("typebridge.yaml"), manifest).unwrap();
+    assert_success(
+        &run_cli(root, &["schema", "check"]),
+        "struct-only schema remains valid",
+    );
+    let output = run_cli(root, &["migration", "make", "--name", "initial"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported_struct_migration"));
+    fs::write(
+        root.join("typebridge.yaml"),
+        manifest.replace("migrate: 'false'", "migrate: 'true'"),
+    )
+    .unwrap();
+    assert!(!run_cli(root, &["schema", "check"]).status.success());
+}
+
+#[test]
+fn abstract_attribute_ownership_refusal_is_scoped_to_configured_codegen() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("schema/model.yaml"),
+        include_str!("../../schema-codegen/tests/fixtures/abstract-owned-attribute.yaml"),
+    )
+    .unwrap();
+    let manifest = "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: abstract-check\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: abstractcheck\n";
+    fs::write(root.join("typebridge.yaml"), manifest).unwrap();
+    assert_success(
+        &run_cli(root, &["schema", "check"]),
+        "schema-only abstract ownership",
+    );
+    fs::write(
+        root.join("typebridge.yaml"),
+        format!("{manifest}bindings:\n  python:\n    output: generated/python\n"),
+    )
+    .unwrap();
+    let output = run_cli(root, &["schema", "check"]);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("projection_abstract_attribute_ownership"),
+        "{error}"
+    );
+    assert!(error.contains("model.yaml:10:"), "{error}");
+    assert!(error.contains("thing") && error.contains("tag"), "{error}");
+    assert!(!root.join("generated").exists());
+    assert_success(
+        &run_cli(root, &["migration", "make", "--name", "initial"]),
+        "valid abstract ownership remains migratable",
+    );
+    assert!(!run_cli(root, &["schema", "generate"]).status.success());
+    assert!(!root.join("generated").exists());
+}
+
+#[test]
+fn reserved_member_names_check_and_generate_for_all_configured_targets() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("schema/model.yaml"),
+        include_str!("../../schema-codegen/tests/fixtures/reserved-member-names.yaml"),
+    )
+    .unwrap();
+    fs::write(root.join("typebridge.yaml"), "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: reserved-check\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: reservedcheck\nbindings:\n  python: {output: generated/python}\n  typescript: {output: generated/typescript}\n  rust: {output: generated/rust}\n  c: {output: generated/c}\n").unwrap();
+    assert_success(
+        &run_cli(root, &["schema", "check"]),
+        "reserved names schema check",
+    );
+    assert!(!root.join("generated").exists());
+    assert_success(
+        &run_cli(root, &["schema", "generate"]),
+        "reserved names generation",
+    );
+    assert!(root.join("generated/python/_models.py").is_file());
+    assert!(root.join("generated/typescript/src/models.ts").is_file());
+    assert!(root.join("generated/rust/src/read.rs").is_file());
+    assert!(root.join("generated/c/src/models.c").is_file());
+}
+
+#[test]
+fn invalid_schema_diagnostics_keep_code_file_line_and_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("schema/model.yaml"),
+        "format: typebridge.schema/v2\nentities:\n  person:\n    owns: [missing-score]\n",
+    )
+    .unwrap();
+    fs::write(root.join("typebridge.yaml"), "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: diagnostics-check\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: diagnosticscheck\n").unwrap();
+    for args in [
+        vec!["schema", "check"],
+        vec!["schema", "generate"],
+        vec!["migration", "make", "--name", "initial"],
+    ] {
+        let output = run_cli(root, &args);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("model.yaml:4:"), "{error}");
+        assert!(error.contains("unknown_schema_fact_reference"), "{error}");
+        assert!(
+            error.contains("references a declaration that does not exist"),
+            "{error}"
+        );
+        assert!(
+            error.contains("["),
+            "stable diagnostic code missing: {error}"
+        );
+        assert!(
+            !error.contains("workspace schema source or semantics are invalid"),
+            "{error}"
+        );
+    }
+    assert!(!root.join("generated").exists());
+    assert!(!root.join("migrations").exists());
+}
+
+#[test]
+fn unexportable_regex_quote_refuses_before_generating_or_authoring() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("schema")).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("schema/model.yaml"),
+        r#"format: typebridge.schema/v2
+attributes:
+  code: {value: {type: string, regex: 'a\"b'}}
+"#,
+    )
+    .unwrap();
+    fs::write(root.join("typebridge.yaml"), "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: quote-check\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: quotecheck\n").unwrap();
+    for args in [
+        vec!["schema", "check"],
+        vec!["schema", "generate"],
+        vec!["migration", "make", "--name", "initial"],
+    ] {
+        let output = run_cli(root, &args);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("unsupported_regex_escaped_quote"), "{error}");
+        assert!(error.contains("model.yaml:3:"), "{error}");
+        assert!(error.contains("post-commit observation"), "{error}");
+        assert!(error.contains("redundant backslash"), "{error}");
+    }
+    assert!(!root.join("migrations").exists());
+    assert!(!root.join("generated").exists());
+}
+
+#[test]
+fn base_cli_workspace_previews_regenerate_without_manifest_or_plan_changes() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy-previews");
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    for (relative, bytes) in snapshot(&fixture) {
+        if relative == "README.md" {
+            continue;
+        }
+        let target = root.join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, bytes).unwrap();
+    }
+    let original = snapshot(root);
+    let plan = run_cli(root, &["migration", "plan"]);
+    assert!(!plan.status.success());
+    assert!(String::from_utf8_lossy(&plan.stderr).contains("migration regenerate-previews"));
+    let checked = run_cli(root, &["migration", "regenerate-previews", "--check"]);
+    assert!(!checked.status.success());
+    let differences = String::from_utf8_lossy(&checked.stdout);
+    assert!(differences.contains("0001_initial.typeql"), "{differences}");
+    assert!(
+        differences.contains("0002_copy-name.typeql"),
+        "{differences}"
+    );
+    assert_eq!(snapshot(root), original, "--check is read-only");
+    assert_success(
+        &run_cli(root, &["migration", "regenerate-previews"]),
+        "regenerate derived previews",
+    );
+    let regenerated = snapshot(root);
+    for (relative, bytes) in &original {
+        if !relative.ends_with(".typeql") {
+            assert_eq!(
+                regenerated.get(relative),
+                Some(bytes),
+                "canonical or source file changed: {relative}"
+            );
+        }
+    }
+    assert_success(
+        &run_cli(root, &["migration", "plan"]),
+        "plan regenerated base history",
+    );
+    assert_success(
+        &run_cli(root, &["migration", "regenerate-previews", "--check"]),
+        "idempotent preview check",
+    );
+    assert_eq!(snapshot(root), regenerated);
+    fs::write(
+        root.join("migrations/v2/0002_copy-name.tbmigration.json"),
+        b"{}",
+    )
+    .unwrap();
+    let invalid = snapshot(root);
+    for args in [
+        vec!["migration", "regenerate-previews"],
+        vec!["migration", "regenerate-previews", "--check"],
+    ] {
+        let output = run_cli(root, &args);
+        assert!(!output.status.success());
+        assert_eq!(
+            snapshot(root),
+            invalid,
+            "invalid manifests never derive previews"
+        );
+    }
+}
+
+#[test]
+fn names_that_collide_after_target_conversion_or_escaping_refuse_at_schema_check() {
+    for (target, left, right) in [
+        ("rust", "where", "where_"),
+        ("python", "value", "value_"),
+        ("rust", "self", "self_"),
+        ("python", "class", "class_"),
+        ("python", "my-name", "my_name"),
+        ("python", "Person", "person"),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("schema")).unwrap();
+        fs::write(
+            root.join("schema/schema.yaml"),
+            "format: typebridge.schema-set/v1\nsources: [model.yaml]\n",
+        )
+        .unwrap();
+        fs::write(root.join("schema/model.yaml"), format!("format: typebridge.schema/v2\nattributes:\n  {left}: {{value: string}}\n  {right}: {{value: string}}\nentities:\n  item: {{owns: [{left}, {right}]}}\n")).unwrap();
+        fs::write(root.join("typebridge.yaml"), format!("format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: collisions\ncompatibility:\n  semantic-profile: typedb-3.13.6/v1\nmigrations:\n  app-label: collisions\nbindings:\n  {target}: {{output: generated}}\n")).unwrap();
+        let output = run_cli(root, &["schema", "check"]);
+        assert!(!output.status.success(), "{target}: {left}/{right}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("projection_name_collision"),
+            "{left}/{right}: {error}"
+        );
+        assert!(!root.join("generated").exists());
+    }
 }

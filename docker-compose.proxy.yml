@@ -23,6 +23,8 @@ services:
       - "${PROXY_PORT:-0}:8080"
     environment:
       TYPEDB_ADDRESS: "typedb:1729"
+      TYPEDB_USERNAME: "${TYPEDB_USERNAME:?Set TYPEDB_USERNAME}"
+      TYPEDB_PASSWORD: "${TYPEDB_PASSWORD:?Set TYPEDB_PASSWORD}"
     healthcheck:
       test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/8080' || exit 1"]
       interval: 3s

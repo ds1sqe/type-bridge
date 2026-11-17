@@ -20,8 +20,8 @@ use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
-use type_bridge_contract::query_plan::v3::{
-    DeleteItem, InsertThing, Operation, Pattern, PlanSpec, QueryPlanV3, Set, Stage, WriteReturns,
+use type_bridge_contract::query_plan::{
+    DeleteItem, InsertThing, Operation, Pattern, PlanSpec, QueryPlan, Set, Stage, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
@@ -105,7 +105,7 @@ impl LeasePlans {
         &self,
         row: LeaseRow<'_>,
         given: bool,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    ) -> Result<QueryPlan, Diagnostic> {
         let mut plan = Builder::new(given, &["control"]);
         let mut fields = vec![
             (
@@ -146,7 +146,7 @@ impl LeasePlans {
         observed_fence: u64,
         observed_sequence: Option<u64>,
         given: bool,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    ) -> Result<QueryPlan, Diagnostic> {
         let mut names = vec!["control", "scope", "fence"];
         if self.sequenced {
             names.push("sequence");
@@ -177,11 +177,7 @@ impl LeasePlans {
 
     /// Release exactly this held lease: mark the row free and remove its
     /// holder. The fence (and journal sequence) stay as they are.
-    pub(crate) fn release(
-        &self,
-        row: LeaseRow<'_>,
-        given: bool,
-    ) -> Result<QueryPlanV3, Diagnostic> {
+    pub(crate) fn release(&self, row: LeaseRow<'_>, given: bool) -> Result<QueryPlan, Diagnostic> {
         let mut plan = Builder::new(given, &["control", "scope", "holder", "fence", "state"]);
         let mut patterns = vec![control()?];
         let scope = plan.text("expected_scope", row.scope.managed_scope_id().as_str())?;
@@ -289,9 +285,9 @@ impl Builder {
         Ok(QueryOperand::Input { column })
     }
 
-    fn build(self, plans: &LeasePlans) -> Result<QueryPlanV3, Diagnostic> {
+    fn build(self, plans: &LeasePlans) -> Result<QueryPlan, Diagnostic> {
         let given_rows = (!self.inputs.is_empty()).then(|| vec![InputRow::new(self.row)]);
-        QueryPlanV3::new(
+        QueryPlan::new(
             PlanSpec {
                 bindings: self.bindings,
                 inputs: self.inputs,
@@ -302,7 +298,6 @@ impl Builder {
                 pipeline: self.stages,
                 output: QueryOutput::Rows { columns: vec![] },
                 managed_semantics: plans.semantics.clone(),
-                compatibility: None,
                 functions: vec![],
             },
             &plans.schema,

@@ -205,22 +205,6 @@ impl SchemaLoweringBinding {
         )
     }
 
-    /// Bind capabilities to the TypeDB 3.12.1 lowering profile, the only
-    /// profile 2.2 compiled.
-    #[deprecated(
-        since = "2.3.0",
-        note = "binds the 3.12.1 profile only; use for_semantic_profile or for_context; removed in 3.0"
-    )]
-    pub fn current(
-        available_capabilities: CapabilitySet,
-    ) -> Result<Self, SchemaLoweringDiagnostic> {
-        Self::new(
-            crate::profile::typedb_3_12_1_profile().id.clone(),
-            crate::profile::profile_fingerprint(),
-            available_capabilities,
-        )
-    }
-
     /// Bind a delta context's capabilities to its semantic profile's registry.
     pub fn for_context(context: &ManagedDeltaContext) -> Result<Self, SchemaLoweringDiagnostic> {
         Self::for_semantic_profile(
@@ -486,10 +470,16 @@ fn lower_operation(
     verifier_resolved: bool,
     destructive_approved: bool,
 ) -> Result<StatementUnit, SchemaLoweringDiagnostic> {
-    let classification = classify_operation_transition(operation).map_err(|error| {
+    let mut classification = classify_operation_transition(operation).map_err(|error| {
         SchemaLoweringDiagnostic::new(CODE_INVALID_TRANSITION, error.message())
             .at_operation(operation_index)
     })?;
+    if let Some(SchemaFact::Annotation(annotation)) = operation.undefined_fact()
+        && matches!(annotation.id().subject(), AnnotationSubjectId::Function(id)
+            if target_facts.get(&SchemaFactId::Function(id.clone())).is_none())
+    {
+        classification.safety = SafetyClass::SchemaMetadata;
+    }
     let missing = classification
         .required_capabilities
         .iter()
@@ -605,6 +595,13 @@ fn render_operation_inner(
     source_facts: &SchemaFactCatalog,
     target_facts: &SchemaFactCatalog,
 ) -> Result<Vec<TypeQlStatement>, RenderFailure> {
+    if let Some(SchemaFact::Annotation(annotation)) = operation.undefined_fact()
+        && matches!(annotation.id().subject(), AnnotationSubjectId::Function(id)
+            if target_facts.get(&SchemaFactId::Function(id.clone())).is_none())
+    {
+        // Undefining the function removes its stored metadata as well.
+        return Ok(vec![]);
+    }
     match operation.kind() {
         SchemaOperationKind::Define => {
             let facts = operation.defined_facts().expect("define exposes facts");
@@ -1038,17 +1035,6 @@ mod tests {
     };
     use type_bridge_contract::value::{CanonicalString, Cardinality, ValueTypeTag};
 
-    #[test]
-    #[allow(deprecated)]
-    fn deprecated_current_binds_the_3_12_1_registry() {
-        let capabilities = CapabilitySet::default();
-        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
-        assert_eq!(
-            SchemaLoweringBinding::current(capabilities.clone()).unwrap(),
-            SchemaLoweringBinding::for_semantic_profile(&profile, capabilities).unwrap()
-        );
-    }
-
     fn type_id(kind: TypeKind, label: &str) -> TypeId {
         TypeId::new(kind, label).unwrap()
     }
@@ -1125,6 +1111,36 @@ mod tests {
             }
             output.push_str(statement.query());
             output.push('\n');
+        }
+    }
+
+    #[test]
+    fn regex_lowering_preserves_regex_escapes() {
+        for pattern in [
+            r"^[A-Z]{2}\d+$",
+            r"^\w+\.\s*$",
+            r#"^a"b$"#,
+            r"^\u0024",
+            r"^\u{0024}",
+            r"^\x24",
+            r"^a\\b$",
+            "^a\nb$",
+        ] {
+            let fact = annotation(
+                AnnotationSubjectId::Value(ValueFactId::new(attribute_id("code"))),
+                AnnotationKindId::Regex,
+                SchemaAnnotationValue::Regex(RegexPattern::new(pattern).unwrap()),
+            );
+            let catalog =
+                SchemaFactCatalog::new([value_fact("code", ValueTypeTag::String)]).unwrap();
+            let rendered = render_operation_inner(
+                &SchemaOperation::define(vec![fact]).unwrap(),
+                &catalog,
+                &catalog,
+            )
+            .unwrap_or_else(|error| panic!("{pattern:?}: {error:?}"));
+            let expected = format!("@regex(\"{}\")", pattern.replace('"', "\\\""));
+            assert!(rendered[0].query().contains(&expected), "{rendered:?}");
         }
     }
 

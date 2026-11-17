@@ -633,19 +633,18 @@ printf '%s\\n' "$1" >> "$INVOCATION_LOG"
     )
 
     assert result.returncode == 0, result.stderr
+    # Frozen 2.0.1 recovery graph used by the legacy recovery workflow.
     assert invocation_log.read_text(encoding="utf-8").splitlines() == [
         "type-bridge-contract",
         "type-bridge-core-lib",
         "type-bridge-schema",
         "type-bridge-query",
         "type-bridge-schema-migration",
-        "type-bridge-toml-transpiler",
         "type-bridge-schema-compat",
         "type-bridge-schema-codegen",
         "type-bridge-orm-derive",
         "type-bridge-typedb-runtime",
         "type-bridge-orm",
-        "type-bridge-migration",
         "type-bridge-schema-migration-typedb",
         "type-bridge-server",
         "type-bridge-workspace",

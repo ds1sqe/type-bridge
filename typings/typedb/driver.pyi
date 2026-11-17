@@ -1,5 +1,6 @@
 # ruff: noqa: F403
-from typing import Any
+from types import TracebackType
+from typing import Any, Self
 
 from typedb.api.answer.concept_document_iterator import *
 from typedb.api.answer.concept_row import *
@@ -24,6 +25,7 @@ from typedb.api.connection.driver_options import *
 from typedb.api.connection.query_options import *
 from typedb.api.connection.transaction import *
 from typedb.api.connection.transaction_options import *
+from typedb.api.connection.transaction_options import TransactionOptions as TransactionOptions
 from typedb.api.user.user import *
 from typedb.common.datetime import *
 from typedb.common.duration import *
@@ -33,17 +35,44 @@ from typedb.common.exception import *
 class Credentials:
     def __init__(self, username: str, password: str) -> None: ...
 
+class DriverTlsConfig:
+    def __init__(self, native_object: Any) -> None: ...
+    @staticmethod
+    def disabled() -> DriverTlsConfig: ...
+    @staticmethod
+    def enabled_with_native_root_ca() -> DriverTlsConfig: ...
+    @staticmethod
+    def enabled_with_root_ca(tls_root_ca_path: str) -> DriverTlsConfig: ...
+    @property
+    def is_enabled(self) -> bool: ...
+    @property
+    def root_ca_path(self) -> str | None: ...
+
 class DriverOptions:
+    tls_config: DriverTlsConfig
+    request_timeout_millis: int
+    primary_failover_retries: int
     def __init__(
         self,
-        is_tls_enabled: bool = False,
-        tls_root_ca_path: str | None = ...,
+        tls_config: DriverTlsConfig,
+        *,
+        primary_failover_retries: int | None = ...,
+        request_timeout_millis: int | None = ...,
     ) -> None: ...
 
 class Driver:
     databases: Any
-    def transaction(self, database: str, tx_type: TransactionType) -> Transaction: ...
+    def transaction(
+        self, database: str, tx_type: TransactionType, options: TransactionOptions | None = ...
+    ) -> Transaction: ...
     def close(self) -> None: ...
+    def __enter__(self) -> Self: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None: ...
 
 class TransactionType:
     READ: TransactionType
@@ -56,6 +85,13 @@ class Transaction:
     def rollback(self) -> None: ...
     def is_open(self) -> bool: ...
     def close(self) -> None: ...
+    def __enter__(self) -> Self: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None: ...
 
 class TypeDB:
     DEFAULT_ADDRESS: str

@@ -9,6 +9,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::fingerprint::Fingerprint as GenericFingerprint;
 use crate::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use crate::id::{AttributeId, TypeId, TypeKind};
+use crate::query_plan::TypeMatchMode;
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 
 /// Capability required to execute the first closed copy-attribute backfill.
@@ -94,6 +95,8 @@ pub struct AttributeBackfillPlan {
     format: FormatVersion,
     managed_semantics: ManagedSemanticSchemaFingerprint,
     owner: TypeId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<TypeMatchMode>,
     partition: BackfillPartition,
     postcondition: BackfillPostcondition,
     required_capabilities: CapabilitySet,
@@ -109,6 +112,7 @@ impl AttributeBackfillPlan {
         owner: TypeId,
         source: AttributeId,
         destination: AttributeId,
+        mode: TypeMatchMode,
         partition: BackfillPartition,
         managed_semantics: ManagedSemanticSchemaFingerprint,
         reverse: Option<BackfillReverseProgram>,
@@ -135,7 +139,8 @@ impl AttributeBackfillPlan {
         Ok(Self {
             conflict: BackfillConflictPolicy::SkipEqualRejectDifferent,
             destination,
-            format: FormatVersion::V1,
+            format: FormatVersion::from_raw(2),
+            mode: Some(mode),
             managed_semantics,
             owner,
             partition,
@@ -145,6 +150,31 @@ impl AttributeBackfillPlan {
             source,
             transform: BackfillValueTransform::Identity,
         })
+    }
+
+    /// The persisted backfill format. Format 1 is historical only.
+    pub const fn format(&self) -> FormatVersion {
+        self.format
+    }
+
+    /// The explicit format-2 choice, or the recorded format-1 `has` semantics.
+    pub const fn mode(&self) -> TypeMatchMode {
+        match self.mode {
+            Some(mode) => mode,
+            None => TypeMatchMode::Isa,
+        }
+    }
+
+    /// Refuse historical records at new-authoring boundaries.
+    pub fn require_new_authoring(&self) -> Result<(), Diagnostic> {
+        if self.format.get() == 1 {
+            return Err(backfill_failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_backfill_historical_authoring",
+                "format 1 is historical only; regenerate with explicit isa or isa! mode (format 2)",
+            ));
+        }
+        Ok(())
     }
 
     /// Return the historical owner type selected by this plan.
@@ -220,7 +250,7 @@ impl AttributeBackfillPlan {
 pub fn decode_attribute_backfill_plan(bytes: &[u8]) -> Result<AttributeBackfillPlan, Diagnostic> {
     let candidate = from_canonical_json::<AttributeBackfillCandidate>(bytes)?;
     let format = match candidate.format {
-        1 => FormatVersion::V1,
+        1 | 2 => FormatVersion::from_raw(candidate.format as u16),
         _ => {
             return Err(backfill_failure(
                 DiagnosticCategory::InvalidContract,
@@ -229,7 +259,17 @@ pub fn decode_attribute_backfill_plan(bytes: &[u8]) -> Result<AttributeBackfillP
             ));
         }
     };
-    let _ = format;
+    let mode = match (format.get(), candidate.mode.as_deref()) {
+        (1, None) => TypeMatchMode::Isa,
+        (2, Some(value)) => TypeMatchMode::from_typeql(value)?,
+        _ => {
+            return Err(backfill_failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_backfill_type_match_mode",
+                "format 2 requires explicit mode isa or isa!; historical format 1 has no mode field",
+            ));
+        }
+    };
     let semantics =
         ManagedSemanticSchemaFingerprint::from_wire(from_canonical_json::<GenericFingerprint>(
             &to_canonical_json(&candidate.managed_semantics)?,
@@ -247,10 +287,11 @@ pub fn decode_attribute_backfill_plan(bytes: &[u8]) -> Result<AttributeBackfillP
             ));
         }
     };
-    let plan = AttributeBackfillPlan::new(
+    let mut plan = AttributeBackfillPlan::new(
         candidate.owner,
         candidate.source,
         candidate.destination,
+        mode,
         BackfillPartition::new(
             candidate.partition.batch_rows,
             candidate.partition.stable_attribute,
@@ -258,6 +299,10 @@ pub fn decode_attribute_backfill_plan(bytes: &[u8]) -> Result<AttributeBackfillP
         semantics,
         reverse,
     )?;
+    if format.get() == 1 {
+        plan.format = format;
+        plan.mode = None;
+    }
     if plan.canonical_bytes()? != bytes {
         return Err(backfill_failure(
             DiagnosticCategory::Integrity,
@@ -271,6 +316,7 @@ pub fn decode_attribute_backfill_plan(bytes: &[u8]) -> Result<AttributeBackfillP
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct AttributeBackfillCandidate {
+    mode: Option<String>,
     conflict: String,
     destination: AttributeId,
     format: u32,

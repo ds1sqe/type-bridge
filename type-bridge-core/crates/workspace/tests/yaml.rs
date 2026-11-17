@@ -7,7 +7,7 @@ use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::projection::BindingTarget;
 use type_bridge_workspace::{
-    ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationV2Directory,
+    ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MigrationDirectory,
     OutputDirectory, SchemaAuthorityOutputPath, SchemaSetPath, SecretReference,
     SecretReferenceService, SecretSlot, TypeBridgeConfig, TypeBridgeConfigServices,
     TypeBridgeConfigSpec, WorkspaceConfigErrorCode, WorkspaceRoot, WorkspaceServiceError,
@@ -111,7 +111,7 @@ fn programmatic(
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
         .require_capabilities(CapabilitySet::from_iter([
             CapabilityId::new("schema.doc-meta").unwrap(),
             CapabilityId::new("schema.annotations").unwrap(),
@@ -248,7 +248,7 @@ fn manifest_relative_paths_are_normalized_but_cannot_escape_workspace_root() {
         Some("schema/schema.yaml")
     );
     assert_eq!(
-        config.migration_v2_directory().as_path().to_str(),
+        config.migration_directory().as_path().to_str(),
         Some("migrations/v2")
     );
     assert_eq!(
@@ -594,4 +594,20 @@ fn binding_type_names_preserve_canonical_identity_and_validate_names() {
     );
     let unknown_kind = yaml.replace("      attribute:", "      unknown:");
     assert!(TypeBridgeConfigSpec::parse_yaml(unknown_kind, origin()).is_err());
+}
+
+#[test]
+fn omitted_migration_directory_defaults_relative_to_its_manifest() {
+    let source = CanonicalSource(Cell::new(0));
+    let secrets = AcceptSecrets(Cell::new(0));
+    let extensions = AcceptExtensions(Cell::new(0));
+    let yaml = WORKSPACE_YAML.replace("  directory: ../migrations/v2\n", "");
+    let config = TypeBridgeConfigSpec::parse_yaml(yaml, origin())
+        .unwrap()
+        .resolve(&services(&source, &secrets, &extensions))
+        .unwrap();
+    assert_eq!(
+        config.migration_directory().as_path(),
+        Path::new("config/migrations")
+    );
 }

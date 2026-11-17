@@ -1,7 +1,6 @@
 //! Instruction counts for `schema.rs`; see `validation_iai.rs` for the
 //! conventions.
 
-#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 mod common;
 
 use std::hint::black_box;
@@ -10,7 +9,7 @@ use gungraun::{library_benchmark, library_benchmark_group};
 use type_bridge_core_lib::_schema::TypeSchema;
 
 fn medium_schema() -> TypeSchema {
-    TypeSchema::from_typeql(common::MEDIUM_SCHEMA).unwrap()
+    type_bridge_core_lib::__internal::parse_schema(common::MEDIUM_SCHEMA).unwrap()
 }
 
 #[library_benchmark]
@@ -19,7 +18,7 @@ fn medium_schema() -> TypeSchema {
 #[bench::parse_large_120types(common::large_schema())]
 #[bench::resolve_inheritance_depth10(common::inheritance_schema())]
 fn parse(tql: String) -> (String, TypeSchema) {
-    let schema = TypeSchema::from_typeql(black_box(&tql)).unwrap();
+    let schema = type_bridge_core_lib::__internal::parse_schema(black_box(&tql)).unwrap();
     (tql, schema)
 }
 

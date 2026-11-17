@@ -1,5 +1,8 @@
 # Upgrading to 2.3
 
+This page describes the historical 2.3 upgrade. For the current development
+release, see [Upgrading to 3.0](upgrade-3.0.md).
+
 TypeBridge 2.3 runs every query, direct or through a TypeBridge server, on
 one Rust pipeline, and adds staged transactions over typed `query-plan/v3`
 programs in Python, TypeScript/Node, Rust and C. Most 2.2 application code
@@ -196,7 +199,7 @@ with db.staged_transaction() as tx:
 ```
 
 Not deprecated in 2.3: `Database.transaction()`, TypeScript
-`RustDatabase.transaction()`, Rust `ReadTransaction` and `WriteTransaction`,
+`Database.transaction()`, Rust `ReadTransaction` and `WriteTransaction`,
 the generated managers, and the C ABI 1.6 functions. The staged transaction
 does not carry managers or typed queries yet, so these remain the way to use
 them.
@@ -248,11 +251,11 @@ them.
 ## New in 2.3
 
 - Staged transactions: `Database.staged_transaction()` (Python),
-  `RustDatabase.stagedTransaction()` (TypeScript), `Database::transaction`
+  `Database.stagedTransaction()` (TypeScript), `Database::transaction`
   (Rust) and `type_bridge_database_transaction` (C ABI 1.7). Nothing reaches
   TypeDB before `commit`, and each staged answer resolves after it.
 - A plan builder in all four languages that gives the same canonical bytes
-  in each; see the [Query-plan V3 reference](../reference/query-plan-v3.md).
+  in each; see the [Query-plan V3 reference](../reference/query-plan.md).
 - Staged transactions over a TypeBridge server (`POST /v3/staged`), one
   signed request per commit.
 - C ABI 1.7. Existing 1.6 consumers keep working against the 1.7 runtime;

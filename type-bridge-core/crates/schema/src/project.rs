@@ -4,16 +4,19 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    BindingTarget, CNamingPolicy, CodeResourceDigest, CompleteReadProjection,
-    CreateFieldProjection, CreateProjection, CreateRoleProjection, DeclarationProjection,
-    DeclaredRoleProjection, DirectSubProjection, EmissionPlan, FieldTokenProjection,
-    FunctionParameterProjection, FunctionProjection, FunctionReturnElementProjection,
-    FunctionReturnProjection, ModelProjection, PlayingProjection, ProjectedAnnotation,
-    ProjectedModelForm, ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef,
-    ProjectionConfig, ProjectionHandler, QueryTokenProjection, ReadFieldProjection,
-    ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection, RuntimeProjection,
-    RustCreatePolicy, StructFieldProjection, StructProjection, TYPESCRIPT_MODEL_RESERVED_NAMES,
-    TargetIdentifier,
+    BindingTarget, C_MODEL_MEMBER_RESERVED_NAMES, CNamingPolicy, CodeResourceDigest,
+    CompleteReadProjection, CreateFieldProjection, CreateProjection, CreateRoleProjection,
+    DeclarationProjection, DeclaredRoleProjection, DirectSubProjection, EmissionPlan,
+    FieldTokenProjection, FunctionParameterProjection, FunctionProjection,
+    FunctionReturnElementProjection, FunctionReturnProjection, ModelProjection,
+    PYTHON_MODEL_RESERVED_NAMES, PYTHON_PUBLIC_QUERY_NAMES, PYTHON_PUBLIC_RUNTIME_NAMES,
+    PYTHON_PUBLIC_SCHEMA_NAMES, PlayingProjection, ProjectedAnnotation, ProjectedModelForm,
+    ProjectedModelUse, ProjectedMultiplicity, ProjectedTypeRef, ProjectionConfig,
+    ProjectionHandler, QueryTokenProjection, RUST_MODEL_RESERVED_NAMES, RUST_TYPE_RESERVED_NAMES,
+    ReadFieldProjection, ReadRoleProjection, ReferenceReadProjection, RoleTokenProjection,
+    RuntimeProjection, RustCreatePolicy, StructFieldProjection, StructProjection,
+    TYPESCRIPT_MODEL_RESERVED_NAMES, TYPESCRIPT_ORDERED_PUBLIC_RUNTIME_NAMES,
+    TYPESCRIPT_PUBLIC_RUNTIME_NAMES, TYPESCRIPT_PUBLIC_SCHEMA_NAMES, TargetIdentifier,
 };
 use type_bridge_contract::schema::{
     AnnotationFactId, AnnotationKindId, AnnotationSubjectId, FunctionReturnMode, OwnsFactId,
@@ -113,7 +116,10 @@ fn c_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
     TargetIdentifier::c(bounded).map_err(no_source)
 }
 
-fn python_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+fn python_identifier(mut value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+    if !value.is_empty() && TargetIdentifier::python(&value).is_err() {
+        value.push('_');
+    }
     if matches!(value.as_str(), "iid" | "model_config" | "model_fields")
         || value.starts_with("__") && value.ends_with("__")
     {
@@ -125,7 +131,10 @@ fn python_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostic
     TargetIdentifier::python(value).map_err(no_source)
 }
 
-fn typescript_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+fn typescript_identifier(mut value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+    if !value.is_empty() && TargetIdentifier::typescript(&value).is_err() {
+        value.push('_');
+    }
     if matches!(
         value.as_str(),
         "iid"
@@ -146,7 +155,10 @@ fn typescript_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagno
     TargetIdentifier::typescript(value).map_err(no_source)
 }
 
-fn rust_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+fn rust_identifier(mut value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+    if !value.is_empty() && TargetIdentifier::rust(&value).is_err() {
+        value.push('_');
+    }
     TargetIdentifier::rust(value).map_err(no_source)
 }
 
@@ -190,16 +202,47 @@ impl<'a> ProjectionNamer<'a> {
     }
 
     fn c_label_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
-        c_identifier(format!("{}_{}", self.c_symbol_prefix(), c_v1_escape(label)))
+        let mut name = c_v1_escape(label);
+        if type_bridge_contract::projection::C_PUBLIC_QUERY_TYPE_SUFFIXES.contains(&name.as_str()) {
+            name.push_str("zk");
+        }
+        c_identifier(format!("{}_{}", self.c_symbol_prefix(), name))
+    }
+
+    fn c_member_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
+        let mut name = c_v1_escape(label);
+        if C_MODEL_MEMBER_RESERVED_NAMES.contains(&name.as_str()) {
+            name.push_str("zk");
+        }
+        c_identifier(format!("{}_{}", self.c_symbol_prefix(), name))
     }
 
     fn class_identifier(&self, label: &str) -> Result<TargetIdentifier, SchemaDiagnostics> {
-        let value = python_class_name(label);
+        let mut value = python_class_name(label);
         if self.target == BindingTarget::Python {
+            if PYTHON_PUBLIC_RUNTIME_NAMES
+                .iter()
+                .chain(PYTHON_PUBLIC_QUERY_NAMES)
+                .chain(PYTHON_PUBLIC_SCHEMA_NAMES)
+                .any(|name| *name == value)
+            {
+                value.push('_');
+            }
             python_identifier(value)
         } else if self.target == BindingTarget::TypeScript {
+            if TYPESCRIPT_PUBLIC_RUNTIME_NAMES
+                .iter()
+                .chain(TYPESCRIPT_ORDERED_PUBLIC_RUNTIME_NAMES)
+                .chain(TYPESCRIPT_PUBLIC_SCHEMA_NAMES)
+                .any(|name| *name == value)
+            {
+                value.push('_');
+            }
             typescript_identifier(value)
         } else if self.target == BindingTarget::Rust {
+            if RUST_TYPE_RESERVED_NAMES.contains(&value.as_str()) {
+                value.push('_');
+            }
             rust_identifier(value)
         } else if self.target == BindingTarget::C {
             self.c_label_identifier(label)
@@ -219,7 +262,7 @@ impl<'a> ProjectionNamer<'a> {
         } else if self.target == BindingTarget::Rust {
             rust_identifier(rust_member_name(label))
         } else if self.target == BindingTarget::C {
-            self.c_label_identifier(label)
+            self.c_member_identifier(label)
         } else {
             Err(projection_error(
                 "unsupported_binding_projection_target",
@@ -232,11 +275,21 @@ impl<'a> ProjectionNamer<'a> {
         if self.target == BindingTarget::TypeScript {
             let mut name = typescript_member_name(label);
             if TYPESCRIPT_MODEL_RESERVED_NAMES.contains(&name.as_str()) {
-                // Camel-case projection removes underscores, so this suffix cannot
-                // collide with an otherwise valid, unchanged projected member.
                 name.push('_');
             }
-            TargetIdentifier::typescript(name).map_err(no_source)
+            typescript_identifier(name)
+        } else if self.target == BindingTarget::Python {
+            let mut name = python_member_name(label);
+            if PYTHON_MODEL_RESERVED_NAMES.contains(&name.as_str()) {
+                name.push('_');
+            }
+            python_identifier(name)
+        } else if self.target == BindingTarget::Rust {
+            let mut name = self.member_identifier(label)?.as_str().to_owned();
+            while RUST_MODEL_RESERVED_NAMES.contains(&name.as_str()) {
+                name.push('_');
+            }
+            rust_identifier(name)
         } else {
             self.member_identifier(label)
         }
@@ -637,6 +690,29 @@ pub fn project(
             "projection_config_target_mismatch",
             "projection configuration belongs to a different target",
         ));
+    }
+    for (owner, model) in resolved.types() {
+        for (attribute, owns) in model.owns() {
+            let attribute_type =
+                TypeId::new(TypeKind::Attribute, attribute.label().as_str()).map_err(no_source)?;
+            if owns.origin().is_direct()
+                && resolved
+                    .types()
+                    .get(&attribute_type)
+                    .is_some_and(ResolvedType::is_abstract)
+            {
+                return Err(crate::diagnostic::diagnostic(
+                    DiagnosticCategory::UnsupportedCapability,
+                    "projection_abstract_attribute_ownership",
+                    format!(
+                        "{} owns abstract attribute {}; generated models must own its concrete subtypes instead",
+                        owner.label().as_str(),
+                        attribute.label().as_str()
+                    ),
+                    resolved.ownership_source(owns.id()).cloned(),
+                ));
+            }
+        }
     }
     config.validate_type_name_overrides().map_err(no_source)?;
     for item in config.type_name_overrides() {

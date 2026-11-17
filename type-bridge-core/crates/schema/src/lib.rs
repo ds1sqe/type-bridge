@@ -84,8 +84,16 @@ pub use semantic::{
     semantic_schema_fingerprint,
 };
 pub use timezone::{
-    TYPEDB_3_12_1_TEMPORAL_POLICY_ID, TYPEDB_3_12_1_TIMEZONE_POLICY_ID, parse_provider_datetime_tz,
-    parse_provider_datetime_tz_evidence, resolve_provider_datetime_tz,
+    TYPEDB_3_12_1_TEMPORAL_POLICY_ID, TYPEDB_3_12_1_TIMEZONE_POLICY_ID, parse_provider_datetime,
+    parse_provider_datetime_tz, parse_provider_datetime_tz_evidence, resolve_provider_datetime_tz,
     validate_provider_datetime_tz, validate_provider_duration, validate_provider_temporal_literal,
     validate_provider_temporal_value,
 };
+
+/// Internal migration integration; not part of the public SDK surface.
+#[doc(hidden)]
+pub mod __internal {
+    pub use crate::delta::{
+        apply_delta_with_function_dependencies, diff_managed_with_function_dependencies,
+    };
+}

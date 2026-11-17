@@ -1,6 +1,4 @@
 //! Closed generated-descriptor compatibility input for direct schema facts.
-
-#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -15,7 +13,6 @@ use type_bridge_contract::schema::{
     ValueFactId,
 };
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, Cardinality, ValueTypeTag};
-use type_bridge_core_lib::_schema::TypeSchema;
 use type_bridge_schema::FactAssembler;
 
 use crate::released_syntax::ReleasedSyntax;
@@ -363,7 +360,7 @@ pub fn typeql_to_generated_descriptors(
     document: DocumentId,
     source: &str,
 ) -> Result<String, SchemaDiagnostics> {
-    if type_bridge_core_lib::_parser::parse_typeql(source).is_ok_and(|schema| {
+    if type_bridge_core_lib::__internal::archive::parse_unresolved(source).is_ok_and(|schema| {
         schema.attributes.is_empty()
             && schema.entities.is_empty()
             && schema.relations.is_empty()
@@ -1077,180 +1074,6 @@ pub fn generated_declared_descriptors_json(source: &str) -> Result<String, Strin
     typeql_to_generated_descriptors(document, source).map_err(|diagnostics| diagnostics.to_string())
 }
 
-/// Render models and attach the direct declaration snapshot from the same input.
-pub fn generate_package_with_declared_descriptors(
-    input: &str,
-    target: type_bridge_core_lib::_bindgen::TargetLanguage,
-    options: &type_bridge_core_lib::_bindgen::BindgenOptions,
-) -> Result<type_bridge_core_lib::_bindgen::GeneratedPackage, String> {
-    let descriptors = generated_declared_descriptors_json(input)
-        .map_err(|error| format!("Failed to render declared descriptor snapshot: {error}"))?;
-    let document = DocumentId::new("generated/schema.tql")
-        .expect("static generated schema document ID is valid");
-    let reference_projection = released_unresolved_ranges(&document, input)
-        .map_err(|error| format!("Failed to index released schema references: {error}"))?;
-    let ranges = reference_projection
-        .omitted_from_render
-        .into_iter()
-        .filter_map(|(start, end)| {
-            input.get(start..end).and_then(|spelling| {
-                let spelling = spelling.trim_start();
-                let rest = spelling.strip_prefix("relates")?;
-                rest.as_bytes()
-                    .first()
-                    .is_some_and(|byte| {
-                        !byte.is_ascii_alphanumeric() && !matches!(*byte, b'_' | b'-')
-                    })
-                    .then(|| released_render_capability_range(input, start, end))
-            })
-        })
-        .collect::<Vec<_>>();
-    let render_source = type_bridge_core_lib::_parser::blank_source_extents(input, &ranges);
-    let mut render_schema = TypeSchema::from_typeql(&render_source).map_err(|error| {
-        format!("Failed to parse released schema for model generation: {error}")
-    })?;
-    sanitize_released_render_schema(&mut render_schema);
-    let mut package = type_bridge_core_lib::_bindgen::BindgenPlan::from_schema(&render_schema)
-        .render(target, options);
-    attach_declared_descriptors(&mut package, descriptors, target)?;
-    Ok(package)
-}
-
-/// Extend a capability span left through its separator for a syntactically
-/// valid byte-preserving render projection. Comments between the comma and
-/// capability are part of the blanked render-only range; descriptor evidence
-/// continues to use the exact capability span.
-fn released_render_capability_range(
-    source: &str,
-    capability_start: usize,
-    capability_end: usize,
-) -> core::ops::Range<usize> {
-    use type_bridge_core_lib::_parser::{SourceRegionKind, scan_source_regions};
-
-    let separator = scan_source_regions(&source[..capability_start])
-        .into_iter()
-        .rev()
-        .filter(|(_, kind)| *kind == SourceRegionKind::Code)
-        .find_map(|(range, _)| {
-            source[range.clone()]
-                .char_indices()
-                .rev()
-                .find_map(|(offset, character)| {
-                    (!character.is_whitespace()).then_some((range.start + offset, character))
-                })
-        })
-        .and_then(|(offset, character)| (character == ',').then_some(offset));
-    separator.unwrap_or(capability_start)..capability_end
-}
-
-/// Remove open-world references that cannot be represented by a standalone
-/// generated package.
-///
-/// Released generation accepts partial schema exports. Their raw parsed form
-/// can therefore name a parent, owned attribute, relation role, or role
-/// specialization that is absent from this input. The canonical descriptor
-/// records those exact omissions; the binding projection must make the same
-/// conservative choice instead of emitting missing imports, phantom `plays`
-/// strings, undefined Rust fields, or `player_type = "unknown"` metadata.
-/// This adapter is intentionally private to the released generator lane.
-fn sanitize_released_render_schema(schema: &mut TypeSchema) {
-    let attribute_names = schema.attributes.keys().cloned().collect::<BTreeSet<_>>();
-    for attribute in schema.attributes.values_mut() {
-        if attribute
-            .parent
-            .as_ref()
-            .is_some_and(|parent| !attribute_names.contains(parent))
-        {
-            attribute.parent = None;
-        }
-    }
-
-    let entity_names = schema.entities.keys().cloned().collect::<BTreeSet<_>>();
-    for entity in schema.entities.values_mut() {
-        if entity
-            .parent
-            .as_ref()
-            .is_some_and(|parent| !entity_names.contains(parent))
-        {
-            entity.parent = None;
-        }
-        retain_known_ownerships(&attribute_names, &mut entity.owns, &mut entity.owns_order);
-    }
-
-    let relation_names = schema.relations.keys().cloned().collect::<BTreeSet<_>>();
-    for relation in schema.relations.values_mut() {
-        if relation
-            .parent
-            .as_ref()
-            .is_some_and(|parent| !relation_names.contains(parent))
-        {
-            relation.parent = None;
-        }
-        retain_known_ownerships(
-            &attribute_names,
-            &mut relation.owns,
-            &mut relation.owns_order,
-        );
-    }
-
-    // The byte-aligned source projection removed every invalid direct
-    // specialization before inheritance was resolved. Do not infer direct
-    // provenance from this resolved role vector: inherited specialized roles
-    // carry the same `overrides` field, and coincident local/parent names make
-    // such inference ambiguous. At this point the resolved relation role sets
-    // are authoritative for retaining plays edges.
-    let roles_by_relation = released_roles_by_relation(schema);
-    for entity in schema.entities.values_mut() {
-        entity
-            .plays
-            .retain(|played| released_role_exists(&roles_by_relation, &played.role_ref));
-    }
-    for relation in schema.relations.values_mut() {
-        relation
-            .plays
-            .retain(|played| released_role_exists(&roles_by_relation, &played.role_ref));
-    }
-}
-
-fn retain_known_ownerships(
-    attribute_names: &BTreeSet<String>,
-    owns: &mut Vec<type_bridge_core_lib::_schema::OwnedAttribute>,
-    owns_order: &mut Vec<String>,
-) {
-    owns.retain(|owned| attribute_names.contains(&owned.name));
-    owns_order.retain(|name| attribute_names.contains(name));
-}
-
-fn released_role_exists(
-    roles_by_relation: &BTreeMap<String, BTreeSet<String>>,
-    role_ref: &str,
-) -> bool {
-    let Some((relation, role)) = role_ref.split_once(':') else {
-        return false;
-    };
-    !role.contains(':')
-        && roles_by_relation
-            .get(relation)
-            .is_some_and(|roles| roles.contains(role))
-}
-
-fn released_roles_by_relation(schema: &TypeSchema) -> BTreeMap<String, BTreeSet<String>> {
-    schema
-        .relations
-        .iter()
-        .map(|(name, relation)| {
-            (
-                name.clone(),
-                relation
-                    .roles
-                    .iter()
-                    .map(|role| role.name.clone())
-                    .collect(),
-            )
-        })
-        .collect()
-}
-
 /// Render the canonical empty declared-descriptor snapshot: a closed
 /// world with zero declarations, as produced by a complete teardown.
 pub fn empty_generated_declared_descriptors_json() -> Result<String, String> {
@@ -1266,38 +1089,6 @@ pub fn empty_generated_declared_descriptors_json() -> Result<String, String> {
     };
     let bytes = to_canonical_json(&descriptors).map_err(|diagnostic| diagnostic.to_string())?;
     Ok(String::from_utf8(bytes).expect("canonical JSON is valid UTF-8"))
-}
-
-/// Attach an already-rendered declared-descriptor snapshot to a generated
-/// package exactly like the standard generation path: the snapshot file
-/// plus, for Python, the registry constant.
-pub fn attach_declared_descriptors(
-    package: &mut type_bridge_core_lib::_bindgen::GeneratedPackage,
-    descriptors: String,
-    target: type_bridge_core_lib::_bindgen::TargetLanguage,
-) -> Result<(), String> {
-    if target == type_bridge_core_lib::_bindgen::TargetLanguage::Python {
-        let registry = package
-            .files
-            .iter_mut()
-            .find(|file| file.path == "registry.py")
-            .ok_or_else(|| "Python bindgen package did not contain registry.py".to_string())?;
-        let literal = to_canonical_json(&descriptors)
-            .map_err(|error| format!("Failed to quote declared descriptor snapshot: {error}"))?;
-        let literal = String::from_utf8(literal).expect("canonical JSON is valid UTF-8");
-        registry.contents.push_str(&format!(
-            "\nGENERATED_DECLARED_DESCRIPTORS_JSON: str = {literal}\n\
-             __all__.append(\"GENERATED_DECLARED_DESCRIPTORS_JSON\")\n"
-        ));
-    }
-
-    package
-        .files
-        .push(type_bridge_core_lib::_bindgen::GeneratedFile {
-            path: GENERATED_DECLARED_DESCRIPTOR_PATH.to_string(),
-            contents: descriptors,
-        });
-    Ok(())
 }
 
 impl GeneratedDeclaredDescriptorSetV1 {

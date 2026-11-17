@@ -121,7 +121,7 @@ def test_check_and_ci_persist_the_same_job_fan_in() -> None:
     assert "projected-parity) run_projected_parity" in check
     assert "run_projected_parity" in check.split("all)", maxsplit=1)[1]
     assert "projected-parity:" in ci
-    assert "runs-on: ubuntu-latest" in ci.split("  projected-parity:", maxsplit=1)[1]
+    assert "runs-on: ubuntu-24.04" in ci.split("  projected-parity:", maxsplit=1)[1]
     for source in (check, ci):
         assert "scripts/ci/run_projected_parity.py" in source
 

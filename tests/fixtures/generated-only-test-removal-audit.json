@@ -87,7 +87,7 @@
         },
         {
           "path": "tests/contracts/typed_query/typescript/documented_examples.ts",
-          "needles": ["from \"./generated_v2/src/index.js\"", "const session = new QuerySession(db)"]
+          "needles": ["from \"./generated_package/src/index.js\"", "const session = new QuerySession(db)"]
         }
       ],
       "removed_paths": [

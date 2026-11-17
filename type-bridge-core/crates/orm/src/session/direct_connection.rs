@@ -38,6 +38,7 @@ pub struct DirectConnectionPolicy {
     tls: TlsPolicy,
     connection_limits: QueryExecutionResourceLimits,
     answer_limits: QueryExecutionResourceLimits,
+    query_limits: Option<std::sync::Arc<type_bridge_contract::limits::QueryLimits>>,
 }
 
 impl DirectConnectionPolicy {
@@ -58,7 +59,23 @@ impl DirectConnectionPolicy {
             tls: TlsPolicy::disabled(),
             connection_limits: QueryExecutionResourceLimits::default(),
             answer_limits: QueryExecutionResourceLimits::default(),
+            query_limits: None,
         }
+    }
+
+    /// Select independently configured query dimensions for generated manager plans.
+    /// Defaults remain unchanged. A wide full-match Put may need both bindings
+    /// and Boolean terms raised; neither dimension raises the other.
+    /// # Errors
+    /// Returns an unsupported limit value before connection or provider I/O.
+    pub fn query_limits(
+        mut self,
+        limits: type_bridge_contract::limits::QueryLimits,
+    ) -> Result<Self, type_bridge_contract::limits::QueryLimitsError> {
+        let limits = limits.validate_plan()?;
+        self.query_limits = (limits != type_bridge_contract::limits::QueryLimits::PLAN)
+            .then(|| std::sync::Arc::new(limits));
+        Ok(self)
     }
 
     /// Set the authoritative HTTP version-probe port.
@@ -104,6 +121,7 @@ pub(super) struct PreparedDirectConnection {
     pub(super) transport: PreparedSecureConnectOptions,
     pub(super) connection_limits: QueryExecutionResourceLimits,
     pub(super) answer_limits: QueryExecutionResourceLimits,
+    pub(super) query_limits: Option<std::sync::Arc<type_bridge_contract::limits::QueryLimits>>,
     pub(super) deadline: QueryExecutionDeadline,
 }
 
@@ -161,10 +179,12 @@ pub(super) fn prepare_direct_connection(
         TlsPolicyKind::NativeRoots => TlsMode::NativeRoots,
         TlsPolicyKind::CustomRoot(path) => TlsMode::CustomRootCa(path.clone()),
     };
-    let transport = SecureConnectOptions {
-        http_port: policy.http_port,
-        tls_mode,
-        server_version: None,
+    let transport = {
+        let mut options = SecureConnectOptions::default();
+        options.http_port = policy.http_port;
+        options.tls_mode = tls_mode;
+        options.server_version = None;
+        options
     }
     .prepare_transport()
     .map_err(lower_tls_configuration)?
@@ -204,11 +224,14 @@ pub(super) fn prepare_direct_connection(
         transport,
         connection_limits,
         answer_limits,
+        query_limits: policy.query_limits.clone(),
         deadline,
     })
 }
 
-pub(super) fn lower_secure_connection(error: SecureConnectError) -> SdkExecutionDiagnostic {
+/// Lower secure connection errors for bindings without retaining private causes.
+#[doc(hidden)]
+pub fn lower_secure_connect_error(error: SecureConnectError) -> SdkExecutionDiagnostic {
     if let Some(code_value) = error.configuration_code() {
         let code = code(code_value);
         let message = message("The direct connection TLS policy is invalid");
@@ -302,7 +325,7 @@ fn check_control(
 }
 
 fn lower_tls_configuration(error: SecureConnectError) -> SdkExecutionDiagnostic {
-    lower_secure_connection(error)
+    lower_secure_connect_error(error)
 }
 
 fn invalid_input(code_value: &'static str, message_value: &'static str) -> SdkExecutionDiagnostic {
@@ -330,6 +353,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn query_policy_preserves_independent_dimensions_and_validates_before_connect() {
+        use type_bridge_contract::limits::QueryLimits;
+        let policy = DirectConnectionPolicy::new("unused", "unused", "unused", "unused");
+        assert!(policy.query_limits.is_none());
+        let mut limits = QueryLimits::PLAN;
+        limits.structural.bindings = 1024;
+        let policy = policy.query_limits(limits).unwrap();
+        assert_eq!(policy.query_limits.as_deref(), Some(&limits));
+        assert_eq!(
+            limits.structural.boolean_terms,
+            QueryLimits::PLAN.structural.boolean_terms
+        );
+        let policy = policy.query_limits(QueryLimits::PLAN).unwrap();
+        assert!(policy.query_limits.is_none());
+        limits.structural.bindings = type_bridge_contract::limits::MAX_SUPPORTED_BINDINGS + 1;
+        assert!(policy.query_limits(limits).is_err());
+    }
+
+    #[test]
     fn cancelled_connection_fails_before_provider_dispatch() {
         let cancellation = AnswerCancellation::default();
         cancellation.cancel();
@@ -345,7 +387,7 @@ mod tests {
     #[test]
     fn expired_connection_deadline_fails_before_provider_dispatch() {
         let error = check_control(
-            QueryExecutionDeadline::from_timeout_milliseconds(0),
+            QueryExecutionDeadline::expired(),
             &AnswerCancellation::default(),
         )
         .expect_err("zero-timeout connection must fail");

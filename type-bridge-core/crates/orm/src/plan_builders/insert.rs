@@ -3,7 +3,7 @@
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{RoleId, TypeId};
 use type_bridge_contract::query_plan::QueryOutput;
-use type_bridge_contract::query_plan::v3::{
+use type_bridge_contract::query_plan::{
     DocumentRole, InsertThing, Operation, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::schema::OwnsFactId;
@@ -11,7 +11,7 @@ use type_bridge_contract::value::CanonicalValue;
 
 use super::authority::PlanAuthority;
 use super::reference::{Reference, reference_binding};
-use super::{BuiltPlan, PlanDraft, ValueTransport};
+use super::{BuiltPlan, ValueTransport};
 
 /// A relation insert whose players are references resolved in the same
 /// pipeline, answering the new relation's hydration document (with the
@@ -25,7 +25,7 @@ pub(crate) fn relation_insert(
     players: &[(RoleId, Reference<'_>)],
     document_roles: Vec<DocumentRole>,
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(transport);
+    let mut draft = authority.draft(transport);
     // Declared first, so the relation column is always `relation0`.
     let thing = draft.bind("relation")?;
     let mut patterns = Vec::new();

@@ -52,11 +52,11 @@ required, `0..1` is optional, and a maximum above one generates a collection.
 === "Rust"
 
     ```rust
-    let ada = PersonCreate::new(
-        PersonId::new("ada".to_owned()),
-        Name::new("Ada".to_owned()),
-        Some(Age::new(36)),
-    );
+    let ada = PersonCreate::try_new(
+        PersonId::new("ada".to_owned())?,
+        Name::new("Ada".to_owned())?,
+        Some(Age::new(36)?),
+    )?;
     ```
 
 Target-language names are generated deterministically from schema labels. The

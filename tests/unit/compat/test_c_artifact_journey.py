@@ -66,7 +66,7 @@ def _live_report() -> dict[str, Any]:
                 "runtime": "runtime-id",
             },
             "format": "typebridge.c-artifact-connected-observation/v1",
-            "full-c17-marker-count": 62,
+            "full-c17-marker-count": 63,
             "model-codec": {
                 "direct-remote-equal": True,
                 "files": {
@@ -139,14 +139,14 @@ def test_canonical_consumers_adapt_only_package_identity() -> None:
         source = JOURNEY.adapted_fixture(fixture).decode()
         assert "fixture_" not in source
         assert "FIXTURE_" not in source
-        assert "#include <tb_sdkv3/tb_sdkv3.h>" in source
-        assert "tb_sdkv3_schema_package_open" in source
+        assert "#include <tb_sdk/tb_sdk.h>" in source
+        assert "tb_sdk_schema_package_open" in source
         if fixture == JOURNEY.FULL_CONSUMER:
             assert "ordered-omitted" in source
             assert "args.field_aliases_chunks = NULL;" in source
     flat = JOURNEY.adapted_flat_package().decode()
-    assert '#include "src/tb_sdkv3.c"' in flat
-    assert "tb_sdkv3_schema_package_chunks_v1" in flat
+    assert '#include "src/tb_sdk.c"' in flat
+    assert "tb_sdk_schema_package_chunks_v1" in flat
 
 
 def test_tls_consumer_captures_custom_root_without_template_markers() -> None:
@@ -163,7 +163,7 @@ def test_tls_consumer_captures_custom_root_without_template_markers() -> None:
 def test_connected_marker_authority_is_exact_and_duplicate_free() -> None:
     full = JOURNEY.passed_markers(JOURNEY.FULL_CONSUMER, exclude_codec=True)
     query = JOURNEY.passed_markers(JOURNEY.QUERY_CONSUMER)
-    assert len(full) == JOURNEY.FULL_MARKER_COUNT == 62
+    assert len(full) == JOURNEY.FULL_MARKER_COUNT == 63
     assert len(query) == JOURNEY.QUERY_MARKER_COUNT == 8
     JOURNEY.require_markers("\n".join([*full, *query]), [*full, *query], "test")
     with pytest.raises(JOURNEY.JourneyError, match="omitted connected markers"):
@@ -274,7 +274,7 @@ def test_live_report_rejects_tampered_or_incomplete_evidence(
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("publication-disposition", "supported", "publication authority"),
+        ("publication-disposition", "supported", "publication disposition"),
         ("platform", "aarch64-unknown-linux-gnu", "identity drifted"),
     ],
 )

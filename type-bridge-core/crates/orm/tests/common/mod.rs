@@ -496,3 +496,74 @@ impl LifecycleHook for FailingPostHook {
         })
     }
 }
+
+pub const MANAGER_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  name: { value: string }
+  age: { value: integer }
+  position: { value: string }
+  since: { value: string }
+entities:
+  person:
+    owns:
+      name: { key: true }
+      age: { card: 1 }
+  company:
+    owns:
+      name: { key: true }
+relations:
+  employment:
+    owns:
+      position: { card: { min: 0, max: 1 } }
+    relates:
+      employee: { card: 1 }
+      employer: { card: 1 }
+  friendship:
+    owns:
+      since: { card: 1 }
+    relates:
+      friend: { card: { min: 0 } }
+plays:
+  person:
+    employment: [employee]
+    friendship: [friend]
+  company:
+    employment: [employer]
+"#;
+
+/// Install a model fixture through the normal Split-YAML authority path.
+pub fn manager_registry_for_schema(
+    schema: &str,
+) -> Arc<type_bridge_orm::_registry::DescriptorRegistry> {
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, ProjectionHandler};
+    use type_bridge_contract::schema::DocumentId;
+    use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("manager-fixture.yaml").unwrap(), schema)])
+            .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    let projection = project(
+        &resolved,
+        BindingTarget::Python,
+        &ProjectionConfig::python(),
+        &[ProjectionHandler::python_v1()],
+        &[],
+    )
+    .unwrap();
+    InstalledRuntimeProjection::try_new(projection)
+        .unwrap()
+        .manager_registry()
+        .unwrap()
+}
+
+pub fn manager_registry() -> Arc<type_bridge_orm::_registry::DescriptorRegistry> {
+    static REGISTRY: std::sync::OnceLock<Arc<type_bridge_orm::_registry::DescriptorRegistry>> =
+        std::sync::OnceLock::new();
+    Arc::clone(REGISTRY.get_or_init(|| manager_registry_for_schema(MANAGER_SCHEMA)))
+}

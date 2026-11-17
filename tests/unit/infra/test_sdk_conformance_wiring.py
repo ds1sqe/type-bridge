@@ -79,7 +79,7 @@ def _step_index(job: dict[str, Any], name: str) -> int:
     return next(index for index, step in enumerate(job["steps"]) if step["name"] == name)
 
 
-def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
+def test_exact_producer_bound_fragments_precede_each_live_report() -> None:
     jobs = _jobs()
     python_remote = next(
         step
@@ -222,7 +222,7 @@ def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
     assert "steps.prepare-rust-queries.outputs.run_nonce" in rust_prepare
 
 
-def test_node_v2_validator_is_absolute_and_visible_only_to_the_live_producer() -> None:
+def test_node_validator_is_absolute_and_visible_only_to_the_live_producer() -> None:
     job = _jobs()["node-integration"]
     steps = _steps(job)
     setup = steps["Set up Python for the Node queries validator"]
@@ -300,30 +300,30 @@ def test_hosted_queries_fan_in_is_provider_free_and_four_binding() -> None:
     jobs = _jobs()
     needs = ["test-integration", "rust-integration", "node-integration"]
 
-    v2 = jobs["sdk-queries"]
-    assert v2["needs"] == needs
-    assert "services" not in v2
-    v2_steps = _steps(v2)
-    v2_downloads = [step for step in v2["steps"] if step.get("uses") == DOWNLOAD]
-    assert len(v2_downloads) == 4
+    queries = jobs["sdk-queries"]
+    assert queries["needs"] == needs
+    assert "services" not in queries
+    query_steps = _steps(queries)
+    query_downloads = [step for step in queries["steps"] if step.get("uses") == DOWNLOAD]
+    assert len(query_downloads) == 4
     for display, binding in (
         ("Python", "python"),
         ("Node", "node"),
         ("Rust", "rust"),
         ("C", "c"),
     ):
-        download = v2_steps[f"Download {display} queries report"]
+        download = query_steps[f"Download {display} queries report"]
         assert download["with"] == {
             "name": f"sdk-queries-{binding}",
             "path": "${{ runner.temp }}/typebridge-sdk-queries",
         }
-    v2_compare = v2_steps["Compare generated SDK queries reports"]["run"]
-    assert v2_compare.startswith("python scripts/ci/sdk_queries_compare.py ")
-    assert v2_compare.count("$RUNNER_TEMP/typebridge-sdk-queries/") == 4
-    assert all(f'/{binding}.json"' in v2_compare for binding in ("python", "node", "rust", "c"))
-    assert "pending_manifest_promotions" not in str(v2)
-    assert "sdk_fingerprints" not in str(v2)
-    assert "TYPE_BRIDGE_SDK_FINGERPRINTS_OUTPUT" not in str(v2)
+    query_compare = query_steps["Compare generated SDK queries reports"]["run"]
+    assert query_compare.startswith("python scripts/ci/sdk_queries_compare.py ")
+    assert query_compare.count("$RUNNER_TEMP/typebridge-sdk-queries/") == 4
+    assert all(f'/{binding}.json"' in query_compare for binding in ("python", "node", "rust", "c"))
+    assert "pending_manifest_promotions" not in str(queries)
+    assert "sdk_fingerprints" not in str(queries)
+    assert "TYPE_BRIDGE_SDK_FINGERPRINTS_OUTPUT" not in str(queries)
 
 
 def test_local_full_suite_emits_fragments_then_compares_queries() -> None:
@@ -431,7 +431,7 @@ def test_local_profile_lanes_run_the_writes_program_live_in_four_languages() -> 
     source = LOCAL.read_text(encoding="utf-8")
     lane = source[
         source.index(
-            "# The staged V3 suites run on every server of the typedb-3.13.6/v1 profile."
+            "# The staged suites run on every server of the typedb-3.13.6/v1 profile."
         ) : source.index(
             'run_step "cargo test -p type-bridge-orm --features integration-tests --test integration"'
         )
@@ -481,7 +481,7 @@ def test_writes_suite_is_listed_and_its_producers_exist() -> None:
     runner = (ROOT / "scripts/ci/run_sdk_conformance.py").read_text(encoding="utf-8")
     fixture = "sdk_writes_fixture_serves_until_stopped"
     assert fixture in runner
-    server = ROOT / "type-bridge-core/crates/server/tests/v3_staged_integration_tests.rs"
+    server = ROOT / "type-bridge-core/crates/server/tests/staged_integration_tests.rs"
     assert f"async fn {fixture}()" in server.read_text(encoding="utf-8")
     for program in ("python/program.py", "ts/program.ts", "rust/main.rs", "c/program.c"):
         assert (ROOT / "examples/purchase" / program).is_file()

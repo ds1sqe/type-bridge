@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-schema"
-version = "2.3.3"
+version = "3.0.0"
 edition = "2024"
 description = "Canonical schema resolution and projection engine for type-bridge"
 license.workspace = true
@@ -9,16 +9,16 @@ repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
 readme = "README.md"
-documentation = "https://docs.rs/type-bridge-schema/2.3.3"
+documentation = "https://docs.rs/type-bridge-schema/3.0.0"
 rust-version = "1.88"
 
 [dependencies]
 chrono = "=0.4.45"
 chrono-tz = "=0.9.0"
-granit-parser = "=0.0.7"
+granit-parser = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-type-bridge-contract = { path = "../contract", version = "2.3.3" }
+type-bridge-contract = { path = "../contract", version = "3.0.0" }
 unicode-casefold = "=0.2.0"
 unicode-normalization = "=0.1.25"
 

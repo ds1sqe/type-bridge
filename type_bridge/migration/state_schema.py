@@ -1,17 +1,16 @@
-"""Public boundary for TypeBridge-owned migration-state schema objects."""
+"""Frozen legacy ledger labels retained for migration import."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from type_bridge import _rust_runtime
-from type_bridge.migration.introspection import IntrospectedSchema
+from type_bridge import _native
 
 
 @dataclass(frozen=True)
 class MigrationStateSchema:
-    """Immutable label projection of the canonical migration-state schema.
+    """Immutable label projection of the frozen legacy migration ledger.
 
     Role labels are qualified as ``relation:role`` so an application relation
     can use the same unqualified role name without being classified as
@@ -25,8 +24,8 @@ class MigrationStateSchema:
 
 
 def migration_state_schema() -> dict[str, Any]:
-    """Return the full canonical migration-state schema descriptor from Rust."""
-    return _rust_runtime.migration_state_schema()
+    """Return the frozen legacy ledger descriptor from the canonical Rust importer."""
+    return _native.migration_state_schema()
 
 
 def _label_projection(schema: dict[str, Any]) -> MigrationStateSchema:
@@ -48,7 +47,7 @@ def _label_projection(schema: dict[str, Any]) -> MigrationStateSchema:
 
 
 MIGRATION_STATE_SCHEMA: Final = _label_projection(migration_state_schema())
-"""Immutable labels for all schema objects owned by TypeBridge migration state."""
+"""Immutable labels for the legacy ledger read by migration import."""
 
 
 def is_migration_state_type(
@@ -56,45 +55,8 @@ def is_migration_state_type(
     kind: Literal["entity", "relation", "attribute", "role"],
     label: str,
 ) -> bool:
-    """Return whether ``label`` is a TypeBridge migration-state schema object.
+    """Return whether ``label`` belongs to the frozen legacy migration ledger.
 
     Role labels must use the qualified ``relation:role`` form.
     """
-    return _rust_runtime.is_migration_state_type(kind, label)
-
-
-def without_migration_state_schema(schema: IntrospectedSchema) -> IntrospectedSchema:
-    """Return a copy of ``schema`` without TypeBridge migration-state objects."""
-    state_schema = MIGRATION_STATE_SCHEMA
-    state_owners = state_schema.entities | state_schema.relations
-
-    relations = {}
-    for relation_name, relation in schema.relations.items():
-        if relation_name in state_schema.relations:
-            continue
-        roles = {
-            role_name: role
-            for role_name, role in relation.roles.items()
-            if f"{relation_name}:{role_name}" not in state_schema.roles
-        }
-        relations[relation_name] = replace(relation, roles=roles)
-
-    return IntrospectedSchema(
-        entities={
-            name: entity
-            for name, entity in schema.entities.items()
-            if name not in state_schema.entities
-        },
-        relations=relations,
-        attributes={
-            name: attribute
-            for name, attribute in schema.attributes.items()
-            if name not in state_schema.attributes
-        },
-        ownerships=[
-            ownership
-            for ownership in schema.ownerships
-            if ownership.owner_name not in state_owners
-            and ownership.attribute_name not in state_schema.attributes
-        ],
-    )
+    return _native.is_migration_state_type(kind, label)

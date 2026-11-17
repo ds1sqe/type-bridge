@@ -1,7 +1,7 @@
 # Split-YAML and Workspace V1 Reference
 
-This page is the versioned authoring contract for the first TypeBridge V2
-workspace. Its three wire discriminators are versioned independently:
+This page is the versioned authoring contract for the first TypeBridge
+Split-YAML workspace. Its three wire discriminators are versioned independently:
 
 - schema-set manifest: `typebridge.schema-set/v1`
 - schema fragment: `typebridge.schema/v2`
@@ -33,13 +33,13 @@ but these wires never parse a future key and ignore it.
 | 6 | Fact-local extensions | Rejected and deferred to a later document format. |
 | 7 | Schema extensions | Dot-namespaced capability ID with requirement-only `{required}`; no payload or data. |
 | 8 | Structs | Flat, ordered fields with built-in value types; no nesting or user-defined field types. |
-| 9 | Semantic profile | Exactly `typedb-3.11.5/v1`, `typedb-3.12.1/v1` or `typedb-3.13.6/v1` (the default for new workspaces). Migrations accept only `typedb-3.12.1/v1` and `typedb-3.13.6/v1`. |
-| 10 | Migration directory | A workspace path ending directly in `v2`, such as `migrations/v2`. |
+| 9 | Semantic profile | Exactly `typedb-3.12.1/v1` or `typedb-3.13.6/v1` (the default for new workspaces). Migrations accept only `typedb-3.12.1/v1` and `typedb-3.13.6/v1`. |
+| 10 | Migration directory | A confined workspace-relative path; `migrations` when omitted. An unconfigured workspace with a legacy `migrations/v2` child is refused with a move instruction. |
 | 11 | Schema lockfile key | Unsupported. Workspace V1 owns its fixed lock internally. |
 | 12 | TypeDB version range | Unsupported. The exact semantic profile is authoritative. |
 | 13 | Migration policies | Only `directory`, `app-label`, and optional `destructive`. |
-| 14 | Binding mode | Fixed by target key; each binding body contains only `output`. |
-| 15 | Binding customization | Rejected and deferred to a later workspace format. |
+| 14 | Binding mode | Fixed by target key; each binding body contains `output` and optional `type-names`. |
+| 15 | Binding customization | Anything beyond `type-names` is rejected and deferred to a later workspace format. |
 | 16 | Environment URI | One or more comma-separated `host:port` or `[IPv6]:port` endpoints. No scheme, userinfo, path, query, whitespace, empty member, missing port, port 0, or port above 65535. |
 | 17 | Database | A nonempty string scalar. |
 | 18 | Credentials | Separate `username: env:VAR` and `password: env:VAR` references. |
@@ -53,14 +53,18 @@ but these wires never parse a future key and ignore it.
 Workspace V1 additionally has the implemented `tls` and `tls-root-ca` keys.
 They extend transport policy without changing any decision above.
 
+Errata: 3.0 drops the `v2` migration directory suffix of row 10 (see
+[Upgrading to 3.0](upgrade-3.0.md)), and rows 14 and 15 previously omitted
+the accepted `type-names` key. The format version is unchanged.
+
 ## Files and ownership
 
 ```text
 typebridge.yaml                         workspace and generation policy
 schema/schema.yaml                     schema-set source discovery
 schema/**/*.yaml                       portable schema fragments
-migrations/v2/*.tbmigration.json       immutable transition authority
-migrations/v2/*.typeql                 generated review rendering
+migrations/*.tbmigration.json       immutable transition authority
+migrations/*.typeql                 generated review rendering
 generated/schema-authority.json        generated source-free server authority
 environment variables                  deployment credentials
 database ledger                        applied transition state
@@ -159,6 +163,15 @@ the structured form requires `min` and may omit `max` for an unbounded maximum.
 `meta` is a string-keyed map of string values. Unknown or inapplicable keys are
 errors.
 
+Regex patterns retain their decoded YAML text when lowered to TypeQL. Use YAML
+single quotes, such as `'^[A-Z]{2}\d+$'`; double-quoted YAML decodes escapes,
+so double each backslash there, as in `"^[A-Z]{2}\\d+$"`. Two forms are refused during schema resolution because supported TypeDB servers
+cannot export them losslessly: string `values` entries containing a backslash,
+and regexes with an odd number of backslashes immediately before a double quote.
+The latter exports as an invalid TypeQL literal, which would prevent post-commit
+observation. Write the quote without the redundant backslash; a double quote
+needs no escape in a regex (for example, use YAML `'a"b'`).
+
 Schema extensions declare capability requirements only:
 
 ```yaml
@@ -183,6 +196,14 @@ structs:
         type: string
         optional: true
 ```
+
+Struct declarations can be checked and projected, but canonical migrations
+cannot define, remove or change structs in TypeBridge 3.0. A workspace with a
+`migrate: true` environment refuses structs during `schema check`. Use ordinary
+attributes for deployable data, or keep struct schemas outside migration-enabled
+workspaces. The full SDK conformance model also contains `@distinct` ordered
+interfaces, which are outside the supported migration grammar; it is a codegen
+fixture rather than an executable migration workspace.
 
 Function parameters and returns are structured, while `body.typeql` retains
 the provider function body as a typed literal:
@@ -214,9 +235,9 @@ does not claim that every configured provider can execute it.
 
 ## Workspace manifest
 
-Workspace V1 has these closed top-level keys: `format`, `schema`,
-`compatibility`, `migrations`, `bindings`, `secrets`, `extensions`, and
-`environments`.
+Workspace V1 has these closed top-level keys: `format`, `artifacts`,
+`schema`, `compatibility`, `migrations`, `bindings`, `secrets`, `extensions`,
+and `environments`.
 
 ```yaml
 format: typebridge.workspace/v1
@@ -231,7 +252,7 @@ compatibility:
   require: [schema.doc-meta]
 
 migrations:
-  directory: migrations/v2
+  directory: migrations
   app-label: example
   destructive: require-approval
 

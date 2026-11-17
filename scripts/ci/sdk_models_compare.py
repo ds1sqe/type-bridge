@@ -39,6 +39,7 @@ from sdk_conformance_common import (  # noqa: E402, F401
     report_parser,
     validate_report_schema,
 )
+from sdk_plan_parity import compare_oracle_answers  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json"
@@ -1056,6 +1057,7 @@ def _validate_report(report: LoadedJson, contracts: Contracts) -> dict[str, Any]
 
 
 def _derive_summary(reports: dict[str, dict[str, Any]], contracts: Contracts) -> dict[str, Any]:
+    compare_oracle_answers("models", reports)
     first = reports[REPORT_BINDINGS[0]]
     passed_proofs = [
         {

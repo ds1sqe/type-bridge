@@ -15,6 +15,25 @@ mod function;
 mod manager;
 mod reduction;
 
+// Read bindings of an abstract ancestor cover its constructible descendants.
+fn compatible_role_players(
+    projection: &RuntimeProjection,
+    accepted: &BTreeSet<TypeId>,
+) -> BTreeSet<TypeId> {
+    let mut players = accepted.clone();
+    for player in accepted {
+        for ancestor in projection.models()[player]
+            .complete_read()
+            .nominal_upcasts()
+        {
+            if projection.models()[ancestor].declaration().is_abstract() {
+                players.insert(ancestor.clone());
+            }
+        }
+    }
+    players
+}
+
 const QUERY_MODES: [(&str, &str); 2] = [
     ("exact", "TYPE_BRIDGE_QUERY_MATCH_EXACT"),
     ("subtypes", "TYPE_BRIDGE_QUERY_MATCH_SUBTYPES"),
@@ -96,7 +115,7 @@ fn scalar_suffix(domain: ValueTypeTag) -> &'static str {
     }
 }
 
-fn field_domain(
+pub(super) fn field_domain(
     projection: &RuntimeProjection,
     field: &type_bridge_contract::projection::FieldTokenProjection,
 ) -> Result<ValueTypeTag, Diagnostic> {
@@ -200,21 +219,7 @@ fn has_reachable_endpoint(relation: &ModelProjection) -> bool {
 }
 
 fn package_opaque_suffixes() -> [&'static str; 13] {
-    [
-        "query_session",
-        "query_predicate",
-        "query_order",
-        "query",
-        "query_rows_terminal",
-        "query_first_terminal",
-        "query_page_terminal",
-        "query_count_terminal",
-        "query_exists_terminal",
-        "query_rows_result",
-        "query_page_result",
-        "query_count_result",
-        "query_exists_result",
-    ]
+    type_bridge_contract::projection::C_PUBLIC_QUERY_TYPE_SUFFIXES
 }
 
 fn remote_nominal_suffixes() -> impl Iterator<Item = String> {
@@ -369,15 +374,15 @@ pub(super) fn function_names(
         "query_predicate_close",
         "query_order_close",
         "query_where",
-        "query_add_hidden",
+        "query_match",
         "query_allow_cross_join",
         "query_close",
         "query_one",
         "query_first",
         "query_rows",
-        "query_page",
-        "query_count",
-        "query_exists",
+        "query_page_by",
+        "query_count_by",
+        "query_exists_by",
         "query_rows_terminal_close",
         "query_first_terminal_close",
         "query_page_terminal_close",
@@ -489,9 +494,9 @@ pub(super) fn function_names(
                 names.insert(generated_symbol(&base, suffix)?);
             }
             if !role.accepted_players().is_empty() {
-                names.insert(generated_symbol(&base, "connects")?);
+                names.insert(generated_symbol(&base, "links")?);
             }
-            for player in role.accepted_players() {
+            for player in &compatible_role_players(projection, role.accepted_players()) {
                 let player_model = projection
                     .models()
                     .get(player)
@@ -691,11 +696,11 @@ fn render_model_declarations(
              {root_ref} TYPE_BRIDGE_CALL {to_root}(\n\
                const {prefix}_query *query, const {binding} *binding);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {iid}(\n\
-               const {binding} *binding, type_bridge_byte_view_t iid,\n\
+               const {binding} *binding, const type_bridge_iid_t *iid,\n\
                {predicate} **out_predicate,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {iid_in}(\n\
-               const {binding} *binding, const type_bridge_byte_view_t *iids,\n\
+               const {binding} *binding, const type_bridge_iid_t *const *iids,\n\
                size_t iid_count, {predicate} **out_predicate,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {close}({binding} **binding);\n",
@@ -718,7 +723,7 @@ fn render_model_declarations(
                     output,
                     "type_bridge_status_t TYPE_BRIDGE_CALL {selection_open}(\n\
                        const {binding} *binding, uint8_t distinct,\n\
-                       const {order} *const *orders, size_t order_count,\n\
+                       const {order} *const *sorts, size_t sort_count,\n\
                        {selection} **out_selection,\n\
                        type_bridge_execution_diagnostics_t **out_diagnostics);\n",
                 );
@@ -816,7 +821,7 @@ fn render_model_declarations(
                type_bridge_execution_diagnostics_t **out_diagnostics);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {base}_order(\n\
                const {base} *field, type_bridge_query_sort_direction_t direction,\n\
-               type_bridge_query_missing_order_t missing, {order} **out_order,\n\
+               {order} **out_order,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {base}_close({base} **field);\n",
             attribute = attribute.target_name().as_str(),
@@ -845,7 +850,7 @@ fn render_model_declarations(
              {role_ref} TYPE_BRIDGE_CALL {base}_ref(const {base} *role);\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {base}_close({base} **role);\n",
         );
-        for player in role.accepted_players() {
+        for player in &compatible_role_players(projection, role.accepted_players()) {
             let player_model = projection
                 .models()
                 .get(player)
@@ -862,10 +867,10 @@ fn render_model_declarations(
             }
         }
         if !role.accepted_players().is_empty() {
-            let connects = generated_symbol(&base, "connects")?;
+            let links = generated_symbol(&base, "links")?;
             let _ = write!(
                 output,
-                "type_bridge_status_t TYPE_BRIDGE_CALL {connects}(\n\
+                "type_bridge_status_t TYPE_BRIDGE_CALL {links}(\n\
                    const {base} *role, {player_witness} player,\n\
                    {predicate} **out_predicate,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics);\n",
@@ -1051,7 +1056,7 @@ fn render_package_query_declarations(
            const {query} *query, const {predicate} *predicate,\n\
            {query} **out_query,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
-         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_add_hidden(\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_match(\n\
            const {query} *query, {binding_ref} binding, {query} **out_query,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_allow_cross_join(\n\
@@ -1061,30 +1066,30 @@ fn render_package_query_declarations(
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_close({query} **query);\n\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_one(\n\
            const {query} *query,\n\
-           const {order} *const *orders, size_t order_count,\n\
+           const {order} *const *sorts, size_t sort_count,\n\
            {rows_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_first(\n\
            const {query} *query,\n\
-           const {order} *const *orders, size_t order_count,\n\
+           const {order} *const *sorts, size_t sort_count,\n\
            {first_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_rows(\n\
            const {query} *query,\n\
-           const {order} *const *orders, size_t order_count,\n\
+           const {order} *const *sorts, size_t sort_count,\n\
            uint64_t offset, uint64_t limit, {rows_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
-         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_page(\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_page_by(\n\
            {root_ref} root,\n\
-           const {order} *const *orders, size_t order_count,\n\
+           const {order} *const *sorts, size_t sort_count,\n\
            uint64_t offset, uint64_t limit, uint8_t include_total,\n\
            {page_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
-         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_count(\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_count_by(\n\
            {root_ref} root,\n\
            {count_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
-         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_exists(\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_exists_by(\n\
            {root_ref} root,\n\
            {exists_terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n",
@@ -1363,7 +1368,7 @@ fn render_package_definitions(
            const type_bridge_query_limit_override_v1_t *overrides, size_t override_count,\n\
            {session} **out_session,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-           return type_bridge_query_session_open_with_limits_v1(\n\
+           return type_bridge_query_session_open_with_limits(\n\
                package, overrides, override_count,\n\
                (type_bridge_query_session_t **)out_session, out_diagnostics);\n\
          }}\n\n\
@@ -1468,10 +1473,10 @@ fn render_package_definitions(
                (const type_bridge_query_predicate_t *)predicate,\n\
                (type_bridge_query_t **)out_query, out_diagnostics);\n\
          }}\n\n\
-         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_add_hidden(\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_match(\n\
            const {query} *query, {binding_ref} binding, {query} **out_query,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-           return type_bridge_query_add_hidden(\n\
+           return type_bridge_query_match(\n\
                (const type_bridge_query_t *)query, binding.handle,\n\
                binding.expected_model, binding.expected_mode,\n\
                (type_bridge_query_t **)out_query, out_diagnostics);\n\
@@ -1533,7 +1538,7 @@ fn render_package_definitions(
     render_terminal_definition(
         output,
         prefix,
-        "page",
+        "page_by",
         "TYPE_BRIDGE_QUERY_TERMINAL_PAGE",
         "TYPE_BRIDGE_QUERY_ROWS_BOUNDED_MANY",
         &query,
@@ -1544,9 +1549,13 @@ fn render_package_definitions(
         true,
     );
     for (suffix, kind, terminal) in [
-        ("count", "TYPE_BRIDGE_QUERY_TERMINAL_COUNT", &count_terminal),
         (
-            "exists",
+            "count_by",
+            "TYPE_BRIDGE_QUERY_TERMINAL_COUNT",
+            &count_terminal,
+        ),
+        (
+            "exists_by",
             "TYPE_BRIDGE_QUERY_TERMINAL_EXISTS",
             &exists_terminal,
         ),
@@ -1565,7 +1574,7 @@ fn render_package_definitions(
                  NULL, NULL, 0u, 0u, NULL, 0u, NULL, 0u,\n\
                  {{ 0u, 0u, 0u, 0u }}\n\
                }};\n\
-               return type_bridge_query_terminal_open_v1(\n\
+               return type_bridge_query_terminal_open(\n\
                    root.query, &descriptor,\n\
                    (type_bridge_query_terminal_t **)out_terminal, out_diagnostics);\n\
              }}\n\n",
@@ -1592,17 +1601,17 @@ fn render_package_definitions(
         (
             "database",
             "type_bridge_database_t",
-            "type_bridge_database_query_execute_v1",
+            "type_bridge_database_query_execute",
         ),
         (
             "read_transaction",
             "type_bridge_read_transaction_t",
-            "type_bridge_read_transaction_query_execute_v1",
+            "type_bridge_read_transaction_query_execute",
         ),
         (
             "proxy",
             "type_bridge_proxy_connection_t",
-            "type_bridge_proxy_query_execute_v1",
+            "type_bridge_proxy_query_execute",
         ),
     ] {
         for (kind, terminal, result, terminal_kind) in [
@@ -1682,7 +1691,7 @@ fn render_package_definitions(
            const {page_result} *result,\n\
            type_bridge_query_page_metadata_v1_t *out_metadata,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-           return type_bridge_query_result_page_metadata_v1(\n\
+           return type_bridge_query_result_page_metadata(\n\
                (const type_bridge_query_result_t *)result, out_metadata,\n\
                out_diagnostics);\n\
          }}\n\n\
@@ -1727,7 +1736,7 @@ fn render_remote_definitions(output: &mut String, prefix: &str) -> Result<(), Di
   const type_bridge_query_execution_limits_v1_t *limits,
   {context} **out_context,
   type_bridge_execution_diagnostics_t **out_diagnostics) {{
-  return type_bridge_query_remote_context_open_v1(
+  return type_bridge_query_remote_context_open(
       package, advertisement, limits,
       (type_bridge_query_remote_context_t **)out_context, out_diagnostics);
 }}
@@ -1756,7 +1765,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_remote_context_close(
   const type_bridge_cancellation_t *cancellation,
   {pending} **out_pending,
   type_bridge_execution_diagnostics_t **out_diagnostics) {{
-  return type_bridge_query_remote_prepare_v1(
+  return type_bridge_query_remote_prepare(
       (const type_bridge_query_remote_context_t *)context,
       (const type_bridge_query_terminal_t *)terminal, {terminal_kind},
       cancellation, (type_bridge_query_remote_pending_t **)out_pending,
@@ -1796,7 +1805,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_{family}_remote_claim_decod
   const type_bridge_cancellation_t *cancellation,
   type_bridge_byte_view_t response, {result} **out_result,
   type_bridge_execution_diagnostics_t **out_diagnostics) {{
-  return type_bridge_query_remote_claim_decode_v1(
+  return type_bridge_query_remote_claim_decode(
       (const type_bridge_query_remote_claim_t *)claim, {terminal_kind}, cancellation,
       response, (type_bridge_query_result_t **)out_result, out_diagnostics);
 }}
@@ -1845,7 +1854,7 @@ fn render_model_definitions(
             "type_bridge_status_t TYPE_BRIDGE_CALL {open}(\n\
                const {session} *session, {binding} **out_binding,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-               return type_bridge_query_binding_open_v1(\n\
+               return type_bridge_query_binding_open(\n\
                    (const type_bridge_query_session_t *)session, &{model_token},\n\
                    {mode_constant}, (type_bridge_query_binding_t **)out_binding,\n\
                    out_diagnostics);\n\
@@ -1867,19 +1876,19 @@ fn render_model_definitions(
                return value;\n\
              }}\n\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {iid}(\n\
-               const {binding} *binding, type_bridge_byte_view_t iid,\n\
+               const {binding} *binding, const type_bridge_iid_t *iid,\n\
                {predicate} **out_predicate,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-               return type_bridge_query_binding_iid_v1(\n\
+               return type_bridge_query_binding_iid(\n\
                    (const type_bridge_query_binding_t *)binding, &{model_token},\n\
                    {mode_constant}, iid,\n\
                    (type_bridge_query_predicate_t **)out_predicate, out_diagnostics);\n\
              }}\n\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {iid_in}(\n\
-               const {binding} *binding, const type_bridge_byte_view_t *iids,\n\
+               const {binding} *binding, const type_bridge_iid_t *const *iids,\n\
                size_t iid_count, {predicate} **out_predicate,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-               return type_bridge_query_binding_iid_in_v1(\n\
+               return type_bridge_query_binding_iid_in(\n\
                    (const type_bridge_query_binding_t *)binding, &{model_token},\n\
                    {mode_constant}, iids, iid_count,\n\
                    (type_bridge_query_predicate_t **)out_predicate, out_diagnostics);\n\
@@ -1894,16 +1903,16 @@ fn render_model_definitions(
             let selection_open = generated_symbol(&selection, "open")?;
             let selection_to_ref = generated_symbol(&selection, "ref")?;
             let selection_close = generated_symbol(&selection, "close")?;
-            let (parameters, distinct, orders, order_count) = if kind == "one" {
+            let (parameters, distinct, sorts, sort_count) = if kind == "one" {
                 (String::new(), "0u", "NULL", "0u")
             } else {
                 (
                     format!(
-                        "  uint8_t distinct, const {order} *const *orders, size_t order_count,\n"
+                        "  uint8_t distinct, const {order} *const *sorts, size_t sort_count,\n"
                     ),
                     "distinct",
-                    "(const type_bridge_query_order_t *const *)orders",
-                    "order_count",
+                    "(const type_bridge_query_order_t *const *)sorts",
+                    "sort_count",
                 )
             };
             let _ = write!(
@@ -1918,9 +1927,9 @@ fn render_model_definitions(
                      (const type_bridge_query_binding_t *)binding, &{model_token},\n\
                      {mode_constant}, {kind_constant}, {distinct},\n\
                      {{ 0u, 0u, 0u, 0u, 0u, 0u, 0u }},\n\
-                     {orders}, {order_count}, {{ 0u, 0u, 0u, 0u }}\n\
+                     {sorts}, {sort_count}, {{ 0u, 0u, 0u, 0u }}\n\
                    }};\n\
-                   return type_bridge_query_selection_open_v1(\n\
+                   return type_bridge_query_selection_open(\n\
                        &descriptor, (type_bridge_query_selection_t **)out_selection,\n\
                        out_diagnostics);\n\
                  }}\n\n\
@@ -2000,15 +2009,15 @@ fn render_model_definitions(
              }}\n\n\
              type_bridge_status_t TYPE_BRIDGE_CALL {base}_order(\n\
                const {base} *field, type_bridge_query_sort_direction_t direction,\n\
-               type_bridge_query_missing_order_t missing, {order} **out_order,\n\
+               {order} **out_order,\n\
                type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
                type_bridge_query_order_descriptor_v1_t descriptor = {{\n\
                  sizeof(type_bridge_query_order_descriptor_v1_t),\n\
                  TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION,\n\
                  (const type_bridge_query_field_t *)field, &{token}, direction,\n\
-                 missing, 0u, {{ 0u, 0u, 0u, 0u }}\n\
+                 0u, 0u, {{ 0u, 0u, 0u, 0u }}\n\
                }};\n\
-               return type_bridge_query_order_open_v1(\n\
+               return type_bridge_query_order_open(\n\
                    &descriptor, (type_bridge_query_order_t **)out_order,\n\
                    out_diagnostics);\n\
              }}\n\n\
@@ -2049,7 +2058,7 @@ fn render_model_definitions(
                return type_bridge_query_role_close((type_bridge_query_role_t **)role);\n\
              }}\n\n",
         );
-        for player in role.accepted_players() {
+        for player in &compatible_role_players(projection, role.accepted_players()) {
             let player_model = projection
                 .models()
                 .get(player)
@@ -2073,14 +2082,14 @@ fn render_model_definitions(
             }
         }
         if !role.accepted_players().is_empty() {
-            let connects = generated_symbol(&base, "connects")?;
+            let links = generated_symbol(&base, "links")?;
             let _ = write!(
                 output,
-                "type_bridge_status_t TYPE_BRIDGE_CALL {connects}(\n\
+                "type_bridge_status_t TYPE_BRIDGE_CALL {links}(\n\
                    const {base} *role, {player_witness} player,\n\
                    {predicate} **out_predicate,\n\
                    type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
-                   return type_bridge_query_role_connects(\n\
+                   return type_bridge_query_role_links(\n\
                        (const type_bridge_query_role_t *)role, &{token},\n\
                        player.handle, player.expected_model, player.expected_mode,\n\
                        (type_bridge_query_predicate_t **)out_predicate,\n\
@@ -2401,7 +2410,7 @@ fn render_shape_definition(
            descriptor.reserved[1] = 0u;\n\
            descriptor.reserved[2] = 0u;\n\
            descriptor.reserved[3] = 0u;\n\
-           return type_bridge_query_open_v1(\n\
+           return type_bridge_query_open(\n\
                (const type_bridge_query_session_t *)session, &descriptor,\n\
                (type_bridge_query_t **)out_query, out_diagnostics);\n\
          }}\n\n",
@@ -2457,7 +2466,7 @@ fn render_terminal_definition(
         output,
         "type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_{suffix}(\n\
          {query_parameter}{root_parameter}\
-           const {order} *const *orders, size_t order_count,\n\
+           const {order} *const *sorts, size_t sort_count,\n\
          {window_parameters}{total_parameter}\
            {terminal} **out_terminal,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
@@ -2465,13 +2474,13 @@ fn render_terminal_definition(
              sizeof(type_bridge_query_terminal_descriptor_v1_t),\n\
              TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION, {kind}, {cardinality},\n\
              {root_handle}, {root_model}, {root_mode}, 0u,\n\
-             (const type_bridge_query_order_t *const *)orders, order_count,\n\
+             (const type_bridge_query_order_t *const *)sorts, sort_count,\n\
              {offset}, {limit}, {include_total},\n\
              {{ 0u, 0u, 0u, 0u, 0u, 0u, 0u }},\n\
              NULL, NULL, 0u, 0u, NULL, 0u, NULL, 0u,\n\
              {{ 0u, 0u, 0u, 0u }}\n\
            }};\n\
-           return type_bridge_query_terminal_open_v1(\n\
+           return type_bridge_query_terminal_open(\n\
                {query_handle}, &descriptor,\n\
                (type_bridge_query_terminal_t **)out_terminal, out_diagnostics);\n\
          }}\n\n",

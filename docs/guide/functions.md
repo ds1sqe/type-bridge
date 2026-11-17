@@ -38,34 +38,30 @@ type-bridge --manifest typebridge.yaml migration apply --environment development
 type-bridge --manifest typebridge.yaml schema generate
 ```
 
+Canonical migrations support adding and removing functions, including the first
+migration. Authoring parses each body and verifies its static type, role and
+function dependencies. TypeDB validates and executes the body itself.
+Function bodies that select types dynamically or reference TypeBridge control
+schema are refused before migration publication.
+
+Body/signature replacement and standalone `doc`/`meta` changes are not supported
+in 3.0. Remove the function in one migration and add its new definition in the
+next. Initial metadata is emitted with the function definition. Check the
+manifest's `reversible` flag: removing functions with metadata may require a
+new migration to restore them rather than automatic rollback.
+
 Generated packages expose an exact `FunctionRef`/function token with the
 projected parameter and return types. For example, generated Python typing
 preserves `FunctionRef[[Event], Iterator[Event]]`. Application code imports the
 token from its generated package; it does not rebuild the signature in Python
 or Node.
 
-## Retained raw Python function queries
+## Execute a function
 
-The separately retained raw query facade can call a known TypeDB function when
-an application needs explicit TypeQL-shaped results:
-
-```python
-from type_bridge.expressions import FunctionQuery, ReturnType
-
-query = FunctionQuery(
-    name="find-events",
-    args=[("$event", "0x123")],
-    return_type=ReturnType(["event"], is_stream=True),
-).to_query(limit=100)
-
-with db.transaction("read") as tx:
-    rows = tx.execute(query)
-```
-
-`FunctionQuery` is query construction only. It is not schema or model
-authority, and it does not install a generated projection. Prefer generated
-model-owned immutable queries when the result should hydrate as generated
-models.
+Use the generated function tokens in model-owned immutable queries for supported
+scalar returns. For explicit transactions, build staged plans with the generated
+package. Applications needing explicit TypeQL-shaped results can call a function
+in raw TypeQL through `Database.execute_query`.
 
 ## Function shapes
 

@@ -14,7 +14,8 @@ def main() -> None:
         raise RuntimeError("run crud.py first")
     person.age = Age(37)
     updated = manager.update(person)
-    print(updated.age.value if updated.age else None)
+    for item in updated.items:
+        print(item.age.value if item.age else None)
 
 
 if __name__ == "__main__":

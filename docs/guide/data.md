@@ -20,8 +20,7 @@ reachability, named pages, counts, existence checks, and one-exchange remote
 execution.
 
 Use a manager for one type and a query session when the result or predicate
-spans types. The package-root raw `Query`/`QueryBuilder` compatibility facade is
-separate from the generated query contract.
+spans types.
 
 ## Transactions and execution location
 

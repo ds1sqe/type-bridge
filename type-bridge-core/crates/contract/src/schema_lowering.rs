@@ -22,11 +22,7 @@ pub const SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN: &str = "typebridge.schema.
 pub const SCHEMA_LOWERING_PROFILE_CANONICALIZATION: &str = "typebridge.schema-lowering-profile/v1";
 
 /// The semantic-to-lowering profile mapping; this is its only definition.
-///
-/// `typedb-3.11.5/v1` has no registry of its own and keeps lowering through
-/// the 3.12.1 registry, as its existing manifests are bound to it.
-const SCHEMA_LOWERING_PROFILES: [(&str, &str); 3] = [
-    ("typedb-3.11.5/v1", TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID),
+const SCHEMA_LOWERING_PROFILES: [(&str, &str); 2] = [
     ("typedb-3.12.1/v1", TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID),
     ("typedb-3.13.6/v1", TYPEDB_3_13_6_SCHEMA_LOWERING_PROFILE_ID),
 ];
@@ -133,18 +129,6 @@ impl<'de> Deserialize<'de> for SchemaLoweringProfileId {
 pub struct SchemaLoweringProfileFingerprint(Fingerprint);
 
 impl SchemaLoweringProfileFingerprint {
-    /// Fingerprints canonical schema-lowering profile bytes under the
-    /// TypeDB 3.12.1 lowering profile, the only profile 2.2 compiled.
-    #[deprecated(
-        since = "2.3.0",
-        note = "scopes the fingerprint to the 3.12.1 profile only; use compute_for_profile; removed in 3.0"
-    )]
-    pub fn compute(canonical_bytes: &[u8]) -> Self {
-        let profile_id = SchemaLoweringProfileId::new(TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID)
-            .expect("the fixed 3.12.1 schema-lowering profile id is valid");
-        Self::compute_for_profile(&profile_id, canonical_bytes)
-    }
-
     /// Fingerprints canonical schema-lowering profile bytes with the fixed
     /// metadata; the lowering profile id is the fingerprint's profile scope.
     pub fn compute_for_profile(

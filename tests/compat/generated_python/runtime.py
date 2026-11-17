@@ -46,7 +46,7 @@ def main() -> None:
 
     type_bridge = importlib.import_module("type_bridge")
     type_bridge_core = importlib.import_module("type_bridge_core")
-    generated = importlib.import_module("generated_v2")
+    generated = importlib.import_module("generated_package")
     for name in (
         "Attribute",
         "Entity",
@@ -54,10 +54,12 @@ def main() -> None:
         "Role",
         "TypeDBManager",
         "TypeDBType",
+        "Query",
+        "QueryBuilder",
     ):
         if hasattr(type_bridge, name):
             raise AssertionError(f"removed handwritten root export is present: {name}")
-    for name in ("Database", "Query", "QueryBuilder"):
+    for name in ("Database", "Plan", "PlanBuilder"):
         if not hasattr(type_bridge, name):
             raise AssertionError(f"retained root operation is missing: {name}")
 
@@ -65,7 +67,7 @@ def main() -> None:
     for name, module, expected_root in (
         ("type_bridge", type_bridge, artifact_root),
         ("type_bridge_core", type_bridge_core, artifact_root),
-        ("generated_v2", generated, generated_root),
+        ("generated_package", generated, generated_root),
     ):
         paths = module_paths(module)
         if not paths or not all(within(path, expected_root) for path in paths):

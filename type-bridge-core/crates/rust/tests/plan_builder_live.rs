@@ -27,23 +27,10 @@ impl type_bridge::ProxyExchange for RouterExchange {
     fn capabilities(
         &self,
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
-        Box::pin(async { Ok(call(&self.0, "GET", "/v2/capabilities", Vec::new()).await) })
-    }
-
-    fn exchange<'a>(
-        &'a self,
-        request: &'a [u8],
-    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
-        Box::pin(async { Ok(call(&self.0, "POST", "/v2/query", request.to_vec()).await) })
-    }
-
-    fn staged_capabilities(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
         Box::pin(async { Ok(call(&self.0, "GET", "/v3/capabilities", Vec::new()).await) })
     }
 
-    fn exchange_staged<'a>(
+    fn exchange<'a>(
         &'a self,
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {

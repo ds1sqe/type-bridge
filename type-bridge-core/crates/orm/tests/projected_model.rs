@@ -384,6 +384,18 @@ fn canonical_scalars_and_create_fields_use_exact_semantic_tokens() {
         SdkDiagnosticCategory::InvalidInput,
         "wrong_scalar_domain",
     );
+    assert!(
+        wrong_domain
+            .message()
+            .as_str()
+            .contains("same scalar value type")
+    );
+    assert!(
+        wrong_domain
+            .message()
+            .as_str()
+            .contains("generic Plan builder or raw TypeQL")
+    );
     assert_eq!(
         wrong_domain.path(),
         [SdkDiagnosticPathSegment::Type(identifier.clone())]
@@ -1379,6 +1391,55 @@ fn hydrated_things_are_complete_nonrecursive_and_classify_result_failures_as_int
         SdkDiagnosticCategory::Integrity,
         "hydrated_role_player_not_accepted",
     );
+}
+
+#[test]
+fn repeated_iid_role_players_keep_the_narrower_type_and_inherited_key_evidence() {
+    let installed = installed(BindingTarget::Python, SCHEMA);
+    let account = type_id(TypeKind::Entity, "account");
+    let premium = type_id(TypeKind::Entity, "premium-account");
+    let role = RoleId::new("membership", "premium").unwrap();
+    let parent = ProjectedReference::try_new(
+        &installed,
+        account.clone(),
+        Some("0x30".into()),
+        vec![(
+            field(&account, "identifier"),
+            string_value(&installed, "identifier", "premium"),
+        )],
+    )
+    .unwrap();
+    let child = iid_reference(&installed, premium.clone(), "0x30");
+    for references in [
+        vec![parent.clone(), child.clone()],
+        vec![child.clone(), parent.clone()],
+    ] {
+        let create = ProjectedCreate::try_new(
+            &installed,
+            type_id(TypeKind::Relation, "membership"),
+            vec![],
+            vec![
+                (
+                    RoleId::new("membership", "member").unwrap(),
+                    vec![iid_reference(
+                        &installed,
+                        type_id(TypeKind::Entity, "person"),
+                        "0x10",
+                    )],
+                ),
+                (role.clone(), references),
+            ],
+        )
+        .unwrap();
+        let players = &create.roles()[&role];
+        assert_eq!(players.len(), 1);
+        assert_eq!(players[0].type_id(), &premium);
+        assert_eq!(players[0].iid(), Some("0x30"));
+        assert_eq!(
+            players[0].keys()[&field(&premium, "identifier")],
+            string_value(&installed, "identifier", "premium")
+        );
+    }
 }
 
 #[test]

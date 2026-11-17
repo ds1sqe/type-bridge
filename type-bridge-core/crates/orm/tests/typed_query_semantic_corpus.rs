@@ -13,18 +13,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
-use type_bridge_core_lib::ast::{
-    TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
-};
 use type_bridge_orm::_descriptor::{
     EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor,
 };
 use type_bridge_orm::_entity::Annotation;
 use type_bridge_orm::_registry::DescriptorRegistry;
-use type_bridge_orm::session::backend::{
-    AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader,
-    BoundedAnswerStats, BoxFuture, DriverBackend, QueryResult, TransactionOps,
-};
+use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps};
 use type_bridge_orm::{
     BindingId, BindingPair, CapabilitySet, Database, FetchShape, FetchSlot, MatchBinding,
     MatchExpr, MatchMode, MatchOperation, MatchPlan, MatchRequest, MatchResult, OrmError,
@@ -60,8 +54,7 @@ struct RecordingEvents {
     opens: AtomicUsize,
     closes: AtomicUsize,
     selected_statements: AtomicUsize,
-    root_statements: AtomicUsize,
-    rematch_statements: AtomicUsize,
+    count_statements: AtomicUsize,
     hydration_statements: AtomicUsize,
 }
 
@@ -99,124 +92,99 @@ struct CorpusTransaction {
 }
 
 impl TransactionOps for CorpusTransaction {
-    fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-        Box::pin(async { panic!("semantic-corpus backend used the legacy string query seam") })
-    }
-
-    fn query_typed_bounded<'a>(
-        &'a mut self,
-        query: &'a TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &'a mut dyn AnswerConsumer,
-    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        self.events
-            .selected_statements
-            .fetch_add(1, Ordering::SeqCst);
-        let items = solution_rows(&self.fixture)
-            .into_iter()
-            .take(usize::try_from(query.limit).unwrap_or(usize::MAX))
-            .collect();
-        Box::pin(async move { feed(items, limits, consumer) })
-    }
-
-    fn supports_exactly_one_tuple_proof(&self) -> bool {
-        true
-    }
-
-    fn query_tuple_typed_bounded<'a>(
-        &'a mut self,
-        query: &'a TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &'a mut dyn AnswerConsumer,
-    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        self.events
-            .selected_statements
-            .fetch_add(1, Ordering::SeqCst);
-        let items = tuple_rows(&self.fixture, &query.projection, query.limit);
-        Box::pin(async move { feed(items, limits, consumer) })
-    }
-
-    fn query_root_typed_bounded<'a>(
-        &'a mut self,
-        query: &'a TypedRootScan,
-        limits: BoundedAnswerLimits,
-        consumer: &'a mut dyn AnswerConsumer,
-    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        self.events.root_statements.fetch_add(1, Ordering::SeqCst);
-        let root_name = binding_name(query.root);
-        let mut seen = BTreeSet::new();
-        let items = self
+    fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+        let captures = |pattern: &str| regex::Regex::new(pattern).unwrap();
+        let selections = captures(r"select\s+([^;]+);")
+            .captures_iter(typeql)
+            .map(|capture| {
+                captures(r"\$b(\d+)")
+                    .captures_iter(&capture[1])
+                    .map(|value| value[1].parse::<usize>().unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let first = selections
+            .first()
+            .expect("native plans select their bounded prefix");
+        let key_columns = first
+            .iter()
+            .copied()
+            .filter(|column| *column < BINDING_NAMES.len())
+            .collect::<Vec<_>>();
+        let key = |solution: &FixtureSolution| {
+            key_columns
+                .iter()
+                .map(|column| provider_iid(&solution.bindings[BINDING_NAMES[*column]]))
+                .collect::<Vec<_>>()
+        };
+        let keys = self
             .fixture
             .solutions
             .iter()
-            .filter_map(|solution| {
-                let concept_id = provider_iid(&solution.bindings[root_name]);
-                seen.insert(concept_id).then(|| {
-                    AnswerItem::Row(json!({
-                        "bindings": [{
-                            "binding": query.root,
-                            "concept_id": concept_id,
-                        }],
-                        "satisfied_role_edges": [],
-                    }))
-                })
-            })
-            .take(
-                query
-                    .limit
-                    .and_then(|limit| usize::try_from(limit).ok())
-                    .unwrap_or(usize::MAX),
-            )
-            .collect();
-        Box::pin(async move { feed(items, limits, consumer) })
-    }
-
-    fn rematch_page_typed_bounded<'a>(
-        &'a mut self,
-        query: &'a TypedPageRematch,
-        limits: BoundedAnswerLimits,
-        consumer: &'a mut dyn AnswerConsumer,
-    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        self.events
-            .rematch_statements
-            .fetch_add(1, Ordering::SeqCst);
-        let fixture = Arc::clone(&self.fixture);
-        let selected = query
-            .root_concept_ids
-            .iter()
-            .cloned()
+            .map(key)
             .collect::<BTreeSet<_>>();
-        let root_name = binding_name(query.root);
-        let items = fixture
+        let count = keys.len();
+        let number = |name: &str| {
+            captures(&format!(r"{name}\s+(\d+)"))
+                .captures(typeql)
+                .map(|value| value[1].parse::<usize>().unwrap())
+        };
+        let selected = keys
+            .into_iter()
+            .skip(number("offset").unwrap_or(0))
+            .take(number("limit").unwrap_or(usize::MAX))
+            .collect::<BTreeSet<_>>();
+        let expanded = self
+            .fixture
             .solutions
             .iter()
-            .filter(|solution| selected.contains(provider_iid(&solution.bindings[root_name])))
-            .map(|solution| AnswerItem::Document(rematch_document(&fixture, solution)))
-            .collect();
-        Box::pin(async move { feed(items, limits, consumer) })
-    }
-
-    fn hydrate_typed_bounded<'a>(
-        &'a mut self,
-        query: &'a TypedHydrateThings,
-        limits: BoundedAnswerLimits,
-        consumer: &'a mut dyn AnswerConsumer,
-    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        self.events
-            .hydration_statements
-            .fetch_add(1, Ordering::SeqCst);
-        let mut items = Vec::new();
-        for target in &query.targets {
-            for concept_id in &target.concept_ids {
-                let logical = logical_id(concept_id);
-                items.push(AnswerItem::Document(hydrated_binding(
-                    &self.fixture,
-                    target.binding,
-                    logical,
-                )));
-            }
-        }
-        Box::pin(async move { feed(items, limits, consumer) })
+            .filter(|solution| selected.contains(&key(solution)))
+            .collect::<Vec<_>>();
+        let result = if let Some(reduce) =
+            captures(r"reduce\s+\$(b\d+)\s*=\s*count").captures(typeql)
+        {
+            self.events.count_statements.fetch_add(1, Ordering::SeqCst);
+            QueryResult::Rows(vec![
+                json!({reduce[1].to_owned(): {"category":"value","value_type":"integer","value":count}}),
+            ])
+        } else if let Some(fetch) = captures(r#""_iid"\s*:\s*iid\(\$b(\d+)\)"#).captures(typeql) {
+            self.events
+                .hydration_statements
+                .fetch_add(1, Ordering::SeqCst);
+            let binding = fetch[1].parse::<usize>().unwrap();
+            let iids = expanded
+                .iter()
+                .map(|solution| solution.bindings[BINDING_NAMES[binding]].as_str())
+                .collect::<BTreeSet<_>>();
+            QueryResult::Documents(
+                iids.into_iter()
+                    .map(|logical| native_document(&self.fixture, logical))
+                    .collect(),
+            )
+        } else {
+            self.events
+                .selected_statements
+                .fetch_add(1, Ordering::SeqCst);
+            let columns = selections.last().unwrap();
+            assert!(
+                columns.iter().all(|column| *column < BINDING_NAMES.len()),
+                "only model identities leave this native fixture"
+            );
+            let mut seen = BTreeSet::new();
+            let selection_only = *columns == key_columns;
+            QueryResult::Rows(expanded.iter().filter_map(|solution| {
+                let values = columns.iter().map(|column| {
+                    let logical = &solution.bindings[BINDING_NAMES[*column]];
+                    (format!("b{column}"), json!({
+                        "category": if logical.starts_with("employment:") { "relation" } else { "entity" },
+                        "label": logical.split_once(':').unwrap().0, "iid": provider_iid(logical),
+                    }))
+                }).collect::<serde_json::Map<_,_>>();
+                let row = Value::Object(values);
+                (!selection_only || seen.insert(serde_json::to_string(&row).unwrap())).then_some(row)
+            }).collect())
+        };
+        Box::pin(async move { Ok(result) })
     }
 
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
@@ -233,131 +201,29 @@ impl TransactionOps for CorpusTransaction {
     }
 }
 
-fn feed(
-    items: Vec<AnswerItem>,
-    limits: BoundedAnswerLimits,
-    consumer: &mut dyn AnswerConsumer,
-) -> Result<BoundedAnswerStats, OrmError> {
-    let mut reader = BoundedAnswerReader::new(limits);
-    reader.check_before_read()?;
-    for item in items {
-        if reader.accept(item, consumer)? == AnswerControl::Stop {
-            break;
-        }
-    }
-    Ok(reader.stats())
-}
-
-fn solution_rows(fixture: &IdentityFixture) -> Vec<AnswerItem> {
-    fixture
-        .solutions
-        .iter()
-        .map(|solution| {
-            AnswerItem::Row(json!({
-                "bindings": BINDING_NAMES.iter().enumerate().map(|(binding, name)| json!({
-                    "binding": binding,
-                    "concept_id": provider_iid(&solution.bindings[*name]),
-                })).collect::<Vec<_>>(),
-                "satisfied_role_edges": [0, 1],
-            }))
-        })
-        .collect()
-}
-
-fn tuple_rows(fixture: &IdentityFixture, projection: &[u16], limit: u64) -> Vec<AnswerItem> {
-    let mut seen = BTreeSet::new();
-    fixture
-        .solutions
-        .iter()
-        .filter_map(|solution| {
-            let bindings = projection
-                .iter()
-                .map(|binding| {
-                    let concept_id = provider_iid(&solution.bindings[binding_name(*binding)]);
-                    (*binding, concept_id)
-                })
-                .collect::<Vec<_>>();
-            let identity = bindings
-                .iter()
-                .map(|(_, concept_id)| *concept_id)
-                .collect::<Vec<_>>();
-            seen.insert(identity).then(|| {
-                AnswerItem::Row(json!({
-                    "bindings": bindings
-                        .iter()
-                        .map(|(binding, concept_id)| json!({
-                            "binding": binding,
-                            "concept_id": concept_id,
-                        }))
-                        .collect::<Vec<_>>(),
-                    "satisfied_role_edges": [],
-                }))
-            })
-        })
-        .take(usize::try_from(limit).unwrap_or(usize::MAX))
-        .collect()
-}
-
-fn rematch_document(fixture: &IdentityFixture, solution: &FixtureSolution) -> Value {
-    json!({
-        "bindings": BINDING_NAMES.iter().enumerate().map(|(binding, name)| {
-            hydrated_binding(fixture, binding as u16, &solution.bindings[*name])
-        }).collect::<Vec<_>>(),
-        "satisfied_role_edges": [0, 1],
-    })
-}
-
-fn hydrated_binding(fixture: &IdentityFixture, binding: u16, logical: &str) -> Value {
+fn native_document(fixture: &IdentityFixture, logical: &str) -> Value {
     let type_name = logical.split_once(':').unwrap().0;
-    let field_name = if type_name == "employment" {
+    let field = if type_name == "employment" {
         "code"
     } else {
         "name"
     };
-    let field_value = display_value(logical);
-    let roles = if type_name == "employment" {
+    let mut document = json!({"_iid":provider_iid(logical), "_type":type_name,
+        "attributes":{field:display_value(logical)}});
+    if type_name == "employment" {
         let solution = fixture
             .solutions
             .iter()
             .find(|solution| solution.bindings["employment"] == logical)
-            .expect("every employment fixture identity has a complete solution");
-        vec![
-            hydrated_role("employee", &solution.bindings["person"]),
-            hydrated_role("employer", &solution.bindings["company"]),
-        ]
-    } else {
-        Vec::new()
-    };
-    json!({
-        "binding": binding,
-        "concept_id": provider_iid(logical),
-        "concrete_type": type_name,
-        "kind": if type_name == "employment" { "relation" } else { "entity" },
-        "attributes": [{
-            "field": field_name,
-            "value_type": "string",
-            "values": [field_value],
-        }],
-        "roles": roles,
-    })
-}
-
-fn hydrated_role(role: &str, logical_player: &str) -> Value {
-    let type_name = logical_player.split_once(':').unwrap().0;
-    json!({
-        "role": role,
-        "players": [{
-            "concept_id": provider_iid(logical_player),
-            "declared_type": type_name,
-            "concrete_type": type_name,
-            "kind": "entity",
-            "attributes": [{
-                "field": "name",
-                "value_type": "string",
-                "values": [display_value(logical_player)],
-            }],
-        }],
-    })
+            .unwrap();
+        for (index, binding) in ["person", "company"].into_iter().enumerate() {
+            let player = &solution.bindings[binding];
+            document[format!("_role_{index}_iid")] = json!(provider_iid(player));
+            document[format!("_role_{index}_type")] = json!(player.split_once(':').unwrap().0);
+            document[format!("_role_{index}_attributes")] = json!({"name":display_value(player)});
+        }
+    }
+    document
 }
 
 fn provider_iid(logical: &str) -> &'static str {
@@ -406,10 +272,6 @@ fn display_value(logical: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("-")
-}
-
-fn binding_name(binding: u16) -> &'static str {
-    BINDING_NAMES[usize::from(binding)]
 }
 
 fn key(field_name: &str) -> OwnedAttributeDescriptor {
@@ -725,10 +587,9 @@ async fn identity_manifest_executes_through_the_canonical_selected_result_backen
 
     assert_eq!(events.opens.load(Ordering::SeqCst), 6);
     assert_eq!(events.closes.load(Ordering::SeqCst), 6);
-    assert_eq!(events.selected_statements.load(Ordering::SeqCst), 1);
-    assert!(events.root_statements.load(Ordering::SeqCst) >= 6);
-    assert_eq!(events.rematch_statements.load(Ordering::SeqCst), 3);
-    assert!(events.hydration_statements.load(Ordering::SeqCst) >= 1);
+    assert_eq!(events.selected_statements.load(Ordering::SeqCst), 5);
+    assert_eq!(events.count_statements.load(Ordering::SeqCst), 2);
+    assert_eq!(events.hydration_statements.load(Ordering::SeqCst), 9);
 }
 
 #[tokio::test]

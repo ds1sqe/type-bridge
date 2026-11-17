@@ -17,7 +17,7 @@ HARNESS = PRODUCER.parents[1] / "rust_acceptance.rs"
 def test_rust_projected_producer_uses_real_generated_projection_paths() -> None:
     source = PRODUCER.read_text()
     assert "ProxyDatabase::connect" in source
-    assert "RemoteQueryResponseV2::new" in source
+    assert "StagedReply::new" in source
     assert "SCHEMA.generated_projection_validator()" in source
     assert "foreign::Person" in source
     assert "create_new(true)" in source

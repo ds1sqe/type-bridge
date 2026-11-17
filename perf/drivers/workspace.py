@@ -107,17 +107,18 @@ class Workspace:
         self.run("migration", "apply", "--environment", "perf")
 
     def declared(self) -> bytes:
-        """The canonical declared schema the query-only authority checks."""
+        """The canonical declared schema used by the SDK plan authorities."""
         self.run("schema", "export-declared")
         return (self.root / "declared-schema.json").read_bytes()
 
 
 def drop(address: str, http_port: int, username: str, password: str, database: str) -> None:
     """Delete a managed database and its migration journal, if they exist."""
-    from type_bridge_core import PyRustDatabase
+    from type_bridge_core import PyDatabase
 
-    for name in (database, f"{database}__tbv2_journal"):
-        db = PyRustDatabase.connect(
+    # Mirrors type_bridge_contract::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX.
+    for name in (database, f"{database}__tb_journal"):
+        db = PyDatabase.connect(
             address, name, username=username, password=password, http_port=http_port
         )
         try:

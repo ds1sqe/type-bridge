@@ -18,7 +18,7 @@ compatibility:
   semantic-profile: typedb-3.13.6/v1
 
 migrations:
-  directory: migrations/v2
+  directory: migrations
   app-label: application
   destructive: require-approval
 
@@ -64,6 +64,40 @@ Rust generator integrations can pass the same mapping using
 `ProjectionConfig::typescript().with_type_name_override(type_id, name)?` before
 calling `project`. Pass canonical `TypeId` values, including their type kind.
 
+Generated member names escape target language keywords and runtime helpers
+without changing the database label. Python and TypeScript append `_`; Rust
+appends `_` until the name also avoids plan-handle helpers (`where` becomes
+`where__`). For example, `type` becomes `type_` in TypeScript and Rust and
+remains `type` in Python. If escaping collides with another declared member,
+generation reports the collision during `schema check`; rename the field.
+Model names that collide with runtime exports also append `_` (`Query_` in
+Python/TypeScript, `None_` in Rust, and `queryzk` after a C package prefix). Existing valid names keep their bytes.
+
+Collision checks still refuse names when target conversion or escaping makes
+them identical. These include keyword/helper escape pairs (`where`/`where_`,
+`value`/`value_`, `self`/`self_`, `class`/`class_`), punctuation normalization
+(`my-name`/`my_name`), case conversion (`Person`/`person`), and model names
+that overlap derived reference, family, or handle names. The exact collisions
+depend on the target: C-v1's reversible label encoding distinguishes punctuation
+and case. Use `type-names` for model-name conflicts; member conflicts require
+renaming the field.
+
+C retains its reversible C-v1 label encoding. A bare struct member that is a
+C/C++ keyword gets the literal suffix `zk`, as before: `class` becomes
+`classzk`. Prefixed getters and helpers remain unchanged when their complete
+identifier is valid and unique (`item_plan_class`). A field or role whose
+suffix collides with a generated identifier gets `zk` in its projection name:
+`type` becomes `typezk`, avoiding the model's `_type` token; `where` becomes
+`wherezk`, avoiding its `_where` helper. Tokens and getters use that escaped
+projection name in these collision cases. Inside a row view, payload members
+named `kind` or `deleted` get `zk` only there, to avoid the view's header;
+unique prefixed getters and authoring members retain their names.
+
+The marker is not a hash: C-v1 encodes every physical `z` as `zz`, `-` as `zh`,
+and `_` as `zu`, so physical `classzk` becomes `classzzk` and cannot collide
+with the bare keyword member `classzk`. Valid existing prefixed names keep
+their previous spelling.
+
 ## Generate
 
 ```bash
@@ -95,13 +129,13 @@ runtime during import. Installation verifies exact generated classes and
 fingerprints. Rust generated crates bind the equivalent `SchemaPackage` through
 the public SDK.
 
-Generated proxy connections derive Query V2 authority from those private
+Generated proxy connections derive query authority from those private
 package bytes: `connect_proxy`/`connectProxy` and `ExchangeConnection` in
 Python and TypeScript, `SCHEMA.connect(ProxyConnectionPolicy)` in Rust, and
 `type_bridge_proxy_connection_open_v1` with the package in C. Applications
 supply a server endpoint (or advertisement bytes and a caller-owned exchange)
 and resource limits; they do not read an authority file or construct
-`QueryV2Authority`.
+`PlanAuthority`.
 
 ## Server authority artifact
 
@@ -125,7 +159,7 @@ from `typebridge.yaml` after a schema change.
 
 The generic server cannot import an arbitrary generated application package and
 does not compile raw Split-YAML at startup. Mount this generated artifact
-read-only and reference it with `[v2].schema_authority_file`; the server
+read-only and reference it with `[staged].schema_authority_file`; the server
 independently compares it with the schema-fenced live TypeDB state.
 
 Generated code is deterministic for the same workspace inputs and toolchain
@@ -158,10 +192,10 @@ schema/migration diff, regenerate, and run the target type checker.
 === "Rust"
 
     ```rust
-    let person = db.entities::<Person>().put(PersonCreate::new(
-        PersonId::new("ada".to_owned()),
-        Some(Age::new(36)),
-    )).await?;
+    let person = db.entities::<Person>().put(PersonCreate::try_new(
+        PersonId::new("ada".to_owned())?,
+        Some(Age::new(36)?),
+    )?).await?;
     ```
 
 Exact constructor order and optional fields in Rust are schema-generated; use
@@ -175,5 +209,14 @@ consumer. TypeBridge's own acceptance suites generate fresh packages and reject
 dependencies on handwritten authoring modules.
 
 Programmatic TypeQL/TOML-to-model functions and target-language model factories
-are not generator alternatives. Historical TOML is supported only through the
-read-only conversion described in [TOML recovery](toml.md).
+are removed. Use Split-YAML generation. Convert historical TOML with TypeBridge
+2.3.x before upgrading to 3.0.
+
+## Abstract attributes
+
+Abstract attribute types can describe a family of concrete attribute subtypes.
+Generated models in 3.0 must own the concrete subtypes rather than the abstract
+attribute itself. All four generators refuse abstract-attribute ownership with
+the owner, attribute and source location. `schema check` applies this rule when
+bindings are configured; schema-only checking and canonical migrations still
+accept the valid TypeDB schema.

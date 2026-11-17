@@ -20,7 +20,7 @@ COMPARATOR_PATH = SOURCE_ROOT / "scripts/ci/sdk_models_compare.py"
 
 def _load_comparator() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
-        "sdk_conformance_v3_comparator",
+        "sdk_conformance_comparator",
         COMPARATOR_PATH,
     )
     assert spec is not None and spec.loader is not None

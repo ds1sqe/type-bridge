@@ -51,11 +51,11 @@ fn invalid_ordinal() -> SdkExecutionDiagnostic {
     )
 }
 
-pub(crate) unsafe fn resolve_token(
+pub(crate) unsafe fn validate_token(
     package: &SchemaPackageState,
     token: *const TypeBridgeProjectedTokenV1,
     expected: ProjectedTokenKind,
-) -> Result<ProjectedTokenIdentity, SdkExecutionDiagnostic> {
+) -> Result<TypeBridgeProjectedTokenV1, SdkExecutionDiagnostic> {
     if token.is_null() {
         return Err(invalid_layout());
     }
@@ -78,6 +78,16 @@ pub(crate) unsafe fn resolve_token(
     if token.projection_digest != digest {
         return Err(invalid_brand());
     }
+    Ok(token)
+}
+
+pub(crate) unsafe fn resolve_token(
+    package: &SchemaPackageState,
+    token: *const TypeBridgeProjectedTokenV1,
+    expected: ProjectedTokenKind,
+) -> Result<ProjectedTokenIdentity, SdkExecutionDiagnostic> {
+    // SAFETY: the same readable descriptor contract is forwarded to the shared validator.
+    let token = unsafe { validate_token(package, token, expected) }?;
     package
         ._projection
         .projected_token_identity(expected, token.ordinal)

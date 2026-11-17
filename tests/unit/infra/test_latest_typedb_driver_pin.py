@@ -461,9 +461,7 @@ def test_rejects_default_features_that_do_not_include_band9(tmp_path: Path) -> N
         tmp_path,
         "=3.14.0",
         [_version("3.14.0")],
-        feature_block=(
-            '[features]\ndefault = ["band8"]\nband8 = []\nband9 = ["dep:typedb-driver"]\n'
-        ),
+        feature_block=('[features]\ndefault = []\nband9 = ["dep:typedb-driver"]\n'),
     )
 
     assert result.returncode == 1
@@ -477,29 +475,27 @@ def test_rejects_band9_without_a_direct_official_driver_activation(tmp_path: Pat
         [_version("3.14.0")],
         dependency=(
             'typedb-driver = { version = "=3.14.0", optional = true }\n'
-            'type-bridge-typedb-driver-b8 = { version = "=3.11.5", optional = true }'
+            'synthetic-driver = { version = "=3.14.0", optional = true }'
         ),
-        feature_block=(
-            '[features]\ndefault = ["band9"]\nband9 = ["dep:type-bridge-typedb-driver-b8"]\n'
-        ),
+        feature_block=('[features]\ndefault = ["band9"]\nband9 = ["dep:synthetic-driver"]\n'),
     )
 
     assert result.returncode == 1
     assert "band9 must directly activate exactly dep:typedb-driver" in result.stderr
 
 
-def test_rejects_a_transitive_legacy_driver_activation_from_band9(tmp_path: Path) -> None:
+def test_rejects_a_transitive_retired_driver_activation_from_band9(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
         "=3.14.0",
         [_version("3.14.0")],
         dependency=(
             'typedb-driver = { version = "=3.14.0", optional = true }\n'
-            'type-bridge-typedb-driver-b8 = { version = "=3.11.5", optional = true }'
+            'synthetic-driver = { package = "type-bridge-typedb-driver-retired", version = "=3.14.0", optional = true }'
         ),
         feature_block=(
             '[features]\ndefault = ["band9"]\n'
-            'legacy = ["dep:type-bridge-typedb-driver-b8"]\n'
+            'legacy = ["dep:synthetic-driver"]\n'
             'band9 = ["dep:typedb-driver", "legacy"]\n'
         ),
     )

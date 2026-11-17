@@ -21,8 +21,8 @@ const STAGED_CONSUMER: &str = r#"#include <stddef.h>
 #define STAGED_STATIC_ASSERT(value, message) _Static_assert(value, message)
 #endif
 
-STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "staged ABI major drifted");
-STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 7u, "staged ABI minor drifted");
+STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 2u, "staged ABI major drifted");
+STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 0u, "staged ABI minor drifted");
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_TRANSACTION_READ == 1u, "read kind drifted");
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_TRANSACTION_WRITE == 2u, "write kind drifted");
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_PLAN_ANSWER_ROWS == 1, "rows answer drifted");
@@ -88,8 +88,8 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *failure_get_fn)(
 
 void staged_prototypes(void);
 void staged_prototypes(void) {
-  plan_decode_fn decode = &type_bridge_plan_v3_decode;
-  plan_bytes_fn bytes = &type_bridge_plan_v3_canonical_bytes;
+  plan_decode_fn decode = &type_bridge_plan_decode;
+  plan_bytes_fn bytes = &type_bridge_plan_canonical_bytes;
   plan_free_fn plan_free = &type_bridge_plan_free;
   transaction_fn transaction = &type_bridge_database_transaction;
   proxy_transaction_fn proxy_transaction = &type_bridge_proxy_connection_transaction;
@@ -134,11 +134,11 @@ int staged_consume(const type_bridge_database_t *database,
   size_t length = 0u;
   int result = 1;
 
-  if (type_bridge_plan_v3_decode(schema, schema_len, plan_bytes, plan_len,
+  if (type_bridge_plan_decode(schema, schema_len, plan_bytes, plan_len,
                                  &plan, &diagnostics) != TYPE_BRIDGE_STATUS_OK) {
     goto done;
   }
-  if (type_bridge_plan_v3_canonical_bytes(plan, echo, echo_capacity, &length) !=
+  if (type_bridge_plan_canonical_bytes(plan, echo, echo_capacity, &length) !=
           TYPE_BRIDGE_STATUS_OK ||
       length != plan_len) {
     goto done;

@@ -81,6 +81,8 @@ struct InstalledMatchProjectionAuthority {
 /// proxy uses for the same package, instead of one rebuilt from descriptors.
 #[derive(Debug)]
 pub struct InstalledSchemaAuthority {
+    declared: Arc<type_bridge_contract::schema::DeclaredSchema>,
+    plan_authority: std::sync::OnceLock<crate::plan_builders::authority::PlanAuthority>,
     resolved: ResolvedSchema,
     managed: ManagedSchemaState,
 }
@@ -91,13 +93,37 @@ impl InstalledSchemaAuthority {
     #[must_use]
     pub fn from_verified(authority: &VerifiedSchemaAuthority) -> Self {
         Self {
+            declared: Arc::new(authority.declared_schema().clone()),
+            plan_authority: std::sync::OnceLock::new(),
             resolved: authority.resolved_schema().clone(),
             managed: authority.managed_state().clone(),
         }
     }
 
-    pub(crate) const fn new(resolved: ResolvedSchema, managed: ManagedSchemaState) -> Self {
-        Self { resolved, managed }
+    pub(crate) fn new(
+        declared: type_bridge_contract::schema::DeclaredSchema,
+        resolved: ResolvedSchema,
+        managed: ManagedSchemaState,
+    ) -> Self {
+        Self {
+            declared: Arc::new(declared),
+            plan_authority: std::sync::OnceLock::new(),
+            resolved,
+            managed,
+        }
+    }
+
+    pub(crate) fn declared(&self) -> &type_bridge_contract::schema::DeclaredSchema {
+        &self.declared
+    }
+
+    pub(crate) fn shared_declared(&self) -> Arc<type_bridge_contract::schema::DeclaredSchema> {
+        Arc::clone(&self.declared)
+    }
+
+    pub(crate) fn plan_authority(&self) -> &crate::plan_builders::authority::PlanAuthority {
+        self.plan_authority
+            .get_or_init(|| crate::plan_builders::authority::PlanAuthority::from_installed(self))
     }
 
     pub(crate) const fn resolved(&self) -> &ResolvedSchema {
@@ -623,7 +649,10 @@ impl DescriptorRegistry {
         ))
     }
 
-    fn descriptor_by_id(&self, descriptor_id: &DescriptorId) -> Option<TypeDescriptorRef> {
+    pub(crate) fn descriptor_by_id(
+        &self,
+        descriptor_id: &DescriptorId,
+    ) -> Option<TypeDescriptorRef> {
         self.descriptors.read().ok().and_then(|descriptors| {
             descriptors
                 .values()

@@ -1,5 +1,6 @@
 //! Provider-neutral fenced migration journal and recovery contracts.
 
+use crate::DataStepEventRecord;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -718,6 +719,7 @@ pub struct OpenPlanRecord {
     plan: JournalEntry<PlanRecord>,
     events: Vec<JournalEntry<GroupEventRecord>>,
     backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
+    data_events: Vec<JournalEntry<DataStepEventRecord>>,
 }
 
 impl OpenPlanRecord {
@@ -740,6 +742,16 @@ impl OpenPlanRecord {
         events: Vec<JournalEntry<GroupEventRecord>>,
         backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
     ) -> Result<Self, Diagnostic> {
+        Self::from_store_with_data_events(plan, events, backfill_events, Vec::new())
+    }
+
+    /// Rebuild all journal events, including atomic data-step commit boundaries.
+    pub fn from_store_with_data_events(
+        plan: JournalEntry<PlanRecord>,
+        events: Vec<JournalEntry<GroupEventRecord>>,
+        backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
+        data_events: Vec<JournalEntry<DataStepEventRecord>>,
+    ) -> Result<Self, Diagnostic> {
         let mut previous = plan.sequence();
         let mut previous_fence = plan.record().fence();
         let mut ordered: Vec<(
@@ -758,6 +770,14 @@ impl OpenPlanRecord {
                 )
             })
             .chain(backfill_events.iter().map(|event| {
+                (
+                    event.sequence(),
+                    event.record().fence(),
+                    event.record().migration_id(),
+                    event.record().manifest_digest(),
+                )
+            }))
+            .chain(data_events.iter().map(|event| {
                 (
                     event.sequence(),
                     event.record().fence(),
@@ -794,6 +814,9 @@ impl OpenPlanRecord {
             || backfill_events
                 .iter()
                 .any(|event| event.record().scope() != plan.record().scope())
+            || data_events
+                .iter()
+                .any(|event| event.record().scope() != plan.record().scope())
         {
             return Err(failure(
                 DiagnosticCategory::Integrity,
@@ -805,6 +828,7 @@ impl OpenPlanRecord {
             plan,
             events,
             backfill_events,
+            data_events,
         })
     }
 
@@ -821,6 +845,10 @@ impl OpenPlanRecord {
     /// Return ordered sequenced backfill events.
     pub fn backfill_events(&self) -> &[JournalEntry<BackfillEventRecord>] {
         &self.backfill_events
+    }
+    /// Return atomic data-step events in journal order.
+    pub fn data_events(&self) -> &[JournalEntry<DataStepEventRecord>] {
+        &self.data_events
     }
 }
 
@@ -1877,6 +1905,7 @@ pub struct OpenRollbackPlanRecord {
     plan: JournalEntry<RollbackPlanRecord>,
     events: Vec<JournalEntry<RollbackStepEventRecord>>,
     backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
+    data_events: Vec<JournalEntry<DataStepEventRecord>>,
 }
 
 impl OpenRollbackPlanRecord {
@@ -1897,6 +1926,16 @@ impl OpenRollbackPlanRecord {
         events: Vec<JournalEntry<RollbackStepEventRecord>>,
         backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
     ) -> Result<Self, Diagnostic> {
+        Self::from_store_with_data_events(plan, events, backfill_events, Vec::new())
+    }
+
+    /// Rebuild all journal events, including atomic data-step commit boundaries.
+    pub fn from_store_with_data_events(
+        plan: JournalEntry<RollbackPlanRecord>,
+        events: Vec<JournalEntry<RollbackStepEventRecord>>,
+        backfill_events: Vec<JournalEntry<BackfillEventRecord>>,
+        data_events: Vec<JournalEntry<DataStepEventRecord>>,
+    ) -> Result<Self, Diagnostic> {
         let mut previous = plan.sequence();
         let mut previous_fence = plan.record().fence();
         let mut ordered: Vec<(
@@ -1915,6 +1954,14 @@ impl OpenRollbackPlanRecord {
                 )
             })
             .chain(backfill_events.iter().map(|event| {
+                (
+                    event.sequence(),
+                    event.record().fence(),
+                    event.record().migration_id(),
+                    event.record().manifest_digest(),
+                )
+            }))
+            .chain(data_events.iter().map(|event| {
                 (
                     event.sequence(),
                     event.record().fence(),
@@ -1951,6 +1998,9 @@ impl OpenRollbackPlanRecord {
             || backfill_events
                 .iter()
                 .any(|event| event.record().scope() != plan.record().scope())
+            || data_events
+                .iter()
+                .any(|event| event.record().scope() != plan.record().scope())
         {
             return Err(failure(
                 DiagnosticCategory::Integrity,
@@ -1962,6 +2012,7 @@ impl OpenRollbackPlanRecord {
             plan,
             events,
             backfill_events,
+            data_events,
         })
     }
 
@@ -1978,6 +2029,10 @@ impl OpenRollbackPlanRecord {
     /// Return ordered sequenced reverse backfill events.
     pub fn backfill_events(&self) -> &[JournalEntry<BackfillEventRecord>] {
         &self.backfill_events
+    }
+    /// Return atomic data-step events in journal order.
+    pub fn data_events(&self) -> &[JournalEntry<DataStepEventRecord>] {
+        &self.data_events
     }
 }
 
@@ -2004,6 +2059,21 @@ pub trait MigrationLeaseStore: Send + Sync {
 /// Every write must atomically reject a lease that is not the current active
 /// scope, holder, and fence. There is deliberately no advisory validate method.
 pub trait MigrationExecutionJournal: Send + Sync {
+    /// Append an atomic data-step commit boundary under the active fence.
+    fn record_data_event<'a>(
+        &'a self,
+        _lease: &'a MigrationLease,
+        _record: DataStepEventRecord,
+    ) -> ExecutionFuture<'a, JournalEntry<DataStepEventRecord>> {
+        Box::pin(async {
+            Err(failure(
+                DiagnosticCategory::UnsupportedCapability,
+                "migration_data_journal_required",
+                "data steps require a journal with atomic data-event support",
+            ))
+        })
+    }
+
     /// Begin one fully verified plan after stale-ledger and live-source checks.
     ///
     /// An open plan of either direction is exclusive: the store must reject a

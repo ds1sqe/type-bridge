@@ -204,6 +204,7 @@ impl DatabaseDeletionPlanState {
 pub(crate) struct MigrationCatalogState {
     catalog: MigrationCatalog,
     fingerprint_json: Vec<u8>,
+    pub(crate) user_steps: std::sync::Mutex<crate::migration_user_steps::UserSteps>,
 }
 
 impl MigrationCatalogState {
@@ -222,6 +223,7 @@ impl MigrationCatalogState {
         Arc::new(Self {
             catalog,
             fingerprint_json,
+            user_steps: Default::default(),
         })
     }
 
@@ -247,6 +249,7 @@ impl MigrationCatalogState {
         Ok(Arc::new(Self {
             catalog,
             fingerprint_json,
+            user_steps: Default::default(),
         }))
     }
 
@@ -295,6 +298,11 @@ impl MigrationCatalogState {
             .map(|plan| {
                 Arc::new(MigrationPlanState {
                     catalog: Arc::clone(self),
+                    user_steps: self
+                        .user_steps
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone(),
                     plan: MigrationPlanKind::Apply(plan),
                 })
             })
@@ -312,6 +320,11 @@ impl MigrationCatalogState {
             .map(|plan| {
                 Arc::new(MigrationPlanState {
                     catalog: Arc::clone(self),
+                    user_steps: self
+                        .user_steps
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone(),
                     plan: MigrationPlanKind::Rollback(plan),
                 })
             })
@@ -468,6 +481,7 @@ enum MigrationPlanKind {
 pub(crate) struct MigrationPlanState {
     catalog: Arc<MigrationCatalogState>,
     plan: MigrationPlanKind,
+    user_steps: crate::migration_user_steps::UserSteps,
 }
 
 impl MigrationPlanState {
@@ -556,6 +570,7 @@ impl MigrationPlanState {
         .map_err(plan_diagnostic)?;
         Ok(Arc::new(Self {
             catalog: Arc::clone(&self.catalog),
+            user_steps: self.user_steps.clone(),
             plan,
         }))
     }
@@ -572,15 +587,17 @@ impl MigrationPlanState {
         self.require_execution_authorized()?;
         let holder = LeaseHolderId::new(holder)?;
         let managed_database = database.orm_database_arc();
+        let user_steps = self.user_steps.bind(database)?;
         match &self.plan {
             MigrationPlanKind::Apply(plan) => database
                 .block_on(
-                    type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled(
+                    type_bridge_schema_migration_typedb::execute_catalog_apply_plan_controlled_with_user_steps(
                         managed_database,
                         &self.catalog.catalog,
                         &holder,
                         plan,
                         control,
+                        &user_steps.steps,
                     )
                     .instrument(entry.clone()),
                 )
@@ -588,12 +605,13 @@ impl MigrationPlanState {
                 .map(|report| MigrationPlanExecutionState { report }),
             MigrationPlanKind::Rollback(plan) => database
                 .block_on(
-                    type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled(
+                    type_bridge_schema_migration_typedb::execute_catalog_rollback_plan_controlled_with_user_steps(
                         managed_database,
                         &self.catalog.catalog,
                         &holder,
                         plan,
                         control,
+                        &user_steps.steps,
                     )
                     .instrument(entry.clone()),
                 )
@@ -959,6 +977,7 @@ mod tests {
         let owner = std::sync::Arc::new(MigrationCatalogState {
             catalog,
             fingerprint_json,
+            user_steps: Default::default(),
         });
 
         assert_eq!(owner.len(), 0);

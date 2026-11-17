@@ -2,8 +2,6 @@ mod common;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use type_bridge_orm::_codegen::generator::generate_from_typeql;
-
 fn bench_schema_generate_define(c: &mut Criterion) {
     let mut group = c.benchmark_group("query/schema_generate");
 
@@ -25,28 +23,5 @@ fn bench_schema_generate_define(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_codegen_from_typeql(c: &mut Criterion) {
-    let mut group = c.benchmark_group("query/codegen");
-
-    group.bench_function("small_schema", |b| {
-        b.iter(|| {
-            generate_from_typeql(black_box(common::SMALL_CODEGEN_SCHEMA)).unwrap();
-        })
-    });
-
-    let medium_tql = common::medium_codegen_schema();
-    group.bench_function("medium_schema", |b| {
-        b.iter(|| {
-            generate_from_typeql(black_box(&medium_tql)).unwrap();
-        })
-    });
-
-    group.finish();
-}
-
-criterion_group!(
-    benches,
-    bench_schema_generate_define,
-    bench_codegen_from_typeql
-);
+criterion_group!(benches, bench_schema_generate_define);
 criterion_main!(benches);

@@ -15,6 +15,7 @@ use type_bridge_contract::schema::{
     AnnotationKindId, AnnotationSubjectId, CollectionMode, DocumentId, OwnsFactId, RelatesFactId,
     SchemaFactId, SubFactId,
 };
+use type_bridge_contract::value::Cardinality;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
 fn projection(source: &str) -> type_bridge_contract::projection::RuntimeProjection {
@@ -1108,6 +1109,10 @@ fn typescript_runtime_reserved_model_members_are_escaped() {
         let label = match *reserved {
             "iid" => "Iid",
             "plays" => "Plays",
+            "delete" => "Delete",
+            "insert" => "Insert",
+            "match" => "Match",
+            "put" => "Put",
             other => other,
         };
         let source = format!(
@@ -1555,4 +1560,178 @@ entities:
         decode_runtime_projection_verified(&bytes, &semantic, &binding).unwrap(),
         first
     );
+}
+
+#[test]
+fn specializing_role_inputs_preserve_the_inherited_required_minimum() {
+    let source = r#"format: typebridge.schema/v2
+entities:
+  person: {}
+relations:
+  base:
+    abstract: true
+    relates:
+      source: {card: 1}
+  child:
+    sub: base
+    relates:
+      origin: {as: source}
+plays:
+  person:
+    child: [origin]
+"#;
+    let child = TypeId::new(TypeKind::Relation, "child").unwrap();
+    let origin = RoleId::new("child", "origin").unwrap();
+    for (target, config, handler) in [
+        (
+            BindingTarget::Python,
+            ProjectionConfig::python(),
+            ProjectionHandler::python_v1(),
+        ),
+        (
+            BindingTarget::TypeScript,
+            ProjectionConfig::typescript(),
+            ProjectionHandler::typescript_v1(),
+        ),
+        (
+            BindingTarget::Rust,
+            ProjectionConfig::rust(),
+            ProjectionHandler::rust_v1(),
+        ),
+        (
+            BindingTarget::C,
+            ProjectionConfig::c(CSymbolPrefix::new("required_role").unwrap()),
+            ProjectionHandler::c_v1(),
+        ),
+    ] {
+        let projected = projection_for(source, target, config, handler);
+        let role = &projected.models()[&child].create().roles()[&origin];
+        assert!(role.multiplicity().required(), "{}", target.as_str());
+        assert_eq!(
+            role.multiplicity().cardinality(),
+            Cardinality::new(1, Some(1)).unwrap()
+        );
+    }
+}
+
+#[test]
+fn reserved_model_members_escape_only_in_the_target_that_reserves_them() {
+    let source = include_str!("../../schema-codegen/tests/fixtures/reserved-member-names.yaml");
+    let owner = TypeId::new(TypeKind::Entity, "sample").unwrap();
+    for (target, config, handler, expected) in [
+        (
+            BindingTarget::Python,
+            ProjectionConfig::python(),
+            ProjectionHandler::python_v1(),
+            [
+                "count",
+                "type",
+                "value_",
+                "where_",
+                "default",
+                "self_",
+                "kind",
+                "number",
+                "ref",
+                "crate",
+                "deleted_",
+                "subtypes_",
+                "none",
+                "query_",
+            ],
+        ),
+        (
+            BindingTarget::TypeScript,
+            ProjectionConfig::typescript(),
+            ProjectionHandler::typescript_v1(),
+            [
+                "count",
+                "type_",
+                "value",
+                "where_",
+                "default_",
+                "self",
+                "kind",
+                "number_",
+                "ref",
+                "crate",
+                "deleted_",
+                "subtypes_",
+                "none",
+                "query",
+            ],
+        ),
+        (
+            BindingTarget::Rust,
+            ProjectionConfig::rust(),
+            ProjectionHandler::rust_v1(),
+            [
+                "count",
+                "type_",
+                "value",
+                "where__",
+                "default",
+                "self_",
+                "kind",
+                "number",
+                "ref_",
+                "crate_",
+                "deleted_",
+                "subtypes_",
+                "none",
+                "query",
+            ],
+        ),
+        (
+            BindingTarget::C,
+            ProjectionConfig::c(CSymbolPrefix::new("reserved_test").unwrap()),
+            ProjectionHandler::c_v1(),
+            [
+                "reserved_test_count",
+                "reserved_test_typezk",
+                "reserved_test_value",
+                "reserved_test_wherezk",
+                "reserved_test_default",
+                "reserved_test_self",
+                "reserved_test_kind",
+                "reserved_test_number",
+                "reserved_test_refzk",
+                "reserved_test_crate",
+                "reserved_test_deleted",
+                "reserved_test_subtypeszk",
+                "reserved_test_none",
+                "reserved_test_query",
+            ],
+        ),
+    ] {
+        let projected = projection_for(source, target, config, handler);
+        let type_names = match target {
+            BindingTarget::Python => ["None_", "Query_"],
+            BindingTarget::TypeScript => ["None", "Query_"],
+            BindingTarget::Rust => ["None_", "Query"],
+            BindingTarget::C => ["reserved_test_none", "reserved_test_queryzk"],
+            _ => unreachable!(),
+        };
+        for (label, name) in ["none", "query"].into_iter().zip(type_names) {
+            let id = TypeId::new(TypeKind::Attribute, label).unwrap();
+            assert_eq!(projected.models()[&id].target_name().as_str(), name);
+        }
+        for (label, expected) in [
+            "count", "type", "value", "where", "default", "self", "kind", "number", "ref", "crate",
+            "deleted", "subtypes", "none", "query",
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            let id = OwnsFactId::new(owner.clone(), AttributeId::new(label).unwrap()).unwrap();
+            assert_eq!(
+                projected.models()[&owner].query_tokens().fields()[&id]
+                    .target_name()
+                    .as_str(),
+                expected,
+                "{} {label}",
+                target.as_str()
+            );
+        }
+    }
 }

@@ -33,6 +33,7 @@ use type_bridge_query::{
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
 
 struct LiveSchemaFixture {
+    declared: DeclaredSchema,
     employee: TypeId,
     employment: TypeId,
     managed: ManagedSchemaState,
@@ -124,6 +125,7 @@ fn live_schema_fixture(suffix: &str) -> LiveSchemaFixture {
     )
     .unwrap();
     LiveSchemaFixture {
+        declared,
         employee,
         employment,
         managed,
@@ -262,7 +264,8 @@ async fn validated_assertions_execute_on_one_borrowed_real_transaction() {
 
     let empty = validated_plan(&fixture, "Missing");
     let violating = validated_plan(&fixture, "Ada");
-    let lowered = lower_migration_assertion(&violating).expect("provider lowering");
+    let lowered =
+        lower_migration_assertion(&violating, &fixture.declared).expect("provider lowering");
     for syntax in [
         " isa ", " isa! ", " has ", "links (", " == ", " != ", " < ", " <= ", " > ", " >= ",
         "not {",
@@ -272,7 +275,7 @@ async fn validated_assertions_execute_on_one_borrowed_real_transaction() {
             "missing lowered syntax {syntax:?}"
         );
     }
-    assert!(lowered.typeql().trim_end().ends_with("limit 1;"));
+    assert!(lowered.typeql().contains("limit 1;"));
 
     let available = violating.plan().required_capabilities().clone();
     let missing = CapabilitySet::new();
@@ -287,6 +290,7 @@ async fn validated_assertions_execute_on_one_borrowed_real_transaction() {
         &mut transaction,
         &empty,
         MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &missing,
             StructuralLimits::CANONICAL,
@@ -303,6 +307,7 @@ async fn validated_assertions_execute_on_one_borrowed_real_transaction() {
         &mut transaction,
         &empty,
         MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &wrong_state,
             &available,
             StructuralLimits::CANONICAL,
@@ -319,6 +324,7 @@ async fn validated_assertions_execute_on_one_borrowed_real_transaction() {
         &mut transaction,
         &empty,
         MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &available,
             StructuralLimits::CANONICAL,
@@ -331,6 +337,7 @@ async fn validated_assertions_execute_on_one_borrowed_real_transaction() {
         &mut transaction,
         &violating,
         MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &available,
             StructuralLimits::CANONICAL,
@@ -432,6 +439,7 @@ async fn assertion_and_multiple_schema_statements_commit_in_one_schema_transacti
         &mut transaction,
         &assertion,
         MigrationAssertionExecutionContext::new(
+            &fixture.declared,
             &fixture.managed,
             &available,
             StructuralLimits::CANONICAL,

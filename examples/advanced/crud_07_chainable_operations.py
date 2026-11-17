@@ -1,4 +1,4 @@
-"""Run generated filtered updates and deletes."""
+"""Fetch filtered models, then update and delete them in bulk."""
 
 from app_models import Age, Aliases, Person
 
@@ -12,10 +12,14 @@ def add_adult_alias(person: Person) -> None:
 def main() -> None:
     db = Database(address="localhost:1729", database="typebridge-examples")
     db.connect()
-    adults = Person.manager(db).filter(age__gte=Age(18))
-    updated = adults.update_with(add_adult_alias)
-    deleted = Person.manager(db).filter(age__lt=Age(18)).delete()
-    print("updated:", len(updated), "deleted:", deleted)
+    manager = Person.manager(db)
+    adults = manager.filter(age__gte=Age(18)).all()
+    for person in adults:
+        add_adult_alias(person)
+    updated = manager.update_many(adults)
+    minors = manager.filter(age__lt=Age(18)).all()
+    deleted = manager.delete_many(minors)
+    print("updated:", updated.count, "deleted:", len(deleted))
 
 
 if __name__ == "__main__":

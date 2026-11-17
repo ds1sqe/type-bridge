@@ -280,15 +280,15 @@ fn exact_sdk_models_fingerprint_inventory_is_reproducible() {
 }
 
 #[test]
-fn sdk_catalogs_and_release_archive_use_current_emitter_resources() {
+fn sdk_catalog_uses_current_emitter_resources() {
     let baseline = projections_for(include_str!("acceptance/schema.yaml"), "fixture");
     let expected = baseline
         .iter()
         .map(|(binding, value)| (*binding, value.projection_fingerprint()))
         .collect::<BTreeMap<_, _>>();
-    let artifact = projections_for(SOURCE, "tb_sdkv3");
+    let artifact = projections_for(SOURCE, "tb_sdk");
     let archive = format!(
-        "tb_sdkv3-c-{}.tar.gz",
+        "tb_sdk-c-{}.tar.gz",
         artifact["c"]
             .projection_fingerprint()
             .as_fingerprint()
@@ -324,10 +324,31 @@ fn sdk_catalogs_and_release_archive_use_current_emitter_resources() {
             );
         }
     }
+}
+
+#[test]
+fn frozen_release_archive_matches_its_published_inventory() {
+    // Published 2.3.2 evidence is independent of the current emitter and ABI.
+    const ARCHIVE: &str =
+        "tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz";
     let policy: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../.github/release/c-2.3.3.json")).unwrap();
-    assert!(
-        policy["public_files"].get(&archive).is_some(),
-        "release archive fingerprint is stale"
+        serde_json::from_str(include_str!("../../../../.github/release/c-2.3.2.json")).unwrap();
+    let archives = policy["ci_artifacts"]["c-package-artifacts-linux-x86_64-gnu"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|name| name.as_str().filter(|name| name.starts_with("tb_sdkv3-c-")))
+        .collect::<Vec<_>>();
+    assert_eq!(archives, [ARCHIVE]);
+    let public_archives = policy["public_files"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name.starts_with("tb_sdkv3-c-"))
+        .map(|(name, public)| (name.as_str(), public.as_str().unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        public_archives,
+        [(ARCHIVE, "type-bridge-c-sdk-example-2.3.2.tar.gz")]
     );
 }

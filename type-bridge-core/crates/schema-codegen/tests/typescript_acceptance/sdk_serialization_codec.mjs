@@ -129,7 +129,7 @@ const interaction = generated.Interaction.encodeCreate(
     target: personCreateValue,
   }),
 );
-const event = generated.Event.reference("0x700", {});
+const event = generated.Event.reference(new generated.Iid("0x700"), {});
 const container = generated.Container.encodeCreate(
   generated.Container.create({ item: [event] }),
 );
@@ -206,8 +206,20 @@ const depthError = expectCode(
   () => generated.decodeArchiveControlled(archive, { maxDepth: 1 }),
   "projected_codec_depth_limit",
 );
+for (const timeoutMilliseconds of [0, 0n]) {
+  const unlimited = generated.decodeArchiveControlled(archive, { timeoutMilliseconds });
+  if (unlimited.length !== records.length ||
+      unlimited.some((record, index) => !Buffer.from(record).equals(Buffer.from(records[index])))) {
+    throw new Error("zero timeout did not preserve the archive without a deadline");
+  }
+}
+// Decode enough canonical text to exercise an elapsed positive deadline.
+const deadlineRecord = generated.Identifier.encodeAttribute(
+  generated.Identifier.create("x".repeat(512 * 1024)),
+);
+const deadlineArchive = generated.encodeArchive(Array(32).fill(deadlineRecord));
 const deadlineError = expectCode(
-  () => generated.decodeArchiveControlled(archive, { timeoutMilliseconds: 0 }),
+  () => generated.decodeArchiveControlled(deadlineArchive, { timeoutMilliseconds: 1 }),
   "projected_codec_deadline_exceeded",
 );
 const foreignRecord = foreign.RobotId.encodeAttribute(foreign.RobotId.create(7n));

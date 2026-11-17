@@ -1,14 +1,14 @@
-"""Thin forwarding facade for generated V2 runtime projections."""
+"""Thin forwarding facade for generated runtime projections."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from type_bridge_core import PyProjectedModelManager, PyRuntimeProjection
 
-from type_bridge._rust_runtime import rust_core, rust_database_for, rust_transaction_for
+from type_bridge._native import core_database_for, core_module, core_transaction_for
 
 
 class GeneratedEntityProjection:
@@ -33,7 +33,7 @@ def install_runtime_projection(
     models: Sequence[tuple[type[object], type[object] | None]],
 ) -> PyRuntimeProjection:
     """Verify and install one generated package's native projection."""
-    installed = rust_core().PyRuntimeProjection(
+    installed = core_module().PyRuntimeProjection(
         projection_json,
         semantic_fingerprint_json,
         projection_fingerprint_json,
@@ -54,7 +54,7 @@ def install_runtime_projection_with_authority(
     structs: Sequence[type[object]] = (),
 ) -> PyRuntimeProjection:
     """Verify and install one ordered generated package with compiled authority."""
-    installed = rust_core().PyRuntimeProjection(
+    installed = core_module().PyRuntimeProjection(
         projection_json,
         semantic_fingerprint_json,
         projection_fingerprint_json,
@@ -74,71 +74,17 @@ def _installed_projection_for(model: type[object]) -> PyRuntimeProjection:
         raise TypeError("query builder requires an exact installed generated model class") from None
 
 
-def projected_query_builder_match_entity_for(
-    model: type[GeneratedEntityProjection],
-    variable: str,
-    filters: dict[str, object],
-) -> str:
-    """Compile a raw-query entity match from verified generated projection facts."""
-    projection = _installed_projection_for(model)
-    return projection.query_builder_match_entity(model, variable, filters)
-
-
-def projected_query_builder_insert_entity_for(
-    instance: GeneratedEntityProjection,
-    variable: str,
-) -> str:
-    """Compile a raw-query entity insert from one exact generated value."""
-    projection = _installed_projection_for(type(instance))
-    return projection.query_builder_insert_entity(instance, variable)
-
-
-def projected_query_builder_match_relation_for(
-    model: type[GeneratedRelationProjection],
-    variable: str,
-    role_players: dict[str, str] | None,
-) -> str:
-    """Compile a raw-query relation match from verified generated role tokens."""
-    projection = _installed_projection_for(model)
-    return projection.query_builder_match_relation(model, variable, role_players)
-
-
-def _projected_query_builder_match_entity_clause_for(
-    model: type[GeneratedEntityProjection],
-    variable: str,
-    filters: dict[str, object],
-) -> dict[str, Any]:
-    return _installed_projection_for(model)._query_builder_match_entity_clause(
-        model, variable, filters
-    )
-
-
-def _projected_query_builder_insert_entity_clause_for(
-    instance: GeneratedEntityProjection,
-    variable: str,
-) -> dict[str, Any]:
-    return _installed_projection_for(type(instance))._query_builder_insert_entity_clause(
-        instance, variable
-    )
-
-
-def _projected_query_builder_match_relation_clause_for(
-    model: type[GeneratedRelationProjection],
-    variable: str,
-    role_players: dict[str, str] | None,
-) -> dict[str, Any]:
-    return _installed_projection_for(model)._query_builder_match_relation_clause(
-        model, variable, role_players
-    )
-
-
 def projected_manager_for(
     projection: PyRuntimeProjection,
     model: type[object],
     connection: object,
 ) -> PyProjectedModelManager:
     """Bind a package projection to an existing native connection handle."""
-    transaction = rust_transaction_for(connection)
+    from type_bridge_core import ProxyConnection
+
+    if isinstance(connection, ProxyConnection):
+        return projection.manager_for_proxy(model, connection)
+    transaction = core_transaction_for(connection)
     if transaction is not None:
         return projection.manager_for_transaction(model, transaction)
-    return projection.manager_for_database(model, rust_database_for(connection))
+    return projection.manager_for_database(model, core_database_for(connection))

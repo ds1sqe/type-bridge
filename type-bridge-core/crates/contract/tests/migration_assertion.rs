@@ -134,7 +134,26 @@ fn malformed_sparse_unknown_and_forged_capability_bytes_fail_closed() {
 #[test]
 fn variable_binding_and_pattern_limits_are_enforced() {
     assert!(QueryVariable::new("$person").is_err());
-    assert!(BindingId::new(256).is_err());
+    assert_eq!(BindingId::new(u16::MAX).unwrap().get(), u16::MAX);
+    let oversized = (0..=256).map(|id| binding(id, &format!("v{id}"))).collect();
+    assert_eq!(
+        MigrationAssertionPlan::new(
+            oversized,
+            vec![AssertionPattern::Isa {
+                binding: BindingId::new(0).unwrap(),
+                include_subtypes: false,
+                type_id: TypeId::new(TypeKind::Entity, "person").unwrap()
+            }],
+            vec![],
+            vec![],
+            managed_semantics(b"migration-assertion-limit-fixture"),
+            AssertionExpectation::NoRows,
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "migration_assertion_binding_limit"
+    );
 
     let id = BindingId::new(0).expect("binding id");
     let mut nested = AssertionPattern::Isa {

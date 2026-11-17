@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import math
+import subprocess
 import tarfile
 import tomllib
 from pathlib import Path
@@ -86,13 +87,20 @@ def test_server_image_build_and_runtime_are_immutable_and_least_privilege() -> N
     assert "dpkg --install /tmp/libpcre2.deb /tmp/perl-base.deb" in source
     assert "rm -f /tmp/libpcre2.deb /tmp/perl-base.deb /var/log/dpkg.log" in source
     assert "/var/cache/ldconfig/aux-cache" in source
-    assert "cargo build --locked --release -p type-bridge-server --no-default-features" in source
-    assert "--features band8,band9,v2-query" in source
+    assert "cargo build --locked --release -p type-bridge-server" in source
+    assert "--no-default-features" not in source
+    assert "--features" not in source
     assert "&& chage --lastday 0 typebridge" in source
     assert "&& rm -f /etc/shadow-" in source
     assert "USER 10001:10001" in source
     assert 'ENTRYPOINT ["/usr/local/bin/type-bridge-server"]' in source
     assert 'CMD ["--config", "/etc/type-bridge/server.toml"]' in source
+    assert (
+        "COPY crates/node/THIRD_PARTY_NOTICES.md /usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md"
+        in source
+    )
+    permissions = source.split("RUN chmod 0555", 1)[1].split("USER 10001", 1)[0]
+    assert "/usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md" in permissions
     assert "HEALTHCHECK" not in source
     assert "server.toml /app/server.toml" not in source
     assert "apt-get" not in source
@@ -125,7 +133,8 @@ def test_container_default_configuration_contains_no_credentials() -> None:
         "database": "typedb",
         "http_port": 8000,
     }
-    assert config["v2"] == {"enabled": False}
+    assert config["staged"] == {"enabled": False, "raw_enabled": False}
+    assert "schema" not in config
     for marker in ("username", "password", "secret", "token", "private"):
         assert marker not in source.lower()
 
@@ -152,6 +161,7 @@ def test_oci_layout_validator_is_fail_closed() -> None:
         "etc/type-bridge/server.toml",
         "usr/local/bin/type-bridge-server",
         "usr/share/licenses/type-bridge/LICENSE",
+        "usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md",
     ):
         assert required in source
     assert "10001:10001" in source
@@ -187,9 +197,12 @@ def _layer_bytes(
     files = {
         "etc/ssl/certs/ca-certificates.crt": b"test certificate bundle\n",
         "etc/shadow": f"root:*:0:0:99999:7:::\n{shadow_entry}\n".encode(),
-        "etc/type-bridge/server.toml": b"[v2]\nenabled = false\n",
+        "etc/type-bridge/server.toml": CONTAINER_CONFIG.read_bytes(),
         "usr/local/bin/type-bridge-server": b"\x7fELFsynthetic server",
         "usr/share/licenses/type-bridge/LICENSE": b"MIT\n",
+        "usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md": (
+            CORE / "crates/node/THIRD_PARTY_NOTICES.md"
+        ).read_bytes(),
     }
     if shadow_backup_entry is not None:
         files["etc/shadow-"] = f"{shadow_backup_entry}\n".encode()
@@ -257,9 +270,9 @@ def _write_oci_archive(
     labels = {
         **oci_validator.EXPECTED_LABELS,
         "org.opencontainers.image.revision": REVISION,
-        "org.opencontainers.image.version": "2.3.3",
+        "org.opencontainers.image.version": "3.0.0",
         "org.opencontainers.image.created": CREATED,
-        "io.type-bridge.release-identity": f"v2.3.3@{REVISION}",
+        "io.type-bridge.release-identity": f"v3.0.0@{REVISION}",
     }
     config = _json_bytes(
         {
@@ -339,10 +352,10 @@ def _validator_args(archive: Path) -> argparse.Namespace:
         archive=str(archive),
         created=CREATED,
         platform="linux/amd64",
-        release_identity=f"v2.3.3@{REVISION}",
+        release_identity=f"v3.0.0@{REVISION}",
         report=str(archive.with_suffix(".json")),
         revision=REVISION,
-        version="2.3.3",
+        version="3.0.0",
     )
 
 
@@ -566,7 +579,7 @@ def test_pinned_skopeo_runner_scopes_offline_output_and_registry_credentials(
         group_id=5678,
     )
     registry_command = run_pinned_skopeo.build_command(
-        ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:2.3.3"],
+        ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:3.0.0"],
         registry_auth=True,
         working_directory=working_directory,
         environment={"DOCKER_CONFIG": str(docker_config)},
@@ -597,7 +610,7 @@ def test_pinned_skopeo_runner_scopes_offline_output_and_registry_credentials(
     assert any(str(auth_file) in argument for argument in registry_command)
     assert registry_command[-2:] == [
         "inspect",
-        "docker://ghcr.io/ds1sqe/type-bridge-server:2.3.3",
+        "docker://ghcr.io/ds1sqe/type-bridge-server:3.0.0",
     ]
 
 
@@ -612,7 +625,7 @@ def test_pinned_skopeo_runner_rejects_symlinked_registry_auth(tmp_path: Path) ->
 
     with pytest.raises(run_pinned_skopeo.RunnerError, match="missing or unsafe"):
         run_pinned_skopeo.build_command(
-            ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:2.3.3"],
+            ["inspect", "docker://ghcr.io/ds1sqe/type-bridge-server:3.0.0"],
             registry_auth=True,
             working_directory=working_directory,
             environment={"DOCKER_CONFIG": str(docker_config)},
@@ -687,7 +700,7 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert workflow.count('export SOURCE_DATE_EPOCH="$source_date_epoch"') == 1
     assert workflow.count('--build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"') == 1
     assert "TYPE_BRIDGE_SERVER_IMAGE" in workflow
-    assert "production_binary_serves_v1_health_and_v2_query" in workflow
+    assert "production_binary_serves_staged_and_removed_routes" in workflow
     assert "docker/setup-qemu-action@" in workflow
     assert workflow.count(f"image: {BINFMT_IMAGE}") == 1
     assert "tonistiigi/binfmt:latest" not in workflow
@@ -697,9 +710,9 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert workflow.count("actions/attest-build-provenance@") == 3
     assert workflow.count("actions/attest-sbom@") == 2
     assert "Refusing to overwrite conflicting immutable OCI tag." in workflow
-    assert "SERVER_OCI_MINOR_ALIAS: '2.3'" in workflow
-    assert 'for alias in "$SERVER_OCI_MINOR_ALIAS" 2 latest; do' in workflow
-    assert '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "2", "latest"],' in workflow
+    assert "SERVER_OCI_MINOR_ALIAS: '3.0'" in workflow
+    assert 'for alias in "$SERVER_OCI_MINOR_ALIAS" 3 latest; do' in workflow
+    assert '"aliases": [os.environ["SERVER_OCI_MINOR_ALIAS"], "3", "latest"],' in workflow
     assert "release.yml@refs/tags/${{ env.RELEASE_TAG }}'" in workflow
     assert "release.yml@refs/tags/v2[.]0[.]0$'" not in workflow
     assert "for alias in 2.0 2 latest; do" not in workflow
@@ -708,3 +721,32 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert "packages: write" in workflow
     assert workflow.count("packages: write") == 1
     assert "body_path: dist/server-oci-release.md" in workflow
+
+
+def test_shipped_notice_covers_every_server_normal_dependency() -> None:
+    notice = (CORE / "crates/node/THIRD_PARTY_NOTICES.md").read_text()
+    tree = subprocess.check_output(
+        [
+            "cargo",
+            "+1.94.1",
+            "tree",
+            "--locked",
+            "-p",
+            "type-bridge-server",
+            "-e",
+            "normal",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ],
+        cwd=CORE,
+        text=True,
+    )
+    packages = {tuple(row.split()[:2]) for row in tree.splitlines()}
+    missing = sorted(
+        (name, version)
+        for name, version in packages
+        if f"| `{name}` | `{version.removeprefix('v')}` |" not in notice
+    )
+    assert not missing, f"server dependencies absent from shipped notice: {missing}"

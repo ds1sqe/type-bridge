@@ -15,8 +15,8 @@ remote server later without changing semantic systems.
 
 ## Before connecting
 
-TypeBridge admits TypeDB versions >=3.11.0 for database operations. Supported
-lines remain the measured 3.11–3.14 lines; 3.14.0 is recommended. Newer lines
+TypeBridge admits TypeDB versions >=3.12.0 for database operations. Supported
+lines remain the measured 3.12–3.14 lines; 3.14.0 is recommended. Newer lines
 are admitted with a warning that they are
 "not tested or supported by this TypeBridge release" and no compatibility
 guarantee. They reuse the newest measured profile and protocol assumptions.

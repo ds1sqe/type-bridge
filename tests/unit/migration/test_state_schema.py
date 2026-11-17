@@ -9,21 +9,11 @@ from typing import Literal
 import pytest
 
 import type_bridge.migration as migration
-import type_bridge.migration.state_schema as state_schema_module
 from type_bridge.migration import (
     MIGRATION_STATE_SCHEMA,
     MigrationStateSchema,
     is_migration_state_type,
     migration_state_schema,
-    without_migration_state_schema,
-)
-from type_bridge.migration.introspection import (
-    IntrospectedAttribute,
-    IntrospectedEntity,
-    IntrospectedOwnership,
-    IntrospectedRelation,
-    IntrospectedRole,
-    IntrospectedSchema,
 )
 
 EXPECTED_ENTITIES = frozenset(
@@ -84,7 +74,7 @@ def test_migration_state_schema_projects_the_canonical_rust_descriptor() -> None
     assert MIGRATION_STATE_SCHEMA.relations == frozenset()
     assert MIGRATION_STATE_SCHEMA.attributes == EXPECTED_ATTRIBUTES
     assert MIGRATION_STATE_SCHEMA.roles == frozenset()
-    assert migration.MigrationStateManager.ENTITY_NAME in MIGRATION_STATE_SCHEMA.entities
+    assert "type_bridge_migration" in MIGRATION_STATE_SCHEMA.entities
 
 
 def test_migration_state_schema_projection_is_immutable() -> None:
@@ -124,70 +114,12 @@ def test_predicate_rejects_unknown_schema_kind() -> None:
         )
 
 
-def test_without_migration_state_schema_filters_every_object_kind(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    synthetic_contract = MigrationStateSchema(
-        entities=frozenset({"state-entity"}),
-        relations=frozenset({"state-relation"}),
-        attributes=frozenset({"state-attribute"}),
-        roles=frozenset({"app-relation:state-role"}),
-    )
-    monkeypatch.setattr(state_schema_module, "MIGRATION_STATE_SCHEMA", synthetic_contract)
-
-    schema = IntrospectedSchema(
-        entities={
-            "state-entity": IntrospectedEntity(name="state-entity"),
-            "app-entity": IntrospectedEntity(name="app-entity"),
-        },
-        relations={
-            "state-relation": IntrospectedRelation(
-                name="state-relation",
-                roles={"state-role": IntrospectedRole(name="state-role")},
-            ),
-            "app-relation": IntrospectedRelation(
-                name="app-relation",
-                roles={
-                    "state-role": IntrospectedRole(name="state-role"),
-                    "app-role": IntrospectedRole(name="app-role"),
-                },
-            ),
-        },
-        attributes={
-            "state-attribute": IntrospectedAttribute(name="state-attribute", value_type="string"),
-            "app-attribute": IntrospectedAttribute(name="app-attribute", value_type="string"),
-        },
-        ownerships=[
-            IntrospectedOwnership("state-entity", "app-attribute"),
-            IntrospectedOwnership("state-relation", "app-attribute"),
-            IntrospectedOwnership("app-entity", "state-attribute"),
-            IntrospectedOwnership("app-entity", "app-attribute"),
-        ],
-    )
-
-    filtered = without_migration_state_schema(schema)
-
-    assert filtered is not schema
-    assert set(filtered.entities) == {"app-entity"}
-    assert set(filtered.relations) == {"app-relation"}
-    assert set(filtered.relations["app-relation"].roles) == {"app-role"}
-    assert set(filtered.attributes) == {"app-attribute"}
-    assert filtered.ownerships == [IntrospectedOwnership("app-entity", "app-attribute")]
-
-    assert set(schema.entities) == {"state-entity", "app-entity"}
-    assert set(schema.relations) == {"state-relation", "app-relation"}
-    assert set(schema.relations["app-relation"].roles) == {"state-role", "app-role"}
-    assert set(schema.attributes) == {"state-attribute", "app-attribute"}
-    assert len(schema.ownerships) == 4
-
-
 def test_public_migration_package_exports_state_schema_contract() -> None:
     expected = {
         "MIGRATION_STATE_SCHEMA",
         "MigrationStateSchema",
         "is_migration_state_type",
         "migration_state_schema",
-        "without_migration_state_schema",
     }
 
     assert expected <= set(migration.__all__)

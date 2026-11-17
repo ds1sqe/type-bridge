@@ -28,16 +28,26 @@ function verifyInstalledPackage(installedRoot) {
   );
   const typeBridge = requirePackage("@type-bridge/node");
   for (const name of [
-    "QueryV2Authority",
-    "RustDatabase",
-    "RustTransactionContext",
-    "TypedQuery",
+    "Iid",
+    "PlanAuthority",
+    "Database",
+    "TransactionContext",
     "ensureDatabase",
     "long",
   ]) {
     assert.equal(typeof typeBridge[name], "function", `${name} must remain public`);
   }
   for (const name of [
+    "AggregateSpec",
+    "BooleanExpr",
+    "ComparisonExpr",
+    "NotExpr",
+    "QueryExpr",
+    "SortExpr",
+    "TypedGroupByQuery",
+    "TypedQuery",
+    "TypedQueryError",
+    "agg",
     "DescriptorRegistry",
     "Entity",
     "Relation",
@@ -60,8 +70,10 @@ function verifyInstalledPackage(installedRoot) {
     () => requirePackage("@type-bridge/node/typed"),
     (error) => error?.code === "ERR_PACKAGE_PATH_NOT_EXPORTED",
   );
-  const queryV2 = requirePackage("@type-bridge/node/query-v2");
-  assert.equal(queryV2.QueryV2Authority, typeBridge.QueryV2Authority);
+  assert.throws(
+    () => requirePackage("@type-bridge/node/query-v2"),
+    (error) => error?.code === "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  );
   const runtimeProjection = requirePackage("@type-bridge/node/runtime-projection");
   assert.deepEqual(Object.keys(runtimeProjection).sort(), [
     "InstalledRuntimeProjection",
@@ -71,7 +83,9 @@ function verifyInstalledPackage(installedRoot) {
     "QueryLimits",
     "installGeneratedSchemaAuthority",
     "installRuntimeProjection",
+    "projectedBatchDeleted",
     "projectedManagerNativeCall",
+    "writeResult",
   ]);
 
   assert.equal(packageJson.main, "dist/public.js");
@@ -85,7 +99,7 @@ function verifyInstalledPackage(installedRoot) {
 
   const native = require(path.join(installedRoot, "dist", "native.js")).loadNative();
   assert.equal(typeof native.NodeRuntimeProjection, "function");
-  assert.equal(typeof native.queryV2Authority, "function");
+  assert.equal(typeof native.planAuthority, "function");
   for (const name of [
     "NodeDescriptorRegistry",
     "NodeDynamicEntityManager",
@@ -127,6 +141,31 @@ function verifyPackedArtifact(artifactDirectory) {
     );
     assert.ifError(install.error);
     assert.equal(install.status, 0, install.stderr || install.stdout);
+
+    fs.writeFileSync(path.join(stage, "consumer.ts"), `
+import { Database, type TimeoutMilliseconds } from "@type-bridge/node";
+import { QueryExecutionResourceLimits } from "@type-bridge/node/runtime-projection";
+const signal: AbortSignal = new AbortController().signal;
+const timeout: TimeoutMilliseconds = 30000;
+const limits = new QueryExecutionResourceLimits({ timeoutMilliseconds: timeout });
+declare const database: Database;
+database.databaseExistsControlled({ timeoutMilliseconds: 0n });
+void signal;
+void limits;
+`);
+    fs.writeFileSync(path.join(stage, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        target: "ES2022", lib: ["ES2022"], types: [], module: "NodeNext",
+        moduleResolution: "NodeNext", strict: true, skipLibCheck: false, noEmit: true,
+      },
+      include: ["consumer.ts"],
+    }));
+    const typecheck = spawnSync(process.execPath, [
+      path.resolve(__dirname, "../node_modules/typescript/bin/tsc"),
+      "--project", path.join(stage, "tsconfig.json"),
+    ], { encoding: "utf8", shell: false });
+    assert.ifError(typecheck.error);
+    assert.equal(typecheck.status, 0, typecheck.stderr || typecheck.stdout);
 
     // Native modules remain locked for the lifetime of their Node process on
     // Windows. Load and inspect the installed package in a child so the DLL is

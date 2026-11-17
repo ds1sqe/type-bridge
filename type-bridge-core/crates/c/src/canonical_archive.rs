@@ -191,7 +191,7 @@ pub unsafe fn canonical_control(
 
 /// Opaque owned immutable canonical byte buffer.
 pub struct TypeBridgeCanonicalBytes {
-    bytes: Vec<u8>,
+    pub(crate) bytes: Vec<u8>,
 }
 
 /// Opaque bounded deterministic archive builder.

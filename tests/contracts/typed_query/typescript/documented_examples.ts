@@ -8,22 +8,22 @@ import {
   Score,
   type Page,
   type Query,
-} from "./generated_v2/src/index.js";
+} from "./generated_package/src/index.js";
 import {
-  RustDatabase,
-  type RustTransactionContext,
+  Database,
+  type TransactionContext,
 } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "typed_query_example");
+const db = Database.connect("localhost:1729", "typed_query_example");
 const session = new QuerySession(db);
 const person = session.exact(Person);
 const event = session.exact(Event);
 const container = session.exact(Container);
 const employment = session.exact(Employment);
 
-const employee = employment.role(Employment.employee).connects(person);
-const subject = event.role(Event.subject).connects(person);
-const contained = container.role(Container.item).connects(event);
+const employee = employment.role(Employment.employee).links(person);
+const subject = event.role(Event.subject).links(person);
+const contained = container.role(Container.item).links(event);
 
 const onePerson: Query<Person> = session.query(person);
 const scalar: Person = await onePerson.one();
@@ -45,8 +45,8 @@ const fiveSlots: Query<
   .where(
     subject,
     contained,
-    otherEvent.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(otherEvent),
+    otherEvent.role(Event.subject).links(colleague),
+    container.role(Container.item).links(otherEvent),
   );
 
 const personPair: Query<readonly [Person, Person]> = session
@@ -55,8 +55,8 @@ const personPair: Query<readonly [Person, Person]> = session
   .where(
     subject,
     contained,
-    otherEvent.role(Event.subject).connects(colleague),
-    container.role(Container.item).connects(otherEvent),
+    otherEvent.role(Event.subject).links(colleague),
+    container.role(Container.item).links(otherEvent),
   );
 
 void scalar;
@@ -68,11 +68,11 @@ void personPair;
 // diagnostic.
 
 const adults = onePerson.where(
-  person.field(Person.score).gte(Score.create(18n)),
+  person.field(Person.score).ge(Score.create(18n)),
   person.field(Person.identifier).startsWith(Identifier.create("Al")),
   person.field(Person.identifier).contains(Identifier.create("Research")),
   person.field(Person.identifier).endsWith(Identifier.create("Labs")),
-  person.field(Person.identifier).regex(Identifier.create(String.raw`^A[[:alpha:]]+$`)),
+  person.field(Person.identifier).like(Identifier.create(String.raw`^A[[:alpha:]]+$`)),
 );
 
 const literalPercent = onePerson.where(
@@ -90,7 +90,7 @@ void independentPairs;
 const orderedPeople: readonly Person[] = await onePerson.rows({
   limit: 50n,
   offset: 0n,
-  orderBy: [person.field(Person.identifier).asc()],
+  sort: [person.field(Person.identifier).asc()],
 });
 
 const personCount: bigint = await twoSlots.countBy(person);
@@ -110,7 +110,7 @@ const page: Page<Readonly<{
 }>> = await work.pageBy(person, {
   limit: 50n,
   offset: 0n,
-  orderBy: [person.field(Person.identifier).asc()],
+  sort: [person.field(Person.identifier).asc()],
   includeTotal: true,
 });
 
@@ -125,7 +125,7 @@ const ownedPerson = ownedSession.exact(Person);
 const ownedRows = await ownedSession.query(ownedPerson).rows({ limit: 10n });
 
 // Borrowed: only the caller closes the context, which remains reusable.
-const tx: RustTransactionContext = db.transaction("read");
+const tx: TransactionContext = db.transaction("read");
 try {
   const borrowed = new QuerySession(tx);
   const borrowedPerson = borrowed.exact(Person);

@@ -3,8 +3,8 @@
 
 use std::collections::BTreeSet;
 use std::env;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::common::dynamic_crud::*;
@@ -15,8 +15,8 @@ use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
 };
 use type_bridge_orm::session::backend::{
-    AnswerCancellation, AnswerConsumer, AnswerControl, BoundedAnswerLimits, BoundedAnswerStats,
-    BoxFuture, DriverBackend, QueryResult, TransactionOps,
+    AnswerCancellation, AnswerConsumer, AnswerControl, AnswerLimits, BoundedAnswerLimits,
+    BoundedAnswerStats, BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps,
 };
 use type_bridge_orm::session::real_driver::RealBackend;
 use type_bridge_orm::*;
@@ -30,15 +30,32 @@ struct LifecycleCounts {
 }
 
 #[derive(Clone)]
-struct RootScanBarrier {
-    root_selected: Arc<Notify>,
+struct PageReadBarrier {
+    page_ready: Arc<Notify>,
     writer_finished: Arc<Notify>,
+    events: Arc<Mutex<Vec<SnapshotEvent>>>,
+}
+
+impl PageReadBarrier {
+    fn is_page_statement(typeql: &str) -> bool {
+        typeql.split(';').any(|stage| stage.trim() == "limit 10")
+            && typeql
+                .split(';')
+                .any(|stage| stage.trim_start().starts_with("fetch {"))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SnapshotEvent {
+    ReadStarted(String),
+    ReadFinished(String),
+    WriterCommitted,
 }
 
 struct ObservedRealBackend {
     inner: RealBackend,
     lifecycle: Arc<LifecycleCounts>,
-    root_scan_barrier: Option<RootScanBarrier>,
+    page_read_barrier: Option<PageReadBarrier>,
 }
 
 impl DriverBackend for ObservedRealBackend {
@@ -53,14 +70,14 @@ impl DriverBackend for ObservedRealBackend {
     ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>>> {
         let database = database.to_owned();
         let lifecycle = Arc::clone(&self.lifecycle);
-        let root_scan_barrier = self.root_scan_barrier.clone();
+        let page_read_barrier = self.page_read_barrier.clone();
         Box::pin(async move {
             let inner = self.inner.open_transaction(&database, tx_type).await?;
             lifecycle.opens.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(ObservedRealTransaction {
                 inner,
                 lifecycle,
-                root_scan_barrier,
+                page_read_barrier,
                 paused: false,
             }) as Box<dyn TransactionOps>)
         })
@@ -78,7 +95,7 @@ impl DriverBackend for ObservedRealBackend {
 struct ObservedRealTransaction {
     inner: Box<dyn TransactionOps>,
     lifecycle: Arc<LifecycleCounts>,
-    root_scan_barrier: Option<RootScanBarrier>,
+    page_read_barrier: Option<PageReadBarrier>,
     paused: bool,
 }
 
@@ -128,21 +145,43 @@ impl TransactionOps for ObservedRealTransaction {
         limits: BoundedAnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats>> {
+        self.inner.query_root_typed_bounded(query, limits, consumer)
+    }
+
+    fn query_materialized_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: Option<GivenRowsSpec>,
+        limits: AnswerLimits,
+        canonical: bool,
+        statement_display: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<QueryResult>> {
         Box::pin(async move {
-            let result = self
-                .inner
-                .query_root_typed_bounded(query, limits, consumer)
-                .await;
-            // A page-selection scan always carries a window offset (including
-            // `Some(0)`), while the optional total scan does not. Pause only
-            // after the selected root identities have been captured.
-            if query.offset.is_some()
-                && !self.paused
-                && let Some(barrier) = &self.root_scan_barrier
+            if !self.paused
+                && PageReadBarrier::is_page_statement(typeql)
+                && let Some(barrier) = &self.page_read_barrier
             {
                 self.paused = true;
-                barrier.root_selected.notify_one();
+                barrier.page_ready.notify_one();
                 barrier.writer_finished.notified().await;
+            }
+            if let Some(barrier) = &self.page_read_barrier {
+                barrier
+                    .events
+                    .lock()
+                    .unwrap()
+                    .push(SnapshotEvent::ReadStarted(typeql.to_owned()));
+            }
+            let result = self
+                .inner
+                .query_materialized_bounded(typeql, rows, limits, canonical, statement_display)
+                .await;
+            if let Some(barrier) = &self.page_read_barrier {
+                barrier
+                    .events
+                    .lock()
+                    .unwrap()
+                    .push(SnapshotEvent::ReadFinished(typeql.to_owned()));
             }
             result
         })
@@ -191,7 +230,7 @@ impl TransactionOps for ObservedRealTransaction {
 
 async fn observed_database(
     database_name: &str,
-    root_scan_barrier: Option<RootScanBarrier>,
+    page_read_barrier: Option<PageReadBarrier>,
 ) -> (Database, Arc<LifecycleCounts>) {
     let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_owned());
     let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
@@ -204,7 +243,7 @@ async fn observed_database(
         Box::new(ObservedRealBackend {
             inner,
             lifecycle: Arc::clone(&lifecycle),
-            root_scan_barrier,
+            page_read_barrier,
         }),
         database_name,
     );
@@ -320,13 +359,15 @@ fn adversarial_limits() -> Vec<(
             "provider_cancelled",
         ),
         (
-            "zero-deadline",
+            // A zero timeout means no deadline; an elapsed token is explicit.
+            "expired-deadline",
             MatchExecutionLimits::tightened(
                 100,
                 64 * 1024,
-                Duration::ZERO,
+                Duration::from_secs(5),
                 AnswerCancellation::default(),
-            ),
+            )
+            .with_absolute_deadline(QueryExecutionDeadline::expired()),
             MatchErrorCategory::ResourceLimit,
             "transaction_deadline_exceeded",
         ),
@@ -349,6 +390,31 @@ fn assert_bounded_execution_error(
     expected_category: MatchErrorCategory,
     expected_code: &str,
 ) {
+    // Deadline and cancellation refusals carry the invocation timeline as a
+    // phase-decorated execution diagnostic; other limits stay match errors.
+    if let OrmError::ExecutionDiagnostic(diagnostic) = &error
+        && matches!(
+            expected_code,
+            "transaction_deadline_exceeded" | "provider_cancelled"
+        )
+    {
+        use type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory;
+        let category = match expected_category {
+            MatchErrorCategory::Cancelled => SdkDiagnosticCategory::Cancelled,
+            MatchErrorCategory::ResourceLimit => SdkDiagnosticCategory::ResourceLimit,
+            other => panic!("{other:?} refusals are not phase-decorated"),
+        };
+        assert_eq!(diagnostic.category(), category);
+        assert_eq!(diagnostic.code().as_str(), expected_code);
+        assert!(
+            diagnostic
+                .details()
+                .keys()
+                .any(|key| key.as_str() == "execution_phase"),
+            "a decorated refusal names its execution phase"
+        );
+        return;
+    }
     let OrmError::Match(error) = error else {
         panic!("expected canonical match error, got {error}")
     };
@@ -376,21 +442,30 @@ async fn dynamic_entity_transaction_commit_and_rollback_against_typedb() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("tx").await;
     let descriptor = schema.person_descriptor();
-    let db_manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let db_manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
 
     let rollback_tx = db
         .transaction_context(TxType::Write)
         .await
         .expect("write transaction should open");
-    let rollback_manager =
-        DynamicEntityManager::with_transaction(rollback_tx.clone(), descriptor.clone());
+    let rollback_manager = DynamicEntityManager::with_registry_transaction(
+        rollback_tx.clone(),
+        schema.registry(),
+        descriptor.clone(),
+    );
     rollback_manager
-        .insert(&person_attrs("Rollback", 20))
+        .insert(&schema.person_attrs("Rollback", 20))
         .await
-        .expect("transaction-bound insert should succeed");
+        .expect("transaction-bound insert should succeed")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     assert_eq!(
         rollback_manager
-            .count_with_filters(&[Filter::string_eq("name", "Rollback")])
+            .count_with_filters(&[Filter::string_eq(&schema.name_attr, "Rollback")])
             .await
             .expect("transaction-bound read should see uncommitted write"),
         1
@@ -401,7 +476,7 @@ async fn dynamic_entity_transaction_commit_and_rollback_against_typedb() {
         .expect("rollback should succeed");
     assert!(
         db_manager
-            .get(&[Filter::string_eq("name", "Rollback")])
+            .get(&[Filter::string_eq(&schema.name_attr, "Rollback")])
             .await
             .expect("post-rollback lookup should succeed")
             .is_empty()
@@ -411,15 +486,24 @@ async fn dynamic_entity_transaction_commit_and_rollback_against_typedb() {
         .transaction_context(TxType::Write)
         .await
         .expect("write transaction should open");
-    let commit_manager = DynamicEntityManager::with_transaction(commit_tx.clone(), descriptor);
+    let commit_manager = DynamicEntityManager::with_registry_transaction(
+        commit_tx.clone(),
+        schema.registry(),
+        descriptor,
+    );
     commit_manager
-        .insert(&person_attrs("Commit", 21))
+        .insert(&schema.person_attrs("Commit", 21))
         .await
-        .expect("transaction-bound insert should succeed");
+        .expect("transaction-bound insert should succeed")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     commit_tx.commit().await.expect("commit should succeed");
 
     let committed = db_manager
-        .get(&[Filter::string_eq("name", "Commit")])
+        .get(&[Filter::string_eq(&schema.name_attr, "Commit")])
         .await
         .expect("post-commit lookup should succeed");
     assert_eq!(committed.len(), 1);
@@ -429,11 +513,17 @@ async fn dynamic_entity_transaction_commit_and_rollback_against_typedb() {
 async fn typed_string_predicates_execute_across_given_and_inline_provider_bands() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("typed-string-parameters").await;
-    let manager = DynamicEntityManager::new(&db, schema.person_descriptor());
+    let manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.person_descriptor());
     let alice_iid = manager
-        .insert(&person_attrs("Alice", 33))
+        .insert(&schema.person_attrs("Alice", 33))
         .await
-        .expect("typed string-predicate fixture should commit");
+        .expect("typed string-predicate fixture should commit")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let registry = DescriptorRegistry::new();
     registry
@@ -829,11 +919,16 @@ async fn selected_page_and_total_remain_on_one_read_snapshot_across_a_concurrent
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("selected-snapshot").await;
     let descriptor = schema.person_descriptor();
-    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let manager = DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
     let selected_iid = manager
-        .insert(&person_attrs("BeforeSnapshot", 20))
+        .insert(&schema.person_attrs("BeforeSnapshot", 20))
         .await
-        .expect("initial entity should commit");
+        .expect("initial entity should commit")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
 
     let registry = DescriptorRegistry::new();
     registry
@@ -870,13 +965,15 @@ async fn selected_page_and_total_remain_on_one_read_snapshot_across_a_concurrent
     )
     .expect("page request should validate");
 
-    let root_selected = Arc::new(Notify::new());
+    let page_ready = Arc::new(Notify::new());
     let writer_finished = Arc::new(Notify::new());
+    let events = Arc::new(Mutex::new(Vec::new()));
     let (barrier_db, lifecycle) = observed_database(
         db.database_name(),
-        Some(RootScanBarrier {
-            root_selected: Arc::clone(&root_selected),
+        Some(PageReadBarrier {
+            page_ready: Arc::clone(&page_ready),
             writer_finished: Arc::clone(&writer_finished),
+            events: Arc::clone(&events),
         }),
     )
     .await;
@@ -890,12 +987,16 @@ async fn selected_page_and_total_remain_on_one_read_snapshot_across_a_concurrent
                     .expect("barrier page should execute")
             },
             async {
-                root_selected.notified().await;
-                let update = manager
-                    .update(Some(&selected_iid), &person_attrs("BeforeSnapshot", 99))
-                    .await;
+                page_ready.notified().await;
+                manager
+                    .update(
+                        Some(&selected_iid),
+                        &schema.person_attrs("BeforeSnapshot", 99),
+                    )
+                    .await
+                    .expect("inter-stage writer should commit");
+                events.lock().unwrap().push(SnapshotEvent::WriterCommitted);
                 writer_finished.notify_one();
-                update.expect("inter-stage writer should commit");
             },
         )
     })
@@ -918,6 +1019,28 @@ async fn selected_page_and_total_remain_on_one_read_snapshot_across_a_concurrent
         .expect("snapshot root should include age");
     assert_eq!(snapshot_age.values(), &[AttributeValue::Long(20)]);
 
+    let events = events.lock().unwrap().clone();
+    eprintln!("snapshot statement sequence: {events:#?}");
+    let [
+        SnapshotEvent::ReadStarted(count),
+        SnapshotEvent::ReadFinished(count_finished),
+        SnapshotEvent::WriterCommitted,
+        SnapshotEvent::ReadStarted(page_statement),
+        SnapshotEvent::ReadFinished(page_finished),
+    ] = events.as_slice()
+    else {
+        panic!("count must finish before the writer commits, then the page must run: {events:#?}");
+    };
+    assert_eq!(count, count_finished);
+    assert!(
+        count.split(';').any(|stage| {
+            stage.trim_start().starts_with("reduce ") && stage.trim_end().ends_with("= count")
+        }),
+        "expected total statement: {count}"
+    );
+    assert_eq!(page_statement, page_finished);
+    assert!(PageReadBarrier::is_page_statement(page_statement));
+
     let fresh = manager
         .get_by_iid(&selected_iid)
         .await
@@ -937,11 +1060,16 @@ async fn staged_reads_in_one_write_transaction_see_earlier_writes_with_consisten
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("staged-read-write-read").await;
     let descriptor = schema.person_descriptor();
-    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let manager = DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
     manager
-        .insert(&person_attrs("StagedBefore", 20))
+        .insert(&schema.person_attrs("StagedBefore", 20))
         .await
-        .expect("initial entity should commit");
+        .expect("initial entity should commit")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let registry = DescriptorRegistry::new();
     registry
         .register_entity(descriptor.as_ref().clone())
@@ -1027,11 +1155,16 @@ async fn selected_owned_execution_recovers_after_real_resource_failures() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("selected-owned-resource").await;
     let descriptor = schema.person_descriptor();
-    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let manager = DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
     let selected_iid = manager
-        .insert(&person_attrs("OwnedResource", 31))
+        .insert(&schema.person_attrs("OwnedResource", 31))
         .await
-        .expect("owned resource fixture should commit");
+        .expect("owned resource fixture should commit")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let registry = DescriptorRegistry::new();
     registry
         .register_entity(descriptor.as_ref().clone())
@@ -1083,11 +1216,16 @@ async fn selected_borrowed_context_survives_real_resource_failures_until_caller_
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("selected-borrowed-resource").await;
     let descriptor = schema.person_descriptor();
-    let manager = DynamicEntityManager::new(&db, descriptor.clone());
+    let manager = DynamicEntityManager::from_registry(&db, schema.registry(), descriptor.clone());
     let selected_iid = manager
-        .insert(&person_attrs("BorrowedResource", 32))
+        .insert(&schema.person_attrs("BorrowedResource", 32))
         .await
-        .expect("borrowed resource fixture should commit");
+        .expect("borrowed resource fixture should commit")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     let registry = DescriptorRegistry::new();
     registry
         .register_entity(descriptor.as_ref().clone())

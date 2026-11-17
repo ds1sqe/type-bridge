@@ -20,7 +20,7 @@ use type_bridge_schema_compat::{ADOPTED_GENESIS_FILE_NAME, parse_adopted_genesis
 use type_bridge_schema_migration::{
     BackfillMigrationGenerationRequest, GeneratedMigration, MigrationDirectory,
     MigrationGenerationOutcome, MigrationGenerationRequest, MigrationHistoryGraph,
-    MigrationPreviewError, VerifiedMigrationHistoryBundle,
+    MigrationPreviewError, VerifiedMigrationHistoryBundle, VerifiedSchemaMigrationManifest,
     canonical_history_declared_legacy_bridge_count_in, discover_verified_migration_chain_in,
     encode_verified_migration_history_bundle, generate_backfill_migration, generate_next_migration,
     render_migration_preview, require_adoption_authority_pair,
@@ -30,7 +30,7 @@ use type_bridge_schema_migration::{
 
 use crate::{
     MAX_BACKFILL_INTENT_BYTES, TypeBridgeWorkspace, TypeBridgeWorkspaceError, WorkspaceConfigError,
-    WorkspaceConfigErrorCode, parse_backfill_intent,
+    WorkspaceConfigErrorCode, WorkspaceOutputDirectory, parse_backfill_intent,
 };
 
 fn migration_directory_escape() -> TypeBridgeWorkspaceError {
@@ -39,7 +39,7 @@ fn migration_directory_escape() -> TypeBridgeWorkspaceError {
             WorkspaceConfigErrorCode::PathNotConfined,
             "the migration directory must remain beneath the workspace without symbolic links",
         )
-        .with_detail("migration_v2_directory"),
+        .with_detail("migration_directory"),
     )
 }
 
@@ -68,6 +68,15 @@ impl MigrationDirectoryAuthority {
     #[must_use]
     pub fn display_path(&self) -> &Path {
         &self.configured_path
+    }
+
+    /// Build the existing output writer from this exact retained capability.
+    #[doc(hidden)]
+    pub fn __internal_output_directory(&self) -> Result<WorkspaceOutputDirectory, String> {
+        WorkspaceOutputDirectory::from_root(
+            self.directory.__internal_retained_directory(),
+            &self.configured_path,
+        )
     }
 }
 
@@ -119,15 +128,26 @@ impl TypeBridgeWorkspace {
         create: bool,
     ) -> Result<MigrationDirectoryAuthority, TypeBridgeWorkspaceError> {
         let root = self.config().workspace_root().as_path();
+        let configured = self.config().migration_directory();
+        if !configured.configured {
+            match self.root_directory().symlink_metadata(configured.as_path().join("v2")) {
+                Ok(_) => return Err(TypeBridgeWorkspaceError::Config(WorkspaceConfigError::new(
+                    WorkspaceConfigErrorCode::LegacyMigrationDirectory,
+                    "migration_directory_move_required: from the manifest directory run `find migrations/v2 -mindepth 1 -maxdepth 1 -exec mv -n -t migrations/ -- {} + && rmdir migrations/v2`, then regenerate the workspace lock",
+                ).with_detail(configured.as_path().display().to_string()))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(_) => return Err(migration_directory_escape()),
+            }
+        }
         let directory = MigrationDirectory::open_beneath_directory(
             self.root_directory(),
-            self.config().migration_v2_directory().as_path(),
+            self.config().migration_directory().as_path(),
             create,
         )
         .map_err(|_| migration_directory_escape())?;
         Ok(MigrationDirectoryAuthority {
             directory,
-            configured_path: root.join(self.config().migration_v2_directory().as_path()),
+            configured_path: root.join(self.config().migration_directory().as_path()),
             owner: Arc::clone(self.authority_owner()),
         })
     }
@@ -140,7 +160,7 @@ impl TypeBridgeWorkspace {
             .config()
             .workspace_root()
             .as_path()
-            .join(self.config().migration_v2_directory().as_path());
+            .join(self.config().migration_directory().as_path());
         if !Arc::ptr_eq(&directory.owner, self.authority_owner())
             || directory.configured_path != expected
         {
@@ -288,12 +308,57 @@ impl TypeBridgeWorkspace {
                 context: self.delta_context(),
             },
         )?;
-        let preview = format!(
-            "-- binding-neutral backfill migration: {}/{}\n-- reviewed source intent: {}\n",
-            generated.manifest().id().app_label().as_str(),
-            generated.manifest().id().name().as_str(),
-            intent_name.display(),
-        );
+        let preview = render_migration_preview(generated.manifest(), self.delta_context())
+            .map_err(preview_diagnostic)?;
+        write_generated_migration_under_lock(&authoring_lock, &generated, &preview)?;
+        Ok(generated)
+    }
+
+    /// Author and atomically publish ordered data intents under one history lock.
+    /// Intent and plan files must be regular direct children of this directory.
+    pub fn author_data_migration_in(
+        &self,
+        directory: &MigrationDirectoryAuthority,
+        base_name: &str,
+        intents: &[PathBuf],
+    ) -> Result<GeneratedMigration, TypeBridgeWorkspaceError> {
+        self.require_migration_directory(directory)?;
+        let authoring_lock = try_acquire_migration_authoring_lock(directory.directory())?;
+        let (graph, genesis) = self.discover_migrations_with_genesis_in(directory)?;
+        let historical = match graph.default_head()? {
+            Some(head) => graph.manifest(head).expect("verified head").target_schema(),
+            None => &genesis,
+        };
+        let mut steps = Vec::new();
+        for name in intents {
+            let bytes = crate::data_intent::read_file(directory.directory(), name)?;
+            let document = DocumentId::new(name.to_str().ok_or_else(|| {
+                backfill_intent_read_error(
+                    type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+                    "workspace_data_intent_non_utf8",
+                    "data intent filename must be UTF-8",
+                )
+            })?)?;
+            steps.push(crate::data_intent::parse(
+                document,
+                &bytes,
+                directory.directory(),
+                historical,
+            )?);
+        }
+        let generated = type_bridge_schema_migration::generate_data_migration(
+            &graph,
+            &MigrationGenerationRequest {
+                app_label: self.config().app_label().as_str(),
+                base_name,
+                genesis_source: &genesis,
+                desired: self.declared_schema(),
+                context: self.delta_context(),
+            },
+            &steps,
+        )?;
+        let preview = render_migration_preview(generated.manifest(), self.delta_context())
+            .map_err(preview_diagnostic)?;
         write_generated_migration_under_lock(&authoring_lock, &generated, &preview)?;
         Ok(generated)
     }
@@ -345,6 +410,59 @@ impl TypeBridgeWorkspace {
         )?)
     }
 
+    /// Regenerate derived previews from the verified committed history.
+    ///
+    /// Check mode lists differences without writing or creating an authoring lock.
+    /// Write mode holds the authoring lock and publishes one prepared atomic batch.
+    /// Profile bridges are repaired only by `migration upgrade-profile`.
+    pub fn migration_regenerate_previews_in(
+        &self,
+        directory: &MigrationDirectoryAuthority,
+        check: bool,
+    ) -> Result<Vec<String>, TypeBridgeWorkspaceError> {
+        self.require_migration_directory(directory)?;
+        let _lock = if check {
+            None
+        } else {
+            Some(try_acquire_migration_authoring_lock(directory.directory())?)
+        };
+        let graph = self.discover_migrations_in(directory)?;
+        let mut outputs = Vec::new();
+        for (_, manifest) in graph.manifests() {
+            let expected = self.migration_preview(manifest)?;
+            let name = format!("{}.typeql", manifest.id().name().as_str());
+            if preview_matches(directory, &name, expected.as_bytes()) {
+                continue;
+            }
+            if manifest.is_profile_bridge() {
+                return Err(preview_mismatch(manifest, &name));
+            }
+            outputs.push((name, expected.into_bytes()));
+        }
+        let changed = outputs.iter().map(|(name, _)| name.clone()).collect();
+        if !check && !outputs.is_empty() {
+            let writer = directory
+                .__internal_output_directory()
+                .map_err(preview_publish_error)?;
+            writer
+                .write_atomic_batch(outputs.iter().map(|(name, bytes)| (name, bytes)))
+                .map_err(preview_publish_error)?;
+        }
+        Ok(changed)
+    }
+
+    fn migration_preview(
+        &self,
+        manifest: &VerifiedSchemaMigrationManifest,
+    ) -> Result<String, TypeBridgeWorkspaceError> {
+        let context = type_bridge_schema::ManagedDeltaContext::new(
+            self.delta_context().scope_id().clone(),
+            manifest.semantic_profile().id().clone(),
+            self.delta_context().available_capabilities().clone(),
+        );
+        render_migration_preview(manifest, &context).map_err(preview_diagnostic)
+    }
+
     /// Plan the dependency-ordered chain from an explicit applied basis.
     ///
     /// The plan is offline: it names what would apply and each manifest's
@@ -365,6 +483,13 @@ impl TypeBridgeWorkspace {
         applied: &BTreeSet<MigrationId>,
     ) -> Result<Vec<MigrationPlanEntry>, TypeBridgeWorkspaceError> {
         let graph = self.discover_migrations_in(directory)?;
+        for (_, manifest) in graph.manifests() {
+            let expected = self.migration_preview(manifest)?;
+            let name = format!("{}.typeql", manifest.id().name().as_str());
+            if !preview_matches(directory, &name, expected.as_bytes()) {
+                return Err(preview_mismatch(manifest, &name));
+            }
+        }
         let order = graph.plan_apply_to_default_head(applied)?;
         order
             .into_iter()
@@ -563,4 +688,49 @@ fn preview_diagnostic(error: MigrationPreviewError) -> TypeBridgeWorkspaceError 
             ))
         }
     }
+}
+
+fn preview_matches(directory: &MigrationDirectoryAuthority, name: &str, expected: &[u8]) -> bool {
+    let Ok(file) = directory.directory().open_regular_readonly(name.as_ref()) else {
+        return false;
+    };
+    let mut actual = Vec::new();
+    let limit = type_bridge_contract::limits::MAX_CANONICAL_BYTES;
+    file.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut actual)
+        .is_ok()
+        && actual.len() <= limit
+        && actual == expected
+}
+
+fn preview_mismatch(
+    manifest: &VerifiedSchemaMigrationManifest,
+    name: &str,
+) -> TypeBridgeWorkspaceError {
+    let recovery = if manifest.is_profile_bridge() {
+        "rerun type-bridge migration upgrade-profile for the bridge's environment and target profile"
+    } else {
+        "run type-bridge migration regenerate-previews (--check lists differences without writing)"
+    };
+    TypeBridgeWorkspaceError::Contract(Diagnostic::new(
+        type_bridge_contract::diagnostic::DiagnosticCategory::Integrity,
+        type_bridge_contract::diagnostic::DiagnosticCode::new(
+            "workspace_migration_preview_mismatch",
+        )
+        .expect("static code"),
+        format!(
+            "derived migration preview {name} is missing, unreadable, or differs from verified history (renderer changed or file edited); {recovery}"
+        ),
+    ))
+}
+
+fn preview_publish_error(message: String) -> TypeBridgeWorkspaceError {
+    TypeBridgeWorkspaceError::Contract(Diagnostic::new(
+        type_bridge_contract::diagnostic::DiagnosticCategory::Integrity,
+        type_bridge_contract::diagnostic::DiagnosticCode::new(
+            "workspace_migration_preview_publish_failed",
+        )
+        .expect("static code"),
+        message,
+    ))
 }

@@ -1,10 +1,8 @@
 use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::schema::{AnnotationKindId, CollectionMode, DocumentId, SchemaFact};
-use type_bridge_core_lib::_bindgen::{BindgenOptions, TargetLanguage};
 use type_bridge_schema_compat::{
-    GENERATED_DECLARED_DESCRIPTOR_PATH, GENERATED_DECLARED_DESCRIPTOR_V1,
-    GENERATED_DECLARED_DESCRIPTOR_V2, generate_package_with_declared_descriptors,
+    GENERATED_DECLARED_DESCRIPTOR_V1, GENERATED_DECLARED_DESCRIPTOR_V2,
     generated_descriptors_to_declared, typeql_to_declared, typeql_to_generated_descriptors,
 };
 
@@ -204,65 +202,6 @@ fn missing_explicit_playing_changes_identity_instead_of_being_inferred() {
     );
 }
 
-fn generated_overlap_schema() -> &'static str {
-    r#"define
-attribute identifier, value string;
-attribute age, value integer;
-attribute standalone-tag, value string;
-entity party @abstract, owns identifier @key;
-entity person sub party,
-    owns age,
-    plays membership:member @card(0..1) @doc("person playing") @meta("owner", "person");
-relation membership, relates member @card(1..2);
-relation curated-membership sub membership, relates participant as member;
-relation audit,
-    relates record,
-    plays membership:member @card(0..2) @doc("audit playing") @meta("owner", "audit");
-"#
-}
-
-#[test]
-fn generation_time_snapshot_and_native_package_share_declared_identity() {
-    let source_document = DocumentId::new("schema/generated-overlap.tql").unwrap();
-    let expected = typeql_to_declared(source_document.clone(), generated_overlap_schema())
-        .expect("shared overlap TypeQL adapts");
-    let snapshot = typeql_to_generated_descriptors(source_document, generated_overlap_schema())
-        .expect("generation-time snapshot emits");
-    let adapted = generated_descriptors_to_declared(
-        DocumentId::new("generated/declared-schema.json").unwrap(),
-        snapshot.as_bytes(),
-    )
-    .expect("emitted direct snapshot adapts");
-    assert_eq!(
-        adapted.declared_identity_fingerprint(),
-        expected.declared_identity_fingerprint(),
-    );
-    assert!(snapshot.contains("standalone-tag"));
-    assert!(snapshot.contains("curated-membership"));
-    assert!(snapshot.contains("person playing"));
-    assert!(snapshot.contains("audit playing"));
-
-    let package = generate_package_with_declared_descriptors(
-        generated_overlap_schema(),
-        TargetLanguage::Python,
-        &BindgenOptions::default(),
-    )
-    .expect("native package seam renders");
-    let generated_snapshot = package
-        .file(GENERATED_DECLARED_DESCRIPTOR_PATH)
-        .expect("package exports the direct snapshot");
-    let registry = package.file("registry.py").expect("Python registry exists");
-    assert_eq!(
-        generated_snapshot.contents,
-        snapshot.replace("schema/generated-overlap.tql", "generated/schema.tql",)
-    );
-    assert!(
-        registry
-            .contents
-            .contains("GENERATED_DECLARED_DESCRIPTORS_JSON")
-    );
-}
-
 #[test]
 fn legacy_unordered_descriptor_bytes_remain_exact_v1() {
     let snapshot = typeql_to_generated_descriptors(
@@ -280,81 +219,6 @@ fn legacy_unordered_descriptor_bytes_remain_exact_v1() {
     );
     assert!(!snapshot.contains("collection_mode"));
     assert!(!snapshot.contains("distinct"));
-}
-
-#[test]
-fn ordered_and_distinct_select_v2_and_round_trip_exact_semantics() {
-    let document = DocumentId::new("ordered.tql").unwrap();
-    let source = "define\nattribute tag, value string;\nentity person, owns tag[] @distinct;\nrelation team, relates member[] @distinct;\n";
-    let expected = typeql_to_declared(document.clone(), source).unwrap();
-    let snapshot = typeql_to_generated_descriptors(document, source).unwrap();
-    let value: Value = serde_json::from_str(&snapshot).unwrap();
-    assert_eq!(value["format"], GENERATED_DECLARED_DESCRIPTOR_V2);
-    assert_eq!(value["closed_world"], true);
-    assert_eq!(value["unsupported_constructs"], json!([]));
-    assert_eq!(
-        value["entities"][0]["owns"][0]["collection_mode"],
-        "ordered_list"
-    );
-    assert_eq!(value["entities"][0]["owns"][0]["distinct"], true);
-    assert_eq!(
-        value["relations"][0]["relates"][0]["collection_mode"],
-        "ordered_list"
-    );
-    assert_eq!(value["relations"][0]["relates"][0]["distinct"], true);
-
-    let rebuilt = generated_descriptors_to_declared(
-        DocumentId::new("generated/declared-schema.json").unwrap(),
-        snapshot.as_bytes(),
-    )
-    .unwrap();
-    assert_eq!(
-        rebuilt.declared_identity_fingerprint(),
-        expected.declared_identity_fingerprint()
-    );
-    assert_eq!(
-        rebuilt
-            .facts()
-            .filter(|fact| matches!(fact, SchemaFact::Owns(owns) if owns.collection_mode() == CollectionMode::OrderedList))
-            .count(),
-        1,
-    );
-    assert_eq!(
-        rebuilt
-            .facts()
-            .filter(|fact| matches!(fact, SchemaFact::Relates(relates) if relates.collection_mode() == CollectionMode::OrderedList))
-            .count(),
-        1,
-    );
-    assert_eq!(
-        rebuilt
-            .facts()
-            .filter(|fact| matches!(fact, SchemaFact::Annotation(annotation) if annotation.id().kind() == &AnnotationKindId::Distinct))
-            .count(),
-        2,
-    );
-
-    let package = generate_package_with_declared_descriptors(
-        source,
-        TargetLanguage::Python,
-        &BindgenOptions::default(),
-    )
-    .expect("ordered package emits its successor descriptor");
-    let attached = package
-        .file(GENERATED_DECLARED_DESCRIPTOR_PATH)
-        .expect("successor descriptor retains the frozen package path");
-    assert_eq!(
-        serde_json::from_str::<Value>(&attached.contents).unwrap()["format"],
-        GENERATED_DECLARED_DESCRIPTOR_V2,
-    );
-    assert_eq!(
-        package
-            .files
-            .iter()
-            .filter(|file| file.path == GENERATED_DECLARED_DESCRIPTOR_PATH)
-            .count(),
-        1,
-    );
 }
 
 #[test]
@@ -431,4 +295,96 @@ fn v2_defaults_are_accepted_only_inside_a_material_ordered_snapshot() {
             .as_str(),
         "non_canonical_generated_descriptor",
     );
+}
+
+#[test]
+fn ordered_and_distinct_select_v2_and_round_trip_exact_semantics() {
+    let document = DocumentId::new("ordered.tql").unwrap();
+    let source = "define\nattribute tag, value string;\nentity person, owns tag[] @distinct;\nrelation team, relates member[] @distinct;\n";
+    let expected = typeql_to_declared(document.clone(), source).unwrap();
+    let snapshot = typeql_to_generated_descriptors(document, source).unwrap();
+    let value: Value = serde_json::from_str(&snapshot).unwrap();
+    assert_eq!(value["format"], GENERATED_DECLARED_DESCRIPTOR_V2);
+    assert_eq!(value["closed_world"], true);
+    assert_eq!(value["unsupported_constructs"], json!([]));
+    assert_eq!(
+        value["entities"][0]["owns"][0]["collection_mode"],
+        "ordered_list"
+    );
+    assert_eq!(value["entities"][0]["owns"][0]["distinct"], true);
+    assert_eq!(
+        value["relations"][0]["relates"][0]["collection_mode"],
+        "ordered_list"
+    );
+    assert_eq!(value["relations"][0]["relates"][0]["distinct"], true);
+
+    let rebuilt = generated_descriptors_to_declared(
+        DocumentId::new("generated/declared-schema.json").unwrap(),
+        snapshot.as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        rebuilt.declared_identity_fingerprint(),
+        expected.declared_identity_fingerprint()
+    );
+    assert_eq!(
+        rebuilt
+            .facts()
+            .filter(|fact| matches!(fact, SchemaFact::Owns(owns) if owns.collection_mode() == CollectionMode::OrderedList))
+            .count(),
+        1,
+    );
+    assert_eq!(
+        rebuilt
+            .facts()
+            .filter(|fact| matches!(fact, SchemaFact::Relates(relates) if relates.collection_mode() == CollectionMode::OrderedList))
+            .count(),
+        1,
+    );
+    assert_eq!(
+        rebuilt
+            .facts()
+            .filter(|fact| matches!(fact, SchemaFact::Annotation(annotation) if annotation.id().kind() == &AnnotationKindId::Distinct))
+            .count(),
+        2,
+    );
+}
+
+fn generated_overlap_schema() -> &'static str {
+    r#"define
+attribute identifier, value string;
+attribute age, value integer;
+attribute standalone-tag, value string;
+entity party @abstract, owns identifier @key;
+entity person sub party,
+    owns age,
+    plays membership:member @card(0..1) @doc("person playing") @meta("owner", "person");
+relation membership, relates member @card(1..2);
+relation curated-membership sub membership, relates participant as member;
+relation audit,
+    relates record,
+    plays membership:member @card(0..2) @doc("audit playing") @meta("owner", "audit");
+"#
+}
+
+#[test]
+fn generation_time_snapshot_round_trips_declared_identity() {
+    let source_document = DocumentId::new("schema/generated-overlap.tql").unwrap();
+    let expected = typeql_to_declared(source_document.clone(), generated_overlap_schema())
+        .expect("shared overlap TypeQL adapts");
+    let snapshot = typeql_to_generated_descriptors(source_document, generated_overlap_schema())
+        .expect("generation-time snapshot emits");
+    let adapted = generated_descriptors_to_declared(
+        DocumentId::new("generated/declared-schema.json").unwrap(),
+        snapshot.as_bytes(),
+    )
+    .expect("emitted direct snapshot adapts");
+    assert_eq!(
+        adapted.declared_identity_fingerprint(),
+        expected.declared_identity_fingerprint(),
+    );
+    assert!(snapshot.contains("standalone-tag"));
+    assert!(snapshot.contains("curated-membership"));
+    assert!(snapshot.contains("person playing"));
+    assert!(snapshot.contains("audit playing"));
 }

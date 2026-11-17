@@ -1,7 +1,7 @@
 //! External-crate source compatibility for the released server config API.
 
 use type_bridge_server::config::{
-    InterceptorsSection, LoggingSection, SchemaSection, ServerConfig, ServerSection, TypeDBSection,
+    InterceptorsSection, LoggingSection, ServerConfig, ServerSection, TypeDBSection,
 };
 
 #[test]
@@ -19,7 +19,6 @@ fn released_struct_literals_and_exhaustive_patterns_still_compile() {
             http_port: 8000,
             server_version: None,
         },
-        schema: SchemaSection::default(),
         interceptors: InterceptorsSection::default(),
         logging: LoggingSection::default(),
     };
@@ -27,7 +26,6 @@ fn released_struct_literals_and_exhaustive_patterns_still_compile() {
     let ServerConfig {
         server,
         typedb,
-        schema,
         interceptors,
         logging,
     } = config;
@@ -49,7 +47,6 @@ fn released_struct_literals_and_exhaustive_patterns_still_compile() {
     assert_eq!(password, "password");
     assert_eq!(http_port, 8000);
     assert!(server_version.is_none());
-    assert!(schema.source_file.is_empty());
     assert!(interceptors.enabled.is_empty());
     assert_eq!(logging.level, "info");
 }
@@ -70,7 +67,6 @@ fn released_debug_trait_redacts_connection_credentials() {
             http_port: 8000,
             server_version: None,
         },
-        schema: SchemaSection::default(),
         interceptors: InterceptorsSection::default(),
         logging: LoggingSection::default(),
     };
@@ -79,15 +75,4 @@ fn released_debug_trait_redacts_connection_credentials() {
     assert!(!rendered.contains(SENTINEL), "{rendered}");
     assert!(rendered.contains("[REDACTED]"));
     assert!(rendered.contains("test"));
-}
-
-#[cfg(feature = "typedb")]
-#[test]
-fn released_connect_signature_still_accepts_plaintext_section() {
-    fn assert_future(config: &TypeDBSection) {
-        let future = type_bridge_server::typedb::TypeDBClient::connect(config);
-        drop(future);
-    }
-
-    let _signature: for<'a> fn(&'a TypeDBSection) = assert_future;
 }

@@ -47,6 +47,9 @@ run_rust() {
     run_step "cargo audit (all maintained lockfiles)" \
         bash scripts/ci/check_dependency_security.sh
 
+    run_step "frozen Rust consumer locks" \
+        python scripts/ci/refresh_rust_consumer_locks.py --check
+
     run_step "cargo check --all-targets" \
         cargo check --manifest-path type-bridge-core/Cargo.toml --all-targets
 
@@ -86,6 +89,8 @@ run_rust() {
 run_python() {
     printf "${BOLD}━━━ Python ━━━${RESET}\n\n"
 
+    run_step "3.0 upgrade guide coverage" python scripts/ci/check_upgrade_guide.py
+
     run_step "ruff check ." \
         uv run ruff check .
 
@@ -97,9 +102,6 @@ run_python() {
 
     run_step "pyright tests/" \
         uv run pyright tests/
-
-    run_step "query-v2 authoring negative Pyright contract" \
-        uv run python tests/unit/typed_query/check_query_negative.py
 
     run_step "schema-codegen Python projection acceptance" \
         uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
@@ -137,9 +139,9 @@ run_node() {
     popd >/dev/null
 }
 
-# ── C foundation checks (matching ci.yml rust-check C steps) ──────────────
+# ── C SDK and runtime checks (matching ci.yml rust-check C steps) ─────────
 run_c() {
-    printf "${BOLD}━━━ C foundation (internal) ━━━${RESET}\n\n"
+    printf "${BOLD}━━━ C SDK and runtime ━━━${RESET}\n\n"
 
     run_step "C distribution contract" \
         python scripts/ci/validate_c_distribution_contract.py

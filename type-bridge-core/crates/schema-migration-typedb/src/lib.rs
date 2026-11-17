@@ -1,8 +1,8 @@
 //! TypeDB-backed fenced execution storage for V2 schema migrations.
 //!
 //! This public leaf crate is the only layer that knows both the provider-neutral
-//! migration execution contracts and the TypeDB ORM. It does not extend or
-//! import the archival V1 migration state store.
+//! migration execution contracts and the TypeDB ORM. It owns the read-only
+//! legacy ledger importer and never runs the legacy migration executor.
 //!
 //! Most embedders should use [`TypeDbMigrationRunner`]. Lower-level composition
 //! must construct one [`TypeDbExecutionBinding`] and reuse it for both
@@ -17,10 +17,21 @@
 pub mod readme_doctests {}
 
 mod control_schema;
+mod data_plan;
 mod lease_plan;
 mod legacy_import;
+mod legacy_ledger;
+mod legacy_ledger_plan;
+mod legacy_schema;
+pub use legacy_ledger::AppliedMigrationRecord;
+pub use legacy_schema::{
+    MigrationStateSchemaKind, applied_migration_entity_label, is_migration_state_type,
+    migration_state_schema,
+};
 mod observation;
 mod provider;
+mod user_steps;
+pub use user_steps::MigrationUserSteps;
 mod runner;
 mod store;
 mod wire;
@@ -29,17 +40,12 @@ pub use control_schema::{
     JOURNAL_CONTROL_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL, TYPEBRIDGE_INTERNAL_PREFIX,
     control_schema_labels, is_typebridge_internal_label,
 };
-pub use legacy_import::{
-    digest_legacy_applied_records, extract_legacy_applied_set_digest, extract_legacy_frontier,
-    verify_legacy_continuity,
-};
+pub use legacy_import::digest_legacy_applied_records;
 pub use observation::{
     LiveQueryControlPresence, PartitionedDeclaredSchema, observe_managed_state_from_export,
     partition_typeql_export, rebuild_live_managed_state, rebuild_live_query_authority,
     rebuild_live_query_authority_state,
 };
-#[allow(deprecated)]
-pub use provider::require_supported_migration_server;
 pub use provider::{
     TypeDbExecutionBinding, TypeDbMigrationProvider, execution_capability_vocabulary,
     migration_server_for_profile, require_supported_migration_execution_binding,
@@ -59,6 +65,8 @@ mod backfill;
 mod catalog_executor;
 pub use catalog_executor::{
     execute_catalog_apply_plan, execute_catalog_apply_plan_controlled,
-    execute_catalog_rollback_plan, execute_catalog_rollback_plan_controlled,
-    load_catalog_applied_migrations, verify_catalog_state,
+    execute_catalog_apply_plan_controlled_with_user_steps, execute_catalog_rollback_plan,
+    execute_catalog_rollback_plan_controlled,
+    execute_catalog_rollback_plan_controlled_with_user_steps, load_catalog_applied_migrations,
+    verify_catalog_state,
 };

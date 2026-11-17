@@ -240,7 +240,9 @@ def test_report_history_fingerprint_is_bound_to_its_server(tmp_path: Path, profi
     assert isinstance(result, dict)
     observation = result["observation"]
     assert isinstance(observation, dict)
-    observation["catalog_fingerprint"] = identity.expected_history_fingerprint
+    observation["catalog_fingerprint"] = comparator.FORMAT2_HISTORY_FINGERPRINTS[
+        identity.semantic_profile
+    ]
     comparator._validate_report(report, contracts.observation_refs)
     observation["catalog_fingerprint"] = "0" * 64
     with pytest.raises(comparator.ContractError) as rejected:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,14 @@ def contract_relative(suite: str, kind: str) -> str:
 
 
 SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"
+EXPECTED_SERVER_ENV = "TYPE_BRIDGE_EXPECTED_SERVER_VERSION"
+# Measured pairs only; selection never changes the exact detected-version check.
+SERVER_PROFILES = {
+    "3.12.3": "typedb-3.12.1/v1",
+    "3.13.6": "typedb-3.13.6/v1",
+    "3.14.0": "typedb-3.13.6/v1",
+}
+
 
 ErrorFactory = Callable[[str, str], Exception]
 
@@ -58,6 +66,29 @@ class ProfileIdentity:
     live_server_version: str
     expected_fingerprints: dict[str, Any] | None
     expected_history_fingerprint: str | None = None
+
+
+def expected_server(environment: Mapping[str, str]) -> str | None:
+    """Use the explicit selection, including the existing test.sh/CI version variable."""
+    return environment.get(EXPECTED_SERVER_ENV, environment.get("TYPEDB_VERSION"))
+
+
+def require_server_profile(
+    profile: str, server: str, *, error: ErrorFactory = ProfileMatrixError
+) -> None:
+    """Refuse every unmeasured server/profile pair."""
+    if SERVER_PROFILES.get(server) != profile:
+        raise error("server_profile_mismatch", f"unmeasured TypeDB {server!r} / {profile!r} pair")
+
+
+def with_server(
+    identity: ProfileIdentity, server: str | None, *, error: ErrorFactory = ProfileMatrixError
+) -> ProfileIdentity:
+    """Select an exact measured server, preserving the matrix default when unset."""
+    if server is None:
+        return identity
+    require_server_profile(identity.semantic_profile, server, error=error)
+    return replace(identity, live_server_version=server)
 
 
 def matrix_relative(suite: str) -> str:
@@ -228,10 +259,14 @@ def requested(
     profile.
     """
 
+    environment = os.environ if environment is None else environment
     if profile is None:
-        environment = os.environ if environment is None else environment
         profile = environment.get(SEMANTIC_PROFILE_ENV) or catalog_profile(suite, root=root)
-    return select(suite, profile, root=root, error=error)
+    return with_server(
+        select(suite, profile, root=root, error=error),
+        expected_server(environment),
+        error=error,
+    )
 
 
 def select_lane(
@@ -272,6 +307,15 @@ def report_directory(suite: str) -> str:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check-server-profile")
+    parser.add_argument("--expected-server")
+    arguments = parser.parse_args()
+    if arguments.check_server_profile is not None:
+        require_server_profile(arguments.check_server_profile, arguments.expected_server)
+        raise SystemExit(0)
     print(
         json.dumps(
             {

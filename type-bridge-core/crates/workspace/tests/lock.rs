@@ -9,7 +9,7 @@ use type_bridge_contract::migration::MigrationAppLabel;
 use type_bridge_contract::projection::BindingTarget;
 use type_bridge_workspace::{
     ConfigOrigin, ExtensionRegistryService, ExtensionRequirement, MAX_WORKSPACE_LOCK_BYTES,
-    MigrationV2Directory, OutputDirectory, SchemaSetPath, SecretReference, SecretReferenceService,
+    MigrationDirectory, OutputDirectory, SchemaSetPath, SecretReference, SecretReferenceService,
     TypeBridgeConfig, TypeBridgeConfigServices, TypeBridgeConfigSpec, TypeBridgeWorkspace,
     TypeBridgeWorkspaceServices, WorkspaceDirectoryAuthority, WorkspaceLockErrorCode,
     WorkspaceRoot, WorkspaceServiceError, generate_workspace_lock, verify_workspace_lock,
@@ -99,7 +99,7 @@ fn programmatic_workspace(
         .app_label(MigrationAppLabel::new(app_label).unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
         .semantic_profile(SemanticProfileId::new("typedb-3.12.1/v1").unwrap())
-        .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
+        .migration_directory(MigrationDirectory::new("migrations/v2").unwrap())
         .require_capability(CapabilityId::new("schema.doc-meta").unwrap());
     if with_output {
         builder = builder.output(
@@ -245,7 +245,7 @@ fn config_profile_scope_and_capability_claim_tampering_is_rejected() {
 
     for tampered in [
         replace_first(lock.bytes(), "example-schema", "changed-schema"),
-        replace_first(lock.bytes(), "typedb-3.12.1/v1", "typedb-3.11.5/v1"),
+        replace_first(lock.bytes(), "typedb-3.12.1/v1", "typedb-3.13.6/v1"),
         replace_first(lock.bytes(), "schema.doc-meta", "schema.annotations"),
     ] {
         assert_eq!(
@@ -309,4 +309,45 @@ fn unconsumed_output_configuration_does_not_create_placeholder_lock_claims() {
         generate_workspace_lock(&without_output).unwrap().bytes(),
         generate_workspace_lock(&with_output).unwrap().bytes()
     );
+}
+
+#[test]
+fn old_migration_directory_identity_is_stale_with_a_regeneration_hint() {
+    use type_bridge_contract::codec::to_canonical_json;
+    use type_bridge_contract::fingerprint::{
+        CanonicalizationVersion, Fingerprint, FingerprintDomain,
+    };
+    let directory = TempDirectory::new();
+    let workspace = programmatic_workspace(&directory, "example", false);
+    let lock = generate_workspace_lock(&workspace).unwrap();
+    let config = workspace.config();
+    // Reconstruct the former identity view, which was hashed into the lock;
+    // the path itself was never a top-level lock field.
+    let old_view = serde_json::json!({
+        "app_label": config.app_label().as_str(),
+        "configured_capability_requirements": config.required_capabilities().iter().map(|id| id.as_str()).collect::<Vec<_>>(),
+        "managed_scope_id": config.managed_scope().id().as_str(),
+        "managed_scope_profile_id": config.managed_scope().profile().id().as_str(),
+        "migration_v2_directory": config.migration_directory().as_path().to_str().unwrap(),
+        "schema_set": config.schema_set().as_path().to_str().unwrap(),
+        "semantic_profile_id": config.semantic_profile().as_str(),
+    });
+    let old_identity = Fingerprint::compute(
+        FingerprintDomain::new("typebridge.workspace.config-identity").unwrap(),
+        CanonicalizationVersion::new("typebridge.workspace-config-identity/v1").unwrap(),
+        None,
+        &to_canonical_json(&old_view).unwrap(),
+    );
+    let mut old_lock: serde_json::Value = serde_json::from_slice(lock.bytes()).unwrap();
+    old_lock["resolved_config_identity"] = serde_json::to_value(old_identity).unwrap();
+    let error =
+        verify_workspace_lock(&to_canonical_json(&old_lock).unwrap(), &workspace).unwrap_err();
+    assert_eq!(error.code(), WorkspaceLockErrorCode::Stale);
+    assert!(error.to_string().contains("generate_workspace_lock"));
+    assert!(error.to_string().contains("resolved_config_identity"));
+    verify_workspace_lock(
+        generate_workspace_lock(&workspace).unwrap().bytes(),
+        &workspace,
+    )
+    .unwrap();
 }

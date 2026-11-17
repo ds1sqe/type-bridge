@@ -42,9 +42,13 @@ EXPECTED_MIGRATION_ORDER = (
     "administration/0003_backfill-display-name",
     "administration/0004_contract-legacy-name",
 )
-EXPECTED_CATALOG_FINGERPRINT = profile_matrix.select(
-    "administration", "typedb-3.12.1/v1"
-).expected_history_fingerprint
+# New-authoring reports use format 2; profiles.json preserves historical pins.
+FORMAT2_HISTORY_FINGERPRINTS = json.loads(
+    (
+        ROOT / "tests/contracts/sdk_conformance/administration/new-authoring-format2-history.json"
+    ).read_text()
+)
+EXPECTED_CATALOG_FINGERPRINT = FORMAT2_HISTORY_FINGERPRINTS["typedb-3.12.1/v1"]
 
 
 class ContractError(ValueError):
@@ -231,9 +235,11 @@ def _validate_report(report: dict[str, Any], observation_refs: tuple[str, ...]) 
         _validate_observation(
             observation_refs[index],
             result["observation"],
-            profile_matrix.select_server(
-                "administration", report["server_version"]
-            ).expected_history_fingerprint,
+            FORMAT2_HISTORY_FINGERPRINTS[
+                profile_matrix.select_server(
+                    "administration", report["server_version"]
+                ).semantic_profile
+            ],
         )
 
 

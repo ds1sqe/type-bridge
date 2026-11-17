@@ -41,7 +41,7 @@ relations:
 
 fn fixture() -> (DeclaredSchema, CapabilitySet, ManagedDeltaContext) {
     let declared = declared_schema();
-    let required = capabilities(&["schema.roles", "server.query-v2"]);
+    let required = capabilities(&["schema.roles", "app.workspace-additive"]);
     let context = ManagedDeltaContext::new(
         ManagedScopeId::new("example-application").expect("scope is valid"),
         SemanticProfileId::new("typedb-3.12.1/v1").expect("profile is valid"),
@@ -131,7 +131,7 @@ fn split_yaml_authority_round_trips_without_source_access() {
     assert_eq!(encode_schema_authority(&rebuilt), bytes);
     assert_eq!(
         authority.authority_fingerprint().digest().to_hex(),
-        "a1cac0a9577e883b48ff33a2fb5790a799b676e6a65f2252f308987be0c0b49b"
+        "488a57ebdf242b9cd37bae0283240a7cf6d28b21f57f71b54e2dec1a2cba098c"
     );
 }
 
@@ -146,7 +146,7 @@ fn artifact_requirements_are_additive_but_fail_closed() {
         declared.required_capabilities(),
     );
 
-    let missing_declared = capabilities(&["server.query-v2"]);
+    let missing_declared = capabilities(&["app.workspace-additive"]);
     let error = build_schema_authority(&declared, &missing_declared, &context)
         .expect_err("artifact cannot omit a declared requirement");
     assert_eq!(
@@ -228,7 +228,7 @@ fn every_derived_authority_claim_is_reconstructed_after_resigning() {
     assert_resigned_mutation_rejected(
         &base,
         &available,
-        |value| value["content"]["semantic_profile"]["id"] = "typedb-3.11.5/v1".into(),
+        |value| value["content"]["semantic_profile"]["id"] = "typedb-3.13.6/v1".into(),
         SchemaAuthorityErrorCode::IntegrityMismatch,
     );
     assert_resigned_mutation_rejected(
@@ -280,7 +280,7 @@ fn every_derived_authority_claim_is_reconstructed_after_resigning() {
         &available,
         |value| {
             value["content"]["required_capabilities"] =
-                Value::Array(vec![Value::String("server.query-v2".to_owned())]);
+                Value::Array(vec![Value::String("app.workspace-additive".to_owned())]);
         },
         SchemaAuthorityErrorCode::UnsupportedCapability,
     );

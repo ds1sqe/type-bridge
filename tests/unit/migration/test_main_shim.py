@@ -31,7 +31,7 @@ def test_main_shim_has_no_typer_import() -> None:
     )
 
 
-def test_main_shim_uses_only_the_v2_native_runner_without_an_external_binary() -> None:
+def test_main_shim_uses_only_the_native_runner_without_an_external_binary() -> None:
     """The wheel entry point must not depend on a separately installed bin."""
     module_name = "type_bridge.migration.__main__"
     if module_name in sys.modules:
@@ -44,5 +44,5 @@ def test_main_shim_uses_only_the_v2_native_runner_without_an_external_binary() -
     assert "shutil" not in source
     assert "_find_bin" not in source
     assert "run_legacy_migration_cli" not in source
-    assert "run_v2_cli" in source
+    assert "run_cli" in source
     assert "sys.exit" in source, "__main__.py must propagate the native exit code"

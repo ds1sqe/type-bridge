@@ -51,6 +51,8 @@ pub struct TypeBridgeProxyConnectionOptionsV1 {
     pub connection_limits: *const TypeBridgeQueryExecutionLimitsV1,
     /// Ceiling for every terminal on the connection; null selects defaults.
     pub answer_limits: *const TypeBridgeQueryExecutionLimitsV1,
+    /// Finite delivery window; zero selects 60000 ms. Does not limit execution.
+    pub admission_window_milliseconds: u64,
     /// Must be zero.
     pub reserved: [u64; 4],
 }
@@ -72,6 +74,9 @@ pub(crate) struct StagedProxyGuard {
 }
 
 impl StagedProxyGuard {
+    pub(crate) fn package_state(&self) -> &Arc<SchemaPackageState> {
+        &self.package
+    }
     pub(crate) fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         self.runtime.block_on(future)
     }
@@ -85,11 +90,52 @@ impl StagedProxyGuard {
 }
 
 impl TypeBridgeProxyConnection {
+    pub(crate) fn package_state(&self) -> &Arc<SchemaPackageState> {
+        &self.package
+    }
+    pub(crate) fn manager_target(&self) -> type_bridge_orm::QueryTarget<'_> {
+        type_bridge_orm::QueryTarget::Proxy(&self.connection)
+    }
+    pub(crate) fn manager_block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
+
+    pub(super) fn new(
+        package: Arc<SchemaPackageState>,
+        connection: ProxyQueryConnection,
+        runtime: Arc<tokio::runtime::Runtime>,
+    ) -> Self {
+        Self {
+            package,
+            connection,
+            runtime,
+        }
+    }
+
     pub(crate) fn check_borrowed_ranges(
         &self,
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
         preflight.check_package_borrowed_ranges(&self.package)
+    }
+
+    pub(crate) fn raw_transaction(
+        &self,
+        kind: type_bridge_orm::TxType,
+    ) -> Result<
+        (
+            type_bridge_orm::session::raw::RawTransaction,
+            StagedProxyGuard,
+        ),
+        type_bridge_orm::session::raw::RawQueryError,
+    > {
+        Ok((
+            self.connection.raw_transaction(kind)?,
+            StagedProxyGuard {
+                runtime: Arc::clone(&self.runtime),
+                package: Arc::clone(&self.package),
+            },
+        ))
     }
 
     /// Open a staged transaction whose commit is one signed exchange with
@@ -123,6 +169,8 @@ struct CopiedOptions {
     advertisement: Option<Vec<u8>>,
     connection_limits: QueryExecutionResourceLimits,
     answer_limits: QueryExecutionResourceLimits,
+    admission_window_milliseconds: std::num::NonZeroU64,
+    caller_item_limit: Option<u64>,
 }
 
 fn options_invalid(code_text: &'static str, text: &'static str) -> SdkExecutionDiagnostic {
@@ -270,6 +318,16 @@ unsafe fn copy_options(
         advertisement,
         connection_limits,
         answer_limits,
+        admission_window_milliseconds: std::num::NonZeroU64::new(
+            options.admission_window_milliseconds,
+        )
+        .unwrap_or(
+            std::num::NonZeroU64::new(
+                type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
+            )
+            .unwrap(),
+        ),
+        caller_item_limit: (!options.answer_limits.is_null()).then_some(answer_limits.items),
     })
 }
 
@@ -328,6 +386,58 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
     out_connection: *mut *mut TypeBridgeProxyConnection,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: unchanged version-1 options; the default override graph is empty.
+    unsafe {
+        proxy_connection_open_with_query_limits(
+            package,
+            options,
+            ptr::null(),
+            0,
+            cancellation,
+            out_connection,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Open a proxy connection with independent named query-limit overrides.
+/// The server advertisement remains a tighten-only ceiling.
+/// # Safety
+/// Parent/options handles and named overrides are readable during the call;
+/// writable output slots cannot overlap any borrowed input.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_proxy_connection_open_with_query_limits_v1(
+    package: *const TypeBridgeSchemaPackage,
+    options: *const TypeBridgeProxyConnectionOptionsV1,
+    query_limits: *const TypeBridgeQueryLimitOverrideV1,
+    query_limit_count: usize,
+    cancellation: *const TypeBridgeCancellation,
+    out_connection: *mut *mut TypeBridgeProxyConnection,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: the common constructor fences the complete borrowed graph.
+    unsafe {
+        proxy_connection_open_with_query_limits(
+            package,
+            options,
+            query_limits,
+            query_limit_count,
+            cancellation,
+            out_connection,
+            out_diagnostics,
+        )
+    }
+}
+
+unsafe fn proxy_connection_open_with_query_limits(
+    package: *const TypeBridgeSchemaPackage,
+    options: *const TypeBridgeProxyConnectionOptionsV1,
+    query_limits: *const TypeBridgeQueryLimitOverrideV1,
+    query_limit_count: usize,
+    cancellation: *const TypeBridgeCancellation,
+    out_connection: *mut *mut TypeBridgeProxyConnection,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
     let preflight = match preflight_outputs(out_connection, out_diagnostics) {
         Ok(value) => value,
         Err(status) => return status,
@@ -339,6 +449,8 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
         unsafe { preflight_handle(&preflight, options) },
         // SAFETY: only complete outer objects are inspected before initialization.
         unsafe { preflight_handle(&preflight, cancellation) },
+        // SAFETY: the override graph is caller-readable and fenced before output initialization.
+        unsafe { check_query_limit_override_ranges(&preflight, query_limits, query_limit_count) },
     ] {
         if let Err(status) = result {
             return status;
@@ -370,6 +482,12 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
         if package.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
+        // SAFETY: every named override range passed the output-alias fence.
+        let query_limits = match unsafe { connection_query_limits(query_limits, query_limit_count) }
+        {
+            Ok(limits) => limits,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
         let Some(options) = options else {
             return return_execution_error(
                 options_invalid(
@@ -415,15 +533,26 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
             ))
         }));
         let connection = match outcome {
-            Ok(Ok(value)) => value,
+            Ok(Ok(value)) => value
+                .with_caller_item_limit(copied.caller_item_limit)
+                .with_admission_window_milliseconds(copied.admission_window_milliseconds),
             Ok(Err(error)) => return return_execution_error(error, out_diagnostics),
             Err(_) => return TypeBridgeStatus::Panic,
         };
-        let handle = reservation.initialize(TypeBridgeProxyConnection {
-            package: Arc::clone(package),
+        let connection = match query_limits {
+            Some(limits) => match connection.with_query_limits(limits) {
+                Ok(connection) => connection,
+                Err(_) => {
+                    unreachable!("connection query limits were validated before provider I/O")
+                }
+            },
+            None => connection,
+        };
+        let handle = reservation.initialize(TypeBridgeProxyConnection::new(
+            Arc::clone(package),
             connection,
-            runtime: Arc::new(runtime),
-        });
+            Arc::new(runtime),
+        ));
         // SAFETY: the output slot was preflighted and initialized.
         unsafe { out_connection.write_unaligned(Box::into_raw(handle)) };
         TypeBridgeStatus::Ok
@@ -441,7 +570,7 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_close(
 
 /// Execute one reusable terminal on a TypeBridge server.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_proxy_query_execute_v1(
+pub unsafe extern "C" fn type_bridge_proxy_query_execute(
     proxy: *const TypeBridgeProxyConnection,
     terminal: *const TypeBridgeQueryTerminal,
     expected_terminal_kind: u32,
@@ -497,27 +626,38 @@ pub unsafe extern "C" fn type_bridge_proxy_query_execute_v1(
         if !Arc::ptr_eq(&proxy.package, &terminal.state.package) {
             return return_execution_error(package_mismatch(), out_diagnostics);
         }
-        if matches!(terminal.spec, TerminalSpec::Manager { .. }) {
-            return return_execution_error(manager_remote_unsupported(), out_diagnostics);
-        }
-        let request = match validate_terminal(&terminal.query, &terminal.spec) {
-            Ok(value) => value,
-            Err(error) => return return_execution_error(lower(error), out_diagnostics),
+        let request = match &terminal.spec {
+            TerminalSpec::Manager { .. } => None,
+            _ => match validate_terminal(&terminal.query, &terminal.spec) {
+                Ok(value) => Some(value),
+                Err(error) => return return_execution_error(lower(error), out_diagnostics),
+            },
         };
         let reservation = match ReservedBox::try_new(AllocationSite::QueryResultHandle) {
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
         };
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            proxy.runtime.block_on(execute_validated_on_target(
+        let outcome = catch_unwind(AssertUnwindSafe(|| match &terminal.spec {
+            TerminalSpec::Manager { operation, filter } => {
+                proxy.runtime.block_on(execute_manager_on_target(
+                    terminal,
+                    QueryTarget::Proxy(&proxy.connection),
+                    *operation,
+                    filter,
+                    parsed.resources,
+                    parsed.deadline,
+                    answer.clone(),
+                ))
+            }
+            _ => proxy.runtime.block_on(execute_validated_on_target(
                 QueryTarget::Proxy(&proxy.connection),
                 terminal,
-                request,
+                request.expect("non-manager terminal was validated"),
                 ProjectedQueryOrigin::remote_unbound(),
                 parsed.resources,
                 parsed.deadline,
                 &answer,
-            ))
+            )),
         }));
         let value = match outcome {
             Ok(Ok(value)) => value,
@@ -534,4 +674,131 @@ pub unsafe extern "C" fn type_bridge_proxy_query_execute_v1(
         unsafe { out_result.write_unaligned(Box::into_raw(result)) };
         TypeBridgeStatus::Ok
     })
+}
+
+#[cfg(test)]
+mod query_policy_tests {
+    use super::*;
+    use type_bridge_contract::capability::CapabilityId;
+    use type_bridge_contract::query_remote::{
+        RemoteCapabilities, RemoteExecutorBinding, RemoteSigningPublicKey,
+    };
+
+    #[test]
+    fn connection_query_limits_intersect_pinned_server_policy_without_io() {
+        let package = crate::entity_crud::tests::package("proxyquerypolicy");
+        let mut capabilities = type_bridge_contract::query_plan::query_plan_capability_vocabulary();
+        capabilities.insert(
+            CapabilityId::new(type_bridge_contract::query_remote::CAP_QUERY_REMOTE_STAGED).unwrap(),
+        );
+        let mut server = QueryLimits::PLAN;
+        server.structural.bindings = 768;
+        server.structural.boolean_terms = 300;
+        let advertisement = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("c-proxy-query-policy-tests", "epoch-00000000001").unwrap(),
+            RemoteSigningPublicKey::from_bytes([5; 32]),
+        )
+        .with_query_limits(server)
+        .unwrap()
+        .encode()
+        .unwrap();
+        let mut options = crate::query::tests::proxy_options("http://127.0.0.1:9");
+        options.pinned_advertisement = TypeBridgeByteView {
+            data: advertisement.as_ptr(),
+            length: advertisement.len(),
+        };
+        let overrides = [
+            TypeBridgeQueryLimitOverrideV1 {
+                name: b"bindings".as_ptr(),
+                name_length: 8,
+                value: 1024,
+            },
+            TypeBridgeQueryLimitOverrideV1 {
+                name: b"boolean_terms".as_ptr(),
+                name_length: 13,
+                value: 512,
+            },
+            TypeBridgeQueryLimitOverrideV1 {
+                name: b"input_rows".as_ptr(),
+                name_length: 10,
+                value: 13,
+            },
+        ];
+        let mut connection = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: retained descriptors and independent output slots.
+        let status = unsafe {
+            type_bridge_proxy_connection_open_with_query_limits_v1(
+                &package,
+                &options,
+                overrides.as_ptr(),
+                overrides.len(),
+                ptr::null(),
+                &mut connection,
+                &mut diagnostics,
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        assert!(diagnostics.is_null());
+        let limits = unsafe { &*connection }.connection.query_limits();
+        assert_eq!(limits.structural.bindings, 768);
+        assert_eq!(limits.structural.boolean_terms, 300);
+        assert_eq!(limits.structural.input_rows, 13);
+        assert_eq!(limits.structural.selected_slots, 16);
+        assert_eq!(
+            unsafe { type_bridge_proxy_connection_close(&mut connection) },
+            TypeBridgeStatus::Ok
+        );
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn admission_window_defaults_and_round_trips() {
+        let endpoint = b"http://127.0.0.1:41650";
+        let mut options = TypeBridgeProxyConnectionOptionsV1 {
+            struct_size: size_of::<TypeBridgeProxyConnectionOptionsV1>() as u32,
+            version: PROXY_CONNECTION_OPTIONS_VERSION,
+            endpoint: TypeBridgeByteView {
+                data: endpoint.as_ptr(),
+                length: endpoint.len(),
+            },
+            tls_mode: TLS_DISABLED,
+            reserved0: 0,
+            custom_root_ca_path: TypeBridgeByteView {
+                data: std::ptr::null(),
+                length: 0,
+            },
+            headers: std::ptr::null(),
+            header_count: 0,
+            pinned_advertisement: TypeBridgeByteView {
+                data: std::ptr::null(),
+                length: 0,
+            },
+            connection_limits: std::ptr::null(),
+            answer_limits: std::ptr::null(),
+            admission_window_milliseconds: 0,
+            reserved: [0; 4],
+        };
+        // SAFETY: all views are immutable and live until the copies finish.
+        assert_eq!(
+            unsafe { copy_options(&options) }
+                .unwrap()
+                .admission_window_milliseconds
+                .get(),
+            60_000
+        );
+        options.admission_window_milliseconds = 1234;
+        assert_eq!(
+            unsafe { copy_options(&options) }
+                .unwrap()
+                .admission_window_milliseconds
+                .get(),
+            1234
+        );
+    }
 }

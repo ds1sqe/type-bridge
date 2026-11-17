@@ -1,8 +1,8 @@
-//! `type-bridge` — the V2 workspace command-line interface.
+//! `type-bridge` — the workspace command-line interface.
 //!
 //! `schema check`, `schema generate`, `migration make`, and `migration
 //! plan`, and rollback preview run without any network I/O. `migration apply`,
-//! `migration rollback --execute`, `migration verify`, `migration adopt`, and
+//! `migration rollback --execute`, `migration verify`, and
 //! `migration upgrade-profile` connect through one named workspace
 //! environment: credentials stay symbolic environment references resolved
 //! only at command time, and application requires the environment's
@@ -40,7 +40,7 @@ mod build_identity {
 #[command(
     name = "type-bridge",
     version = build_identity::CLI_VERSION,
-    about = "TypeBridge V2 workspace commands"
+    about = "TypeBridge workspace commands"
 )]
 struct Cli {
     /// Path to the workspace manifest.
@@ -70,7 +70,7 @@ enum SchemaCommand {
     Check,
     /// Generate the configured binding projections from the canonical schema.
     Generate,
-    /// Export canonical declared-schema bytes for low-level V2 tooling.
+    /// Export canonical declared-schema bytes for low-level tooling.
     ExportDeclared {
         /// Workspace-relative destination for the canonical JSON artifact.
         #[arg(long, default_value = "declared-schema.json")]
@@ -88,9 +88,18 @@ enum MigrationCommand {
         /// Closed backfill-intent YAML inside the configured migration directory.
         #[arg(long)]
         backfill_intent: Option<PathBuf>,
+        /// Ordered data-step intent files inside the migration directory; repeatable.
+        #[arg(long = "data-step", conflicts_with = "backfill_intent")]
+        data_step: Vec<PathBuf>,
     },
     /// Order the committed chain and report each manifest's safety class.
     Plan,
+    /// Regenerate derived TypeQL previews from verified canonical manifests.
+    RegeneratePreviews {
+        /// List differing previews without writing; differences exit nonzero.
+        #[arg(long)]
+        check: bool,
+    },
     /// Apply the committed chain to one named environment.
     Apply {
         /// The manifest environment to apply against.
@@ -103,6 +112,12 @@ enum MigrationCommand {
     /// Verify the migration state triad against one named environment.
     Verify {
         /// The manifest environment to verify against.
+        #[arg(long)]
+        environment: String,
+    },
+    /// Clear an open plan only at a safe, completed manifest boundary.
+    AbandonPlan {
+        /// The manifest environment whose exact database pair is targeted.
         #[arg(long)]
         environment: String,
     },
@@ -123,18 +138,6 @@ enum MigrationCommand {
         /// Select stable human or machine-readable output.
         #[arg(long, value_enum, default_value_t = RollbackOutput::Text)]
         output: RollbackOutput,
-    },
-    /// Adopt a completed archived V1 history as the canonical genesis.
-    Adopt {
-        /// The manifest environment holding the migrated v1 database.
-        #[arg(long)]
-        environment: String,
-        /// Directory containing the completed archived migration files.
-        #[arg(long)]
-        archive_directory: PathBuf,
-        /// Migration name recorded for the zero-operation bridge manifest.
-        #[arg(long, default_value = "0000_archive_frontier")]
-        name: String,
     },
     /// Move the history to the workspace's newer TypeDB line at a profile bridge.
     UpgradeProfile {
@@ -216,6 +219,23 @@ fn run(cli: &Cli) -> Result<(), String> {
         Command::Schema {
             command: SchemaCommand::Check,
         } => {
+            if !workspace.config().outputs().is_empty() {
+                let authority = type_bridge_schema::build_schema_authority(
+                    workspace.declared_schema(),
+                    workspace.required_capabilities(),
+                    workspace.delta_context(),
+                )
+                .map_err(display)?;
+                for target in workspace.config().outputs().keys() {
+                    generate_binding_package(
+                        *target,
+                        workspace.resolved_schema(),
+                        &authority,
+                        workspace.config().app_label(),
+                        workspace.config().type_name_overrides(*target),
+                    )?;
+                }
+            }
             println!(
                 "schema sources are valid\n  declared identity: {}\n  managed semantics: {}",
                 workspace
@@ -239,35 +259,32 @@ fn run(cli: &Cli) -> Result<(), String> {
         Command::Schema {
             command: SchemaCommand::ExportDeclared { output },
         } => run_schema_export_declared(&workspace, output),
-        Command::Migration { command } => match command {
-            MigrationCommand::Make {
-                name,
-                backfill_intent,
-            } => {
-                let directory = workspace.ensure_migration_directory().map_err(display)?;
-                if let Some(intent) = backfill_intent {
-                    let generated = workspace
-                        .author_backfill_migration_in(&directory, name, intent)
-                        .map_err(display_workspace)?;
-                    let path = directory.display_path().join(generated.file_name());
-                    println!(
-                        "wrote {}\n  safety: {:?}\n  preview: {}",
-                        path.display(),
-                        generated.manifest().safety(),
-                        path.with_file_name(generated.preview_file_name()).display(),
-                    );
-                    return Ok(());
-                }
-                match workspace
-                    .migration_make_in(&directory, name)
-                    .map_err(display_workspace)?
-                {
-                    MigrationGenerationOutcome::UpToDate => {
-                        println!("history already reaches the desired schema");
+        Command::Migration { command } => {
+            match command {
+                MigrationCommand::Make {
+                    name,
+                    backfill_intent,
+                    data_step,
+                } => {
+                    let directory = workspace.ensure_migration_directory().map_err(display)?;
+                    if !data_step.is_empty() {
+                        let generated = workspace
+                            .author_data_migration_in(&directory, name, data_step)
+                            .map_err(display_workspace)?;
+                        println!(
+                            "wrote {}\n  safety: {:?}\n  reversible: {}",
+                            directory
+                                .display_path()
+                                .join(generated.file_name())
+                                .display(),
+                            generated.manifest().safety(),
+                            generated.manifest().reversible()
+                        );
+                        return Ok(());
                     }
-                    MigrationGenerationOutcome::Generated(generated) => {
-                        workspace
-                            .write_generated_migration_in(&directory, &generated)
+                    if let Some(intent) = backfill_intent {
+                        let generated = workspace
+                            .author_backfill_migration_in(&directory, name, intent)
                             .map_err(display_workspace)?;
                         let path = directory.display_path().join(generated.file_name());
                         println!(
@@ -276,82 +293,113 @@ fn run(cli: &Cli) -> Result<(), String> {
                             generated.manifest().safety(),
                             path.with_file_name(generated.preview_file_name()).display(),
                         );
+                        return Ok(());
                     }
+                    match workspace
+                        .migration_make_in(&directory, name)
+                        .map_err(display_workspace)?
+                    {
+                        MigrationGenerationOutcome::UpToDate => {
+                            println!("history already reaches the desired schema");
+                        }
+                        MigrationGenerationOutcome::Generated(generated) => {
+                            workspace
+                                .write_generated_migration_in(&directory, &generated)
+                                .map_err(display_workspace)?;
+                            let path = directory.display_path().join(generated.file_name());
+                            println!(
+                                "wrote {}\n  safety: {:?}\n  preview: {}",
+                                path.display(),
+                                generated.manifest().safety(),
+                                path.with_file_name(generated.preview_file_name()).display(),
+                            );
+                        }
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            MigrationCommand::Apply {
-                environment,
-                approvals,
-            } => run_connected(
-                &workspace,
-                environment,
-                ConnectedAction::Apply {
-                    approvals: approvals.clone(),
-                },
-            ),
-            MigrationCommand::Verify { environment } => {
-                run_connected(&workspace, environment, ConnectedAction::Verify)
-            }
-            MigrationCommand::Rollback {
-                environment,
-                removals,
-                approvals,
-                execute,
-                output,
-            } => run_migration_rollback(
-                &workspace,
-                environment,
-                removals,
-                approvals,
-                *execute,
-                *output,
-            ),
-            MigrationCommand::Adopt {
-                environment,
-                archive_directory,
-                name,
-            } => run_connected(
-                &workspace,
-                environment,
-                ConnectedAction::Adopt {
-                    archive_directory: archive_directory.clone(),
-                    name: name.clone(),
-                },
-            ),
-            MigrationCommand::UpgradeProfile {
-                environment,
-                to,
-                name,
-            } => run_connected(
-                &workspace,
-                environment,
-                ConnectedAction::UpgradeProfile {
-                    to: to.clone(),
-                    name: name.clone(),
-                },
-            ),
-            MigrationCommand::Plan => {
-                let directory = workspace.open_migration_directory().map_err(display)?;
-                let plan = workspace
-                    .migration_plan_in(&directory, &BTreeSet::new())
-                    .map_err(display_workspace)?;
-                if plan.is_empty() {
-                    println!("no committed migrations");
-                    return Ok(());
+                MigrationCommand::Apply {
+                    environment,
+                    approvals,
+                } => run_connected(
+                    &workspace,
+                    environment,
+                    ConnectedAction::Apply {
+                        approvals: approvals.clone(),
+                    },
+                ),
+                MigrationCommand::Verify { environment } => {
+                    run_connected(&workspace, environment, ConnectedAction::Verify)
                 }
-                for entry in plan {
-                    println!(
-                        "{}/{}  safety={:?}  reversible={}",
-                        entry.id().app_label().as_str(),
-                        entry.id().name().as_str(),
-                        entry.safety(),
-                        entry.reversible(),
-                    );
+                MigrationCommand::AbandonPlan { environment } => {
+                    run_connected(&workspace, environment, ConnectedAction::AbandonPlan)
                 }
-                Ok(())
+                MigrationCommand::Rollback {
+                    environment,
+                    removals,
+                    approvals,
+                    execute,
+                    output,
+                } => run_migration_rollback(
+                    &workspace,
+                    environment,
+                    removals,
+                    approvals,
+                    *execute,
+                    *output,
+                ),
+                MigrationCommand::UpgradeProfile {
+                    environment,
+                    to,
+                    name,
+                } => run_connected(
+                    &workspace,
+                    environment,
+                    ConnectedAction::UpgradeProfile {
+                        to: to.clone(),
+                        name: name.clone(),
+                    },
+                ),
+                MigrationCommand::RegeneratePreviews { check } => {
+                    let directory = workspace.open_migration_directory().map_err(display)?;
+                    let changed = workspace
+                        .migration_regenerate_previews_in(&directory, *check)
+                        .map_err(display_workspace)?;
+                    for name in &changed {
+                        println!(
+                            "{} {name}",
+                            if *check { "would rewrite" } else { "rewrote" }
+                        );
+                    }
+                    if *check && !changed.is_empty() {
+                        return Err("derived previews differ; run type-bridge migration regenerate-previews".to_owned());
+                    }
+                    if changed.is_empty() {
+                        println!("migration previews are current");
+                    }
+                    Ok(())
+                }
+                MigrationCommand::Plan => {
+                    let directory = workspace.open_migration_directory().map_err(display)?;
+                    let plan = workspace
+                        .migration_plan_in(&directory, &BTreeSet::new())
+                        .map_err(display_workspace)?;
+                    if plan.is_empty() {
+                        println!("no committed migrations");
+                        return Ok(());
+                    }
+                    for entry in plan {
+                        println!(
+                            "{}/{}  safety={:?}  reversible={}",
+                            entry.id().app_label().as_str(),
+                            entry.id().name().as_str(),
+                            entry.safety(),
+                            entry.reversible(),
+                        );
+                    }
+                    Ok(())
+                }
             }
-        },
+        }
     }
 }
 
@@ -514,7 +562,39 @@ fn load_workspace(manifest: &PathBuf) -> Result<TypeBridgeWorkspace, String> {
     let extensions = NoExtensions;
     let services = TypeBridgeWorkspaceServices::new(&source, &secrets, &extensions, &available);
     // Services borrow locally, so the workspace is constructed in this scope.
-    TypeBridgeWorkspace::from_located_config(located, &services).map_err(display)
+    TypeBridgeWorkspace::from_located_config(located, &services).map_err(display_workspace)
+}
+
+fn display_schema_diagnostics(
+    diagnostics: type_bridge_contract::schema::SchemaDiagnostics,
+) -> String {
+    diagnostics
+        .iter()
+        .map(|entry| {
+            let message = entry.diagnostic().to_string();
+            let mut rendered = match entry.primary() {
+                Some(span) => format!(
+                    "{}:{}:{}: {message}",
+                    span.document().as_str(),
+                    span.line(),
+                    span.column()
+                ),
+                None => message,
+            };
+            for related in entry.related() {
+                let span = related.span();
+                rendered.push_str(&format!(
+                    "\n  {}:{}:{}: {}",
+                    span.document().as_str(),
+                    span.line(),
+                    span.column(),
+                    related.message()
+                ));
+            }
+            rendered
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn display(error: impl std::fmt::Display) -> String {
@@ -527,6 +607,9 @@ fn display(error: impl std::fmt::Display) -> String {
 /// carry the command that resolves them as a `hint` detail, which the plain
 /// `Display` projection omits.
 fn display_workspace(error: TypeBridgeWorkspaceError) -> String {
+    if let TypeBridgeWorkspaceError::Schema(diagnostics) = error {
+        return display_schema_diagnostics(diagnostics);
+    }
     match error.contract() {
         Some(diagnostic) => with_hint(error.to_string(), diagnostic),
         None => error.to_string(),
@@ -576,17 +659,6 @@ fn sanitize_connected_orm_error(
 
 /// Schema export happens after credentials have been resolved, so no raw ORM
 /// error or source chain may cross the CLI boundary.
-fn sanitize_schema_export_error(_error: type_bridge_orm::OrmError) -> String {
-    "cannot export the managed schema [typedb_schema_export_failed]; inspect provider logs"
-        .to_owned()
-}
-
-/// Render a non-success migration outcome without exposing diagnostic details.
-///
-/// TypeDB adapters retain provider text in `Diagnostic` details for trusted
-/// programmatic inspection. Its `Display` surface intentionally omits those
-/// details, while derived `Debug` includes them, so every post-credential CLI
-/// path must use this closed projection.
 fn sanitize_migration_execution_outcome(
     context: &str,
     outcome: type_bridge_schema_migration::MigrationExecutionOutcome,
@@ -709,7 +781,7 @@ fn generate_binding_package(
                 &handlers,
                 &resources,
             )
-            .map_err(display)?;
+            .map_err(display_schema_diagnostics)?;
             emitter.emit(&projection, authority)
         }
         BindingTarget::TypeScript => {
@@ -723,7 +795,7 @@ fn generate_binding_package(
                 &handlers,
                 &resources,
             )
-            .map_err(display)?;
+            .map_err(display_schema_diagnostics)?;
             emitter.emit(&projection, authority)
         }
         BindingTarget::Rust => {
@@ -737,7 +809,7 @@ fn generate_binding_package(
                 &handlers,
                 &resources,
             )
-            .map_err(display)?;
+            .map_err(display_schema_diagnostics)?;
             emitter.emit(&projection, authority)
         }
         BindingTarget::C => {
@@ -748,7 +820,7 @@ fn generate_binding_package(
                 app_label,
             )))?;
             let projection = project(resolved, BindingTarget::C, &config, &handlers, &resources)
-                .map_err(display)?;
+                .map_err(display_schema_diagnostics)?;
             emitter.emit(&projection, authority)
         }
         _ => {
@@ -1127,7 +1199,7 @@ mod schema_generation_atomicity_tests {
     }
 }
 
-/// Export canonical declared bytes for explicitly low-level V2 tooling.
+/// Export canonical declared bytes for explicitly low-level tooling.
 fn run_schema_export_declared(
     workspace: &TypeBridgeWorkspace,
     output: &Path,
@@ -1198,13 +1270,10 @@ enum ConnectedAction {
         approvals: Vec<String>,
     },
     Verify,
+    AbandonPlan,
     Rollback {
         removals: BTreeSet<type_bridge_contract::migration::MigrationId>,
         approvals: Vec<String>,
-    },
-    Adopt {
-        archive_directory: PathBuf,
-        name: String,
     },
     UpgradeProfile {
         to: String,
@@ -1222,9 +1291,10 @@ fn secure_connect_options(
             type_bridge_orm::TlsMode::CustomRootCa(root_ca.as_path().to_path_buf())
         }
     };
-    let mut options = type_bridge_orm::SecureConnectOptions {
-        tls_mode,
-        ..type_bridge_orm::SecureConnectOptions::default()
+    let mut options = {
+        let mut options = type_bridge_orm::SecureConnectOptions::default();
+        options.tls_mode = tls_mode;
+        options
     };
     if let Some(port) = environment.http_port() {
         options.http_port = port;
@@ -1285,8 +1355,8 @@ async fn run_connected_async(
         &action,
         ConnectedAction::Apply { .. }
             | ConnectedAction::Rollback { .. }
-            | ConnectedAction::Adopt { .. }
             | ConnectedAction::UpgradeProfile { .. }
+            | ConnectedAction::AbandonPlan
     ) && !environment.migrate()
     {
         return Err(format!(
@@ -1308,31 +1378,7 @@ async fn run_connected_async(
         require_profile_upgrade_target(config.semantic_profile(), to)?;
     }
 
-    // Validate the name and capture one immutable archive-history authority
-    // before creating the canonical directory or resolving credentials.
-    let prepared_adoption = match &action {
-        ConnectedAction::Adopt {
-            archive_directory,
-            name,
-        } => Some(prepare_archive_adoption(
-            workspace,
-            archive_directory,
-            name,
-        )?),
-        ConnectedAction::Apply { .. }
-        | ConnectedAction::Rollback { .. }
-        | ConnectedAction::Verify
-        | ConnectedAction::UpgradeProfile { .. } => None,
-    };
-
-    // Retain one descriptor-backed authority for the whole connected action.
-    // Adoption alone may create missing real directory components; apply and
-    // verify remain fail-closed and non-creating here.
-    let migration_directory = if matches!(&action, ConnectedAction::Adopt { .. }) {
-        workspace.ensure_migration_directory().map_err(display)?
-    } else {
-        workspace.open_migration_directory().map_err(display)?
-    };
+    let migration_directory = workspace.open_migration_directory().map_err(display)?;
     // Ordinary connected operations reject an incomplete adoption pair before
     // credentials, network I/O, or database creation. Adoption itself is the
     // sole recovery path permitted to observe and complete an exact orphan.
@@ -1341,12 +1387,13 @@ async fn run_connected_async(
     let ordinary_graph = match &action {
         ConnectedAction::Apply { .. }
         | ConnectedAction::Rollback { .. }
+        | ConnectedAction::AbandonPlan
         | ConnectedAction::Verify => Some(
             workspace
                 .discover_migrations_in(&migration_directory)
                 .map_err(display_workspace)?,
         ),
-        ConnectedAction::Adopt { .. } | ConnectedAction::UpgradeProfile { .. } => None,
+        ConnectedAction::UpgradeProfile { .. } => None,
     };
     let profile_bridge = match &action {
         ConnectedAction::UpgradeProfile { name, .. } => Some(publish_profile_upgrade_bridge(
@@ -1356,8 +1403,8 @@ async fn run_connected_async(
         )?),
         ConnectedAction::Apply { .. }
         | ConnectedAction::Rollback { .. }
-        | ConnectedAction::Verify
-        | ConnectedAction::Adopt { .. } => None,
+        | ConnectedAction::AbandonPlan
+        | ConnectedAction::Verify => None,
     };
     // Approval syntax, membership, safety, and digest binding are local
     // authority checks. Resolve them before credentials, network I/O, or
@@ -1376,8 +1423,8 @@ async fn run_connected_async(
                 .ok_or_else(|| "internal rollback history was not retained".to_owned())?,
             approvals,
         )?),
-        ConnectedAction::Verify
-        | ConnectedAction::Adopt { .. }
+        ConnectedAction::AbandonPlan
+        | ConnectedAction::Verify
         | ConnectedAction::UpgradeProfile { .. } => None,
     };
 
@@ -1396,13 +1443,13 @@ async fn run_connected_async(
     // guarantee a broken adoption — while its journal companion is new by
     // definition. Only migration-gated actions may bootstrap anything.
     let managed_requires_existing = match &action {
+        ConnectedAction::AbandonPlan => {
+            Some("`migration abandon-plan` requires an existing managed database")
+        }
         ConnectedAction::Verify => Some(
             "`migration verify` is read-only and never creates databases \
              — apply migrations to this environment first",
         ),
-        ConnectedAction::Adopt { .. } => {
-            Some("`migration adopt` cutover requires the migrated v1 database to already exist")
-        }
         ConnectedAction::UpgradeProfile { .. } => Some(
             "`migration upgrade-profile` requires the database moved to the new TypeDB server \
              to already exist",
@@ -1412,6 +1459,9 @@ async fn run_connected_async(
     // The upgrade records into the ledger moved with the managed database; an
     // empty journal could never stand at the bridge parent.
     let journal_requires_existing = match &action {
+        ConnectedAction::AbandonPlan => {
+            Some("`migration abandon-plan` requires an existing journal database")
+        }
         ConnectedAction::Verify => {
             Some("`migration verify` is read-only and never creates databases")
         }
@@ -1419,9 +1469,7 @@ async fn run_connected_async(
             "`migration upgrade-profile` requires the migration journal moved with the \
              managed database",
         ),
-        ConnectedAction::Apply { .. }
-        | ConnectedAction::Rollback { .. }
-        | ConnectedAction::Adopt { .. } => None,
+        ConnectedAction::Apply { .. } | ConnectedAction::Rollback { .. } => None,
     };
     // A TypeDB connection is server-scoped: binding a database name does not
     // require that database to exist. Negotiate and gate both pair members
@@ -1491,21 +1539,6 @@ async fn run_connected_async(
             )
         })?;
     }
-
-    // Adoption's live-schema comparison and complete pair publication precede
-    // journal creation. Publication is bridge-first under the canonical
-    // authoring lock, rolls back files created by a failed attempt, and accepts
-    // exact orphan pieces so interrupted attempts remain adopt-only resumable.
-    let adoption_files = if let Some(prepared) = prepared_adoption.as_ref() {
-        verify_prepared_adoption_live(&managed, prepared).await?;
-        Some(publish_prepared_adoption(
-            workspace,
-            &migration_directory,
-            prepared,
-        )?)
-    } else {
-        None
-    };
 
     if let Some(reason) = journal_requires_existing {
         let exists = journal.database_exists().await.map_err(|error| {
@@ -1605,6 +1638,21 @@ async fn run_connected_async(
                 ) => Err(sanitize_migration_rollback_outcome(outcome)),
             }
         }
+        ConnectedAction::AbandonPlan => {
+            let abandoned = runner
+                .abandon_plan_in(directory, &holder)
+                .await
+                .map_err(display)?;
+            println!(
+                "{}",
+                if abandoned {
+                    "abandoned the open plan; applied ledger retained"
+                } else {
+                    "no open execution plan"
+                }
+            );
+            Ok(())
+        }
         ConnectedAction::Verify => {
             let report = runner
                 .verify_in(directory, Some(workspace.declared_schema()))
@@ -1626,53 +1674,6 @@ async fn run_connected_async(
                     eprintln!("drift: {finding:?}");
                 }
                 Err(format!("{} drift finding(s)", report.findings().len()))
-            }
-        }
-        ConnectedAction::Adopt { .. } => {
-            let bridge_display_path = adoption_files
-                .ok_or_else(|| "internal adoption preflight state was not retained".to_owned())?;
-            let prepared = prepared_adoption
-                .as_ref()
-                .ok_or_else(|| "internal adoption authority was not retained".to_owned())?;
-            let outcome = runner
-                .import_verified_legacy_frontier_in(
-                    &prepared.history,
-                    &prepared.reconstructed,
-                    directory,
-                    &holder,
-                )
-                .await;
-            match outcome {
-                Ok(
-                    type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::UpToDate,
-                ) => {
-                    println!("archive history is already adopted; the bridged ledger is current");
-                    Ok(())
-                }
-                Ok(
-                    type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::Executed(
-                        type_bridge_schema_migration::MigrationExecutionOutcome::Applied { .. },
-                    ),
-                ) => {
-                    println!(
-                        "adopted the archive history\n  genesis: {}\n  bridge: {}",
-                        migration_directory
-                            .display_path()
-                            .join(type_bridge_schema_compat::ADOPTED_GENESIS_FILE_NAME)
-                            .display(),
-                        bridge_display_path.display(),
-                    );
-                    Ok(())
-                }
-                Ok(
-                    type_bridge_schema_migration_typedb::MigrationDirectoryApplyOutcome::Executed(
-                        outcome,
-                    ),
-                ) => Err(sanitize_migration_execution_outcome(
-                    "adoption checkpoint did not complete",
-                    outcome,
-                )),
-                Err(error) => Err(display(error)),
             }
         }
         ConnectedAction::UpgradeProfile { .. } => {
@@ -1763,8 +1764,8 @@ struct ProfileUpgradeBridge {
 /// lock, so the bridge can never continue a stale head. The bridge's
 /// identity follows `migration make`: the next ordinal prefix and `name`.
 /// A file created here is removed again when the published history does
-/// not replay-verify. An already bridged history publishes nothing, so a
-/// retry after a failed connection reuses the committed bridge.
+/// not replay-verify. An already bridged history reuses the committed bridge
+/// and repairs only its derived preview before retrying the connection.
 fn publish_profile_upgrade_bridge(
     workspace: &TypeBridgeWorkspace,
     migration_directory: &type_bridge_workspace::MigrationDirectoryAuthority,
@@ -1789,7 +1790,21 @@ fn publish_profile_upgrade_bridge(
         )
         .map_err(display_diagnostic)?
         {
-            type_bridge_schema_migration::MigrationProfileUpgrade::Bridged { bridge, .. } => {
+            type_bridge_schema_migration::MigrationProfileUpgrade::Bridged { graph, bridge } => {
+                let manifest = graph.manifest(&bridge).ok_or_else(|| {
+                    "profile bridge is absent from its verified history".to_owned()
+                })?;
+                let preview = type_bridge_schema_migration::render_migration_preview(
+                    manifest,
+                    workspace.delta_context(),
+                )
+                .map_err(display)?;
+                migration_directory
+                    .__internal_output_directory()?
+                    .write_atomic(
+                        format!("{}.typeql", bridge.name().as_str()).as_ref(),
+                        preview.as_bytes(),
+                    )?;
                 return Ok(ProfileUpgradeBridge { id: bridge });
             }
             type_bridge_schema_migration::MigrationProfileUpgrade::Pending {
@@ -1824,7 +1839,25 @@ fn publish_profile_upgrade_bridge(
     .map_err(display)?;
     let bytes = type_bridge_schema_migration::encode_verified_manifest(&bridge).map_err(display)?;
     let file_name = format!("{}.tbmigration.json", id.name().as_str());
-    let created = publish_authority(directory, &file_name, &bytes)?;
+    let preview_name = format!("{}.typeql", id.name().as_str());
+    let preview =
+        type_bridge_schema_migration::render_migration_preview(&bridge, workspace.delta_context())
+            .map_err(display)?;
+    let preview_created = publish_authority(directory, &preview_name, preview.as_bytes())?;
+    let created = match publish_authority(directory, &file_name, &bytes) {
+        Ok(created) => created,
+        Err(error) => {
+            if preview_created {
+                directory
+                    .remove_file(preview_name.as_ref())
+                    .and_then(|()| directory.sync_all())
+                    .map_err(|cleanup| {
+                        format!("{error}; cannot remove newly published bridge preview: {cleanup}")
+                    })?;
+            }
+            return Err(error);
+        }
+    };
     if let Err(error) = workspace.discover_migrations_in(migration_directory) {
         let primary = display_workspace(error);
         if !created {
@@ -1833,6 +1866,13 @@ fn publish_profile_upgrade_bridge(
         return Err(
             match directory
                 .remove_file(file_name.as_ref())
+                .and_then(|()| {
+                    if preview_created {
+                        directory.remove_file(preview_name.as_ref())
+                    } else {
+                        Ok(())
+                    }
+                })
                 .and_then(|()| directory.sync_all())
             {
                 Ok(()) => primary,
@@ -1864,285 +1904,6 @@ fn default_profile_bridge_name(
     ))
 }
 
-struct PreparedArchiveAdoption {
-    history: type_bridge_migration::LegacyAdoptionHistory,
-    reconstructed: type_bridge_migration::VerifiedLegacyHead,
-    authority: type_bridge_schema_compat::AdoptedGenesisAuthority,
-    bridge: type_bridge_schema_migration::VerifiedSchemaMigrationManifest,
-    bridge_name: String,
-    bridge_bytes: Vec<u8>,
-}
-
-/// Validate and derive every filesystem authority from one retained archive
-/// history capture. This function performs no canonical-directory writes.
-fn prepare_archive_adoption(
-    workspace: &TypeBridgeWorkspace,
-    archive_directory: &std::path::Path,
-    name: &str,
-) -> Result<PreparedArchiveAdoption, String> {
-    // Validate the caller-controlled name before loading history or creating
-    // the configured canonical directory.
-    let migration_name =
-        type_bridge_contract::migration::MigrationName::new(name.to_owned()).map_err(display)?;
-    let bridge_name = format!("{}.tbmigration.json", migration_name.as_str());
-    let history =
-        type_bridge_migration::load_adoption_history(archive_directory).map_err(|error| {
-            format!("archive migration directory failed the checked adoption loader: {error}")
-        })?;
-    let reconstructed = type_bridge_migration::reconstruct_legacy_head(&history)
-        .map_err(|error| format!("archive head reconstruction failed: {error}"))?;
-    let authority = type_bridge_schema_compat::parse_adopted_genesis_authority(
-        type_bridge_contract::schema::DocumentId::new("legacy-head-snapshot.typeql")
-            .map_err(display)?,
-        reconstructed.schema_typeql(),
-    )
-    .map_err(display)?;
-    let frontier = type_bridge_schema_migration_typedb::extract_legacy_frontier(history.graph())
-        .map_err(display)?;
-    let applied_set =
-        type_bridge_schema_migration_typedb::extract_legacy_applied_set_digest(history.graph())
-            .map_err(display)?;
-    let id = type_bridge_contract::migration::MigrationId::from_components(
-        type_bridge_contract::migration::MigrationAppLabel::new(
-            workspace.config().app_label().as_str().to_owned(),
-        )
-        .map_err(display)?,
-        migration_name,
-    );
-    let bridge = type_bridge_schema_migration::build_legacy_frontier_bridge(
-        id,
-        frontier,
-        applied_set,
-        authority.declared(),
-        workspace.delta_context(),
-    )
-    .map_err(display)?;
-    let bridge_bytes =
-        type_bridge_schema_migration::encode_verified_manifest(&bridge).map_err(display)?;
-    history
-        .require_unchanged_head(&reconstructed)
-        .map_err(|error| {
-            format!("archive migration directory changed during adoption preparation: {error}")
-        })?;
-    Ok(PreparedArchiveAdoption {
-        history,
-        reconstructed,
-        authority,
-        bridge,
-        bridge_name,
-        bridge_bytes,
-    })
-}
-
-/// Compare the live managed schema with the prepared immutable head without
-/// using live state as publication authority.
-async fn verify_prepared_adoption_live(
-    managed: &type_bridge_orm::Database,
-    prepared: &PreparedArchiveAdoption,
-) -> Result<(), String> {
-    let export = managed
-        .schema_text()
-        .await
-        .map_err(sanitize_schema_export_error)?;
-    prepared
-        .history
-        .require_unchanged_head(&prepared.reconstructed)
-        .map_err(|error| format!("archive adoption history changed during live export: {error}"))?;
-    let expected_internal = type_bridge_schema_compat::released_typeql_to_declared_projection(
-        type_bridge_contract::schema::DocumentId::new("managed-fence-schema.typeql")
-            .map_err(display)?,
-        type_bridge_schema_migration_typedb::MANAGED_FENCE_SCHEMA_TYPEQL,
-    )
-    .map_err(display)?;
-    let live = type_bridge_schema_compat::parse_adopted_genesis_authority_with_internal(
-        type_bridge_contract::schema::DocumentId::new("legacy-live-head.typeql")
-            .map_err(display)?,
-        &export,
-        Some(&expected_internal),
-    )
-    .map_err(display)?;
-    if live.legacy_identity() != prepared.authority.legacy_identity()
-        || live.declared().declared_identity_fingerprint()
-            != prepared
-                .authority
-                .declared()
-                .declared_identity_fingerprint()
-        || live.released_extension_identity() != prepared.authority.released_extension_identity()
-    {
-        return Err(
-            "live managed schema differs from the independently verified archive-head snapshot"
-                .to_owned(),
-        );
-    }
-    Ok(())
-}
-
-/// Publish the bridge/genesis pair under the shared authoring lock.
-///
-/// The prospective complete graph is replay-verified before publication. The
-/// bridge is made visible first, so ordinary readers fail closed during the
-/// short incomplete interval. Exact pre-existing orphan pieces are retained
-/// and completed; only files created by this attempt are rolled back.
-fn publish_prepared_adoption(
-    workspace: &TypeBridgeWorkspace,
-    migration_directory: &type_bridge_workspace::MigrationDirectoryAuthority,
-    prepared: &PreparedArchiveAdoption,
-) -> Result<PathBuf, String> {
-    publish_prepared_adoption_with_after_bridge(workspace, migration_directory, prepared, || {})
-}
-
-fn publish_prepared_adoption_with_after_bridge<F>(
-    workspace: &TypeBridgeWorkspace,
-    migration_directory: &type_bridge_workspace::MigrationDirectoryAuthority,
-    prepared: &PreparedArchiveAdoption,
-    after_bridge: F,
-) -> Result<PathBuf, String>
-where
-    F: FnOnce(),
-{
-    let directory = migration_directory.directory();
-    let _lock = directory.try_acquire_authoring_lock().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::WouldBlock {
-            "migration adoption conflicts with another canonical history publisher".to_owned()
-        } else {
-            format!("cannot lock canonical migration publication: {error}")
-        }
-    })?;
-    let genesis_name = type_bridge_schema_compat::ADOPTED_GENESIS_FILE_NAME;
-    let genesis_bytes = prepared.reconstructed.schema_typeql().as_bytes();
-    let mut bridge_created = false;
-    let mut genesis_created = false;
-    let mut after_bridge = Some(after_bridge);
-
-    let publication = (|| -> Result<(), String> {
-        if let Some(existing) = read_existing_authority(directory, genesis_name)?
-            && existing != genesis_bytes
-        {
-            return Err(format!(
-                "{genesis_name} already exists but differs from the verified archive-head snapshot"
-            ));
-        }
-        let bridge_already_published =
-            if let Some(existing) = read_existing_authority(directory, &prepared.bridge_name)? {
-                if existing != prepared.bridge_bytes {
-                    return Err(format!(
-                        "{} already exists with different authority bytes",
-                        prepared.bridge_name
-                    ));
-                }
-                true
-            } else {
-                false
-            };
-
-        let (current, evidence) =
-            type_bridge_schema_migration::discover_verified_migration_chain_with_evidence_in(
-                directory,
-                prepared.authority.declared(),
-                workspace.delta_context(),
-            )
-            .map_err(display)?;
-        let prospective = if current.manifest(prepared.bridge.id()).is_some() {
-            current
-        } else {
-            let manifests = current
-                .manifests()
-                .map(|(_, manifest)| manifest.clone())
-                .chain(std::iter::once(prepared.bridge.clone()))
-                .collect::<Vec<_>>();
-            type_bridge_schema_migration::MigrationHistoryGraph::from_verified(manifests)
-                .map_err(display)?
-        };
-        type_bridge_schema_migration::require_adoption_authority_pair(&prospective, true)
-            .map_err(display)?;
-        evidence.require_unchanged(directory).map_err(display)?;
-        prepared
-            .history
-            .require_unchanged_head(&prepared.reconstructed)
-            .map_err(|error| {
-                format!("archive adoption history changed before pair publication: {error}")
-            })?;
-
-        if !bridge_already_published {
-            bridge_created =
-                publish_authority(directory, &prepared.bridge_name, &prepared.bridge_bytes)?;
-        }
-        if let Some(after_bridge) = after_bridge.take() {
-            after_bridge();
-        }
-        prepared
-            .history
-            .require_unchanged_head(&prepared.reconstructed)
-            .map_err(|error| {
-                format!("archive adoption history changed before genesis publication: {error}")
-            })?;
-        genesis_created = publish_authority(directory, genesis_name, genesis_bytes)?;
-        prepared
-            .history
-            .require_unchanged_head(&prepared.reconstructed)
-            .map_err(|error| {
-                format!("archive adoption history changed after pair publication: {error}")
-            })?;
-        workspace
-            .discover_migrations_in(migration_directory)
-            .map_err(display)?;
-        Ok(())
-    })();
-
-    if let Err(error) = publication {
-        return Err(rollback_adoption_publication(
-            directory,
-            &prepared.bridge_name,
-            bridge_created,
-            genesis_created,
-            error,
-        ));
-    }
-    Ok(migration_directory
-        .display_path()
-        .join(&prepared.bridge_name))
-}
-
-fn rollback_adoption_publication(
-    directory: &type_bridge_schema_migration::MigrationDirectory,
-    bridge_name: &str,
-    bridge_created: bool,
-    genesis_created: bool,
-    primary: String,
-) -> String {
-    let mut cleanup_errors = Vec::new();
-    if genesis_created
-        && let Err(error) =
-            directory.remove_file(type_bridge_schema_compat::ADOPTED_GENESIS_FILE_NAME.as_ref())
-    {
-        cleanup_errors.push(format!("cannot remove newly published genesis: {error}"));
-    }
-    if bridge_created && let Err(error) = directory.remove_file(bridge_name.as_ref()) {
-        cleanup_errors.push(format!("cannot remove newly published bridge: {error}"));
-    }
-    if (bridge_created || genesis_created)
-        && let Err(error) = directory.sync_all()
-    {
-        cleanup_errors.push(format!("cannot flush adoption rollback: {error}"));
-    }
-    if cleanup_errors.is_empty() {
-        primary
-    } else {
-        format!(
-            "{primary}; adoption publication rollback failed: {}",
-            cleanup_errors.join("; ")
-        )
-    }
-}
-
-/// Publish immutable authority from a unique, flushed same-directory temp.
-///
-/// Hard-link publication is atomic and no-replace. An existing final name is
-/// accepted only when its bounded bytes are identical, allowing a retry to
-/// recover after publication succeeded but the caller did not observe it. In
-/// particular, a directory-sync error may be reported after the final link is
-/// already durable; that exact orphan is intentionally left for the same
-/// adoption command to recognize and complete on retry.
 fn publish_authority(
     directory: &type_bridge_schema_migration::MigrationDirectory,
     name: &str,
@@ -2241,12 +2002,26 @@ fn unique_authority_temporary_name(name: &str, attempt: u64) -> String {
 fn resolve_credential(
     reference: &type_bridge_workspace::SecretReference,
 ) -> Result<String, String> {
-    std::env::var(reference.environment_variable()).map_err(|_| {
+    resolve_credential_with(reference, |name| std::env::var(name).ok())
+}
+
+fn resolve_credential_with(
+    reference: &type_bridge_workspace::SecretReference,
+    read: impl FnOnce(&str) -> Option<String>,
+) -> Result<String, String> {
+    let value = read(reference.environment_variable()).ok_or_else(|| {
         format!(
             "credential environment variable {:?} is not set",
             reference.environment_variable()
         )
-    })
+    })?;
+    if value.is_empty() {
+        return Err(format!(
+            "credential environment variable {:?} is empty",
+            reference.environment_variable()
+        ));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -2254,6 +2029,18 @@ mod credential_error_redaction_tests {
     use super::*;
     use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
     use type_bridge_typedb_runtime::RuntimeError;
+
+    #[test]
+    fn environment_credentials_refuse_missing_and_empty_values() {
+        let reference =
+            type_bridge_workspace::SecretReference::environment("TEST_CREDENTIAL").unwrap();
+        assert!(resolve_credential_with(&reference, |_| None).is_err());
+        assert!(resolve_credential_with(&reference, |_| Some(String::new())).is_err());
+        assert_eq!(
+            resolve_credential_with(&reference, |_| Some("secret".into())).unwrap(),
+            "secret"
+        );
+    }
 
     const PROVIDER_TEXT: &str =
         "TB_ADDRESS_SECRET TB_USERNAME_SECRET TB_PASSWORD_SECRET TB_PROVIDER_SECRET";
@@ -2338,21 +2125,6 @@ mod credential_error_redaction_tests {
         assert!(
             !sanitized.contains("typedb_database_connect_failed"),
             "{sanitized}"
-        );
-    }
-
-    #[test]
-    fn schema_export_drops_hostile_orm_text_and_source() {
-        let sanitized = sanitize_schema_export_error(type_bridge_orm::OrmError::Connection(
-            PROVIDER_TEXT.into(),
-        ));
-        let rendered = format!("{sanitized}\n{sanitized:?}");
-        for secret in SECRETS {
-            assert!(!rendered.contains(secret), "{secret}: {rendered}");
-        }
-        assert!(
-            rendered.contains("typedb_schema_export_failed"),
-            "{rendered}"
         );
     }
 
@@ -2760,6 +2532,22 @@ mod rollback_cli_contract_tests {
     use super::*;
 
     #[test]
+    fn abandon_plan_grammar_requires_an_exact_environment() {
+        assert!(Cli::try_parse_from(["type-bridge", "migration", "abandon-plan"]).is_err());
+        let cli = Cli::try_parse_from([
+            "type-bridge",
+            "migration",
+            "abandon-plan",
+            "--environment",
+            "dev",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Command::Migration {
+            command: MigrationCommand::AbandonPlan { environment }
+        } if environment == "dev"));
+    }
+
+    #[test]
     fn rollback_grammar_requires_environment_and_explicit_removal() {
         assert!(Cli::try_parse_from(["type-bridge", "migration", "rollback"]).is_err());
         assert!(
@@ -2864,7 +2652,7 @@ mod migration_command_tests {
     #[test]
     fn migration_make_creates_its_missing_authoring_directory() {
         let directory = tempfile::tempdir().expect("workspace directory");
-        let manifest = write_workspace_manifest(directory.path(), "typedb-3.11.5/v1");
+        let manifest = write_workspace_manifest(directory.path(), "typedb-3.12.1/v1");
         let migration_directory = directory.path().join("migrations/v2");
         assert!(!migration_directory.exists());
 
@@ -2874,6 +2662,7 @@ mod migration_command_tests {
                 command: MigrationCommand::Make {
                     name: "initial".to_owned(),
                     backfill_intent: None,
+                    data_step: Vec::new(),
                 },
             },
         })
@@ -2890,7 +2679,7 @@ mod migration_command_tests {
     #[test]
     fn migration_make_accepts_a_confined_backfill_intent() {
         let directory = tempfile::tempdir().expect("workspace directory");
-        let manifest = write_workspace_manifest(directory.path(), "typedb-3.11.5/v1");
+        let manifest = write_workspace_manifest(directory.path(), "typedb-3.12.1/v1");
         fs::write(
             directory.path().join("schema/fragments/model.yaml"),
             "format: typebridge.schema/v2\nattributes:\n  display-name: { value: string }\n  legacy-name: { value: string }\n  person-id: { value: string }\nentities:\n  person:\n    owns:\n      display-name: {}\n      legacy-name: {}\n      person-id: { key: true }\n",
@@ -2902,13 +2691,14 @@ mod migration_command_tests {
                 command: MigrationCommand::Make {
                     name: "initial".to_owned(),
                     backfill_intent: None,
+                    data_step: Vec::new(),
                 },
             },
         };
         run(&initial).expect("initial migration");
         fs::write(
             directory.path().join("migrations/v2/copy-name.backfill.yaml"),
-            "format: typebridge.migration-backfill-intent/v1\ncopy-attribute:\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
+            "format: typebridge.migration-backfill-intent/v2\ncopy-attribute:\n  mode: isa\n  owner-kind: entity\n  owner: person\n  source: legacy-name\n  destination: display-name\n  partition-key: person-id\n  batch-rows: 128\n  reverse: remove-equal-copied-destination\n",
         )
         .expect("backfill intent writes");
 
@@ -2918,6 +2708,7 @@ mod migration_command_tests {
                 command: MigrationCommand::Make {
                     name: "copy-name".to_owned(),
                     backfill_intent: Some(PathBuf::from("copy-name.backfill.yaml")),
+                    data_step: Vec::new(),
                 },
             },
         })
@@ -2931,45 +2722,98 @@ mod migration_command_tests {
         );
     }
 
-    fn connected_actions(directory: &Path) -> [ConnectedAction; 3] {
+    #[test]
+    fn migration_make_authors_ordered_repeatable_data_intents() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = write_workspace_manifest(directory.path(), "typedb-3.12.1/v1");
+        run(&Cli {
+            manifest: manifest.clone(),
+            command: Command::Migration {
+                command: MigrationCommand::Make {
+                    name: "initial".into(),
+                    backfill_intent: None,
+                    data_step: vec![],
+                },
+            },
+        })
+        .unwrap();
+        for (name, id) in [("first.data.yaml", "first"), ("second.data.yaml", "second")] {
+            fs::write(directory.path().join("migrations/v2").join(name), format!("format: typebridge.migration-data-step-intent/v1\nid: {id}\nforward:\n  user: {id}\n")).unwrap();
+        }
+        let cli = Cli::try_parse_from([
+            "type-bridge",
+            "--manifest",
+            manifest.to_str().unwrap(),
+            "migration",
+            "make",
+            "--name",
+            "derive",
+            "--data-step",
+            "first.data.yaml",
+            "--data-step",
+            "second.data.yaml",
+        ])
+        .unwrap();
+        run(&cli).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                directory
+                    .path()
+                    .join("migrations/v2/0002_derive.tbmigration.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["steps"][0]["step"]["id"], "first");
+        assert_eq!(value["steps"][1]["step"]["id"], "second");
+        assert_eq!(value["safety"]["reversible"], false);
+        let preview =
+            fs::read_to_string(directory.path().join("migrations/v2/0002_derive.typeql")).unwrap();
+        assert!(preview.contains("IRREVERSIBLE"));
+        assert!(
+            Cli::try_parse_from([
+                "type-bridge",
+                "migration",
+                "make",
+                "--name",
+                "bad",
+                "--data-step",
+                "first.data.yaml",
+                "--backfill-intent",
+                "copy.yaml"
+            ])
+            .is_err()
+        );
+    }
+
+    fn connected_actions(_directory: &Path) -> [ConnectedAction; 2] {
         [
             ConnectedAction::Apply {
                 approvals: Vec::new(),
             },
             ConnectedAction::Verify,
-            ConnectedAction::Adopt {
-                archive_directory: directory.join("missing-archive"),
-                name: "0000_archive_frontier".to_owned(),
-            },
         ]
     }
 
     #[test]
-    fn unsupported_execution_profile_rejects_before_credentials_or_filesystem_mutation() {
-        // A workspace on a query-only profile (3.11.5) never reaches setup.
-        let profile = "typedb-3.11.5/v1";
+    fn retired_workspace_profile_rejects_before_credentials_or_filesystem_mutation() {
+        let profile = format!("typedb-3.{}.5/v1", 12 - 1);
         let directory = tempfile::tempdir().expect("workspace directory");
-        let manifest = write_workspace_manifest(directory.path(), profile);
-        let workspace = load_workspace(&manifest).expect("workspace loads");
-
-        for action in connected_actions(directory.path()) {
-            let error = run_connected(&workspace, "dev", action)
-                .expect_err("every connected migration operation uses a paired profile");
-
-            assert!(
-                error.contains("migration_typedb_semantic_profile_unsupported"),
-                "{error}"
-            );
-            assert!(error.contains(profile), "{error}");
-            assert!(error.contains("typedb-3.12.1/v1"), "{error}");
-            assert!(error.contains("typedb-3.13.6/v1"), "{error}");
-            assert!(
-                !error.contains("credential environment variable")
-                    && !error.contains("cannot connect")
-                    && !error.contains("cannot check database"),
-                "profile gate ran after external setup: {error}"
-            );
-        }
+        let manifest = write_workspace_manifest(directory.path(), &profile);
+        let error = load_workspace(&manifest)
+            .err()
+            .expect("retired workspace profile must refuse");
+        assert!(
+            error.contains("workspace requires a frozen TypeDB 3.12.1 or 3.13.6 semantic profile"),
+            "{error}"
+        );
+        assert!(error.contains(&profile), "{error}");
+        assert!(
+            !error.contains("credential environment variable")
+                && !error.contains("cannot connect")
+                && !error.contains("cannot check database"),
+            "profile gate ran after external setup: {error}"
+        );
         assert!(
             !directory.path().join("migrations/v2").exists(),
             "profile rejection must not create the migration directory"
@@ -3014,6 +2858,7 @@ mod migration_command_tests {
                 command: MigrationCommand::Make {
                     name: "initial".to_owned(),
                     backfill_intent: None,
+                    data_step: Vec::new(),
                 },
             },
         })
@@ -3206,6 +3051,10 @@ mod migration_command_tests {
             .expect_err("the fixture has no credentials");
         assert!(error.contains("credential environment variable"), "{error}");
         let published = fs::read(&bridge).expect("the bridge is published before connecting");
+        let preview = directory
+            .path()
+            .join("migrations/v2/0002_profile_upgrade_typedb_3_13_6.typeql");
+        assert_eq!(fs::read(&preview).unwrap(), b"\n");
 
         // The bridged history is ordinary again; a retry reuses the bridge.
         let plan = workspace
@@ -3229,6 +3078,28 @@ mod migration_command_tests {
             ]
         );
         assert_eq!(fs::read(&bridge).expect("bridge"), published);
+        fs::remove_file(&preview).unwrap();
+        let directory_authority = workspace.open_migration_directory().unwrap();
+        let mismatch = workspace
+            .migration_plan_in(&directory_authority, &BTreeSet::new())
+            .unwrap_err();
+        assert!(mismatch.to_string().contains("migration upgrade-profile"));
+        for check in [true, false] {
+            let mismatch = workspace
+                .migration_regenerate_previews_in(&directory_authority, check)
+                .unwrap_err();
+            assert!(mismatch.to_string().contains("migration upgrade-profile"));
+            assert!(!preview.exists());
+            assert_eq!(fs::read(&bridge).unwrap(), published);
+        }
+        let error = run_connected(&workspace, "dev", upgrade(NEW_PROFILE, None)).unwrap_err();
+        assert!(error.contains("credential environment variable"), "{error}");
+        assert_eq!(fs::read(&preview).unwrap(), b"\n");
+        fs::write(&preview, b"tampered review artifact").unwrap();
+        let error = run_connected(&workspace, "dev", upgrade(NEW_PROFILE, None)).unwrap_err();
+        assert!(error.contains("credential environment variable"), "{error}");
+        assert_eq!(fs::read(&preview).unwrap(), b"\n");
+        assert_eq!(fs::read(&bridge).unwrap(), published);
 
         // The next authored migration continues after the bridge.
         fs::write(
@@ -3242,6 +3113,7 @@ mod migration_command_tests {
                 command: MigrationCommand::Make {
                     name: "company".to_owned(),
                     backfill_intent: None,
+                    data_step: Vec::new(),
                 },
             },
         })
@@ -3278,277 +3150,6 @@ mod migration_command_tests {
         assert_eq!(
             canonical_files(directory.path()),
             ["0001_initial.tbmigration.json"]
-        );
-    }
-}
-
-#[cfg(test)]
-mod adoption_file_tests {
-    use super::*;
-    use sha2::{Digest as _, Sha256};
-
-    const LEGACY_SCHEMA: &str = "define\nentity person;\n";
-
-    fn adoption_workspace() -> (tempfile::TempDir, TypeBridgeWorkspace) {
-        let directory = tempfile::tempdir().expect("workspace directory");
-        fs::create_dir_all(directory.path().join("schema/fragments")).expect("schema directory");
-        fs::write(
-            directory.path().join("schema/schema.yaml"),
-            "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
-        )
-        .expect("schema set writes");
-        fs::write(
-            directory.path().join("schema/fragments/model.yaml"),
-            "format: typebridge.schema/v2\nentities: {person: {}}\n",
-        )
-        .expect("schema writes");
-        let manifest = directory.path().join("typebridge.yaml");
-        fs::write(
-            &manifest,
-            "format: typebridge.workspace/v1\n\
-             schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: adoption-test\n\
-             compatibility:\n  semantic-profile: typedb-3.12.1/v1\n\
-             migrations:\n  directory: migrations/v2\n  app-label: smoke\n\
-             environments:\n  dev:\n    database: adoption_test\n    uri: never-contact.invalid:1729\n    migrate: 'true'\n    credential:\n      username: env:TYPEBRIDGE_TEST_USERNAME\n      password: env:TYPEBRIDGE_TEST_PASSWORD\n",
-        )
-        .expect("manifest writes");
-        let workspace = load_workspace(&manifest).expect("workspace loads");
-        (directory, workspace)
-    }
-
-    fn write_legacy_fixture(root: &Path) -> PathBuf {
-        let directory = root.join("migrations/legacy");
-        fs::create_dir_all(&directory).expect("legacy directory");
-        let name = "0001_initial";
-        let python_source = "class Migration:\n    operations = []\n";
-        let checksum = type_bridge_migration::migration_file_checksum(python_source);
-        let source_sha256 = format!("{:x}", Sha256::digest(python_source.as_bytes()));
-        let schema_hash = format!("{:x}", Sha256::digest(LEGACY_SCHEMA.as_bytes()));
-        fs::write(directory.join(format!("{name}.py")), python_source)
-            .expect("legacy source writes");
-        let adoption = type_bridge_migration::LegacyAdoptionMetadata::new(
-            "legacy",
-            name,
-            Vec::new(),
-            checksum,
-            source_sha256,
-            type_bridge_migration::LegacySchemaEffect::Snapshot,
-            type_bridge_migration::MigrationDependencySpec {
-                app_label: "legacy".to_owned(),
-                migration_name: name.to_owned(),
-            },
-            schema_hash.clone(),
-        )
-        .expect("legacy adoption metadata");
-        fs::write(
-            directory.join(format!("{name}.adoption.json")),
-            serde_json::to_vec_pretty(&adoption).expect("metadata encodes"),
-        )
-        .expect("metadata writes");
-        let snapshot = directory.join("snapshots/v0001");
-        fs::create_dir_all(&snapshot).expect("snapshot directory");
-        fs::write(snapshot.join("schema.tql"), LEGACY_SCHEMA).expect("snapshot schema writes");
-        fs::write(
-            snapshot.join("snapshot.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "version": "v0001",
-                "source_migration": name,
-                "schema_hash": schema_hash,
-                "file_hashes": {"schema.tql": schema_hash},
-                "type_bridge_version": "1.5.11",
-                "type_bridge_core_version": "1.5.11"
-            }))
-            .expect("snapshot manifest encodes"),
-        )
-        .expect("snapshot manifest writes");
-        directory
-    }
-
-    #[test]
-    fn authority_publication_is_atomic_no_replace_and_resumable() {
-        let directory = tempfile::tempdir().expect("directory");
-        let authority =
-            type_bridge_schema_migration::MigrationDirectory::open_ambient(directory.path())
-                .expect("directory authority");
-        let name = "adopted-genesis.typeql";
-        let path = directory.path().join("adopted-genesis.typeql");
-        assert!(
-            publish_authority(&authority, name, b"define\nentity person;\n")
-                .expect("first publish")
-        );
-        assert!(
-            !publish_authority(&authority, name, b"define\nentity person;\n")
-                .expect("identical recovery")
-        );
-        assert!(publish_authority(&authority, name, b"define\nentity company;\n").is_err());
-        assert_eq!(
-            fs::read(&path).expect("authority reads"),
-            b"define\nentity person;\n"
-        );
-        assert!(
-            fs::read_dir(directory.path())
-                .expect("directory reads")
-                .all(|entry| !entry
-                    .expect("entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".tmp"))
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn authority_publication_rejects_final_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let directory = tempfile::tempdir().expect("directory");
-        let outside = directory.path().join("outside");
-        fs::write(&outside, b"untouched").expect("outside writes");
-        let path = directory.path().join("adopted-genesis.typeql");
-        symlink(&outside, &path).expect("symlink");
-        let authority =
-            type_bridge_schema_migration::MigrationDirectory::open_ambient(directory.path())
-                .expect("directory authority");
-
-        assert!(publish_authority(&authority, "adopted-genesis.typeql", b"replacement").is_err());
-        assert_eq!(fs::read(&outside).expect("outside reads"), b"untouched");
-    }
-
-    #[test]
-    fn invalid_adoption_name_creates_no_canonical_directory() {
-        let (directory, workspace) = adoption_workspace();
-        let missing_archive = directory.path().join("missing-legacy");
-        let error = run_connected(
-            &workspace,
-            "dev",
-            ConnectedAction::Adopt {
-                archive_directory: missing_archive,
-                name: String::new(),
-            },
-        )
-        .expect_err("invalid name fails before history or network access");
-        assert!(error.contains("migration"), "{error}");
-        assert!(
-            !directory.path().join("migrations/v2").exists(),
-            "bad-name validation must not create canonical filesystem state"
-        );
-    }
-
-    #[test]
-    fn invalid_apply_approvals_fail_before_credentials_or_network() {
-        let (directory, workspace) = adoption_workspace();
-        fs::create_dir_all(directory.path().join("migrations/v2")).expect("canonical directory");
-
-        for (approval, expected) in [
-            ("not-a-compound-id", "must be app-label/name"),
-            ("smoke/0001_missing", "is not in the committed history"),
-        ] {
-            let error = run_connected(
-                &workspace,
-                "dev",
-                ConnectedAction::Apply {
-                    approvals: vec![approval.to_owned()],
-                },
-            )
-            .expect_err("invalid approval is rejected by local authority");
-            assert!(error.contains(expected), "{approval}: {error}");
-            assert!(
-                !error.contains("credential")
-                    && !error.contains("connect")
-                    && !error.contains("database"),
-                "approval validation ran after external setup: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn adoption_retry_completes_either_exact_orphan_direction() {
-        for orphan in ["genesis", "bridge"] {
-            let (directory, workspace) = adoption_workspace();
-            let legacy = write_legacy_fixture(directory.path());
-            let prepared = prepare_archive_adoption(&workspace, &legacy, "0000_archive_frontier")
-                .expect("adoption prepares");
-            let migration_directory = workspace
-                .ensure_migration_directory()
-                .expect("canonical directory");
-            match orphan {
-                "genesis" => {
-                    publish_authority(
-                        migration_directory.directory(),
-                        type_bridge_schema_compat::ADOPTED_GENESIS_FILE_NAME,
-                        prepared.reconstructed.schema_typeql().as_bytes(),
-                    )
-                    .expect("genesis orphan publishes");
-                }
-                "bridge" => {
-                    publish_authority(
-                        migration_directory.directory(),
-                        &prepared.bridge_name,
-                        &prepared.bridge_bytes,
-                    )
-                    .expect("bridge orphan publishes");
-                }
-                _ => unreachable!(),
-            }
-
-            publish_prepared_adoption(&workspace, &migration_directory, &prepared)
-                .expect("adoption retry completes the exact orphan");
-            workspace
-                .discover_migrations_in(&migration_directory)
-                .expect("completed adoption pair discovers");
-            assert!(
-                migration_directory
-                    .display_path()
-                    .join(type_bridge_schema_compat::ADOPTED_GENESIS_FILE_NAME)
-                    .is_file()
-            );
-            assert!(
-                migration_directory
-                    .display_path()
-                    .join(&prepared.bridge_name)
-                    .is_file()
-            );
-        }
-    }
-
-    #[test]
-    fn legacy_history_race_after_bridge_rolls_back_new_publication() {
-        let (directory, workspace) = adoption_workspace();
-        let legacy = write_legacy_fixture(directory.path());
-        let prepared = prepare_archive_adoption(&workspace, &legacy, "0000_archive_frontier")
-            .expect("adoption prepares");
-        let migration_directory = workspace
-            .ensure_migration_directory()
-            .expect("canonical directory");
-        let legacy_source = legacy.join("0001_initial.py");
-
-        let error = publish_prepared_adoption_with_after_bridge(
-            &workspace,
-            &migration_directory,
-            &prepared,
-            || {
-                fs::write(
-                    &legacy_source,
-                    "class Migration:\n    operations = ['changed']\n",
-                )
-                .expect("race mutation writes");
-            },
-        )
-        .expect_err("legacy authority race aborts pair publication");
-        assert!(error.contains("changed"), "{error}");
-        assert!(
-            !migration_directory
-                .display_path()
-                .join(&prepared.bridge_name)
-                .exists(),
-            "new bridge is rolled back"
-        );
-        assert!(
-            !migration_directory
-                .display_path()
-                .join(type_bridge_schema_compat::ADOPTED_GENESIS_FILE_NAME)
-                .exists(),
-            "genesis is never published after the race"
         );
     }
 }

@@ -16,8 +16,6 @@ server_version = "3.12.1"
 tls = true
 tls-root-ca = "certs/root.pem"
 
-[schema]
-source_file = "schema.tql"
 
 [interceptors]
 enabled = ["audit-log"]
@@ -30,7 +28,8 @@ file_path = "/var/log/audit.jsonl"
 level = "info"
 format = "json"
 
-[v2]
+[staged]
 enabled = true
+raw_enabled = false
 schema_authority_file = "schema-authority.json"
 authority_mode = "managed"

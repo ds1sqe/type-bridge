@@ -17,3 +17,6 @@ pub use type_bridge_orm::_schema::error::*;
 pub use type_bridge_orm::_schema::generator::*;
 pub use type_bridge_orm::_schema::info::*;
 pub use type_bridge_orm::_schema::manager::*;
+
+pub use type_bridge_orm::expr::Expr;
+pub use type_bridge_orm::query::EntityQuery;

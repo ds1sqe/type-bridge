@@ -272,7 +272,7 @@ def test_partial_visibility_is_polled_before_deciding(tmp_path: Path) -> None:
     assert sleeps == [7]
 
 
-def test_immutable_b8_key_must_exist_non_yanked_and_is_never_uploaded(
+def test_immutable_key_must_exist_non_yanked_and_is_never_uploaded(
     tmp_path: Path,
 ) -> None:
     bundle, _, _ = bundled(tmp_path, immutable=True)

@@ -147,11 +147,6 @@ def test_error_cases_pin_real_boundary_and_canonical_codes() -> None:
         "reachability.reversed-bounds": ("invalid_plan", "reachable_bounds"),
         "reachability.depth-ceiling": ("invalid_plan", "reachable_depth_limit"),
         "order.non-scalar-field": ("invalid_plan", "non_scalar_order_field"),
-        "order.missing-stable-root-key": ("invalid_plan", "missing_stable_unique_key"),
-        "order.missing-stable-collection-key": (
-            "invalid_plan",
-            "missing_stable_unique_key",
-        ),
         "cardinality.one-zero": ("cardinality", "no_result"),
         "cardinality.one-many": ("cardinality", "not_unique"),
         "transaction.non-read-context": (
@@ -270,6 +265,20 @@ def test_generated_operation_projection_is_derived_from_the_identity_manifest() 
     }
 
 
+def test_keyless_order_cases_use_iid_fallback() -> None:
+    cases = {case["id"]: case for case in _load(CORPUS_PATH)["cases"]}
+    for case_id, identity in (
+        ("order.iid-root-fallback", "root"),
+        ("order.iid-collection-fallback", "concept"),
+    ):
+        expected = cases[case_id]["expected"]
+        assert expected["outcome"] == "success"
+        assert expected["identity_basis"] == identity
+        assert not expected["zero_executor_invocations"]
+        assert not expected["zero_data_statements"]
+        assert expected["error_code"] is None
+
+
 def test_contract_document_pins_required_sections_and_implemented_import_status() -> None:
     contract = CONTRACT_PATH.read_text(encoding="utf-8")
     required_headings = {
@@ -299,3 +308,16 @@ def test_contract_document_pins_required_sections_and_implemented_import_status(
     assert "A seventeenth" in contract
     assert "no SQL wildcard meaning" in contract
     assert "does not accept handwritten descriptors" in contract
+
+
+def test_complex_fixture_surface_table_matches_canonical_string_operators() -> None:
+    readme = (ROOT / "tests/live/query_complex/README.md").read_text()
+    rows = {
+        parts[0]: parts
+        for line in readme.splitlines()
+        if line.startswith("| ")
+        if len(parts := [cell.strip() for cell in line.strip("|").split("|")]) == 8
+    }
+    for sdk in ("Python", "Node", "Rust", "C"):
+        assert rows[f"{sdk} manager filter"][2].startswith("No")
+    assert rows["Rust generic Plan"][2] == "Yes"

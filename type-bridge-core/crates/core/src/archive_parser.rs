@@ -1,7 +1,6 @@
 //! Frozen reader for released schema inputs.
 //!
 //! It is a reader for legacy inputs, not an emitter, so the one-AST rule holds.
-#![allow(deprecated)]
 //! Winnow-based parser for TypeQL `define` blocks.
 //!
 //! Converts TypeQL schema text into [`TypeSchema`](crate::_schema::TypeSchema) structs.
@@ -33,8 +32,7 @@ type PResult<T> = winnow::error::Result<T>;
 /// grammar is tried first for the whole document so inputs accepted by 1.5.x
 /// retain exactly the same definition boundaries. The safer body scanner is
 /// an additive fallback only when that frozen grammar rejects the document.
-#[deprecated(since = "2.3.0", note = "legacy archive reader; removed in 3.0")]
-pub fn parse_typeql(input: &str) -> Result<TypeSchema, SchemaError> {
+pub(crate) fn parse_typeql(input: &str) -> Result<TypeSchema, SchemaError> {
     parse_typeql_with_function_grammar(input, FunctionBodyGrammar::Frozen)
         .or_else(|_| parse_typeql_with_function_grammar(input, FunctionBodyGrammar::Robust))
 }
@@ -1773,8 +1771,10 @@ mod tests {
     // Validation runs inside `from_typeql` (which calls `validate()` after parsing).
     #[test]
     fn test_parse_relation_role_distinct_bare_rejected() {
-        let err = TypeSchema::from_typeql("define\nrelation team, relates member @distinct;")
-            .unwrap_err();
+        let err = crate::__internal::archive::parse_resolved(
+            "define\nrelation team, relates member @distinct;",
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("@distinct"),
@@ -2014,7 +2014,7 @@ mod tests {
     // @distinct and the ordered `[]` syntax.
     #[test]
     fn test_parse_owns_distinct_bare_rejected() {
-        let err = TypeSchema::from_typeql(
+        let err = crate::__internal::archive::parse_resolved(
             "define\nentity person, owns name @distinct;\nattribute name, value string;",
         )
         .unwrap_err();
@@ -2452,7 +2452,7 @@ relation authoring sub contribution
 
     #[test]
     fn test_parse_and_resolve() {
-        let schema = TypeSchema::from_typeql(
+        let schema = crate::__internal::archive::parse_resolved(
             "\
 define
 attribute name, value string;

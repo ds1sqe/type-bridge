@@ -72,6 +72,32 @@ function constantString(node) {
   return null;
 }
 
+// Raw TypeQL is forwarded unchanged to the core; it is not a host query compiler.
+// Restrict exemptions to the existing facade owners and exact forwarding body.
+const RAW_TYPESCRIPT_OWNERS = new Map([
+  ["typescript/index.ts", new Set(["Database", "MigrationTransaction", "NativeDatabase", "NativeTransactionContext"])],
+  ["typescript/native.ts", new Set(["NativeProxyConnection"])],
+  ["typescript/raw-query.ts", new Set(["RawTransaction", "NativeRawTransaction"])],
+  ["typescript/runtime-projection.ts", new Set(["ProxyConnection"])],
+]);
+
+function isRawTypeScriptForwarding(file, node, source) {
+  if (!ts.isIdentifier(node) || node.text !== "executeQuery") return false;
+  let method = node.parent;
+  while (method && !ts.isMethodDeclaration(method) && !ts.isMethodSignature(method)) {
+    method = method.parent;
+  }
+  if (!method || !ts.isIdentifier(method.name) || method.name.text !== "executeQuery") return false;
+  const owner = method.parent;
+  if (!(ts.isClassDeclaration(owner) || ts.isInterfaceDeclaration(owner)) || !owner.name) return false;
+  const owners = RAW_TYPESCRIPT_OWNERS.get(path.relative(CRATE_ROOT, file));
+  if (!owners?.has(owner.name.text)) return false;
+  if (ts.isMethodSignature(method)) return node === method.name;
+  const body = method.body?.getText(source).replace(/\s+/g, "");
+  const args = ["Database", "ProxyConnection"].includes(owner.name.text) ? "query,kind" : "query";
+  return body === `{returnrawNativePromise(rawNativeCall(()=>this.#native.executeQuery(${args})));}`;
+}
+
 function inspectTypeScript(file, text) {
   const source = ts.createSourceFile(
     file,
@@ -111,7 +137,8 @@ function inspectTypeScript(file, text) {
   function visit(node) {
     if (
       ts.isIdentifier(node) &&
-      HOST_QUERY_POLICY_IDENTIFIERS.has(node.text)
+      HOST_QUERY_POLICY_IDENTIFIERS.has(node.text) &&
+      !isRawTypeScriptForwarding(file, node, source)
     ) {
       add(
         node,
@@ -266,8 +293,46 @@ function maskRustCommentsAndLiterals(text) {
   return output.join("");
 }
 
+function rustScopes(code) {
+  const scopes = [];
+  const pattern = /\b(impl\s+(\w+)|(?:pub\s+)?(?:async\s+)?fn\s+(\w+))\b[^;{]*\{/g;
+  for (const match of code.matchAll(pattern)) {
+    const open = match.index + match[0].length - 1;
+    let depth = 1;
+    let end = open + 1;
+    for (; end < code.length && depth; end += 1) {
+      if (code[end] === "{") depth += 1;
+      if (code[end] === "}") depth -= 1;
+    }
+    if (depth === 0) scopes.push({ start: match.index, end, open, owner: match[2], method: match[3] });
+  }
+  return scopes;
+}
+
+function isRawRustForwarding(file, code, match, scopes) {
+  if (match[0] !== "execute_query") return false;
+  const relative = path.relative(CRATE_ROOT, file);
+  if (!["src/lib.rs", "src/raw_runtime.rs"].includes(relative)) return false;
+  const enclosing = scopes.filter(({ start, end }) => start <= match.index && match.index < end);
+  const method = enclosing.filter((scope) => scope.method).at(-1);
+  const owner = enclosing.filter((scope) => scope.owner).at(-1)?.owner;
+  if (!method) return false;
+  const migration = relative === "src/lib.rs" && owner === "NodeRustTransactionContext";
+  const raw = relative === "src/raw_runtime.rs";
+  const declaration = method.method === "execute_query" &&
+    (migration || (raw && ["NodeRawTransaction", "NodeDatabase", "NodeProxyConnection"].includes(owner)));
+  if (declaration && match.index < method.open && /\bquery\s*:\s*String\b/.test(code.slice(method.start, method.open))) return true;
+  const receiver = migration ? "tx" : "transaction";
+  const call = declaration && (migration || owner === "NodeRawTransaction") ||
+    raw && !owner && method.method === "execute_one" &&
+    /\btransaction\s*:\s*RawTransaction\b/.test(code.slice(method.start, method.open));
+  return call && new RegExp(`(?:^|[=;({])\\s*${receiver}\\s*\\.\\s*$`).test(code.slice(method.open, match.index)) &&
+    /^\s*\(\s*&query\s*\)/.test(code.slice(match.index + match[0].length));
+}
+
 function inspectRust(file, text) {
   const code = maskRustCommentsAndLiterals(text);
+  const scopes = rustScopes(code);
   const findings = [];
   const checks = [
     {
@@ -285,6 +350,7 @@ function inspectRust(file, text) {
 
   for (const check of checks) {
     for (const match of code.matchAll(check.pattern)) {
+      if (isRawRustForwarding(file, code, match, scopes)) continue;
       findings.push(
         finding(
           file,

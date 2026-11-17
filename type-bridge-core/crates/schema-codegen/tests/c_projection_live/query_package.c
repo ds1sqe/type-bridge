@@ -46,7 +46,7 @@ query_flatten_resource(const type_bridge_chunked_byte_view_v1_t *resource,
   return 1;
 }
 
-type_bridge_status_t TYPE_BRIDGE_CALL query_schema_package_open_flat_v2(
+type_bridge_status_t TYPE_BRIDGE_CALL query_schema_package_open_flat(
     type_bridge_schema_package_t **out_package,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   const type_bridge_schema_package_chunked_descriptor_v1_t *chunks =
@@ -84,7 +84,7 @@ type_bridge_status_t TYPE_BRIDGE_CALL query_schema_package_open_flat_v2(
   descriptor.binding_fingerprint_json = views[4];
   descriptor.managed_scope = views[5];
   descriptor.semantic_profile = views[6];
-  status = type_bridge_schema_package_open_v2(&descriptor, out_package,
+  status = type_bridge_schema_package_open(&descriptor, out_package,
                                               out_diagnostics);
 
 cleanup:

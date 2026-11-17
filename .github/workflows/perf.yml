@@ -56,7 +56,7 @@ jobs:
       (github.event_name != 'workflow_run'
         || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
       && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'perf'))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       started_at: ${{ steps.clock.outputs.started_at }}
     steps:
@@ -67,7 +67,7 @@ jobs:
   micro:
     needs: metadata
     name: Micro and Python binding benchmarks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
@@ -123,7 +123,7 @@ jobs:
         working-directory: type-bridge-core
         run: |
           CRITERION_HOME="$PERF_DIR/criterion/core" cargo bench --locked -p type-bridge-core-lib \
-            --bench validation --bench compilation --bench schema -- --noplot
+            --bench validation --bench schema -- --noplot
           CRITERION_HOME="$PERF_DIR/criterion/orm" cargo bench --locked -p type-bridge-orm \
             --bench serde --bench query_building --bench staged -- --noplot
 
@@ -133,7 +133,7 @@ jobs:
           GUNGRAUN_SAVE_SUMMARY: json
         run: |
           GUNGRAUN_HOME="$PERF_DIR/iai/core" cargo bench --locked -p type-bridge-core-lib \
-            --bench validation_iai --bench compilation_iai --bench schema_iai
+            --bench validation_iai --bench schema_iai
           GUNGRAUN_HOME="$PERF_DIR/iai/orm" cargo bench --locked -p type-bridge-orm \
             --bench serde_iai --bench query_building_iai --bench staged_iai
 
@@ -174,7 +174,7 @@ jobs:
   build:
     needs: metadata
     name: Cold release build times
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
@@ -213,7 +213,7 @@ jobs:
   size:
     needs: metadata
     name: Linux x86_64 artifact sizes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
@@ -262,13 +262,13 @@ jobs:
             -p type-bridge-cli --bin type-bridge
           cp "$CARGO_TARGET_DIR/release/type-bridge" "$PERF_DIR/cli-unstripped"
           cargo build --locked --release --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --no-default-features --features band8,band9,v2-query
+            -p type-bridge-server --no-default-features --features band9,axum-transport
           strip -o "$PERF_DIR/server" "$CARGO_TARGET_DIR/release/type-bridge-server"
       - name: Build canonical stripped CLI
         run: >-
           python scripts/ci/standalone_cli_artifact.py build
           --output "$GITHUB_WORKSPACE/tmp/perf-cli"
-      # The release C helper remains frozen to 1.6 until 2.3 release prep.
+      # Measure the current ABI runtime using the release Cargo build flags.
       - name: Archive current CMake runtime install with release Cargo flags
         run: |
           python - <<'PY'
@@ -332,7 +332,7 @@ jobs:
     needs: metadata
     name: Offline test-suite durations
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
@@ -393,7 +393,7 @@ jobs:
     needs: metadata
     name: Live SDK pipelines
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
       typedb:
@@ -535,7 +535,7 @@ jobs:
     needs: metadata
     name: Offline SDK binding overhead
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
@@ -627,7 +627,7 @@ jobs:
       github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
       || github.event_name == 'release'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
       versions: ${{ steps.pick.outputs.versions }}
@@ -654,7 +654,7 @@ jobs:
   released:
     needs: [metadata, versions]
     name: Released ${{ matrix.sdk }} ${{ matrix.version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -785,7 +785,7 @@ jobs:
     name: Base versus head micro benchmarks
     if: github.event_name == 'pull_request'
     needs: metadata
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
       contents: read
@@ -906,7 +906,7 @@ jobs:
         || github.event_name == 'schedule'
         || github.event_name == 'workflow_dispatch')
     needs: [micro, build, size, suite, pipeline, binding, versions, released]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write

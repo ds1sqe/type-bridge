@@ -43,12 +43,13 @@ async fn fixture_runtime() -> TypeDBRuntime {
         &std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "127.0.0.1:1729".to_owned()),
         &std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned()),
         &std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned()),
-        ConnectOptions {
-            http_port: std::env::var("TYPEDB_HTTP_PORT")
+        {
+            let mut options = ConnectOptions::default();
+            options.http_port = std::env::var("TYPEDB_HTTP_PORT")
                 .unwrap_or_else(|_| "8000".to_owned())
                 .parse()
-                .expect("HTTP port is valid"),
-            ..ConnectOptions::default()
+                .expect("HTTP port is valid");
+            options
         },
     )
     .await
@@ -121,7 +122,7 @@ async fn generated_c_emits_complete_administration_report() {
         "strict C17 consumer compile",
     );
 
-    let database = format!("sdk_administration_c_{}", std::process::id());
+    let database = support::live_database_name("sdk_administration_c");
     let mut child = Command::new(&executable)
         .current_dir(&generated)
         .env("TYPE_BRIDGE_SDK_ADMINISTRATION_DATABASE", &database)
@@ -217,9 +218,9 @@ async fn generated_c_emits_complete_administration_report() {
     assert_eq!(report["results"][2]["observation"]["forward_changed"], 2);
     assert_eq!(
         report["results"][3]["observation"]["catalog_fingerprint"],
-        support::sdk_profile_matrix::requested("administration")
-            .expected_history_fingerprint
-            .expect("matrix history fingerprint")
+        support::format2_history_fingerprint(
+            &support::sdk_profile_matrix::requested("administration").semantic_profile
+        )
     );
     if let Some(directory) = std::env::var_os("TYPE_BRIDGE_SDK_ADMINISTRATION_REPORT_DIR") {
         fs::copy(

@@ -129,7 +129,6 @@ NON_NORMATIVE_WORKFLOWS = {
     "python_filtered_callback_update_and_filtered_delete",
     "python_cross_type_attribute_owner_lookup",
     "python_key_fallback_update_delete_without_iid",
-    "python_retained_raw_query_builder_generated_models",
 }
 CANONICAL_GAP_WORKFLOWS = {
     "entity_relation_batch_update_delete_and_atomicity",
@@ -210,13 +209,26 @@ def test_full_sdk_manifest_has_closed_profiles_and_real_rust_owners() -> None:
 
     capabilities = manifest["capabilities"]
     used_owners = {capability["owner"] for capability in capabilities}
-    assert used_owners == set(manifest["owners"])
+    parity_owners = {
+        "typed_plan_parity": {
+            "path": "scripts/ci/sdk_plan_parity.py",
+            "symbol": "def compare_twins",
+        },
+        "typed_answer_capture_parity": {
+            "path": "scripts/ci/sdk_plan_parity.py",
+            "symbol": "def compare_oracle_answers",
+        },
+    }
+    assert {name: manifest["owners"].get(name) for name in parity_owners} == parity_owners
+    assert used_owners.isdisjoint(parity_owners)
+    assert used_owners | parity_owners.keys() == set(manifest["owners"])
     for owner_id, owner in manifest["owners"].items():
         relative = PurePosixPath(owner["path"])
         assert not relative.is_absolute(), owner_id
         assert ".." not in relative.parts, owner_id
-        assert relative.parts[:2] == ("type-bridge-core", "crates"), owner_id
-        assert relative.suffix == ".rs", owner_id
+        if owner_id not in parity_owners:
+            assert relative.parts[:2] == ("type-bridge-core", "crates"), owner_id
+            assert relative.suffix == ".rs", owner_id
         source_path = ROOT / relative
         assert source_path.is_file(), source_path
         source = source_path.read_text(encoding="utf-8")

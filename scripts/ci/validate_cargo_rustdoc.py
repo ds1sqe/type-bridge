@@ -237,9 +237,9 @@ def plan_rustdoc_targets(
                 f"{package.name} has unsupported docs target {package.docs_target!r}"
             )
 
-    if len(planned) != 17:
+    if len(planned) != 15:
         raise RustdocValidationError(
-            f"public rustdoc inventory must resolve exactly 17 targets; found {len(planned)}"
+            f"public rustdoc inventory must resolve exactly 15 targets; found {len(planned)}"
         )
     return tuple(planned)
 

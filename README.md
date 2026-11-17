@@ -25,7 +25,7 @@ share one Rust-owned schema, query, migration, validation, and ORM engine.
 | Rust | Schema-bound create/model types, async CRUD and immutable queries | [`type-bridge`](https://crates.io/crates/type-bridge) |
 | C | Generated nominal models, transactions, direct/remote queries | [Ubuntu 24.04 x86_64 shared runtime](https://ds1sqe.github.io/type-bridge/guide/c/) |
 | CLI | Split-YAML checks, migrations, and all four projections | Python package or standalone Linux archive |
-| Server | Remote V2 query execution over the same generated contract | `ghcr.io/ds1sqe/type-bridge-server` |
+| Server | Remote staged query execution over the same generated contract | `ghcr.io/ds1sqe/type-bridge-server` |
 
 TypeBridge preserves TypeDB concepts directly: independent attributes,
 entities, relations, roles, inheritance, cardinality, ordering, keys, and
@@ -82,7 +82,7 @@ session = blocking(Person.query(db))
 person = session.exact(Person)
 adults = (
     session.query(person)
-    .where(person.field(Person.age).gte(Age(18)))
+    .where(person.field(Person.age).ge(Age(18)))
     .rows(limit=100)
 )
 ```
@@ -101,10 +101,10 @@ Import application values from the generated package and connection primitives
 from `@type-bridge/node`:
 
 ```ts
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 import { Age, Person, PersonId } from "./generated/models/index.js";
 
-const db = RustDatabase.connect("localhost:1729", "example", {
+const db = Database.connect("localhost:1729", "example", {
   username: "admin",
   password: "password",
 });
@@ -119,6 +119,12 @@ const people = Person.manager(db).filter({ age__gte: Age.create(18n) }).all();
 See the [TypeScript/Node guide](https://ds1sqe.github.io/type-bridge/guide/typescript/)
 for generated managers, transactions, and direct/remote queries.
 
+Staged-plan integer data is always `bigint`, including nested fetches and
+computed integers; doubles and count envelopes remain `number`. Raw queries
+keep safe integers as `number` and use `bigint` outside the safe range.
+For JSON, use a bigint replacer such as
+`(_key, value) => typeof value === "bigint" ? value.toString() : value`.
+
 ## Rust
 
 The same workspace emits a schema-bound Rust crate. The generated SDK uses
@@ -126,7 +132,7 @@ Rust 1.88+ and the crates.io `type-bridge` runtime:
 
 ```toml
 [dependencies]
-type-bridge = "2"
+type-bridge = "3"
 ```
 
 Follow the [Rust client guide](https://ds1sqe.github.io/type-bridge/guide/rust/)
@@ -134,7 +140,7 @@ for generation, direct execution, transactions, and remote queries.
 
 ## C
 
-TypeBridge 2.3 ships a C ABI 1.7 shared runtime and standalone CLI for
+TypeBridge 3.0 ships a C ABI 2.0 shared runtime and standalone CLI for
 Ubuntu 24.04 on x86_64 GNU/Linux. Generate an application schema package from
 Split-YAML, then link C17 or C++17 consumers with CMake or pkg-config.
 
@@ -149,7 +155,7 @@ archives, installation, generation, and the exact supported matrix.
 - [Manage schemas and migrations](https://ds1sqe.github.io/type-bridge/guide/schema-workflows/)
 - [Run the query server](https://ds1sqe.github.io/type-bridge/guide/server-container/)
 - [Browse the Cargo package index](https://ds1sqe.github.io/type-bridge/guide/cargo-packages/)
-- [Compatibility and removals](https://ds1sqe.github.io/type-bridge/guide/v2-deprecations/)
+- [Upgrade to 3.0: compatibility and removals](https://ds1sqe.github.io/type-bridge/guide/upgrade-3.0/)
 
 ## Development
 

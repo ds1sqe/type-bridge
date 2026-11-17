@@ -47,9 +47,10 @@ pub async fn observations(prefix: &str) -> Vec<(&'static str, ClassifiedCommitEr
         &format!("{prefix}_{}", std::process::id()),
         "admin",
         "password",
-        ConnectOptions {
-            http_port,
-            ..Default::default()
+        {
+            let mut options = ConnectOptions::default();
+            options.http_port = http_port;
+            options
         },
     )
     .await

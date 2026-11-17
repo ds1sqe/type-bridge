@@ -209,6 +209,20 @@ fn projection_uses_ordered_collections(projection: &RuntimeProjection) -> bool {
     })
 }
 
+fn supports_scalar_plan_writes(model: &ModelProjection) -> bool {
+    model.create().enabled()
+        && model.create().fields().iter().all(|field| {
+            field.multiplicity().container()
+                == type_bridge_contract::projection::ProjectedContainer::Scalar
+                && field.multiplicity().collection_mode().is_unordered()
+        })
+        && model
+            .create()
+            .roles()
+            .values()
+            .all(|role| role.multiplicity().collection_mode().is_unordered())
+}
+
 fn model_documentation(model: &ModelProjection) -> Option<String> {
     let type_doc = documentation_annotation(model.declaration().annotations());
     let direct_sub_doc = model

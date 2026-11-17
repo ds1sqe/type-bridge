@@ -105,7 +105,7 @@ def _evidence(binding: str = "rust") -> dict[str, Any]:
 def _acceptance() -> dict[str, Any]:
     return {
         "format": "typebridge.c-artifact-acceptance-report/v1",
-        "publication-disposition": "artifact-only-unpublished-unsupported",
+        "publication-disposition": "signed-github-release",
         "artifacts": {
             "cli": {"artifact-id": f"sha256:{'1' * 64}", "sha256": "2" * 64},
             "generated-package": {"artifact-id": f"sha256:{'3' * 64}", "sha256": "4" * 64},
@@ -243,7 +243,7 @@ def test_publication_is_canonical_and_create_new(tmp_path: Path) -> None:
 def composition_acceptance() -> dict[str, Any]:
     return {
         "format": "typebridge.c-artifact-acceptance-report/v1",
-        "publication-disposition": "artifact-only-unpublished-unsupported",
+        "publication-disposition": "signed-github-release",
         "artifacts": {
             "cli": {"artifact-id": f"sha256:{'1' * 64}", "sha256": "2" * 64},
             "generated-package": {"artifact-id": f"sha256:{'3' * 64}", "sha256": "4" * 64},

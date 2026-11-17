@@ -6,7 +6,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-use crate::diagnostic::{Diagnostic, DiagnosticCategory};
+use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 
 /// Maximum UTF-8 byte length of one canonical label.
 pub const MAX_LABEL_BYTES: usize = 255;
@@ -25,6 +25,55 @@ pub fn is_canonical_thing_iid(value: &str) -> bool {
             && digits.len() <= MAX_THING_IID_HEX_DIGITS
             && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
     })
+}
+
+/// A nominal provider Thing IID, validated before query construction or I/O.
+///
+/// Serialization preserves the provider spelling and the existing string wire
+/// representation. Construction accepts exactly [`is_canonical_thing_iid`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Iid(String);
+
+impl Iid {
+    /// Validate a provider IID without normalizing its spelling.
+    pub fn new(value: impl Into<String>) -> Result<Self, Diagnostic> {
+        let value = value.into();
+        if !is_canonical_thing_iid(&value) {
+            return Err(Diagnostic::stable(
+                DiagnosticCategory::InvalidContract,
+                "invalid_iid",
+                "IID must be 0x followed by one to 256 hexadecimal digits",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Borrow the validated provider spelling.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    /// Consume the identifier and return its validated spelling without allocating.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Display for Iid {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl Serialize for Iid {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Iid {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
 }
 
 // TypeDB 3.12.1 pins the TypeQL 3.12.0 grammar. Keep this vocabulary
@@ -106,11 +155,17 @@ impl Label {
     /// Validate and construct a label.
     pub fn new(value: impl Into<String>) -> Result<Self, Diagnostic> {
         let value = value.into();
+        if is_typeql_3_12_1_reserved_label(&value) {
+            return Err(Diagnostic::new(
+                DiagnosticCategory::InvalidContract,
+                DiagnosticCode::new("malformed_id").expect("static diagnostic code"),
+                format!("reserved TypeQL keyword {value:?} cannot be used as a schema label"),
+            ));
+        }
         let mut chars = value.chars();
         let valid = value.len() <= MAX_LABEL_BYTES
             && chars.next().is_some_and(|ch| ch == '_' || is_xid_start(ch))
-            && chars.all(|ch| ch == '-' || is_xid_continue(ch))
-            && !is_typeql_3_12_1_reserved_label(&value);
+            && chars.all(|ch| ch == '-' || is_xid_continue(ch));
         if valid {
             Ok(Self(value))
         } else {
@@ -253,6 +308,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nominal_iids_validate_construction_and_wire_without_rewriting() {
+        let spelling = "0xAbCdEf";
+        let iid = Iid::new(spelling).unwrap();
+        assert_eq!(iid.as_str(), spelling);
+        assert_eq!(iid.to_string(), spelling);
+        let json = serde_json::to_string(&iid).unwrap();
+        assert_eq!(json, "\"0xAbCdEf\"");
+        assert_eq!(serde_json::from_str::<Iid>(&json).unwrap(), iid);
+        let pointer = iid.as_str().as_ptr();
+        let text = iid.into_string();
+        assert_eq!(text, spelling);
+        assert_eq!(text.as_ptr(), pointer);
+        for invalid in ["", "0x", "0X01", "0xgg", " 0x01", "0x01 "] {
+            assert_eq!(
+                Iid::new(invalid).unwrap_err().code().as_str(),
+                "invalid_iid"
+            );
+            assert!(serde_json::from_str::<Iid>(&serde_json::to_string(invalid).unwrap()).is_err());
+        }
+        assert!(Iid::new(format!("0x{}", "a".repeat(256))).is_ok());
+        assert!(Iid::new(format!("0x{}", "a".repeat(257))).is_err());
+        assert!(serde_json::from_str::<Iid>("42").is_err());
+    }
+
+    #[test]
     fn labels_reject_malformed_input_during_deserialization() {
         for value in ["", "9person", "person name", "person.", "a²"] {
             assert_eq!(
@@ -281,6 +361,15 @@ mod tests {
         }
         assert!(Label::new("matching").is_ok());
         assert!(Label::new("entity-type").is_ok());
+    }
+
+    #[test]
+    fn reserved_label_diagnostic_names_the_keyword() {
+        let error = Label::new("iid").unwrap_err();
+        assert_eq!(error.code().as_str(), "malformed_id");
+        assert!(error.message().contains("iid"));
+        assert!(error.message().contains("reserved"));
+        assert!(!error.details().contains_key("maximum_bytes"));
     }
 
     #[test]

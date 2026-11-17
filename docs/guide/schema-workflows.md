@@ -1,14 +1,14 @@
 # Schema and migration workflows
 
 TypeBridge separates desired schema, migration history, and generated
-application projections. For new V2 systems, a versioned Split-YAML workspace
+application projections. For new systems, a versioned Split-YAML workspace
 is the canonical authoring authority.
 
-## Recommended V2 flow
+## Recommended flow
 
 1. Author a [Split-YAML schema set and workspace](split-yaml-v1.md).
 2. Validate it offline with `type-bridge … schema check`.
-3. [Generate](generator.md) the configured Python, TypeScript, and Rust
+3. [Generate](generator.md) the configured Python, TypeScript, Rust, and C
    projections from one snapshot.
 4. Create and review a [migration](migrations.md).
 5. Apply the migration only in an environment that permits it.
@@ -17,11 +17,10 @@ is the canonical authoring authority.
 If the workspace deploys the generic TypeBridge server, configure and deploy
 its source-free authority artifact from that same generation snapshot.
 
-Split-YAML is the only active authoring path. Existing TOML and historical
-migration material is handled only by the documented read-only conversion and
-recovery workflows. Generated files are projections, not alternate schema
-authorities: regenerate them after an accepted schema change and never edit or
-subclass their runtime bases.
+Split-YAML is the schema authoring authority. Convert historical inputs and
+adopt frozen migration histories with TypeBridge 2.3.x before upgrading.
+Generated files are projections: regenerate them after an accepted schema
+change and never edit or subclass their runtime bases.
 
 Generated packages embed compiled authority for their normal remote sessions.
 When configured, the separately emitted `typebridge.schema-authority/v1` JSON
@@ -32,5 +31,5 @@ Split-YAML.
 ## API boundary projections
 
 Application-boundary DTOs should be defined by the application around generated
-models. Generated Python, TypeScript, and Rust packages retain language-specific
+models. Generated Python, TypeScript, Rust, and C packages retain language-specific
 types while sharing canonical field, role, and schema identities.

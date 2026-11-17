@@ -51,7 +51,7 @@ def test_cold_runner_writes_valid_result(tmp_path: Path, monkeypatch: pytest.Mon
         "--group",
         "public",
         "--package",
-        "type-bridge-toml-transpiler",
+        "type-bridge-contract",
         "--target-dir",
         str(tmp_path / "target"),
         "--out",

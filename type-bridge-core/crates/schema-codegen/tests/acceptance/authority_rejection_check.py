@@ -130,7 +130,7 @@ if query_aliases != -1 and query_aliases <= native_install:
 ordered_init = (SOURCE / "__init__.py").read_text()
 if ordered_init.index("from ._models import ") >= ordered_init.index("from ._query import "):
     raise AssertionError("ordered package init did not trigger model admission before query")
-if (SOURCE / "_query.py").read_bytes() != (STAGE / "generated_v2" / "_query.py").read_bytes():
+if (SOURCE / "_query.py").read_bytes() != (STAGE / "generated_package" / "_query.py").read_bytes():
     raise AssertionError("ordered package changed the fixed Python query resource")
 
 completed = subprocess.run(

@@ -196,7 +196,7 @@
       "node": [
         {
           "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
-          "anchors": ["personManager.insertMany(batchPeople)", "personManager.putMany(insertedBatch)", "personManager.update", "personManager.delete(transactionPersonIid)"]
+          "anchors": ["personManager.insertMany(batchPeople)", "personManager.putMany(insertedBatch)", "personManager.update", "personManager.delete(stalePerson.iid)"]
         }
       ],
       "rust": [
@@ -286,7 +286,7 @@
       "python": [
         {
           "path": "tests/integration/schema/test_generated_projection_live.py",
-          "anchors": ["identifier_field.starts_with", "~identifier_field.neq", "offset=1", "all_people_query.first"]
+          "anchors": ["identifier_field.starts_with", "~identifier_field.ne", "offset=1", "all_people_query.first"]
         }
       ],
       "node": [
@@ -364,7 +364,7 @@
       "node": [
         {
           "path": "type-bridge-core/crates/node/tests/projection-integration/generated-package-live.test.ts",
-          "anchors": ["session.reachable(", "assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)", ".allowCrossJoin(crossLeft, crossRight)"]
+          "anchors": ["session.reachable(", "assertIidsEqual(await queryProgram(remoteSession, oneRemoteExchange), direct)", ".allowCrossJoin(crossLeft, crossRight)"]
         }
       ],
       "rust": [

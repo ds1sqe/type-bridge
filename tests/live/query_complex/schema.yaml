@@ -1,0 +1,104 @@
+format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  tag: { value: string }
+  score: { value: integer }
+  nickname: { value: string }
+  note: { value: string }
+  priority: { value: integer }
+  done: { value: boolean }
+  blocked: { value: boolean }
+  site: { value: string }
+  seen: { value: datetime-tz }
+entities:
+  party:
+    abstract: true
+    owns:
+      identifier: { key: true }
+      tag: { card: { min: 0, max: 3 } }
+      score: { card: { min: 0, max: 1 } }
+      nickname: { card: { min: 0, max: 1 } }
+      seen: { card: { min: 0, max: 1 } }
+  person: { sub: party }
+  employee: { sub: person }
+  company:
+    owns:
+      identifier: { key: true }
+  department:
+    owns:
+      identifier: { key: true }
+      blocked: { card: { min: 0, max: 1 } }
+  project:
+    owns:
+      identifier: { key: true }
+      priority: { card: 1 }
+  task:
+    owns:
+      identifier: { key: true }
+      done: { card: 1 }
+  office:
+    owns:
+      identifier: { key: true }
+      site: { card: 1 }
+relations:
+  association:
+    abstract: true
+    owns:
+      identifier: { key: true }
+    relates:
+      participant: { card: 1 }
+      peer: { card: 1 }
+  friendship: { sub: association }
+  relay:
+    relates:
+      edge: { card: 1 }
+      peer: { card: 1 }
+  employment:
+    owns:
+      note: { card: { min: 0, max: 1 } }
+    relates:
+      worker: { card: 1 }
+      employer: { card: 1 }
+  membership:
+    relates:
+      member: { card: 1 }
+      department: { card: 1 }
+  assignment:
+    relates:
+      worker: { card: 1 }
+      project: { card: 1 }
+  project-task:
+    relates:
+      project: { card: 1 }
+      task: { card: 1 }
+  located:
+    relates:
+      department: { card: 1 }
+      office: { card: 1 }
+  company-office:
+    relates:
+      company: { card: 1 }
+      office: { card: 1 }
+plays:
+  party:
+    association: [participant, peer]
+    relay: [peer]
+    employment: [worker]
+    membership: [member]
+    assignment: [worker]
+  company:
+    employment: [employer]
+    company-office: [company]
+  department:
+    membership: [department]
+    located: [department]
+  project:
+    assignment: [project]
+    project-task: [project]
+  task:
+    project-task: [task]
+  office:
+    located: [office]
+    company-office: [office]
+  association:
+    relay: [edge]

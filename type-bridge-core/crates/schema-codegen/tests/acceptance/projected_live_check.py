@@ -17,7 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from type_bridge import Database
+from type_bridge import Database, Iid
 
 REPORT_FORMAT = "typebridge.projected-live-report/v1"
 # `main` reports on the models matrix entry it selects from
@@ -557,13 +557,14 @@ def _insert(
     ref: str,
     manager: Any,
     value: object,
-    created: dict[str, tuple[Any, object, str]],
+    created: dict[str, tuple[Any, object, Iid]],
     actual_order: list[str],
 ) -> object:
-    if manager.insert(value) is not value:
+    result = manager.insert(value)
+    if result.count != 1 or result.item is not value or result.items[0] is not value:
         raise ProducerError("invalid_crud_result", f"insert changed result identity for {ref}")
     iid = getattr(value, "iid", None)
-    if type(iid) is not str or not iid:
+    if not isinstance(iid, Iid):
         raise ProducerError("invalid_crud_result", f"insert did not attach an IID for {ref}")
     created[ref] = (manager, value, iid)
     actual_order.append(ref)
@@ -574,7 +575,7 @@ def _insert(
 
 
 def _cleanup_created(
-    created: dict[str, tuple[Any, object, str]],
+    created: dict[str, tuple[Any, object, Iid]],
     cleanup_order: Sequence[str],
     managers: Mapping[str, Any],
 ) -> tuple[list[str], list[dict[str, object]], dict[str, int], dict[str, bool]]:
@@ -631,7 +632,7 @@ def _run_journey(
         if manager.count() != 0:
             raise ProducerError("database_not_empty", f"new database contains {model} values")
 
-    created: dict[str, tuple[Any, object, str]] = {}
+    created: dict[str, tuple[Any, object, Iid]] = {}
     actual_create_order: list[str] = []
     observations: dict[str, object] = {}
     plain_read_after_create = False
@@ -745,7 +746,7 @@ def _run_journey(
             "event-ada", managers["event"], event, created, actual_create_order
         )
         event_iid = getattr(hydrated_event, "iid", None)
-        if type(event_iid) is not str:
+        if not isinstance(event_iid, Iid):
             raise ProducerError("invalid_hydration", "Event hydration lost its IID")
         container = package.Container(item=[package.EventRef(event_iid)])
         hydrated_container = _insert(

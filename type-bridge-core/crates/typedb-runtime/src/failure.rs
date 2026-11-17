@@ -203,7 +203,7 @@ pub(crate) fn redacted_commit_failure(failure: &Failure, error: &impl ProviderEr
     message
 }
 // Driver 3.14.0 (band 9) stringifies tonic transport errors into Other; only entire pinned
-// templates are trusted. Band 8 has no pinned templates, so its Other is always opaque.
+// templates are trusted.
 // Reviewed for 3.14.0: the driver changed only its concept-document and JSON
 // value rendering since 3.13.6; its transport stack (tonic, h2, rustls) is unchanged.
 #[cfg(feature = "band9")]
@@ -339,8 +339,6 @@ macro_rules! driver_error_adapter {
         }
     };
 }
-#[cfg(feature = "band8")]
-driver_error_adapter!(driver_b8, |_: &str| TransportKind::Other);
 #[cfg(feature = "band9")]
 driver_error_adapter!(driver_b9, other_transport_kind);
 
@@ -545,7 +543,6 @@ mod tests {
             }
         };
     }
-    driver_transport_tests!("band8", driver_b8);
     driver_transport_tests!("band9", driver_b9);
 
     #[cfg(feature = "band9")]
@@ -576,28 +573,9 @@ mod tests {
     #[cfg(feature = "band9")]
     pinned_transport_test!(pinned_driver_unknown_certificate_issuer, 3);
 
-    #[cfg(feature = "band8")]
-    #[test]
-    fn band8_other_never_matches_band9_templates() {
-        use crate::driver_b8::Error;
-        for template in [
-            "http2 error: keep-alive timed out: operation timed out",
-            "invalid peer certificate: UnknownIssuer: transport error: invalid peer certificate: UnknownIssuer: invalid peer certificate: UnknownIssuer",
-        ] {
-            assert_eq!(
-                Error::Other(template.to_owned()).transport_kind(),
-                Some(TransportKind::Other)
-            );
-        }
-    }
-
     #[test]
     fn address_errors_use_fixed_guidance_without_the_address() {
         let messages = [
-            #[cfg(feature = "band8")]
-            crate::driver_b8::Addresses::try_from_address_str("SECRET_SENTINEL:not-a-port")
-                .map(|_| ())
-                .map_err(|error| redact_address_error(&error)),
             #[cfg(feature = "band9")]
             crate::driver_b9::Addresses::try_from_address_str("SECRET_SENTINEL:not-a-port")
                 .map(|_| ())

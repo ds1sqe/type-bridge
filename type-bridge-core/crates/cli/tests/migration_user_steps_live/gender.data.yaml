@@ -1,0 +1,6 @@
+format: typebridge.migration-data-step-intent/v1
+id: derive-gender
+forward:
+  user: derive-gender
+reverse:
+  user: derive-gender

@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import importlib.util
 import inspect
+import itertools
 import json
 import os
 import stat
@@ -17,6 +19,8 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+from type_bridge import Iid
 
 REPORT_FORMAT = "typebridge.projected-parity-report/v1"
 # The models TypeDB version matrix: the report's profile and the semantic
@@ -209,37 +213,46 @@ def _fingerprint(domain: bytes, canonicalization: bytes, payload: bytes) -> str:
     return digest.hexdigest()
 
 
-_REMOTE_CAPABILITIES = [
-    "query.execution.batch-identity-rebind",
-    "query.execution.same-snapshot-hydration",
-    "query.input.given-rows",
-    "query.operation.distinct-count",
-    "query.operation.distinct-exists",
-    "query.operation.exactly-one",
-    "query.operation.page",
-    "query.order.stable-collection",
-    "query.order.stable-root",
-    "query.order.stable-selected",
-    "query.output.collect",
-    "query.output.collect-distinct",
-    "query.output.hydrated",
-    "query.output.named",
-    "query.output.rows",
-    "query.pattern.has",
-    "query.pattern.iid",
-    "query.pattern.isa",
-    "query.pattern.isa-subtypes",
-    "query.plan",
-    "query.plan.v2",
-    "query.remote.envelope-v2",
-    "query.remote.structured-diagnostic",
-    "query.stage.distinct",
-    "query.stage.limit",
-    "query.stage.offset",
-    "query.stage.require",
-    "query.stage.select",
-    "query.stage.sort",
-]
+_REMOTE_CAPABILITIES = sorted(
+    [
+        "query.execution.batch-identity-rebind",
+        "query.execution.same-snapshot-hydration",
+        "query.input.given-rows",
+        "query.operation.distinct-count",
+        "query.operation.distinct-exists",
+        "query.operation.exactly-one",
+        "query.operation.page",
+        "query.order.stable-collection",
+        "query.order.stable-root",
+        "query.order.stable-selected",
+        "query.output.collect",
+        "query.output.collect-distinct",
+        "query.output.hydrated",
+        "query.output.named",
+        "query.output.rows",
+        "query.pattern.has",
+        "query.pattern.iid",
+        "query.pattern.isa",
+        "query.pattern.isa-subtypes",
+        "query.plan",
+        "query.plan.v2",
+        "query.remote.envelope-v2",
+        "query.remote.structured-diagnostic",
+        "query.stage.distinct",
+        "query.stage.limit",
+        "query.stage.offset",
+        "query.stage.require",
+        "query.stage.select",
+        "query.stage.sort",
+        "query.fetch.thing",
+        "query.let",
+        "query.expr.iid",
+        "query.pipeline.rematch",
+        "query.plan.v3",
+        "query.remote.envelope-v3",
+        "query.remote.answer-dimensions",
+    ]
+)
 
 
 def _remote_advertisement() -> bytes:
@@ -591,32 +604,65 @@ def _hydrated_rows_reply(
     node: int,
 ) -> bytes:
     decoded = json.loads(request)
-    if not isinstance(decoded, dict) or not isinstance(decoded.get("plan"), dict):
-        raise AssertionError("generated remote request is malformed")
-    plan = _canonical(decoded["plan"]).rstrip(b"\n")
+    if len(decoded["plans"]) != 1:
+        raise AssertionError("exact fixture must use one native thing fetch")
+    plan = json.loads(bytes.fromhex(decoded["plans"][0]["plan_bytes"]))
+    fetch = next(stage for stage in plan["pipeline"] if stage["kind"] == "fetch")
+    nodes = {item["id"]: item for item in graph["nodes"]}
+    root = nodes[node]
+
+    def scalar(value):
+        return {"kind": "scalar", "value": value}
+
+    def text(value):
+        return scalar({"kind": "string", "value": value})
+
+    def attributes(item):
+        return {
+            "kind": "document",
+            "fields": {
+                field["attribute"]: (
+                    {"kind": "list", "values": field["values"]}
+                    if field["attribute"] == "aliases"
+                    else scalar(field["values"][0])
+                    if field["values"]
+                    else {"kind": "absent"}
+                )
+                for field in item["attributes"]
+            },
+        }
+
+    base = {
+        "_iid": text(root["iid"]),
+        "_type": text(root["concrete"]["label"]),
+        "attributes": attributes(root),
+    }
+    choices = []
+    for index, listed in enumerate(fetch["roles"]):
+        role = next(
+            (role for role in root["roles"] if role["role"]["label"] == listed["role"]["label"]),
+            None,
+        )
+        choices.append((index, role["players"] if role and role["players"] else [None]))
+    documents = []
+    for players in itertools.product(*(players for _, players in choices)):
+        document = dict(base)
+        for (index, _), player in zip(choices, players, strict=True):
+            if player is None:
+                continue
+            target = nodes[player["node"]]
+            document[f"_role_{index}_iid"] = text(target["iid"])
+            document[f"_role_{index}_type"] = text(target["concrete"]["label"])
+            document[f"_role_{index}_attributes"] = attributes(target)
+        documents.append(document)
     return _remote_signed_reply(
         {
-            "format": "typebridge.query-remote-response/v2",
+            "answers": [{"kind": "documents", "documents": documents}],
+            "format": "typebridge.query-remote-response/v3",
             "nonce": decoded["nonce"],
-            "outcome": {
-                "graph": graph,
-                "kind": "hydrated_rows",
-                "rows": [
-                    {
-                        "slots": [
-                            {
-                                "kind": "singular",
-                                "value": {"declared": declared, "node": node},
-                            }
-                        ]
-                    }
-                ],
-            },
-            "plan": _fingerprint(b"typebridge.query.plan", b"typebridge.query-plan-c14n/v2", plan),
+            "outcome": {"kind": "committed"},
             "request": _fingerprint(
-                b"typebridge.query.remote-request",
-                b"typebridge.query-remote-request/v2",
-                request,
+                b"typebridge.query.remote-request", b"typebridge.query-remote-request/v3", request
             ),
         },
         advertisement,
@@ -651,11 +697,11 @@ async def _hydrate_exact(
     session = package.QuerySession(
         package.ExchangeConnection(advertisement, exchange),
         resources=package.QueryExecutionResourceLimits(
-            items=8,
+            items=64,
             bytes=1 << 20,
-            collection_members=16,
-            graph_nodes=16,
-            attribute_values=128,
+            collection_members=128,
+            graph_nodes=64,
+            attribute_values=1024,
             role_players=64,
         ),
     )
@@ -696,6 +742,31 @@ def _dana_node(node_id: int = 1, iid: str = "0x02") -> dict[str, object]:
     )
 
 
+async def _ordered_link_observation(package, model, graph, root_node):
+    try:
+        await _hydrate_exact(package, model, graph, root_node)
+    except Exception as error:
+        if getattr(error, "code", None) != "query_plan_hydration_ordered_role":
+            raise
+        assert error.path == [{"kind": "provider_evidence"}], error.path
+        print(
+            "INTENDED_STAGED_DIFFERENCE ordered roles refused: network-link:participant", flush=True
+        )
+    else:
+        raise AssertionError("populated ordered query role was accepted")
+    empty = copy.deepcopy(graph)
+    for role in empty["nodes"][root_node]["roles"]:
+        if role["role"]["label"] == "participant":
+            role["players"] = []
+    native = await _hydrate_exact(package, model, empty, root_node)
+    assert native.participant == ()
+    constructed = _constructed_observations(package)
+    constructed["ada"].attach_runtime_iid(Iid("0x01"))
+    constructed["dana"].attach_runtime_iid(Iid("0x02"))
+    constructed["link"].attach_runtime_iid(Iid("0x10"))
+    return model.decode_snapshot(constructed["link"].encode_snapshot())
+
+
 async def _hydrated_observations(package: Any) -> dict[str, object]:
     ada = await _hydrate_exact(package, package.Person, {"nodes": [_ada_node()]}, 0)
     negative_robot = await _hydrate_exact(
@@ -732,7 +803,7 @@ async def _hydrated_observations(package: Any) -> dict[str, object]:
         },
         1,
     )
-    link = await _hydrate_exact(
+    link = await _ordered_link_observation(
         package,
         package.NetworkLink,
         {
@@ -908,7 +979,7 @@ def _constructed_observations(package: Any) -> dict[str, object]:
         target=ada,
     )
     event = package.Event(subject=ada)
-    event.attach_runtime_iid("0x20")
+    event.attach_runtime_iid(Iid("0x20"))
     container = package.Container(item=(event,))
     return {
         "ada": ada,
@@ -1095,9 +1166,9 @@ def _constraint_observation(
         "role_cardinality",
         lambda: package.Container(
             item=(
-                package.EventRef("0x01"),
-                package.EventRef("0x02"),
-                package.EventRef("0x03"),
+                package.EventRef(Iid("0x01")),
+                package.EventRef(Iid("0x02")),
+                package.EventRef(Iid("0x03")),
             )
         ),
         exception_names=("ProjectedCardinalityError",),

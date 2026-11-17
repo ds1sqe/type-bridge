@@ -8,34 +8,10 @@ This crate wraps [`type-bridge-core-lib`](../core/) and exposes it as a native
 Python extension module via [PyO3](https://pyo3.rs) and
 [maturin](https://www.maturin.rs).
 
-All complex types cross the Python ↔ Rust boundary via
-`pythonize` / `depythonize` using **serde-tagged-enum dicts**:
-
-```python
-# Pattern dict format (serde tag = "type", content = "data")
-pattern = {
-    "type": "Entity",
-    "data": {
-        "variable": "$p",
-        "type_name": "person",
-        "constraints": [],
-        "is_strict": False,
-    },
-}
-```
-
-## Available Python classes
-
-| Class | Wraps |
-|-------|-------|
-| `ValidationEngine` | `type_bridge_core_lib::validation::ValidationEngine` |
-| `QueryCompiler` | `type_bridge_core_lib::compiler::QueryCompiler` |
-| `TypeSchema` | `type_bridge_core_lib::_schema::TypeSchema` |
-| `ValueCoercer` | `type_bridge_core_lib::value_coercion::ValueCoercer` |
-
-**Standalone functions:** `parse_typeql_query()`, `format_value()`, `coerce_value()`
-
-**AST wrappers:** `EntityPattern`, `RelationPattern`, `MatchClause`, `InsertClause`, etc. (mirrors of `type_bridge_core_lib::ast`)
+Applications use generated models and the `type_bridge` query API. This
+extension provides native projection, plan execution, diagnostics and canonical
+value boundaries. Generated models own schema validation and value conversion.
+Legacy validators, scalar formatters and query-node wrappers were removed in 3.0.
 
 ## Building
 
@@ -55,43 +31,24 @@ the abi3-py312 wheel baseline and GIL requirement.
 ## Usage from Python
 
 ```python
-from type_bridge_core import ValidationEngine, QueryCompiler, TypeSchema
+from type_bridge_core import Iid, canonical_enum_spelling
 
-# Parse and compile
-compiler = QueryCompiler()
-clauses = compiler.parse("match $p isa person, has name 'Alice';")
-typeql = compiler.compile(clauses)
-
-# Schema-aware validation
-schema = TypeSchema.from_typeql("define entity person, owns name; attribute name, value string;")
-engine = ValidationEngine()
-result = schema.validate_query(clauses)
-print(result)  # {"is_valid": true, "errors": []}
+iid = Iid("0x1e00000000000000000001")
+assert str(iid) == "0x1e00000000000000000001"
+assert canonical_enum_spelling("manager_lookup", "exact") == "eq"
 ```
 
-## Prepared V2 remote execution
+## Staged remote execution
 
-The module exposes `query_v2_authority(...)`, `query_v2_prepare_remote(...)`,
-and the returned one-shot `PendingQueryV2Remote` handle for canonical Rust V2
-plans. The request and its reply use the one remote envelope
-(`typebridge.query-remote-request/v2`), so the executor must advertise
-`query.plan.v2`, `query.remote.envelope-v2`, and
-`query.remote.structured-diagnostic`. The capability-advertisement bytes
-passed to preparation are an explicit trust input: obtain them over
-authenticated TLS for the intended executor, or
-pin/provision their exact bytes or fingerprint out of band. Fetching
-`/v2/capabilities` over unauthenticated HTTP is discovery only; it cannot
-authenticate the reply-signing key supplied by an intermediary.
+Generated query sessions and typed plans use the shared staged runtime for
+both direct and proxy execution. Connect through the generated package's
+`connect_proxy` or `ExchangeConnection`, then use the same queries and
+transaction `stage`/`commit`/pending `result` operations as on a direct database.
 
-Preparation pins the advertisement, executor epoch, signing key and key ID.
-`decode_reply(...)` accepts exactly one signed response and authenticates its
-outer envelope before constructing a typed outcome. The `max_bytes` request
-argument limits the complete signed wire size of a successful typed response;
-authenticated structured failures instead use the protocol hard ceiling, so a
-zero or otherwise tiny success budget still surfaces its bound diagnostic.
-Replay or foreign request bindings are rejected with stable V2 diagnostics. A
-standalone executor rotates its epoch and signing identity on restart, so
-authenticate and accept the replacement advertisement explicitly.
+The proxy uses `/v3/staged` and `/v3/capabilities`. Authenticate the executor's
+advertisement over trusted TLS or pin its exact bytes out of band. Replies are
+signed and bound to the request and executor identity before typed results are
+constructed. Raw TypeQL uses its separate explicit raw transaction context.
 
 ## License
 

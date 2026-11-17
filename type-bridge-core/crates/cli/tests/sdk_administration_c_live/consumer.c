@@ -122,7 +122,7 @@ int main(void) {
   const char *password = getenv("TYPEDB_PASSWORD");
   const char *http_port_text = getenv("TYPEDB_HTTP_PORT");
   type_bridge_runtime_config_v1_t runtime_config = {sizeof(runtime_config), TYPE_BRIDGE_RUNTIME_CONFIG_VERSION, 2u, 0u, {0u}};
-  type_bridge_database_config_v2_t database_config = {0};
+  type_bridge_database_config_t database_config = {0};
   type_bridge_runtime_t *runtime = NULL;
   type_bridge_schema_package_t *package = NULL;
   type_bridge_database_t *database = NULL;
@@ -162,9 +162,9 @@ int main(void) {
   if (database_name == NULL) fail("database environment", TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
 
   CHECK(type_bridge_runtime_open_v1(&runtime_config, &runtime, &execution_diagnostics));
-  CHECK(tb_administration_schema_package_open(&package, &diagnostics));
+  CHECK(tb_administration_schema_package_open(&package, &execution_diagnostics));
   database_config.struct_size = sizeof(database_config);
-  database_config.version = TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION;
+  database_config.version = TYPE_BRIDGE_DATABASE_CONFIG_VERSION;
   database_config.address = view(address);
   database_config.database = view(database_name);
   database_config.username = view(username);
@@ -172,7 +172,7 @@ int main(void) {
   database_config.http_port = (uint32_t)strtoul(http_port_text, NULL, 10);
   database_config.connection_limits = (type_bridge_query_execution_limits_v1_t)TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
   database_config.answer_limits = (type_bridge_query_execution_limits_v1_t)TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
-  CHECK(type_bridge_database_open_v2(runtime, package, &database_config, NULL, &database, &execution_diagnostics));
+  CHECK(type_bridge_database_open(runtime, package, &database_config, NULL, &database, &execution_diagnostics));
   CHECK(type_bridge_database_administration_open(database, &administration, &diagnostics));
   CHECK(type_bridge_database_administration_inspect(administration, &pair_state, &diagnostics));
   if (pair_state != (uint32_t)TYPE_BRIDGE_DATABASE_PAIR_ABSENT) fail("initial pair", TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
@@ -192,7 +192,7 @@ int main(void) {
   CHECK(type_bridge_migration_cancellation_close(&cancellation));
 
   bundle = read_file("typebridge/migration-history.json", &bundle_length);
-  CHECK(type_bridge_migration_catalog_open(package, (type_bridge_byte_view_t){(const uint8_t *)bundle, bundle_length}, &catalog, &diagnostics));
+  CHECK(type_bridge_migration_catalog_open(package, (type_bridge_byte_view_t){(const uint8_t *)bundle, bundle_length}, &catalog, &execution_diagnostics));
   CHECK(type_bridge_migration_catalog_count(catalog, &catalog_count));
   if (catalog_count != 4u) fail("catalog count", TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
   CHECK(type_bridge_migration_catalog_fingerprint(catalog, &fingerprint));

@@ -6,10 +6,6 @@ use type_bridge_contract::projection::{
 };
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_orm::_descriptor::TypeDescriptor;
-use type_bridge_orm::_manager::query_builder::{
-    build_dynamic_entity_fetch, build_dynamic_entity_fetch_exact, build_dynamic_relation_fetch,
-    build_dynamic_relation_fetch_exact,
-};
 use type_bridge_orm::InstalledRuntimeProjection;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
@@ -175,23 +171,4 @@ fn installed_projection_retains_canonical_function_token_ordinals() {
             .projected_token_identity(ProjectedTokenKind::Function, 2),
         None
     );
-}
-
-#[test]
-fn exact_fetch_builders_add_isa_bang_without_changing_inclusive_builders() {
-    let installed = installed();
-    let person = TypeId::new(TypeKind::Entity, "person").unwrap();
-    let employment = TypeId::new(TypeKind::Relation, "employment").unwrap();
-    let person = installed.entity_descriptor(&person).unwrap();
-    let employment = installed.relation_descriptor(&employment).unwrap();
-
-    let inclusive_entity = build_dynamic_entity_fetch(person, &[], "$e").unwrap();
-    let exact_entity = build_dynamic_entity_fetch_exact(person, &[], "$e").unwrap();
-    assert!(!inclusive_entity.contains("$e isa! person"));
-    assert!(exact_entity.contains("$e isa! person"));
-
-    let inclusive_relation = build_dynamic_relation_fetch(employment, &[], "$r").unwrap();
-    let exact_relation = build_dynamic_relation_fetch_exact(employment, &[], "$r").unwrap();
-    assert!(!inclusive_relation.contains("$r isa! employment"));
-    assert!(exact_relation.contains("$r isa! employment"));
 }

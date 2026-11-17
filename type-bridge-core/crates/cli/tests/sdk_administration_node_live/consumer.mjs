@@ -18,12 +18,8 @@ function identity(value) {
   return `${value.appLabel}/${value.name}`;
 }
 
-function execute(database, transactionType, query) {
-  const transaction = database.transaction(transactionType);
-  const result = transaction.query(query);
-  if (transactionType === "read") transaction.close();
-  else transaction.commit();
-  return result;
+async function execute(database, transactionType, query) {
+  return (await database.executeQuery(query, transactionType)).answers ?? [];
 }
 
 const databaseName = process.env.TYPE_BRIDGE_SDK_ADMINISTRATION_DATABASE;
@@ -64,7 +60,7 @@ const limitedPreview = catalog.previewApply([], [initialId]);
 const limitedPlan = limitedPreview.authorize(limitedPreview.approvalBuilder().finish());
 let resourceCode;
 try {
-  limitedPlan.executeControlled(database, "administration-node-limit", {
+  await limitedPlan.executeControlled(database, "administration-node-limit", {
     resources: new MigrationExecutionResources(0, 0),
   });
   throw new Error("zero group limit succeeded");
@@ -74,28 +70,28 @@ try {
 
 const initialPreview = catalog.previewApply([], [initialId]);
 const initialPlan = initialPreview.authorize(initialPreview.approvalBuilder().finish());
-const initialReport = initialPlan.execute(database, "administration-node-initial");
+const initialReport = await initialPlan.execute(database, "administration-node-initial");
 const expandPreview = catalog.previewApply([initialId], [expandId]);
 const expandPlan = expandPreview.authorize(expandPreview.approvalBuilder().finish());
-expandPlan.execute(database, "administration-node-expand");
+await expandPlan.execute(database, "administration-node-expand");
 
-execute(database, "write", 'insert\n  $first isa person, has person-id "p1", has legacy-name "Ada";\n  $second isa person, has person-id "p2", has legacy-name "Bob", has display-name "conflict";');
+await execute(database, "write", 'insert\n  $first isa person, has person-id "p1", has legacy-name "Ada";\n  $second isa person, has person-id "p2", has legacy-name "Bob", has display-name "conflict";');
 const backfillPreview = catalog.previewApply([initialId, expandId], [backfillId]);
 const backfillBuilder = backfillPreview.approvalBuilder();
 backfillBuilder.approve(0);
 const backfillPlan = backfillPreview.authorize(backfillBuilder.finish());
 let conflictCode;
 try {
-  backfillPlan.execute(database, "administration-node-backfill-conflict");
+  await backfillPlan.execute(database, "administration-node-backfill-conflict");
   throw new Error("conflicting backfill succeeded");
 } catch (error) {
   conflictCode = errorCode(error);
 }
-const conflictCount = execute(database, "read", 'match $person isa person, has display-name $name; fetch { "name": $name };').length;
-execute(database, "write", 'match $person isa person, has person-id "p2", has display-name $name; delete has $name of $person;');
-const forwardReport = backfillPlan.execute(database, "administration-node-backfill-forward");
+const conflictCount = (await execute(database, "read", 'match $person isa person, has display-name $name; fetch { "name": $name };')).length;
+await execute(database, "write", 'match $person isa person, has person-id "p2", has display-name $name; delete has $name of $person;');
+const forwardReport = await backfillPlan.execute(database, "administration-node-backfill-forward");
 const forward = forwardReport.backfills[0];
-const equalCount = execute(database, "read", 'match $person isa person, has legacy-name $source, has display-name $destination; $source == $destination; fetch { "name": $destination };').length;
+const equalCount = (await execute(database, "read", 'match $person isa person, has legacy-name $source, has display-name $destination; $source == $destination; fetch { "name": $destination };')).length;
 const retryPreview = catalog.previewApply([initialId, expandId, backfillId], [backfillId]);
 if (retryPreview.migrationCount() !== 0) throw new Error("retry preview was not empty");
 
@@ -110,9 +106,9 @@ try {
 const rollbackBuilder = rollbackPreview.approvalBuilder();
 rollbackBuilder.approve(0);
 const rollbackPlan = rollbackPreview.authorize(rollbackBuilder.finish());
-const rollbackReport = rollbackPlan.execute(database, "administration-node-backfill-reverse");
+const rollbackReport = await rollbackPlan.execute(database, "administration-node-backfill-reverse");
 const reverse = rollbackReport.backfills[0];
-const remainingCount = execute(database, "read", 'match $person isa person, has display-name $name; fetch { "name": $name };').length;
+const remainingCount = (await execute(database, "read", 'match $person isa person, has display-name $name; fetch { "name": $name };')).length;
 const appliedAfterRollback = catalog.appliedMigrations(database);
 let unknownCode;
 try {
@@ -122,7 +118,7 @@ try {
   unknownCode = errorCode(error);
 }
 const repeatStatus = appliedAfterRollback.some((item) => identity(item) === identity(backfillId)) ? "unexpected" : "up_to_date";
-const reapplyReport = backfillPlan.execute(database, "administration-node-backfill-reapply");
+const reapplyReport = await backfillPlan.execute(database, "administration-node-backfill-reapply");
 
 const deletion = database.planDatabaseDelete().execute();
 const repeatDeletion = database.planDatabaseDelete().execute();

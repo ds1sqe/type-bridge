@@ -1,6 +1,6 @@
 """Integration tests for the version gate (type_bridge/version.py wiring).
 
-Requires a running TypeDB server (band-8, 3.11.5 compose default).
+Requires a running supported TypeDB server.
 All tests use @pytest.mark.integration.
 """
 
@@ -23,12 +23,12 @@ from type_bridge.session import Database
 @pytest.mark.integration
 @pytest.mark.order(410)
 class TestVersionGateLivePositive:
-    """Gate passes on the live compose server (band-8 driver × band-8 server)."""
+    """The retained driver passes the gate on the live compose server."""
 
     def test_connect_passes_version_gate(self, clean_db: Database):
         """Database.connect() succeeds against the live server — gate green."""
         # clean_db fixture already called connect(); assert Rust handle is up.
-        assert getattr(clean_db, "_rust_backend_database", None) is not None
+        assert getattr(clean_db, "_native_database", None) is not None
 
     def test_connect_minimal_round_trip(self, clean_db: Database):
         """Gate passes and a trivial schema query returns a non-error response."""
@@ -79,9 +79,7 @@ class TestServerVersionLive:
         # optional Python typedb-driver package.  The installed Python driver
         # may target a different protocol band from the live test server.
         # ensure_runtime_supported is the full serviceability check: it passes
-        # exactly when some band the server accepts is embedded. A confirmed
-        # 3.12 server normally upgrades from safe band-8 discovery to native
-        # band 9, retaining band 8 only as a compatible fallback.
+        # exactly when the server's protocol is served by the embedded driver.
         version.ensure_runtime_supported(sv)
 
 
@@ -90,43 +88,17 @@ class TestServerVersionLive:
 # ---------------------------------------------------------------------------
 
 
-def _mismatched_driver_version(server: str) -> str:
-    """Pick a driver version the live server gate rejects.
-
-    Prefer the other retained driver line, then use the retired 3.10 line for
-    a 3.12 server that accepts both retained providers. The decision remains
-    owned by the core gate.
-    """
-    import type_bridge_core
-
-    candidate_lines = ("3.11.5", "3.12.1", "3.10.0")
-    for candidate in candidate_lines:
-        try:
-            type_bridge_core.check_supported(candidate, server)
-        except type_bridge_core.VersionError:
-            return candidate
-    raise AssertionError(
-        f"no candidate driver line mismatches server {server!r}; "
-        f"extend candidate_lines to cover its band map entry"
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.order(412)
 class TestVersionGateLiveNegative:
     """Python driver gate fires before driver construction when monkeypatched."""
 
-    def test_cross_band_raises_before_driver_constructed(self, monkeypatch: pytest.MonkeyPatch):
-        """Monkeypatching driver_version to the opposite band of the live server
-        causes direct driver access to raise UnsupportedVersionError before TypeDB.driver is
-        called."""
+    def test_retired_driver_raises_before_driver_constructed(self, monkeypatch: pytest.MonkeyPatch):
+        """A retired driver is refused before the native constructor runs."""
         import type_bridge.session as session_mod
         from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
-        detected_server = _tdm.server_version(
-            TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT, tls=False
-        )
-        mismatched = _mismatched_driver_version(detected_server)
+        mismatched = "3.10.0"
         monkeypatch.setattr(_tdm, "driver_version", lambda: mismatched)
 
         # Spy on TypeDB.driver to assert it is never reached.
@@ -158,10 +130,7 @@ class TestVersionGateLiveNegative:
         """The live gate error names the rejected driver and gives remediation."""
         from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
-        detected_server = _tdm.server_version(
-            TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT, tls=False
-        )
-        mismatched = _mismatched_driver_version(detected_server)
+        mismatched = "3.10.0"
         monkeypatch.setattr(_tdm, "driver_version", lambda: mismatched)
 
         db = Database(
@@ -198,7 +167,7 @@ class TestVersionGateExplicitHttpPort:
             http_port=8000,
         )
         db.connect()
-        assert getattr(db, "_rust_backend_database", None) is not None
+        assert getattr(db, "_native_database", None) is not None
         db.close()
 
 
@@ -221,11 +190,13 @@ class TestVersionGatePinnedServerVersion:
             server_version=detected_server,
         )
         db.connect()
-        assert getattr(db, "_rust_backend_database", None) is not None
+        assert getattr(db, "_native_database", None) is not None
         db.close()
 
-    def test_http_probe_failure_falls_back_to_grpc(self, test_database):
-        """Without a pin, an unreachable HTTP port falls back to gRPC band negotiation."""
+    def test_http_probe_failure_without_pin_refuses(self, test_database):
+        """Without a pin, an unreachable HTTP port refuses: discovery has no gRPC fallback."""
+        from type_bridge_core import VersionError
+
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         db = Database(
@@ -233,8 +204,8 @@ class TestVersionGatePinnedServerVersion:
             database=test_database,
             http_port=1,
         )
-        db.connect()
-        assert getattr(db, "_rust_backend_database", None) is not None
+        with pytest.raises(VersionError, match="requires a reachable HTTP version endpoint"):
+            db.connect()
         db.close()
 
 
@@ -292,7 +263,7 @@ class TestGateNonDefaultHttpPort:
             http_port=int(os.environ["TYPEDB_PROOF_HTTP_PORT"]),
         )
         db.connect()
-        assert getattr(db, "_rust_backend_database", None) is not None
+        assert getattr(db, "_native_database", None) is not None
         db.close()
 
 
@@ -352,22 +323,8 @@ class TestSchemaAnnotationGateLive:
 class TestGivenStageLive:
     """given-stage parameterized queries against the live server.
 
-    Version-adaptive: on a 3.12+ leg one compiled pipeline runs over the
-    input rows through the driver API; on a pre-3.12 leg the raw surface
-    raises the versioned error and bulk operations fall back to per-row
-    queries with identical results.
+    Generated bulk operations require both syntax and row transport support.
     """
-
-    GIVEN_DDL = (
-        "define entity vg-given-person, owns vg-given-name @key, owns vg-given-age;"
-        " attribute vg-given-name, value string;"
-        " attribute vg-given-age, value integer;"
-    )
-    GIVEN_PIPELINE = (
-        "given $n: string, $a: integer;\n"
-        "insert $p isa vg-given-person, has vg-given-name == $n, has vg-given-age == $a;\n"
-        'fetch { "iid": iid($p), "name": $n };'
-    )
 
     @staticmethod
     def _live_server_supports_given_syntax() -> bool:
@@ -386,77 +343,3 @@ class TestGivenStageLive:
             )
         else:
             assert not clean_db.supports_given_stage()
-
-    def test_execute_with_rows_is_version_adaptive(self, clean_db: Database):
-        """3.12+ legs run the pipeline; pre-3.12 legs get the versioned error."""
-        import type_bridge_core
-
-        rows = [["alice", 28], ["bob", 26], ["carol", 31]]
-        if clean_db.supports_given_stage():
-            clean_db.execute_query(self.GIVEN_DDL, transaction_type="schema")
-            docs = clean_db.execute_with_rows(
-                self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
-            )
-            assert len(docs) == len(rows)
-            assert {doc["name"] for doc in docs} == {"alice", "bob", "carol"}
-            assert all(doc["iid"] for doc in docs)
-            fetched = clean_db.execute_query(
-                "match $p isa vg-given-person, has vg-given-name $n; select $n;",
-                transaction_type="read",
-            )
-            assert {row["n"]["value"] for row in fetched} == {"alice", "bob", "carol"}
-        elif not self._live_server_supports_given_syntax():
-            with pytest.raises(type_bridge_core.VersionError) as exc_info:
-                clean_db.execute_with_rows(
-                    self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
-                )
-            message = str(exc_info.value)
-            assert "3.12" in message
-            assert "given-stage" in message
-        else:
-            with pytest.raises(RuntimeError, match="active band-9 provider"):
-                clean_db.execute_with_rows(
-                    self.GIVEN_PIPELINE, "write", ["n", "a"], ["string", "integer"], rows
-                )
-
-    @pytest.mark.parametrize(
-        ("column_type", "value", "expected"),
-        [
-            ("integer", True, "exact Python int"),
-            ("boolean", 1, "exact Python bool"),
-            ("double", 1, "exact Python float"),
-            ("string", b"alice", "exact Python str"),
-        ],
-    )
-    def test_execute_with_rows_rejects_primitive_coercions_before_dispatch(
-        self,
-        clean_db: Database,
-        column_type: str,
-        value: object,
-        expected: str,
-    ) -> None:
-        """Given cells have exact public types; Python coercions never reach TypeDB."""
-        with pytest.raises(TypeError, match=expected):
-            clean_db.execute_with_rows(
-                "not dispatched",
-                "read",
-                ["value"],
-                [column_type],
-                [[value]],
-            )
-
-    def test_execute_with_rows_rejects_malformed_temporal_before_wire_io(
-        self, clean_db: Database
-    ) -> None:
-        """The band-9 adapter validates temporal strings before sending a query."""
-        if not clean_db.supports_given_stage():
-            pytest.skip("requires the TypeDB 3.12 band-9 integration leg")
-
-        with pytest.raises(RuntimeError, match="Invalid given date"):
-            clean_db.execute_with_rows(
-                self.GIVEN_PIPELINE,
-                "write",
-                ["n", "a"],
-                ["date", "integer"],
-                [["not-a-date", 1]],
-            )

@@ -511,6 +511,8 @@ impl SdkCommitFailureOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum SdkDiagnosticDetailValue {
+    /// One process clock and its bounded execution phase records.
+    ExecutionTimeline(crate::execution_timeline::ExecutionTimeline),
     /// A boolean contract fact.
     Boolean(bool),
     /// A non-negative item or occurrence count.
@@ -949,7 +951,11 @@ impl SdkExecutionDiagnostic {
             ),
             SdkQueryDiagnosticCategory::ResourceLimit => (
                 SdkDiagnosticCategory::ResourceLimit,
-                "The typed query exceeded a binding neutral execution limit",
+                if code.as_str() == "resource_in_use" {
+                    "The connection is retained by an active transaction"
+                } else {
+                    "The typed query exceeded a binding neutral execution limit"
+                },
             ),
             SdkQueryDiagnosticCategory::Cancelled => (
                 SdkDiagnosticCategory::Cancelled,
@@ -1362,6 +1368,9 @@ struct DetailJson<'a>(&'a SdkDiagnosticDetailValue);
 impl Serialize for DetailJson<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self.0 {
+            SdkDiagnosticDetailValue::ExecutionTimeline(value) => {
+                tagged(serializer, "execution_timeline", value)
+            }
             SdkDiagnosticDetailValue::Boolean(value) => tagged(serializer, "boolean", value),
             SdkDiagnosticDetailValue::Count(value) => {
                 tagged(serializer, "count", &value.to_string())
@@ -1445,6 +1454,18 @@ fn static_name(value: &'static str) -> SdkDiagnosticName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_resource_in_use_message_describes_its_active_owner() {
+        let diagnostic = SdkExecutionDiagnostic::query_failure(
+            SdkQueryDiagnosticCategory::ResourceLimit,
+            static_code("resource_in_use"),
+        );
+        assert_eq!(
+            serde_json::to_value(diagnostic.host_json()).unwrap()["message"],
+            "The connection is retained by an active transaction"
+        );
+    }
 
     #[test]
     fn signed_failure_details_round_trip_every_phase_and_reason() {

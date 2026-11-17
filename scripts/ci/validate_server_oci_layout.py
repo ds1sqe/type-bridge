@@ -23,11 +23,12 @@ REQUIRED_FILES = {
     "etc/type-bridge/server.toml",
     "usr/local/bin/type-bridge-server",
     "usr/share/licenses/type-bridge/LICENSE",
+    "usr/share/licenses/type-bridge/THIRD_PARTY_NOTICES.md",
 }
 EXPECTED_LABELS = {
     "org.opencontainers.image.title": "TypeBridge Server",
     "org.opencontainers.image.description": (
-        "TypeBridge TypeDB query proxy with the V1 compatibility and V2 prepared-query surfaces"
+        "TypeBridge TypeDB staged plan and opt-in raw query proxy"
     ),
     "org.opencontainers.image.url": "https://ds1sqe.github.io/type-bridge/",
     "org.opencontainers.image.source": "https://github.com/ds1sqe/type-bridge",
@@ -457,8 +458,10 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
             raise ValidationError(
                 f"container example config contains forbidden credential marker {forbidden_text!r}"
             )
-    if "[v2]\nenabled = false" not in example:
-        raise ValidationError("container example config must leave V2 explicitly disabled")
+    if "[staged]\nenabled = false\nraw_enabled = false" not in example:
+        raise ValidationError(
+            "container example config must leave staged and raw execution explicitly disabled"
+        )
 
     binary = _required_regular_payload(entries, "usr/local/bin/type-bridge-server")
     if not binary.startswith(b"\x7fELF"):

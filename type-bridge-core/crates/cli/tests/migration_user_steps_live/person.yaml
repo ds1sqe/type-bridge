@@ -1,0 +1,9 @@
+format: typebridge.schema/v2
+attributes:
+  ssn: { value: string }
+  gender: { value: string }
+entities:
+  person:
+    owns:
+      ssn: { key: true }
+      gender: {}

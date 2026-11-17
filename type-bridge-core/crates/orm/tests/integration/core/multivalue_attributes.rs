@@ -9,16 +9,22 @@ use type_bridge_orm::*;
 async fn dynamic_entity_multi_value_attributes_against_typedb() {
     let _guard = crate::common::integration_test_guard().await;
     let (db, schema) = setup_dynamic_database("multi").await;
-    let manager = DynamicEntityManager::new(&db, schema.person_descriptor());
+    let manager =
+        DynamicEntityManager::from_registry(&db, schema.registry(), schema.person_descriptor());
 
     let iid = manager
-        .insert(&multi_value_attrs("MultiTypes"))
+        .insert(&multi_value_attrs(&schema, "MultiTypes"))
         .await
-        .expect("multi-value insert should return IID");
+        .expect("multi-value insert should return IID")
+        .item()
+        .expect("one written root")
+        .iid
+        .clone()
+        .unwrap();
     assert!(!iid.is_empty());
 
     let rows = manager
-        .get(&[Filter::string_eq("name", "MultiTypes")])
+        .get(&[Filter::string_eq(&schema.name_attr, "MultiTypes")])
         .await
         .expect("entity get should return rows");
     assert_eq!(rows.len(), 1);
@@ -32,13 +38,22 @@ async fn dynamic_entity_multi_value_attributes_against_typedb() {
     assert_eq!(attr_values(&rows[0], &schema.session_length_attr).len(), 3);
 
     let update_attrs = vec![
-        ("name".into(), AttributeValue::String("MultiTypes".into())),
-        ("age".into(), AttributeValue::Long(100)),
-        ("age".into(), AttributeValue::Long(200)),
-        ("balance".into(), AttributeValue::Decimal("10.00".into())),
-        ("balance".into(), AttributeValue::Decimal("20.00".into())),
         (
-            "session_length".into(),
+            schema.name_attr.clone(),
+            AttributeValue::String("MultiTypes".into()),
+        ),
+        (schema.age_attr.clone(), AttributeValue::Long(100)),
+        (schema.age_attr.clone(), AttributeValue::Long(200)),
+        (
+            schema.balance_attr.clone(),
+            AttributeValue::Decimal("10.00".into()),
+        ),
+        (
+            schema.balance_attr.clone(),
+            AttributeValue::Decimal("20.00".into()),
+        ),
+        (
+            schema.session_length_attr.clone(),
             AttributeValue::Duration("PT10M".into()),
         ),
     ];
@@ -62,53 +77,74 @@ async fn dynamic_entity_multi_value_attributes_against_typedb() {
         .expect("entity delete should work");
 }
 
-fn multi_value_attrs(name: &str) -> DynamicAttributeMap {
+fn multi_value_attrs(schema: &DynamicCrudSchema, name: &str) -> DynamicAttributeMap {
     vec![
-        ("name".into(), AttributeValue::String(name.into())),
-        ("age".into(), AttributeValue::Long(85)),
-        ("age".into(), AttributeValue::Long(90)),
-        ("age".into(), AttributeValue::Long(78)),
-        ("score".into(), AttributeValue::Double(1.5)),
-        ("score".into(), AttributeValue::Double(2.7)),
-        ("score".into(), AttributeValue::Double(3.9)),
-        ("active".into(), AttributeValue::Boolean(true)),
-        ("active".into(), AttributeValue::Boolean(false)),
-        ("birthday".into(), AttributeValue::Date("2024-01-15".into())),
-        ("birthday".into(), AttributeValue::Date("2024-03-01".into())),
-        ("birthday".into(), AttributeValue::Date("2024-06-01".into())),
         (
-            "login_at".into(),
+            schema.name_attr.clone(),
+            AttributeValue::String(name.into()),
+        ),
+        (schema.age_attr.clone(), AttributeValue::Long(85)),
+        (schema.age_attr.clone(), AttributeValue::Long(90)),
+        (schema.age_attr.clone(), AttributeValue::Long(78)),
+        (schema.score_attr.clone(), AttributeValue::Double(1.5)),
+        (schema.score_attr.clone(), AttributeValue::Double(2.7)),
+        (schema.score_attr.clone(), AttributeValue::Double(3.9)),
+        (schema.active_attr.clone(), AttributeValue::Boolean(true)),
+        (schema.active_attr.clone(), AttributeValue::Boolean(false)),
+        (
+            schema.birthday_attr.clone(),
+            AttributeValue::Date("2024-01-15".into()),
+        ),
+        (
+            schema.birthday_attr.clone(),
+            AttributeValue::Date("2024-03-01".into()),
+        ),
+        (
+            schema.birthday_attr.clone(),
+            AttributeValue::Date("2024-06-01".into()),
+        ),
+        (
+            schema.login_at_attr.clone(),
             AttributeValue::DateTime("2024-01-01T10:00:00".into()),
         ),
         (
-            "login_at".into(),
+            schema.login_at_attr.clone(),
             AttributeValue::DateTime("2024-01-01T11:00:00".into()),
         ),
         (
-            "login_at".into(),
+            schema.login_at_attr.clone(),
             AttributeValue::DateTime("2024-01-01T12:00:00".into()),
         ),
         (
-            "seen_at".into(),
+            schema.seen_at_attr.clone(),
             AttributeValue::DateTimeTZ("2024-01-01T10:00:00+00:00".into()),
         ),
         (
-            "seen_at".into(),
+            schema.seen_at_attr.clone(),
             AttributeValue::DateTimeTZ("2024-01-01T14:00:00+00:00".into()),
         ),
-        ("balance".into(), AttributeValue::Decimal("999.99".into())),
-        ("balance".into(), AttributeValue::Decimal("899.99".into())),
-        ("balance".into(), AttributeValue::Decimal("849.99".into())),
         (
-            "session_length".into(),
+            schema.balance_attr.clone(),
+            AttributeValue::Decimal("999.99".into()),
+        ),
+        (
+            schema.balance_attr.clone(),
+            AttributeValue::Decimal("899.99".into()),
+        ),
+        (
+            schema.balance_attr.clone(),
+            AttributeValue::Decimal("849.99".into()),
+        ),
+        (
+            schema.session_length_attr.clone(),
             AttributeValue::Duration("PT30M".into()),
         ),
         (
-            "session_length".into(),
+            schema.session_length_attr.clone(),
             AttributeValue::Duration("PT1H".into()),
         ),
         (
-            "session_length".into(),
+            schema.session_length_attr.clone(),
             AttributeValue::Duration("PT2H".into()),
         ),
     ]

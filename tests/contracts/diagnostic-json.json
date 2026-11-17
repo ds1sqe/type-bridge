@@ -152,7 +152,7 @@
     },
     {
       "id": "contract.malformed_canonical_json",
-      "description": "Schema-authority bytes \"{\": the contract Diagnostic serde form (Python QueryV2Error attributes, the Node error JSON, one element of the C diagnostics JSON array).",
+      "description": "Schema-authority bytes \"{\": the contract Diagnostic serde form (Python PlanError attributes, the Node error JSON, one element of the C diagnostics JSON array).",
       "form": "contract",
       "producers": [
         "rust",

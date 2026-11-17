@@ -10,6 +10,8 @@ import ast
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -63,6 +65,40 @@ def test_every_version_line_has_a_shim() -> None:
         workload.shim("1.5.11")
     with pytest.raises(ValueError, match="not a stable version"):
         workload.shim("2.3.0rc1")
+
+
+def test_workload_cleans_both_journal_generations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    database = Mock()
+    monkeypatch.setitem(
+        sys.modules, "type_bridge", SimpleNamespace(Database=database, __version__="3.0.0")
+    )
+    monkeypatch.setattr(workload, "generated_models", Mock())
+    monkeypatch.setattr(workload, "run", Mock(return_value={name: [1] for name in workload.OPS}))
+
+    assert (
+        workload.main(
+            [
+                "--version",
+                "head",
+                "--database",
+                "purchase",
+                "--models",
+                str(tmp_path),
+                "--out",
+                str(tmp_path / "report.json"),
+            ]
+        )
+        == 0
+    )
+    assert [call.kwargs["database"] for call in database.call_args_list] == [
+        "purchase",
+        "purchase",
+        "purchase__tb_journal",
+        "purchase__tbv2_journal",
+    ]
+    assert database.return_value.delete_database.call_count == 3
 
 
 def test_the_harness_takes_any_stable_2x_release_or_head() -> None:

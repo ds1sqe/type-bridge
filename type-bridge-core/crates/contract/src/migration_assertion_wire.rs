@@ -238,6 +238,10 @@ pub(crate) enum ValueComparatorWire {
     LessOrEqual,
     Greater,
     GreaterOrEqual,
+    Contains,
+    StartsWith,
+    EndsWith,
+    Like,
 }
 
 impl ValueComparatorWire {
@@ -249,6 +253,10 @@ impl ValueComparatorWire {
             Self::LessOrEqual => ValueComparator::LessOrEqual,
             Self::Greater => ValueComparator::Greater,
             Self::GreaterOrEqual => ValueComparator::GreaterOrEqual,
+            Self::Contains => ValueComparator::Contains,
+            Self::StartsWith => ValueComparator::StartsWith,
+            Self::EndsWith => ValueComparator::EndsWith,
+            Self::Like => ValueComparator::Like,
         }
     }
 }

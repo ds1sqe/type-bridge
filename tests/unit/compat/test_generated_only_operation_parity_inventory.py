@@ -36,7 +36,6 @@ REQUIRED_OPERATIONS = {
     "authenticated_remote_structured_diagnostics",
     "remote_reducers_and_grouping",
     "foreign_package_token_and_projection_evidence_rejection",
-    "python_retained_raw_query_builder_generated_models",
     "integer_keys_polymorphic_roles_and_optional_role_survival",
     "plain_inherited_abstract_relation_role_lifecycle",
     "unkeyed_entity_iid_lifecycle_and_singular_query",
@@ -73,6 +72,7 @@ def test_generated_only_operation_inventory_is_complete_and_source_tied() -> Non
         "accepted_live",
         "accepted_offline",
         "uniform_unsupported",
+        "removed_in_3_0",
     ]
     operations = inventory["operations"]
     assert {operation["id"] for operation in operations} == REQUIRED_OPERATIONS
@@ -82,8 +82,11 @@ def test_generated_only_operation_inventory_is_complete_and_source_tied() -> Non
         required_bindings = set(operation.get("required_bindings", BINDINGS))
         assert required_bindings <= BINDINGS, operation["id"]
         assert set(operation["support"]) == required_bindings, operation["id"]
+        if operation["status"] == "removed_in_3_0":
+            assert operation["replacements"], operation["id"]
+            assert required_bindings == {"python"}, operation["id"]
         if operation["status"] == "uniform_unsupported":
-            assert operation["diagnostic"] == "query_remote_v2_native_only_operation"
+            assert operation["diagnostic"] == "query_remote_native_only_operation"
 
         for binding, support in operation["support"].items():
             assert support["surface"], (operation["id"], binding)
@@ -147,3 +150,33 @@ def test_remote_mutations_are_uniformly_not_advertised() -> None:
             ),
         }
     ]
+
+
+def test_removed_seed_records_are_not_accepted_capability_evidence() -> None:
+    inventory = _load()
+    removed = {
+        operation["id"]
+        for operation in inventory["operations"]
+        if operation["status"] == "removed_in_3_0"
+    }
+    assert removed == {
+        "python_filtered_callback_update_and_filtered_delete",
+        "python_key_fallback_update_delete_without_iid",
+    }
+    accepted = {
+        operation["id"]
+        for operation in inventory["operations"]
+        if operation["status"] in {"accepted_live", "accepted_offline"}
+    }
+    assert removed.isdisjoint(accepted)
+    manifest = json.loads((ROOT / "tests/contracts/sdk_conformance/manifest.json").read_text())
+    canonical_evidence = {
+        operation
+        for capability in manifest["capabilities"]
+        for operation in capability["seed_operations"]
+    }
+    assert removed.isdisjoint(canonical_evidence)
+    workflows = {item["id"]: item for item in manifest["seed_workflows"]}
+    for operation in removed:
+        assert workflows[operation]["classification"] == "non_normative"
+        assert workflows[operation]["capabilities"] == []

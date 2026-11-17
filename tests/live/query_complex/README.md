@@ -1,0 +1,175 @@
+# Complex generated-query fixture
+
+The query joins twelve bindings across a chain and a star: person (including
+employee subtypes), company, department, project, task, office, and six keyless
+relations. Conditions cover separate witnesses on a multi-valued field,
+optional scalar presence, ordering, string matching, disjunction, and negation.
+The fixture also checks abstract reads and canonical manager filters. Rust uses
+its generated subtype family; Python, Node, and C additionally exercise exact
+abstract bindings.
+
+```mermaid
+graph LR
+  e{Employment} -- worker --> p[Person / Employee]
+  e -- employer --> c[Company]
+  m{Membership} -- member --> p
+  m -- department --> d[Department]
+  l{Located} -- department --> d
+  l -- office --> o[Office]
+  z{CompanyOffice} -- company --> c
+  z -- office --> o
+  a{Assignment} -- worker --> p
+  a -- project --> j[Project]
+  x{ProjectTask} -- project --> j
+  x -- task --> t[Task]
+```
+
+`fixture.py` owns the size-parameterized data generator, independent known
+answers, and raw TypeQL oracle. The scaling suite can import `seed_queries(size)`
+and `expected_rows(size)`. Every generated SDK runs against the same seeded
+database, compares its complete selected values, and checks first/count/exists.
+The runner applies the generated migration and deletes both the exact database
+and its journal on success or failure after its fresh read probe. It never starts or reconfigures TypeDB.
+
+Install the repository Python/dev dependencies and Node development dependencies
+as described in `DEVELOPMENT.md`. Rebuild the editable Python core after Rust
+changes. Use a disk-backed `TMPDIR` and the existing Cargo target directory:
+
+```bash
+TMPDIR="$HOME/.cache/type-bridge-complex/tmp" \
+CARGO_TARGET_DIR="$PWD/target" \
+CARGO_BUILD_JOBS=24 RUSTUP_TOOLCHAIN=1.94.1 \
+uv run --no-sync python tests/live/query_complex/run.py \
+  --server '3.12.3,127.0.0.1:1729,8000' \
+  --server '3.13.6,127.0.0.1:1730,8001' \
+  --server '3.14.0,127.0.0.1:1731,8002' \
+  --database-prefix type_bridge_complex_ \
+  --size 16 --output tmp/complex-query
+```
+
+Server arguments are `version,address,http-port`; replace the example endpoints
+with the existing servers. The local fixture uses `admin`/`password`. Output must
+be a fresh directory. `--sdk python|node|rust|c` can restrict an iteration; omit it
+for acceptance. Size 16 returns `P0002/job-0002` and `P0008/job-0008`; size 1
+exercises empty matches. List iteration may require the explicit upstream capability skip described below.
+
+Evidence includes native/consumer build logs, emitted packages, raw answers,
+and each SDK's observed JSON. A command failure identifies its evidence log.
+
+The runner preserves the original `select; distinct; sort;` raw statement byte for byte, and measures it alongside the current sorted statement and the equivalent fetch-only oracle. Each runs in a separate
+process with a 20 second client timeout; `oracles.json` records its outcome and
+elapsed time. SDK consumers have a 60 second timeout. Before deleting a database,
+the runner waits and opens and closes a fresh read transaction on that database.
+A failed probe retains the database and journal and reports their exact names.
+Python provider statements are captured in `python-statements.jsonl` for shape
+comparison with both raw statements. The fetch-only answer is the comparison
+oracle for SDK results; the sorted oracle must agree whenever it completes.
+
+The root Pyright configuration excludes `python.py` because its generated
+package exists only in a staged run. The runner checks that consumer with the
+staged package on its import path before opening a database.
+
+The generated programs also exercise 2/4/6/8/10 binding prefixes. Every width
+has independent known answers, rows, first, count/exists, offset/limit, root
+pagination with total, and grouped counts. The size parameter controls the
+ordinary P-prefixed data; twelve fixed W/X-prefixed records each fail exactly
+one filter. The generator asserts that property. The live runner drops each
+filter in turn at every width where it applies and requires the raw row count
+to change: 53 independent exclusion checks, plus six baseline checks per server.
+This prevents another condition from masking a filter regression.
+
+The identifier disjunction admits P/W prefixes and rejects X. A negated
+cross-note prefix and a separate note-presence predicate have separate witnesses;
+a positive note-prefix predicate would imply presence and make that test vacuous.
+Company prefix, blocked department, office site, priority, and cross-field score
+comparison each have their own witness. The twelve-binding cross-field witness
+passes the task condition, so that condition cannot mask the comparison. P0004
+still demonstrates the smaller-join boundary; the added witness proves it at
+the widest join too. Both present and missing nicknames occur in answers.
+
+The historical original sorted statement is retained byte for byte with its
+own known answer. On size16 the current full query returns P0002/P0008, while
+the historical predicate set also admits three witnesses. The current sorted
+and fetch forms have the same predicates and must agree; the historical form
+is separate evidence and does not claim equivalent filtering or performance.
+
+There is a public surface gap: structural optional branches and arbitrary field
+list membership have no typed-query or generic-Plan builder. The typed fixture
+uses disjunction and captures the `try` blocks used for optional attribute
+hydration. Finite OR-of-equalities remains available as shown in the surface
+table; arbitrary list membership still has no typed builder. Separate raw programs use
+real optional branches and real `let ... in [...]` list iteration through each
+SDK's `execute_query`/`executeQuery` entry point. TypeDB versions that reject
+lists with `REP254` are recorded explicitly; optional-branch checks still run.
+The internal Rust plan fixture proves `QueryPattern::Try` lowering at four and
+ten bindings. The current contract IR has no list operand or membership node.
+
+The supported condition shapes are summarized below. “Finite OR” means explicit
+OR-of-equalities, not a list operator. “Hydration” means existing optional field
+loading, not a user-authored optional structural branch. Manager filters below
+refer to the canonical filter unless the compatibility lookup is named.
+
+| SDK and surface | Equality/range | String match | Finite membership | NOT / OR | Optional branch | Cross-field comparison | Order / offset / page / group |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Python typed query | Yes | Yes | Finite OR; IID set | Yes / Yes | Hydration only | Yes | Yes |
+| Node typed query | Yes | Yes | Finite OR; IID set | Yes / Yes | Hydration only | Yes | Yes |
+| Rust typed query | Yes | Yes | Finite OR; IID set | Yes / Yes | Hydration only | Yes | Yes |
+| C typed query | Yes | Yes | Finite OR; IID set | Yes / Yes | Hydration only | Yes | Yes |
+| Python manager filter | Yes | No; compatibility string lookups only | Compatibility `__in` lookup | No / No | No | No | No |
+| Node manager filter | Yes | No; compatibility string lookups only | Compatibility `__in` lookup | No / No | No | No | No |
+| Rust manager filter | Yes | No | No | No / No | No | No | No |
+| C manager filter | Yes | No | No | No / No | No | No | No |
+| Python generic Plan | Yes | Yes in context DSL | No | No / No | No | Yes | No |
+| Node generic Plan | Yes | Yes in context DSL | No | No / No | No | Yes | No |
+| Rust generic Plan | Yes | Yes | No | No / No | No | Yes | No |
+| C generic Plan | Yes | No | No | No / No | No | Yes | No |
+| Python raw TypeQL | Yes | Yes | Server capability | Yes / Yes | Yes | Yes | Yes |
+| Node raw TypeQL | Yes | Yes | Server capability | Yes / Yes | Yes | Yes | Yes |
+| Rust raw TypeQL | Yes | Yes | Server capability | Yes / Yes | Yes | Yes | Yes |
+| C raw TypeQL | Yes | Yes | Server capability | Yes / Yes | Yes | Yes | Yes |
+
+Abstract managers and typed queries read descendants. Generic PlanBuilder reads
+require `subtypes` explicitly; `exact` on an abstract type fails at build with
+`query_plan_abstract_exact_read`. Rust typed query sessions refuse abstract
+`exact` at compile time, and C omits its generated generic exact factory for
+abstract models; the public low-level C builder receives the same build error.
+The fixture checks generic-plan refusal and subtype-count parity with managers
+in every SDK.
+
+| Comparison shape (all SDKs) | Typed query | Canonical manager | Generic Plan | Raw TypeQL |
+| --- | --- | --- | --- | --- |
+| Cross-numeric-type comparison | No | No | Yes; TypeDB semantics | Yes; TypeDB semantics |
+
+Typed queries and managers require the same scalar value type, including numeric
+types. Plan and raw comparisons are passed to TypeDB without client predicate
+evidence comparison. TypeDB 3.12.3, 3.13.6 and 3.14.0 compare integer
+`9007199254740993` equal to double `9007199254740992.0` and report decimal
+`-0.10000000000000001dec` greater than double `-0.1` (a probable upstream ordering
+bug). Cross-type results can also depend on query shape; Plan follows its exact
+emitted TypeQL statement. See the comparison section of the typed-query guide before using this
+escape hatch.
+
+The abstract-read matrix uses abstract entity `Party`, abstract relation
+`Association` (concrete `Friendship`), and both types as role players
+(`Friendship.participant` and `Relay.edge`). Each SDK runs a table of cases:
+
+| Read position | Python / Node | Rust | C |
+| --- | --- | --- | --- |
+| Standalone binding, rows / first / one / count / exists | Exact and subtypes | Subtype family | Exact and subtypes |
+| Role player and selected links peer | Exact and subtypes | Subtype family | Exact and subtypes |
+| Nested role-player hydration | Both model kinds | Both model kinds | Both model kinds |
+| Field and non-root model group keys | Both model kinds | Both model kinds | Both model kinds |
+| Sort key, page with total, collected page | Both model kinds | Both model kinds | Both model kinds |
+| Manager and filtered reads / IID lookup | Both model kinds | Subtype manager / filter | No abstract canonical manager; typed queries above |
+
+Grouping a root by that same binding remains an intentional contract refusal;
+the model-group test groups selected relation roots by their abstract player.
+Rust keeps its compile-time refusal of exact abstract typed bindings. C's
+nominal role-player factories include compatible abstract ancestors in exact
+and subtype modes; generated opaque carrier structs are never manufactured.
+
+The fixture is registered as an ordinary integration test in
+`tests/integration/schema/test_query_complex_live.py`. The CI schema integration
+job runs its size16 case through all four SDKs alongside generated projection
+acceptance. See the testing guide for the pytest command. Larger size values
+remain available to the scaling plan through the standalone runner/data generator.
