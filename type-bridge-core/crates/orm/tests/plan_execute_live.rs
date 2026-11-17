@@ -1770,7 +1770,9 @@ async fn expired_staged_write_does_not_wait_for_busy_provider_rollback() {
     )
     .await
     .unwrap();
-    let tags = (0..50)
+    // 200 x 200 pairs keep the provider busy far beyond the 100 ms deadline
+    // even on a fast, idle host; 50 x 50 finished in time on CI runners.
+    let tags = (0..200)
         .map(|i| format!("has tag \"tag{i}\""))
         .collect::<Vec<_>>()
         .join(", ");
@@ -1800,7 +1802,7 @@ async fn expired_staged_write_does_not_wait_for_busy_provider_rollback() {
         )
         .await
         .unwrap();
-    assert_eq!(rows(&result), 50);
+    assert_eq!(rows(&result), 200);
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }
