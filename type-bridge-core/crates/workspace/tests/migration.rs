@@ -1026,6 +1026,9 @@ entities:
     }
 }
 
+// Windows refuses to rename a directory while the authority holds it open,
+// so the swap this test defends against cannot be staged there.
+#[cfg(unix)]
 #[test]
 fn preview_regeneration_publishes_into_the_retained_directory_after_rename() {
     let directory = TempDirectory::new();

@@ -1128,6 +1128,7 @@
       "Check released validation-rule wire without feature unification": "success",
       "Checkout code": "success",
       "Initialize MSVC and require clang-cl for every Windows C evidence step": "skipped",
+      "Install IANA zone data for Python": "skipped",
       "Install Rust toolchain": "success",
       "Install pinned cargo-about": "skipped",
       "Install pinned cargo-audit": "skipped",
@@ -1230,6 +1231,7 @@
       "Check released validation-rule wire without feature unification": "success",
       "Checkout code": "success",
       "Initialize MSVC and require clang-cl for every Windows C evidence step": "skipped",
+      "Install IANA zone data for Python": "skipped",
       "Install Rust toolchain": "success",
       "Install pinned cargo-about": "success",
       "Install pinned cargo-audit": "success",
@@ -1266,6 +1268,7 @@
       "Check released validation-rule wire without feature unification": "success",
       "Checkout code": "success",
       "Initialize MSVC and require clang-cl for every Windows C evidence step": "success",
+      "Install IANA zone data for Python": "success",
       "Install Rust toolchain": "success",
       "Install pinned cargo-about": "skipped",
       "Install pinned cargo-audit": "skipped",
@@ -1410,7 +1413,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "289820893f87db0cc68467dcff8ea949f2987a052b9eaa6e1eafdc055c1cbac9",
+  "ci_workflow_sha256": "e07bcd3f11196e05b2dd1bdfeba9f64ac818594ab3a4b4f9baa16d513bac270a",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-3.0.0.tar.gz",
   "format": "typebridge.c-release-policy/v1",

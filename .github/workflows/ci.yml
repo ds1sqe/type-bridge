@@ -226,6 +226,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --no-run --workspace --exclude type-bridge-schema-codegen --benches
 
+      # Windows has no system zone database; zoneinfo reads this package.
+      - name: Install IANA zone data for Python
+        if: runner.os == 'Windows'
+        run: python -m pip install tzdata==2026.6
+
       - name: Run Rust tests
         working-directory: type-bridge-core
         shell: pwsh
