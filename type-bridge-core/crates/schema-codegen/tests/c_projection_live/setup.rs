@@ -80,6 +80,19 @@ async fn main() {
             println!("generated C provider schema setup: passed");
         }
         "cleanup" => {
+            // A migration journey leaves a companion journal, and a bare
+            // connection refuses to delete a database while it exists.
+            let journal = database.derived_journal_database();
+            if journal
+                .database_exists()
+                .await
+                .expect("the companion journal cleanup probe succeeds")
+            {
+                journal
+                    .delete_database()
+                    .await
+                    .expect("the companion journal database is deleted");
+            }
             if database
                 .database_exists()
                 .await
