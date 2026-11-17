@@ -1350,7 +1350,7 @@ type_bridge_database_manager_update(database, selected, (const type_bridge_proje
 ```json
 {
   "fingerprints": [
-    "6ea07bafe67a51646375eae638f9f0d67ffa033e1a69c630784b75fc302a7bd6"
+    "359e84f5e59269081db0173b5bad54517481f18a42d30db3561f6c243e36940d"
   ],
   "source": "TRACE"
 }
@@ -1360,11 +1360,11 @@ type_bridge_database_manager_update(database, selected, (const type_bridge_proje
 
 <!-- walkthrough:update:typeql -->
 ```typeql
-given $in0: integer, $in1: integer; match $thing0 isa! item; $thing0 iid 0x1e00020000000000002711; match try { $thing0 has price $PlanHas1x0; 
+given $in0: string, $in1: integer, $in2: integer; match $thing0 isa! item; $thing0 has sku $key_guard1; $key_guard1 isa! sku; $key_guard1 == $in0; $thing0 iid 0x1e00020000000000002711; match try { $thing0 has price $PlanHas1x0; 
  $PlanHas1x0 isa! price; 
-}; try { $thing0 has stock $PlanHas1x1; 
+}; delete try { has $PlanHas1x0 of $thing0; }; select $thing0, $key_guard1, $in0, $in1, $in2; distinct; match try { $thing0 has stock $PlanHas1x1; 
  $PlanHas1x1 isa! stock; 
-}; delete try { has $PlanHas1x0 of $thing0; }; try { has $PlanHas1x1 of $thing0; }; insert $thing0 has price == $in0; $thing0 has stock == $in1; select $thing0; distinct; match $thing0 isa! $PlanFetchType; fetch { "_iid": iid($thing0), "_type": label($PlanFetchType), "attributes": {  $thing0.*}};
+}; delete try { has $PlanHas1x1 of $thing0; }; select $thing0, $key_guard1, $in0, $in1, $in2; distinct; insert $thing0 has price == $in1; $thing0 has stock == $in2; select $thing0; distinct; match $thing0 isa! $PlanFetchType; fetch { "_iid": iid($thing0), "_type": label($PlanFetchType), "attributes": {  $thing0.*}};
 ```
 
 ### Raw answer

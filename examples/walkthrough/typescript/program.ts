@@ -28,7 +28,14 @@ async function finish(expected: number): Promise<DebugEvent["fields"][]> {
 }
 
 function emit(name: string, step: string, value: unknown): void {
-  process.stdout.write(`${JSON.stringify({ case: name, step, value })}\n`);
+  // Raw documents carry integers as bigint; the transcript compares them as
+  // JSON numbers with the other SDKs.
+  const plain = (_key: string, item: unknown): unknown => {
+    if (typeof item !== "bigint") return item;
+    if (!Number.isSafeInteger(Number(item))) throw new Error(`integer ${item} does not fit a JSON number`);
+    return Number(item);
+  };
+  process.stdout.write(`${JSON.stringify({ case: name, step, value }, plain)}\n`);
 }
 
 function modelRecord(item: CompleteFacet<string>): unknown {
