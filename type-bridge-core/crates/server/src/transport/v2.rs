@@ -187,8 +187,9 @@ pub struct V2QueryState {
     pub(super) database: Database,
     pub(super) declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
-    managed: ManagedSchemaState,
-    resolved: ResolvedSchema,
+    // Shared with every request's blocking preflight instead of deep-copied.
+    managed: Arc<ManagedSchemaState>,
+    resolved: Arc<ResolvedSchema>,
     pub(super) execution_timeout: Duration,
     pub(super) replay_store: Arc<dyn RemoteReplayStore>,
     pub(super) signer: RemoteReplySigningKey,
@@ -283,8 +284,8 @@ impl V2QueryState {
             database,
             declared,
             delta_context,
-            managed,
-            resolved,
+            managed: Arc::new(managed),
+            resolved: Arc::new(resolved),
             execution_timeout: DEFAULT_EXECUTION_TIMEOUT,
             replay_store: Arc::new(InMemoryReplayStore::new(DEFAULT_REPLAY_CAPACITY)),
             signer,
@@ -681,8 +682,8 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
     // Contract/schema/capability work is provider-independent and runs in a
     // bounded blocking pool. The owned permit remains in the blocking task if
     // the async request deadline elapses, preventing detached CPU saturation.
-    let resolved = state.query.resolved.clone();
-    let managed = state.query.managed.clone();
+    let resolved = Arc::clone(&state.query.resolved);
+    let managed = Arc::clone(&state.query.managed);
     let advertisement = state.query.advertisement.clone();
     let preflight = tokio::task::spawn_blocking(move || {
         let _permit = permit;
@@ -2944,6 +2945,23 @@ mod tests {
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 2);
         assert_eq!(fixture.metrics.transaction_closes.load(Ordering::SeqCst), 2);
         assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn requests_share_their_executor_schema_views() {
+        let fixture = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
+        let resolved = Arc::as_ptr(&fixture.query.resolved);
+        let body = post_query(&fixture.router, fixture.request_bytes()).await;
+        fixture.expect_response(&body);
+        // The preflight borrowed the executor's views and released them.
+        assert_eq!(Arc::as_ptr(&fixture.query.resolved), resolved);
+        assert_eq!(Arc::strong_count(&fixture.query.resolved), 1);
+        assert_eq!(Arc::strong_count(&fixture.query.managed), 1);
+
+        // Another executor keeps its own views.
+        let other = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
+        assert!(!Arc::ptr_eq(&fixture.query.resolved, &other.query.resolved));
+        assert!(!Arc::ptr_eq(&fixture.query.managed, &other.query.managed));
     }
 
     #[tokio::test]
