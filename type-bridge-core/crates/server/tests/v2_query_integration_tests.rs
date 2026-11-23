@@ -883,6 +883,195 @@ async fn production_binary_serves_v1_health_and_v2_query() {
     .expect("delete production-server smoke database");
 }
 
+/// The released migration-control schema a managed database carries.
+const MANAGED_CONTROL_SCHEMA: &str = "define
+attribute typebridge-internal-v2-control-scope, value string;
+attribute typebridge-internal-v2-lease-holder, value string;
+attribute typebridge-internal-v2-lease-fence, value string;
+attribute typebridge-internal-v2-lease-state, value string;
+entity typebridge-internal-v2-migration-control,
+    owns typebridge-internal-v2-control-scope @key,
+    owns typebridge-internal-v2-lease-holder @card(0..1),
+    owns typebridge-internal-v2-lease-fence @card(1..1),
+    owns typebridge-internal-v2-lease-state @card(1..1);";
+
+/// A managed executor reads its control singleton at startup and on every
+/// query, in a plain read transaction, and refuses while a migration holds it.
+#[tokio::test]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn managed_executor_serves_reads_and_refuses_during_a_migration() {
+    let LiveQueryFixture {
+        address,
+        username,
+        password,
+        http_port,
+        database_name,
+        database,
+        declared,
+        delta_context,
+        managed,
+        resolved,
+        validated,
+        invocation,
+        ..
+    } = live_query_fixture("managed").await;
+    database
+        .execute_raw(MANAGED_CONTROL_SCHEMA, TxType::Schema)
+        .await
+        .expect("control schema");
+    database
+        .execute_raw(
+            &format!(
+                "insert $c isa typebridge-internal-v2-migration-control, \
+                 has typebridge-internal-v2-control-scope \"{}\", \
+                 has typebridge-internal-v2-lease-fence \"1\", \
+                 has typebridge-internal-v2-lease-state \"free\";",
+                delta_context.scope_id().as_str(),
+            ),
+            TxType::Write,
+        )
+        .await
+        .expect("free control singleton");
+
+    let state = Arc::new(
+        V2QueryState::new(
+            query_plan_v2_capability_vocabulary(),
+            QueryV2AnswerLimits::default(),
+            database.clone(),
+            declared,
+            delta_context,
+            managed,
+            resolved,
+        )
+        .expect("executor advertisement is canonical"),
+    );
+    state
+        .verify_startup_authority()
+        .await
+        .expect("a free control singleton admits startup");
+    let router = create_router_with_v2(
+        Arc::new(make_pipeline(MockExecutor::new(), false)),
+        Arc::clone(&state),
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v2/capabilities")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let advertised =
+        RemoteCapabilities::decode(&response.into_body().collect().await.unwrap().to_bytes())
+            .expect("advertisement");
+    let limits = RemoteLimitsV2 {
+        deadline_ms: Some(30_000),
+        max_bytes: 1 << 20,
+        max_items: 100,
+        max_collection_members: 1 << 16,
+        max_graph_nodes: 0,
+        max_attribute_values: 0,
+        max_role_players: 0,
+        max_statements: 3,
+    };
+    let reply_limits = RemoteReplyDecodeLimitsV2 {
+        max_bytes: limits.max_bytes,
+        max_items: limits.max_items,
+        max_collection_members: limits.max_collection_members,
+        max_graph_nodes: limits.max_graph_nodes,
+        max_attribute_values: limits.max_attribute_values,
+        max_role_players: limits.max_role_players,
+    };
+    let advertisement_fingerprint = advertised.fingerprint().expect("advertisement fingerprint");
+    let execute = |nonce: &'static str| {
+        let router = router.clone();
+        let request = encode_remote_request_v2(&validated, &invocation, &advertised, limits, nonce)
+            .expect("request envelope");
+        async move {
+            let envelope = RemoteQueryRequestV2::decode(&request).expect("request envelope");
+            let fingerprint =
+                RemoteRequestFingerprintV2::compute(&request).expect("request fingerprint");
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v2/query")
+                        .header("content-type", "application/json")
+                        .body(Body::from(request))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (bytes, envelope, fingerprint)
+        }
+    };
+
+    let (bytes, envelope, fingerprint) = execute("server-v2-managed-nonce-0001").await;
+    let outcome = decode_remote_outcome_v2(
+        &bytes,
+        &envelope,
+        &validated,
+        &fingerprint,
+        &advertisement_fingerprint,
+        advertised.reply_key(),
+        reply_limits,
+    )
+    .expect("a free control singleton admits the query");
+    assert_names(&outcome);
+
+    database
+        .execute_raw(
+            "match $c isa typebridge-internal-v2-migration-control; \
+             insert $c has typebridge-internal-v2-lease-holder \"migration\";",
+            TxType::Write,
+        )
+        .await
+        .expect("hold the migration lease");
+    let (bytes, envelope, fingerprint) = execute("server-v2-managed-nonce-0002").await;
+    let refused = decode_remote_outcome_v2(
+        &bytes,
+        &envelope,
+        &validated,
+        &fingerprint,
+        &advertisement_fingerprint,
+        advertised.reply_key(),
+        reply_limits,
+    )
+    .expect_err("a held migration lease refuses the query");
+    assert_eq!(
+        refused.code().as_str(),
+        "query_prepared_migration_in_progress"
+    );
+    assert_eq!(
+        state
+            .verify_startup_authority()
+            .await
+            .expect_err("a held migration lease refuses startup")
+            .code()
+            .as_str(),
+        "query_prepared_migration_in_progress",
+    );
+
+    drop(router);
+    drop(state);
+    database.close().expect("close managed fixture connection");
+    delete_database_secure(
+        &address,
+        &database_name,
+        &username,
+        &password,
+        SecureConnectOptions {
+            http_port,
+            ..SecureConnectOptions::default()
+        },
+    )
+    .await
+    .expect("delete managed smoke database");
+}
+
 #[tokio::test]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn fetch_write_commit_failure_reaches_driver_and_v1_query() {
