@@ -30,14 +30,13 @@ use type_bridge_contract::query_remote::{
 use type_bridge_contract::query_remote_v2::{
     RemoteLimitsV2, RemoteQueryRequestV2, RemoteReplyDecodeLimitsV2, RemoteRequestFingerprintV2,
 };
-use type_bridge_contract::schema::{DeclaredSchema, DocumentId, decode_declared_schema};
+use type_bridge_contract::schema::{DeclaredSchema, decode_declared_schema};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_core_lib::__internal as tql;
 use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
-use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
 use crate::OwnedTransaction as Transaction;
 use crate::query_execution_limits::QueryExecutionDeadline;
@@ -47,9 +46,7 @@ use crate::query_v2_remote::{
     check_advertised_capabilities_v2, decode_remote_outcome_v2, encode_remote_request_v2_at,
     remote_outcome_v2,
 };
-use crate::session::backend::{
-    AnswerCancellation, MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryResult, QueryV2AnswerLimits,
-};
+use crate::session::backend::{AnswerCancellation, QueryResult, QueryV2AnswerLimits};
 use crate::session::database::{Database, DatabaseExecutionIdentity};
 
 const PREPARED_CLOSE_GRACE: Duration = Duration::from_secs(1);
@@ -85,8 +82,8 @@ static LIVE_AUTHORITY_REBUILD_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> = Laz
 
 /// Acquire one process-wide slot for bounded live-schema reconstruction.
 ///
-/// The owned permit is moved into the blocking task, so deadline cancellation
-/// cannot detach an unbounded number of CPU- and memory-heavy parses.
+/// No TypeBridge executor reconstructs the live schema any more. The slot
+/// remains only because `type-bridge-server` 2.3.3 links this function.
 #[doc(hidden)]
 #[allow(clippy::result_unit_err)]
 pub async fn acquire_live_authority_rebuild_permit() -> Result<tokio::sync::OwnedSemaphorePermit, ()>
@@ -524,81 +521,16 @@ pub async fn execute_prepared_local(
     }
     verify_database_identity(database, authority)?;
     check_prepared_cancellation(&cancellation)?;
-    let advisory_rebuild_permit = await_prepared_stage(
-        acquire_live_authority_rebuild_permit(),
-        deadline,
-        &cancellation,
-    )
-    .await?
-    .map_err(|_| {
-        failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_live_schema_unavailable",
-            "the local executor could not reserve live-schema verification capacity",
-        )
-    })?;
-    let advisory_export = await_prepared_stage(database.schema_text(), deadline, &cancellation)
-        .await?
-        .map_err(|_| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "query_prepared_live_schema_unavailable",
-                "the local executor could not verify its live schema authority",
-            )
-        })?;
-    verify_live_authority_export_with_permit(
-        advisory_export,
-        authority,
-        deadline,
-        &cancellation,
-        advisory_rebuild_permit,
-    )
-    .await?;
-    let exact_rebuild_permit = await_prepared_stage(
-        acquire_live_authority_rebuild_permit(),
-        deadline,
-        &cancellation,
-    )
-    .await?
-    .map_err(|_| {
-        failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_live_schema_unavailable",
-            "the local executor could not reserve live-schema verification capacity",
-        )
-    })?;
-    let fence_timeout = schema_fence_timeout(deadline)?;
-    let open = database.schema_fenced_read_transaction(fence_timeout);
-    let opened = await_prepared_stage(open, deadline, &cancellation).await?;
-    let (mut transaction, fenced_schema) = opened.map_err(|_| {
+    // The executor trusts its authority and never exports the live schema:
+    // a schema changed out of band fails at the provider.
+    let opened = await_prepared_stage(database.read_transaction(), deadline, &cancellation).await?;
+    let mut transaction = opened.map_err(|_| {
         failure(
             DiagnosticCategory::Integrity,
             "query_prepared_transaction_failed",
-            "the executor could not open a schema-fenced read transaction",
+            "the executor could not open a read transaction",
         )
     })?;
-    if let Err(diagnostic) = verify_live_authority_export_with_permit(
-        fenced_schema,
-        authority,
-        deadline,
-        &cancellation,
-        exact_rebuild_permit,
-    )
-    .await
-    {
-        let primary_code = diagnostic.code().as_str();
-        if !matches!(
-            tokio::time::timeout(PREPARED_CLOSE_GRACE, transaction.close()).await,
-            Ok(Ok(()))
-        ) {
-            tracing::warn!(
-                primary_code,
-                cleanup_code = "query_prepared_transaction_close_failed",
-                "prepared query transaction cleanup failed after live-authority rejection"
-            );
-        }
-        return Err(diagnostic);
-    }
     if let Err(diagnostic) =
         verify_transaction_control_scope(&mut transaction, authority, deadline, &cancellation).await
     {
@@ -651,86 +583,6 @@ pub async fn execute_prepared_local(
     outcome_json(&outcome)
 }
 
-async fn verify_live_authority_export_with_permit(
-    export: String,
-    authority: &QueryAuthority,
-    deadline: Option<std::time::Instant>,
-    cancellation: &crate::session::backend::AnswerCancellation,
-    rebuild_permit: tokio::sync::OwnedSemaphorePermit,
-) -> Result<(), Diagnostic> {
-    check_prepared_cancellation(cancellation)?;
-    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-        return Err(deadline_exceeded());
-    }
-    let document = DocumentId::new("typebridge-v2-local-live-export.typeql")?;
-    let declared = authority.declared.clone();
-    let context = authority.delta_context.clone();
-    let rebuild = tokio::task::spawn_blocking(move || {
-        let _rebuild_permit = rebuild_permit;
-        rebuild_live_query_authority(document, &export, &declared, &context)
-    });
-    let live = await_prepared_stage(rebuild, deadline, cancellation)
-        .await?
-        .map_err(|_| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "query_prepared_live_schema_invalid",
-                "the local executor live schema cannot form trusted query authority",
-            )
-        })?
-        .map_err(|_| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "query_prepared_live_schema_invalid",
-                "the local executor live schema cannot form trusted query authority",
-            )
-        })?;
-    if live.managed() != &authority.managed {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_stale_schema",
-            "the local executor live schema no longer matches its declared authority",
-        ));
-    }
-    match (&authority.control_policy, live.control_presence()) {
-        (QueryAuthorityControlPolicy::Managed, LiveQueryControlPresence::ManagedFence)
-        | (QueryAuthorityControlPolicy::QueryOnly(_), LiveQueryControlPresence::Absent) => {}
-        (QueryAuthorityControlPolicy::Managed, LiveQueryControlPresence::Absent) => {
-            return Err(failure(
-                DiagnosticCategory::Integrity,
-                "query_prepared_managed_control_missing",
-                "the managed executor database has no migration control authority",
-            ));
-        }
-        (QueryAuthorityControlPolicy::QueryOnly(_), LiveQueryControlPresence::ManagedFence) => {
-            return Err(failure(
-                DiagnosticCategory::Integrity,
-                "query_prepared_query_only_control_present",
-                "the query-only executor database unexpectedly has managed control authority",
-            ));
-        }
-        (_, LiveQueryControlPresence::ManagedFenceWithExtensions) => {
-            return Err(failure(
-                DiagnosticCategory::Integrity,
-                "query_prepared_live_schema_invalid",
-                "the local executor managed control schema carries unsupported released-only extensions",
-            ));
-        }
-    }
-    if matches!(
-        &authority.control_policy,
-        QueryAuthorityControlPolicy::QueryOnly(_)
-    ) && live.legacy_control_present()
-    {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "query_prepared_query_only_legacy_control_present",
-            "the query-only executor database unexpectedly has legacy migration control authority",
-        ));
-    }
-    Ok(())
-}
-
 fn verify_database_identity(
     database: &Database,
     authority: &QueryAuthority,
@@ -767,17 +619,6 @@ fn verify_database_identity(
         ));
     }
     Ok(())
-}
-
-fn schema_fence_timeout(deadline: Option<std::time::Instant>) -> Result<Duration, Diagnostic> {
-    match deadline {
-        Some(deadline) => deadline
-            .checked_duration_since(std::time::Instant::now())
-            .filter(|remaining| !remaining.is_zero())
-            .map(|remaining| remaining.min(MAX_QUERY_V2_SCHEMA_FENCE_DURATION))
-            .ok_or_else(deadline_exceeded),
-        None => Ok(MAX_QUERY_V2_SCHEMA_FENCE_DURATION),
-    }
 }
 
 fn cancelled() -> Diagnostic {
@@ -855,8 +696,8 @@ async fn verify_transaction_control_scope(
     .await
 }
 
-/// Verify the one global managed control row inside the same schema-fenced
-/// transaction that will execute a V2 query.
+/// Verify the one global managed control row inside the transaction that
+/// will execute a V2 query.
 #[doc(hidden)]
 pub async fn verify_managed_query_control_scope(
     transaction: &mut Transaction,
@@ -1477,16 +1318,13 @@ mod tests {
         DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
         encode_declared_schema,
     };
-    use type_bridge_schema_compat::MANAGED_FENCE_SCHEMA_TYPEQL;
 
     use type_bridge_contract::limits::StructuralLimits;
     use type_bridge_contract::query_plan::decode_query_plan;
 
     use super::*;
     use crate::error::OrmError;
-    use crate::session::backend::{
-        BoxFuture, DriverBackend, QueryResult, SchemaFencedReadTransaction, TransactionOps, TxType,
-    };
+    use crate::session::backend::{BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType};
     use crate::session::database::DatabaseConnectionAuthority;
 
     #[derive(Default)]
@@ -1494,15 +1332,25 @@ mod tests {
         closes: AtomicUsize,
         opens: AtomicUsize,
         queries: AtomicUsize,
+        /// Live schema exports; the executor must never request one.
         schema_exports: AtomicUsize,
+    }
+
+    /// A schema export the prepared executor must never request.
+    fn refused_schema_export(exports: &AtomicUsize) -> BoxFuture<'_, Result<String, OrmError>> {
+        exports.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Err(OrmError::Connection(
+                "prepared execution must not export the schema".into(),
+            ))
+        })
     }
 
     struct Backend {
         fail_close: bool,
         metrics: Arc<Metrics>,
-        response: Mutex<Option<Result<QueryResult, OrmError>>>,
-        schema_exports: Mutex<VecDeque<Result<String, OrmError>>>,
-        stall_schema_export: bool,
+        responses: Mutex<VecDeque<Result<QueryResult, OrmError>>>,
+        stall_open: bool,
     }
 
     impl DriverBackend for Backend {
@@ -1512,11 +1360,14 @@ mod tests {
             _tx_type: TxType,
         ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
             self.metrics.opens.fetch_add(1, Ordering::SeqCst);
+            if self.stall_open {
+                return Box::pin(std::future::pending());
+            }
             let response = self
-                .response
+                .responses
                 .lock()
                 .expect("prepared response lock")
-                .take()
+                .pop_front()
                 .expect("one prepared transaction response");
             let transaction = MockTransaction {
                 fail_close: self.fail_close,
@@ -1524,19 +1375,6 @@ mod tests {
                 response: Some(response),
             };
             Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
-        }
-
-        fn open_schema_fenced_read_transaction(
-            &self,
-            database: &str,
-            _timeout: Duration,
-        ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-            let database = database.to_owned();
-            Box::pin(async move {
-                let transaction = self.open_transaction(&database, TxType::Write).await?;
-                let schema_text = self.schema_text(&database).await?;
-                Ok(SchemaFencedReadTransaction::new(transaction, schema_text))
-            })
         }
 
         fn is_open(&self) -> bool {
@@ -1548,17 +1386,7 @@ mod tests {
         }
 
         fn schema_text(&self, _database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
-            self.metrics.schema_exports.fetch_add(1, Ordering::SeqCst);
-            if self.stall_schema_export {
-                return Box::pin(std::future::pending());
-            }
-            let export = self
-                .schema_exports
-                .lock()
-                .expect("prepared schema export lock")
-                .pop_front()
-                .expect("one prepared schema export");
-            Box::pin(async move { export })
+            refused_schema_export(&self.metrics.schema_exports)
         }
     }
 
@@ -1600,15 +1428,13 @@ mod tests {
     struct ControlMetrics {
         closes: AtomicUsize,
         control_queries: AtomicUsize,
-        fenced_opens: AtomicUsize,
+        opens: AtomicUsize,
         schema_exports: AtomicUsize,
         user_queries: AtomicUsize,
         query_texts: Mutex<Vec<String>>,
     }
 
     struct ControlBackend {
-        advisory_schema: String,
-        fenced_schema: String,
         metrics: Arc<ControlMetrics>,
         responses: Mutex<Option<VecDeque<Result<QueryResult, OrmError>>>>,
     }
@@ -1619,36 +1445,18 @@ mod tests {
             _database: &str,
             _tx_type: TxType,
         ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
-            Box::pin(async {
-                Err(OrmError::Transaction(
-                    "managed prepared tests must use schema-fenced admission".into(),
-                ))
-            })
-        }
-
-        fn open_schema_fenced_read_transaction(
-            &self,
-            _database: &str,
-            _timeout: Duration,
-        ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-            self.metrics.fenced_opens.fetch_add(1, Ordering::SeqCst);
+            self.metrics.opens.fetch_add(1, Ordering::SeqCst);
             let responses = self
                 .responses
                 .lock()
                 .expect("control response lock")
                 .take()
-                .expect("one schema-fenced transaction script");
+                .expect("one transaction script");
             let transaction = ControlTransaction {
                 metrics: Arc::clone(&self.metrics),
                 responses,
             };
-            let schema_text = self.fenced_schema.clone();
-            Box::pin(async move {
-                Ok(SchemaFencedReadTransaction::new(
-                    Box::new(transaction),
-                    schema_text,
-                ))
-            })
+            Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
         }
 
         fn is_open(&self) -> bool {
@@ -1660,9 +1468,7 @@ mod tests {
         }
 
         fn schema_text(&self, _database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
-            self.metrics.schema_exports.fetch_add(1, Ordering::SeqCst);
-            let schema = self.advisory_schema.clone();
-            Box::pin(async move { Ok(schema) })
+            refused_schema_export(&self.metrics.schema_exports)
         }
     }
 
@@ -1704,13 +1510,12 @@ mod tests {
         }
     }
 
-    struct UnsupportedFenceBackend {
+    struct RefusingBackend {
         metrics: Arc<Metrics>,
-        schema: String,
         server_version: type_bridge_core_lib::version::Version,
     }
 
-    impl DriverBackend for UnsupportedFenceBackend {
+    impl DriverBackend for RefusingBackend {
         fn open_transaction(
             &self,
             _database: &str,
@@ -1733,9 +1538,7 @@ mod tests {
         }
 
         fn schema_text(&self, _database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
-            self.metrics.schema_exports.fetch_add(1, Ordering::SeqCst);
-            let schema = self.schema.clone();
-            Box::pin(async move { Ok(schema) })
+            refused_schema_export(&self.metrics.schema_exports)
         }
     }
 
@@ -1818,28 +1621,20 @@ mod tests {
         response: Result<QueryResult, OrmError>,
         fail_close: bool,
     ) -> (Database, Arc<Metrics>) {
-        database_with_exports(
-            response,
-            fail_close,
-            [
-                Ok("define entity person;".to_owned()),
-                Ok("define entity person;".to_owned()),
-            ],
-        )
+        database_with_responses([response], fail_close, false)
     }
 
-    fn database_with_exports(
-        response: Result<QueryResult, OrmError>,
+    fn database_with_responses(
+        responses: impl IntoIterator<Item = Result<QueryResult, OrmError>>,
         fail_close: bool,
-        schema_exports: impl IntoIterator<Item = Result<String, OrmError>>,
+        stall_open: bool,
     ) -> (Database, Arc<Metrics>) {
         let metrics = Arc::new(Metrics::default());
         let backend = Backend {
             fail_close,
             metrics: Arc::clone(&metrics),
-            response: Mutex::new(Some(response)),
-            schema_exports: Mutex::new(schema_exports.into_iter().collect()),
-            stall_schema_export: false,
+            responses: Mutex::new(responses.into_iter().collect()),
+            stall_open,
         };
         (
             Database::with_backend(Box::new(backend), "prepared-close"),
@@ -1857,10 +1652,6 @@ mod tests {
         .expect("query-only authority")
     }
 
-    fn managed_schema_export() -> String {
-        format!("{MANAGED_FENCE_SCHEMA_TYPEQL}\nentity person;")
-    }
-
     fn managed_control_row(scope: &str, fence: &str, state: &str) -> serde_json::Value {
         serde_json::json!({
             "scope": scope,
@@ -1873,10 +1664,7 @@ mod tests {
         responses: impl IntoIterator<Item = QueryResult>,
     ) -> (Database, Arc<ControlMetrics>) {
         let metrics = Arc::new(ControlMetrics::default());
-        let schema = managed_schema_export();
         let backend = ControlBackend {
-            advisory_schema: schema.clone(),
-            fenced_schema: schema,
             metrics: Arc::clone(&metrics),
             responses: Mutex::new(Some(responses.into_iter().map(Ok).collect())),
         };
@@ -1894,12 +1682,8 @@ mod tests {
         let backend = Backend {
             fail_close: false,
             metrics: Arc::clone(&metrics),
-            response: Mutex::new(Some(Ok(QueryResult::Rows(Vec::new())))),
-            schema_exports: Mutex::new(VecDeque::from([
-                Ok("define entity person;".to_owned()),
-                Ok("define entity person;".to_owned()),
-            ])),
-            stall_schema_export: false,
+            responses: Mutex::new(VecDeque::from([Ok(QueryResult::Rows(Vec::new()))])),
+            stall_open: false,
         };
         (
             Database::with_backend_authority(Box::new(backend), name, authority),
@@ -2307,7 +2091,7 @@ mod tests {
         assert_eq!(success_metrics.opens.load(Ordering::SeqCst), 1);
         assert_eq!(success_metrics.queries.load(Ordering::SeqCst), 1);
         assert_eq!(success_metrics.closes.load(Ordering::SeqCst), 1);
-        assert_eq!(success_metrics.schema_exports.load(Ordering::SeqCst), 2);
+        assert_eq!(success_metrics.schema_exports.load(Ordering::SeqCst), 0);
 
         let (authority, plan) = authority_and_plan();
         let (failure, failure_metrics) = database(
@@ -2328,104 +2112,43 @@ mod tests {
         assert_eq!(failure_metrics.opens.load(Ordering::SeqCst), 1);
         assert_eq!(failure_metrics.queries.load(Ordering::SeqCst), 1);
         assert_eq!(failure_metrics.closes.load(Ordering::SeqCst), 1);
-        assert_eq!(failure_metrics.schema_exports.load(Ordering::SeqCst), 2);
+        assert_eq!(failure_metrics.schema_exports.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
-    async fn prepared_local_rejects_stale_authority_before_opening_transaction() {
+    async fn prepared_local_never_exports_the_live_schema() {
         let (authority, plan) = authority_and_plan();
-        let (database, metrics) = database_with_exports(
-            Ok(QueryResult::Rows(Vec::new())),
-            false,
-            [Ok("define entity animal;".to_owned())],
-        );
+        let row = || {
+            Ok(QueryResult::Rows(vec![serde_json::json!({
+                "person": {"category": "entity", "label": "person", "iid": "0x01"}
+            })]))
+        };
+        let (database, metrics) = database_with_responses([row(), row()], false, false);
         let authority = query_only_authority(&authority, &database);
-        let diagnostic = execute_prepared_local(
-            &database,
-            &authority,
-            &plan,
-            r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
-        )
-        .await
-        .expect_err("foreign live schema must fail before transaction admission");
-        assert_eq!(diagnostic.code().as_str(), "query_prepared_stale_schema");
-        assert_eq!(diagnostic.category(), DiagnosticCategory::Integrity);
-        assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 1);
-        assert_eq!(metrics.opens.load(Ordering::SeqCst), 0);
-        assert_eq!(metrics.queries.load(Ordering::SeqCst), 0);
-        assert_eq!(metrics.closes.load(Ordering::SeqCst), 0);
+        for _ in 0..2 {
+            let outcome = execute_prepared_local(
+                &database,
+                &authority,
+                &plan,
+                r#"{"operation":"rows","rows":[]}"#,
+                QueryV2AnswerLimits::default(),
+            )
+            .await
+            .expect("prepared query");
+            assert!(outcome.contains("0x01"), "{outcome}");
+        }
+        // Each query opens, queries and closes one read transaction; nothing
+        // ever exports the live schema.
+        assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 0);
+        assert_eq!(metrics.opens.load(Ordering::SeqCst), 2);
+        assert_eq!(metrics.queries.load(Ordering::SeqCst), 2);
+        assert_eq!(metrics.closes.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
-    async fn prepared_local_rechecks_authority_after_open_and_closes_on_drift() {
+    async fn prepared_local_deadline_bounds_transaction_admission() {
         let (authority, plan) = authority_and_plan();
-        let (database, metrics) = database_with_exports(
-            Ok(QueryResult::Rows(Vec::new())),
-            false,
-            [
-                Ok("define entity person;".to_owned()),
-                Ok("define entity animal;".to_owned()),
-            ],
-        );
-        let authority = query_only_authority(&authority, &database);
-        let diagnostic = execute_prepared_local(
-            &database,
-            &authority,
-            &plan,
-            r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
-        )
-        .await
-        .expect_err("schema drift after transaction open must stop execution");
-        assert_eq!(diagnostic.code().as_str(), "query_prepared_stale_schema");
-        assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 2);
-        assert_eq!(metrics.opens.load(Ordering::SeqCst), 1);
-        assert_eq!(metrics.queries.load(Ordering::SeqCst), 0);
-        assert_eq!(metrics.closes.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn prepared_local_masks_untrusted_export_detail_before_open() {
-        let (authority, plan) = authority_and_plan();
-        let (database, metrics) = database_with_exports(
-            Ok(QueryResult::Rows(Vec::new())),
-            false,
-            [Ok("this is not TypeQL".to_owned())],
-        );
-        let authority = query_only_authority(&authority, &database);
-        let diagnostic = execute_prepared_local(
-            &database,
-            &authority,
-            &plan,
-            r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
-        )
-        .await
-        .expect_err("malformed live export must fail closed");
-        assert_eq!(
-            diagnostic.code().as_str(),
-            "query_prepared_live_schema_invalid"
-        );
-        assert_eq!(diagnostic.category(), DiagnosticCategory::Integrity);
-        assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 1);
-        assert_eq!(metrics.opens.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn prepared_local_deadline_bounds_live_authority_preparation() {
-        let (authority, plan) = authority_and_plan();
-        let metrics = Arc::new(Metrics::default());
-        let database = Database::with_backend(
-            Box::new(Backend {
-                fail_close: false,
-                metrics: Arc::clone(&metrics),
-                response: Mutex::new(Some(Ok(QueryResult::Rows(Vec::new())))),
-                schema_exports: Mutex::new(VecDeque::new()),
-                stall_schema_export: true,
-            }),
-            "prepared-live-authority-timeout",
-        );
+        let (database, metrics) = database_with_responses([], false, true);
         let authority = query_only_authority(&authority, &database);
         let diagnostic = execute_prepared_local(
             &database,
@@ -2441,14 +2164,10 @@ mod tests {
             },
         )
         .await
-        .expect_err("live authority export must obey the execution deadline");
+        .expect_err("transaction admission must obey the execution deadline");
         assert_eq!(diagnostic.code().as_str(), "transaction_deadline_exceeded");
-        // The same absolute deadline covers admission to the process-wide
-        // rebuild limiter. Under parallel load it may expire before the
-        // backend export starts; either valid boundary must precede opening a
-        // provider transaction.
-        assert!(metrics.schema_exports.load(Ordering::SeqCst) <= 1);
-        assert_eq!(metrics.opens.load(Ordering::SeqCst), 0);
+        assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 0);
+        assert_eq!(metrics.queries.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -2533,8 +2252,8 @@ mod tests {
                 DiagnosticCategory::Integrity,
                 "{name}"
             );
-            assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 1, "{name}");
-            assert_eq!(metrics.fenced_opens.load(Ordering::SeqCst), 1, "{name}");
+            assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 0, "{name}");
+            assert_eq!(metrics.opens.load(Ordering::SeqCst), 1, "{name}");
             assert_eq!(
                 metrics.control_queries.load(Ordering::SeqCst),
                 expected_control_queries,
@@ -2577,8 +2296,8 @@ mod tests {
         .expect("an exact free control row admits the user query");
 
         assert!(outcome.contains("0x2a"), "{outcome}");
-        assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 1);
-        assert_eq!(metrics.fenced_opens.load(Ordering::SeqCst), 1);
+        assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 0);
+        assert_eq!(metrics.opens.load(Ordering::SeqCst), 1);
         assert_eq!(metrics.control_queries.load(Ordering::SeqCst), 2);
         assert_eq!(metrics.user_queries.load(Ordering::SeqCst), 1);
         assert_eq!(metrics.closes.load(Ordering::SeqCst), 1);
@@ -2593,9 +2312,8 @@ mod tests {
         let (authority, plan) = authority_and_plan();
         let metrics = Arc::new(Metrics::default());
         let database = Database::with_backend(
-            Box::new(UnsupportedFenceBackend {
+            Box::new(RefusingBackend {
                 metrics: Arc::clone(&metrics),
-                schema: "define entity person;".to_owned(),
                 server_version: type_bridge_core_lib::version::Version::new(3, 11, 5),
             }),
             "prepared-profile-mismatch",
@@ -2649,41 +2367,6 @@ mod tests {
         assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 0);
         assert_eq!(metrics.opens.load(Ordering::SeqCst), 0);
         assert_eq!(metrics.queries.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn default_backend_rejects_schema_fenced_execution_without_fallback() {
-        let (authority, plan) = authority_and_plan();
-        let metrics = Arc::new(Metrics::default());
-        let database = Database::with_backend(
-            Box::new(UnsupportedFenceBackend {
-                metrics: Arc::clone(&metrics),
-                schema: "define entity person;".to_owned(),
-                server_version: type_bridge_core_lib::version::Version::new(3, 12, 1),
-            }),
-            "prepared-unsupported-fence",
-        );
-        let authority = query_only_authority(&authority, &database);
-
-        let diagnostic = execute_prepared_local(
-            &database,
-            &authority,
-            &plan,
-            r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
-        )
-        .await
-        .expect_err("the default backend must fail closed at fenced admission");
-
-        assert_eq!(
-            diagnostic.code().as_str(),
-            "query_prepared_transaction_failed"
-        );
-        assert_eq!(diagnostic.category(), DiagnosticCategory::Integrity);
-        assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 1);
-        assert_eq!(metrics.opens.load(Ordering::SeqCst), 0);
-        assert_eq!(metrics.queries.load(Ordering::SeqCst), 0);
-        assert_eq!(metrics.closes.load(Ordering::SeqCst), 0);
     }
 
     #[test]

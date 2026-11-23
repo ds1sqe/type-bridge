@@ -40,9 +40,9 @@ DEFAULT_ROUNDS = 5
 BARRIER_SECONDS = 120.0
 RESULT_SECONDS = 300.0
 
-# The workspace schema as TypeDB receives it. The query-only authority
-# compares the live schema with the declared one exactly, so any drift from
-# workspace/schema/fragments/races.yaml fails every racer's commit.
+# The workspace schema as TypeDB receives it. It must match
+# workspace/schema/fragments/races.yaml: the query-only authority trusts
+# that declaration and does not check the live schema.
 SCHEMA_TYPEQL = """define
 attribute item-id, value string; attribute stock, value integer; attribute price, value integer;
 attribute account-id, value string; attribute balance, value integer;
