@@ -402,7 +402,7 @@ jobs:
             runner: macos-14
             artifact: core-wheels-macos-aarch64
           - target: x86_64-pc-windows-msvc
-            runner: windows-latest
+            runner: windows-2025
             artifact: core-wheels-windows-x86_64
     steps:
       - name: Checkout code
@@ -821,7 +821,7 @@ jobs:
             artifact: node-native-darwin-arm64
             filename: type_bridge_node.darwin-arm64.node
           - target: win32-x64-msvc
-            runner: windows-latest
+            runner: windows-2025
             artifact: node-native-win32-x64-msvc
             filename: type_bridge_node.win32-x64-msvc.node
           - target: win32-arm64-msvc
@@ -1001,7 +1001,7 @@ jobs:
             runner: macos-14
             node-version: "20"
           - target: win32-x64-msvc
-            runner: windows-latest
+            runner: windows-2025
             node-version: "20"
           - target: win32-arm64-msvc
             runner: windows-11-arm

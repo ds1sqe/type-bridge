@@ -118,7 +118,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-2025]
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -350,8 +350,8 @@ jobs:
   # generated C package), apart from rust-check so it runs beside the
   # Windows Rust tests instead of after them.
   c-windows-evidence:
-    name: C evidence windows-latest
-    runs-on: windows-latest
+    name: C evidence windows-2025
+    runs-on: windows-2025
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1087,7 +1087,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-2025]
         shard: [acceptance, rest]
     steps:
       - name: Checkout code
@@ -1201,7 +1201,7 @@ jobs:
             runner: macos-latest
             artifact: wheels-macos-aarch64
           - target: x86_64-pc-windows-msvc
-            runner: windows-latest
+            runner: windows-2025
             artifact: wheels-windows-x86_64
     steps:
       - name: Checkout code
@@ -1247,7 +1247,7 @@ jobs:
   # and strict cleanup before the release acceptance matrix runs.
   node-packed-windows:
     name: Node packed package (Windows)
-    runs-on: windows-latest
+    runs-on: windows-2025
     defaults:
       run:
         working-directory: type-bridge-core/crates/node

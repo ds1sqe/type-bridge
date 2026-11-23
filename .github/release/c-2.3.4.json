@@ -118,7 +118,7 @@
       "Set up Python": "success",
       "Upload immutable non-publishing supply-chain evidence": "success"
     },
-    "C evidence windows-latest": {
+    "C evidence windows-2025": {
       "Build C ABI and check strict headers and consumer on Windows": "success",
       "Check C runtime, transaction, and cancellation ABI": "success",
       "Check C typed-query, diagnostic, function, and remote ABI": "success",
@@ -632,7 +632,7 @@
       "Set up Python": "success",
       "cargo test (schema-codegen acceptance)": "success"
     },
-    "Rust schema-codegen acceptance windows-latest": {
+    "Rust schema-codegen acceptance windows-2025": {
       "Build schema-codegen acceptance tests": "success",
       "Checkout code": "success",
       "Fetch every locked crate": "success",
@@ -665,7 +665,7 @@
       "Set up Python": "success",
       "cargo test (schema-codegen rest)": "success"
     },
-    "Rust schema-codegen rest windows-latest": {
+    "Rust schema-codegen rest windows-2025": {
       "Build schema-codegen rest tests": "success",
       "Checkout code": "success",
       "Fetch every locked crate": "success",
@@ -712,7 +712,7 @@
       "cargo check": "success",
       "cargo clippy": "success"
     },
-    "Rust windows-latest": {
+    "Rust windows-2025": {
       "Audit all maintained Rust lockfiles": "skipped",
       "Build C ABI shared library": "skipped",
       "Build Rust tests": "success",
@@ -895,7 +895,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "e6dc50f2862486fd56f662fb6d8af5a0c2f7576b0912e60c9416f9935c1f332c",
+  "ci_workflow_sha256": "f4a1b147da7c9d583931c49e66a0de16082c9fd8a3d7b6a626eb34a9a2f430a9",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-2.3.4.tar.gz",
   "format": "typebridge.c-release-policy/v1",

@@ -568,7 +568,7 @@ def test_each_core_wheel_executes_v2_authoring_on_its_native_target() -> None:
         ),
         (
             "x86_64-pc-windows-msvc",
-            "windows-latest",
+            "windows-2025",
             "core-wheels-windows-x86_64",
         ),
     ]
@@ -1263,7 +1263,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
     assert "assert.ifError(verify.error);" in packed_package_smoke
     assert "maxRetries: 5" in packed_package_smoke
     assert "retryDelay: 100" in packed_package_smoke
-    assert "runs-on: windows-latest" in ci_windows
+    assert "runs-on: windows-2025" in ci_windows
     assert "npm run build" in ci_windows
     assert "npm pack --ignore-scripts --pack-destination tmp/packed-node" in ci_windows
     assert "npm run smoke:packed-package -- --artifact-directory tmp/packed-node" in ci_windows
@@ -1308,7 +1308,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
         ),
         (
             "win32-x64-msvc",
-            "windows-latest",
+            "windows-2025",
             "node-native-win32-x64-msvc",
             "type_bridge_node.win32-x64-msvc.node",
         ),
@@ -1372,7 +1372,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
         ("linux-arm64-gnu", "ubuntu-24.04-arm", '"20"'),
         ("darwin-x64", "macos-15-intel", '"20"'),
         ("darwin-arm64", "macos-14", '"20"'),
-        ("win32-x64-msvc", "windows-latest", '"20"'),
+        ("win32-x64-msvc", "windows-2025", '"20"'),
         ("win32-arm64-msvc", "windows-11-arm", '"20"'),
     ]
     assert acceptance.count("          - target: ") == 7
