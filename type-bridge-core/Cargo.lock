@@ -3568,7 +3568,6 @@ dependencies = [
  "type-bridge-orm",
  "type-bridge-query",
  "type-bridge-schema",
- "type-bridge-schema-compat",
  "type-bridge-typedb-runtime",
  "uuid",
 ]
