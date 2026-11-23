@@ -42,9 +42,9 @@ The stable `2.3.3` tag points to the same digest (2.3.2 is
 2.3.0 is
 `sha256:fe72c2911a9cfa7116eaf671e195028a1440f579614b2b7f8921ab0f683f3209`).
 After acceptance, `2.3`, `2`, and `latest` are aliases of that exact stable
-manifest. Manual candidate workflows validate the exact `2.3.3` stable bytes
+manifest. Manual candidate workflows validate the exact `2.3.4` stable bytes
 without publishing them or moving aliases. Publication requires the annotated
-`v2.3.3` tag push.
+`v2.3.4` tag push.
 
 Published platforms are `linux/amd64` and `linux/arm64`.
 
