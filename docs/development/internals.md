@@ -41,9 +41,12 @@ When configured for a generic-server deployment, the same generation snapshot
 writes a byte-equivalent `typebridge.schema-authority/v1` artifact. Canonical
 JSON is only its bounded language-neutral codec: it is never parsed as authored
 schema or maintained independently. The server reconstructs all authority
-through Rust constructors, then compares it with a schema-fenced live TypeDB
-view. Generated Python and TypeScript remote sessions instead reconstruct their
-authority from private package evidence and accept no authority-file argument.
+through Rust constructors and trusts it: it does not export or compare the
+live TypeDB schema, so a schema migration requires a server restart. Direct
+prepared queries likewise run in a plain read transaction without a schema
+export. Generated Python and TypeScript remote sessions instead reconstruct
+their authority from private package evidence and accept no authority-file
+argument.
 
 Generated integration uses a projection-owned nominal contract. It does not
 route values through the retained V1 `TypeDBType` nominal boundary, and that

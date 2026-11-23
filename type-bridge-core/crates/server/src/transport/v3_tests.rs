@@ -56,11 +56,27 @@ fn configured_v3_fixture(
     timeout: Option<Duration>,
     ceilings: QueryV2AnswerLimits,
 ) -> V3Fixture {
+    v3_fixture_on_server(
+        pipeline,
+        allow_unauthenticated_writes,
+        timeout,
+        ceilings,
+        type_bridge_core_lib::version::Version::new(3, 12, 1),
+    )
+}
+
+fn v3_fixture_on_server(
+    pipeline: QueryPipeline,
+    allow_unauthenticated_writes: bool,
+    timeout: Option<Duration>,
+    ceilings: QueryV2AnswerLimits,
+    server_version: type_bridge_core_lib::version::Version,
+) -> V3Fixture {
     let authority = authority_fixture(false);
     let declared = authority.declared.clone();
     let metrics = Arc::new(BackendMetrics::default());
     let database = Database::with_backend(
-        Box::new(CountingBackend::new([], Arc::clone(&metrics))),
+        Box::new(CountingBackend::new(Arc::clone(&metrics)).with_server_version(server_version)),
         "server-v3-route",
     );
     let query = V2QueryState::new_query_only(
@@ -975,7 +991,7 @@ async fn plan_policy_refuses_a_staged_delete_before_reservation_or_io() {
     let seen = policy.plans.lock().expect("plans").clone();
     assert_eq!(seen.iter().map(|plan| plan.0).collect::<Vec<_>>(), [0, 1]);
     assert!(seen[1].1.contains(&"query.write.delete".to_owned()));
-    // Refused before live-authority I/O, staging or commit: nothing ran,
+    // Refused before provider I/O, staging or commit: nothing ran,
     // so the commit observer has nothing to observe.
     assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
@@ -991,8 +1007,9 @@ async fn plan_policy_refuses_a_staged_delete_before_reservation_or_io() {
     let admitted = staged(&fixture, &plans[..1], TEST_NONCE);
     assert!(verify(&fixture, &admitted, &post(&fixture, &admitted).await).committed());
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
-    // Live authority export is the I/O the refusals above skipped.
-    assert!(fixture.metrics.schema_exports.load(Ordering::SeqCst) > 0);
+    // The admitted commit ran provider I/O without exporting the schema.
+    assert!(fixture.metrics.transaction_opens.load(Ordering::SeqCst) > 0);
+    assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -1576,4 +1593,22 @@ async fn library_entry_and_router_answer_the_same_request_alike() {
     assert!(routed.committed() && entered.committed());
     assert_eq!(routed.answers(), entered.answers());
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn staged_request_refuses_a_semantic_profile_mismatch() {
+    let fixture = v3_fixture_on_server(
+        hook_pipeline(&[]),
+        true,
+        None,
+        QueryV2AnswerLimits::default(),
+        type_bridge_core_lib::version::Version::new(3, 11, 5),
+    );
+    let plans = [count_plan(&fixture.declared)];
+    let request = staged(&fixture, &plans, TEST_NONCE);
+    let reply = verify(&fixture, &request, &post(&fixture, &request).await);
+    assert!(!reply.committed());
+    assert_eq!(failure_code(&reply), "query_remote_semantic_profile_mismatch");
+    assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
 }

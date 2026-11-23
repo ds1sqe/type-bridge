@@ -661,8 +661,13 @@ impl Transaction {
         options: TransactionOptions,
     ) -> Result<Self, Diagnostic> {
         let limits = crate::query_execution_limits::QueryExecutionResourceLimits::default();
-        let proxy =
-            ProxyStaging::new(None, Some(exchange), staged_advertisement, declared, limits)?;
+        let proxy = ProxyStaging::new(
+            None,
+            Some(exchange),
+            staged_advertisement,
+            std::sync::Arc::new(declared),
+            limits,
+        )?;
         Ok(Self::new_proxy(proxy, options))
     }
     fn with_backend(backend: Backend, database: String, mut options: TransactionOptions) -> Self {

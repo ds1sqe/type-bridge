@@ -179,7 +179,7 @@ impl ModelExecutionTarget<'_> {
 }
 
 /// Execute one adapter-authored model plan inside the caller's existing
-/// schema-fenced transaction.
+/// read transaction.
 pub(crate) async fn execute_validated_model_query_with_statement_limit(
     transaction: &mut Transaction,
     validated: &ValidatedQuery,

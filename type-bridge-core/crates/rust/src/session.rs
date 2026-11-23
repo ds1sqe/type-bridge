@@ -279,7 +279,14 @@ impl<S: Schema> Database<S> {
         inner: type_bridge_orm::Database,
         installed: type_bridge_orm::InstalledRuntimeProjection,
     ) -> Self {
-        let installed = Arc::new(installed);
+        Self::from_test_install(inner, Arc::new(installed))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_install(
+        inner: type_bridge_orm::Database,
+        installed: Arc<type_bridge_orm::InstalledRuntimeProjection>,
+    ) -> Self {
         let match_registry =
             build_match_registry(&installed).expect("test projection descriptors register");
         Self {

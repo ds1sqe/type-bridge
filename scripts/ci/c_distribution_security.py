@@ -55,6 +55,28 @@ AUDIT_ADJUDICATIONS = (
             "Tonic 0.12/TypeDB driver graph; remove with its upstream compatibility upgrade"
         ),
     },
+    {
+        "advisory": "RUSTSEC-2026-0543",
+        "classification": "unmaintained",
+        "package": "chrono",
+        "version": "0.4.45",
+        "rationale": (
+            "non-vulnerability unmaintained notice for a time crate required by the "
+            "upstream TypeDB driver and TypeQL graph; replace when the TypeDB driver "
+            "moves off chrono"
+        ),
+    },
+    {
+        "advisory": "RUSTSEC-2026-0555",
+        "classification": "unmaintained",
+        "package": "chrono-tz",
+        "version": "0.9.0",
+        "rationale": (
+            "non-vulnerability unmaintained notice for a time crate required by the "
+            "upstream TypeDB driver and TypeQL graph; replace when the TypeDB driver "
+            "moves off chrono"
+        ),
+    },
 )
 SECRET_PATTERNS = (
     ("aws-access-key", re.compile(rb"AKIA[0-9A-Z]{16}")),
@@ -491,7 +513,7 @@ def provenance(artifacts: Sequence[Mapping[str, Any]], commit: str, tree: str) -
         "builder": {
             "workflow": ".github/workflows/ci.yml",
             "jobs": ["standalone-cli-artifact", "c-package-artifacts"],
-            "runner": "ubuntu-latest",
+            "runner": "ubuntu-24.04",
         },
         "materials": [
             {

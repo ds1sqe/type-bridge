@@ -113,7 +113,12 @@ filters.
 Vulnerabilities, unsoundness, yanked crates and audit errors block acceptance.
 The retained TypeDB transport graph requires rustls-pemfile 2.2.0 through
 tonic 0.12.3. RUSTSEC-2025-0134 reports it unmaintained, not vulnerable; that
-informational finding remains visible without an advisory ignore.
+informational finding remains visible without an advisory ignore. The TypeDB
+driver and TypeQL also require chrono 0.4.45 and chrono-tz 0.9.0, reported
+unmaintained (not vulnerable) by RUSTSEC-2026-0543 and -0555; the C
+distribution gate adjudicates these three runtime findings exactly. The
+build-only chrono-tz-build 0.3.0 (RUSTSEC-2026-0559) is outside the shipped
+runtime closure.
 
 Facade builds validate metadata in the exact digest-verified PyPI publisher
 image with networking disabled before cross-registry publication. PyPI uses

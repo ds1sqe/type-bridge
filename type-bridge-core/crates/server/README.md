@@ -176,12 +176,17 @@ regular-file target no larger than 1 MiB; special targets and oversized input
 are rejected before parsing.
 
 The V2 surface fails startup unless `schema_authority_file` is canonical and
-constructor-verified, its embedded semantic profile matches the connected
-server, and the selected live authority is valid. `managed` requires the
-complete V2 migration-control schema and its free singleton for the embedded
-scope. `query_only` requires both V2 and legacy migration controls to be absent.
-It is not an automatic fallback. Scope and profile are intentionally absent
-from server configuration because the generated artifact already binds them.
+constructor-verified and its embedded semantic profile matches the connected
+server. `managed` also requires the free migration-control singleton for the
+embedded scope. `query_only` does not read migration control; it is not an
+automatic fallback. Scope and profile are intentionally absent from server
+configuration because the generated artifact already binds them.
+
+The server trusts its configured authority. It does not export, parse, or
+compare the live TypeDB schema, at startup or per request. If the schema is
+changed out of band, queries fail at TypeDB or return different types or
+values, as they would over a direct connection. Restart or redeploy the server
+after every schema migration so that it serves the matching authority.
 
 A relative `schema_authority_file` is resolved against the configuration-file
 directory. Every path component and the final target must be free of symbolic
@@ -191,12 +196,10 @@ file twice, retains the verified bytes as an immutable snapshot, and does not
 reopen it while serving requests. After replacing the file, reload the complete
 configuration; changing the public path field on a loaded value is rejected.
 
-Prepared query execution captures the exact schema export under a bounded
-TypeDB schema-exclusion fence. On TypeDB 3.12.1 that fence uses a `WRITE`
-transaction even though emitted V2 TypeQL is read-only, so the server
-credential needs that transaction permission and an executing request can
-delay concurrent schema work. The default absolute request deadline is 30
-seconds and the hard maximum is five minutes.
+Prepared query execution runs in an ordinary TypeDB `READ` transaction. In
+`managed` mode the same transaction first reads the migration-control
+singleton and refuses the query while a migration holds it. The default
+absolute request deadline is 30 seconds and the hard maximum is five minutes.
 
 ## HTTP API
 
@@ -245,10 +248,8 @@ Returns the loaded TypeQL schema as JSON, or `500` if no schema is loaded.
 ### `GET /v2/capabilities` — prepared executor advertisement
 
 When V2 is enabled, returns the canonical capability advertisement after the
-configured transport policy and a bounded live schema/profile check. Discovery
-does not open a query transaction or acquire the migration-control singleton;
-exact fenced admission happens at startup and for the request that executes a
-plan. The advertisement carries the executor epoch and reply-signing identity,
+configured transport policy. Discovery does not contact TypeDB. The
+advertisement carries the executor epoch and reply-signing identity,
 so clients must obtain it over authenticated TLS for the intended server or
 pin/provision its exact bytes or fingerprint out of band. Plain-HTTP discovery
 does not authenticate that trust input.

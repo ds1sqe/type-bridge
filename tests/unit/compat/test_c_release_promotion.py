@@ -77,22 +77,22 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         assert selected["ci_jobs"]["Staged plans live (typedb/typedb:3.14.0)"][step] == "skipped"
     assert selected["ci_jobs"]["Rust MSRV 1.88"]["Check C foundation on MSRV 1.88"] == "success"
     # The accepted run is a master push, so master-only cache saves run.
-    assert selected["ci_jobs"]["Rust windows-latest"]["Save cargo build cache"] == "success"
+    assert selected["ci_jobs"]["Rust windows-2022"]["Save cargo build cache"] == "success"
     # The Windows C evidence runs in its own job, beside the Windows Rust tests.
-    windows_c = selected["ci_jobs"]["C evidence windows-latest"]
+    windows_c = selected["ci_jobs"]["C evidence windows-2022"]
     assert windows_c["Build C ABI and check strict headers and consumer on Windows"] == "success"
     assert (
         "Build C ABI and check strict headers and consumer on Windows"
-        not in selected["ci_jobs"]["Rust windows-latest"]
+        not in selected["ci_jobs"]["Rust windows-2022"]
     )
     assert (
-        selected["ci_jobs"]["Rust schema-codegen acceptance windows-latest"][
+        selected["ci_jobs"]["Rust schema-codegen acceptance windows-2022"][
             "Initialize MSVC and require clang-cl for Windows C tests"
         ]
         == "success"
     )
     assert (
-        selected["ci_jobs"]["Rust schema-codegen rest ubuntu-latest"][
+        selected["ci_jobs"]["Rust schema-codegen rest ubuntu-24.04"][
             "Initialize MSVC and require clang-cl for Windows C tests"
         ]
         == "skipped"
@@ -120,7 +120,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         ("head_sha", "c" * 40),
         ("head_branch", "develop"),
         ("head_branch", "release/c-sdk-readiness"),
-        ("head_branch", "v2.3.3"),
+        ("head_branch", "v2.3.4"),
         ("path", ".github/workflows/release.yml"),
         ("event", "pull_request"),
         ("event", "schedule"),
@@ -321,10 +321,10 @@ def test_verified_bundle_rejects_substitution(tmp_path: Path, change: str) -> No
 
 
 def test_tag_requires_an_annotated_direct_same_source_target() -> None:
-    reference = {"ref": "refs/tags/v2.3.3", "object": {"type": "tag", "sha": "c" * 40}}
+    reference = {"ref": "refs/tags/v2.3.4", "object": {"type": "tag", "sha": "c" * 40}}
     tag = {
         "sha": "c" * 40,
-        "tag": "v2.3.3",
+        "tag": "v2.3.4",
         "object": {
             "type": "commit",
             "sha": SOURCE,
@@ -351,7 +351,7 @@ def test_workflow_keeps_publish_protected_and_without_builders() -> None:
     assert workflow["permissions"] == {"contents": "read", "actions": "read"}
     publish = workflow["jobs"]["publish"]
     assert publish["environment"] == "release"
-    assert publish["if"] == "inputs.mode == 'publish' && github.ref == 'refs/tags/v2.3.3'"
+    assert publish["if"] == "inputs.mode == 'publish' && github.ref == 'refs/tags/v2.3.4'"
     assert publish["permissions"] == {"contents": "write", "actions": "read", "id-token": "write"}
     assert all(job["runs-on"] == "ubuntu-24.04" for job in workflow["jobs"].values())
     source = json.dumps(publish)
@@ -453,10 +453,10 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
             "files": [promotion.record(payloads / name) for name in files],
         },
     )
-    reference = {"ref": "refs/tags/v2.3.3", "object": {"type": "tag", "sha": "c" * 40}}
+    reference = {"ref": "refs/tags/v2.3.4", "object": {"type": "tag", "sha": "c" * 40}}
     tag = {
         "sha": "c" * 40,
-        "tag": "v2.3.3",
+        "tag": "v2.3.4",
         "object": {
             "type": "commit",
             "sha": SOURCE,
@@ -471,7 +471,7 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
         "id": 999,
         "draft": True,
         "prerelease": False,
-        "tag_name": "v2.3.3",
+        "tag_name": "v2.3.4",
         "target_commitish": SOURCE,
         "body": "Ordinary release",
         "assets": [

@@ -261,7 +261,7 @@ impl ProxyQueryConnection {
             http,
             exchange,
             advertisement,
-            self.authority.declared().clone(),
+            self.authority.shared_declared(),
             self.answer_limits,
         )
         .map_err(lower_remote_query_diagnostic)?;

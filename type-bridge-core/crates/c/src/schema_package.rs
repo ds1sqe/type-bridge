@@ -377,6 +377,7 @@ fn open_owned(
             _authority: authority,
             _projection: projection,
             installed_projection,
+            remote_authority: std::sync::OnceLock::new(),
         }),
     })
 }

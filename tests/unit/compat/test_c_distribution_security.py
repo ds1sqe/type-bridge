@@ -23,7 +23,6 @@ SPEC.loader.exec_module(SECURITY)
 
 
 def clean_audit_report() -> dict[str, object]:
-    adjudication = SECURITY.AUDIT_ADJUDICATIONS[0]
     return {
         "database": {"last-commit": "1" * 40},
         "vulnerabilities": {"count": 0, "list": []},
@@ -36,6 +35,7 @@ def clean_audit_report() -> dict[str, object]:
                         "version": adjudication["version"],
                     },
                 }
+                for adjudication in SECURITY.AUDIT_ADJUDICATIONS
             ]
         },
     }

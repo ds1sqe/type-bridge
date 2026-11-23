@@ -224,6 +224,8 @@ pub(crate) struct SchemaPackageState {
     pub(crate) _authority: VerifiedSchemaAuthority,
     pub(crate) _projection: RuntimeProjection,
     pub(crate) installed_projection: type_bridge_orm::InstalledRuntimeProjection,
+    /// Remote query authority and match registry, built on first use.
+    pub(crate) remote_authority: std::sync::OnceLock<crate::query::RemoteAuthority>,
 }
 
 impl TypeBridgeSchemaPackage {

@@ -125,8 +125,9 @@ from `typebridge.yaml` after a schema change.
 
 The generic server cannot import an arbitrary generated application package and
 does not compile raw Split-YAML at startup. Mount this generated artifact
-read-only and reference it with `[v2].schema_authority_file`; the server
-independently compares it with the schema-fenced live TypeDB state.
+read-only and reference it with `[v2].schema_authority_file`. The server
+trusts this artifact and does not verify it against the live TypeDB schema;
+restart or redeploy the server after every schema migration.
 
 Generated code is deterministic for the same workspace inputs and toolchain
 version. Do not edit, subclass, or reconstruct it. Change Split-YAML, review the

@@ -23,6 +23,11 @@ terminal is a coroutine on every connection, so Python code awaits it.
 TypeScript is the same: `new QuerySession(connection)` takes a `RustDatabase`,
 a transaction, or a proxy connection, and every terminal returns a `Promise`.
 
+Neither connection verifies the live TypeDB schema per query. Both trust the
+generated package's authority. If the schema differs, queries fail at TypeDB
+or return different types or values. After a schema migration, deploy the
+regenerated package, and restart or redeploy any proxy server.
+
 Use `exact(Model)` for exactly one schema type and `subtypes(Model)` for a
 polymorphic binding. Concrete result evidence determines the generated class
 used for hydration.

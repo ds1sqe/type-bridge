@@ -742,13 +742,10 @@ mod tests {
         state: Arc<DirectCancellationState>,
     ) -> crate::session::Database<TestSchema> {
         let generated = package();
-        let installed = Arc::into_inner(
-            generated
-                .verify_and_install()
-                .expect("Rust cancellation proof installs the generated package"),
-        )
-        .expect("a fresh installation has one owner");
-        crate::session::Database::from_test_parts(
+        let installed = generated
+            .verify_and_install()
+            .expect("Rust cancellation proof installs the generated package");
+        crate::session::Database::from_test_install(
             type_bridge_orm::Database::with_backend(
                 Box::new(DirectCancellationBackend { state }),
                 "rust-queries-proof",

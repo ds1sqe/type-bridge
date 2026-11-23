@@ -149,6 +149,10 @@ schema_authority_file = "/run/type-bridge/schema-authority.json"
 authority_mode = "managed"
 ```
 
+The server trusts this authority and does not verify the live TypeDB schema
+per request. After a schema migration, deploy the regenerated authority file
+and restart the server.
+
 To accept queries beyond the default query limits, or to hold clients to
 stricter ones, name the limits to change under `[v2.query_limits]`:
 

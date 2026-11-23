@@ -774,7 +774,7 @@ async fn sdk_writes_fixture_serves_until_stopped() {
     )])
     .expect("suite schema parses");
     let declared = type_bridge_schema::normalize_documents(&documents).expect("suite schema");
-    // The live-authority check is exact: the live schema is the declared one.
+    // The live schema is exactly the declared one.
     let typeql = (suite.typeql)();
     let mut bindings = serde_json::Map::new();
     let mut held = Vec::new();
