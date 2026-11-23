@@ -26,7 +26,7 @@ jobs:
   verify-recovery:
     name: Verify crates.io recovery
     if: github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
@@ -135,7 +135,7 @@ jobs:
       inputs.recovery_mode == 'publish' &&
       needs.verify-recovery.result == 'success'
     needs: verify-recovery
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: read

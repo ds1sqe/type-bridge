@@ -491,7 +491,7 @@ def provenance(artifacts: Sequence[Mapping[str, Any]], commit: str, tree: str) -
         "builder": {
             "workflow": ".github/workflows/ci.yml",
             "jobs": ["standalone-cli-artifact", "c-package-artifacts"],
-            "runner": "ubuntu-latest",
+            "runner": "ubuntu-24.04",
         },
         "materials": [
             {
