@@ -2,6 +2,57 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
+## [2.3.4] - Unreleased
+
+### Changed
+
+- Prepared queries no longer verify the live TypeDB schema (#270). Every
+  direct prepared query from any SDK, and every `type-bridge-server`
+  `/v2/query`, `/v2/capabilities` and `/v3/staged` request, used to export,
+  parse and compare the whole schema, twice per query, and the server also
+  did so at startup. This was the dominant fixed cost per query and, under
+  a container CPU limit, serialized concurrent requests. Executors now trust
+  their schema authority: a schema changed out of band fails at TypeDB or
+  returns different types or values. After a schema migration, deploy the
+  regenerated package, and restart or redeploy the server.
+- Direct prepared queries and `/v2/query` run in an ordinary `READ`
+  transaction instead of a schema-fenced `WRITE` transaction, so the
+  credential no longer needs write permission for them. With a managed
+  authority, direct prepared queries and `/v2/query` still refuse while a
+  migration holds the control singleton. `/v3/staged` never reads the
+  control singleton and does not refuse during a migration.
+- Server startup checks only the connected server's semantic profile and,
+  in `managed` mode, the free migration-control singleton. Every request
+  still checks the semantic profile. A `query_only` server or authority no
+  longer checks that the database lacks migration control: pointed at a
+  managed database, it now starts and serves reads during a migration
+  instead of refusing.
+- These diagnostic codes are no longer produced: `query_remote_stale_schema`,
+  `query_remote_live_schema_unavailable`, `query_remote_live_schema_invalid`,
+  `query_remote_managed_control_missing`,
+  `query_remote_query_only_control_present`,
+  `query_remote_query_only_legacy_control_present`,
+  `query_prepared_stale_schema`, `query_prepared_live_schema_unavailable`,
+  `query_prepared_live_schema_invalid`,
+  `query_prepared_managed_control_missing`,
+  `query_prepared_query_only_control_present` and
+  `query_prepared_query_only_legacy_control_present`. Request and reply
+  envelopes, signatures and the capability advertisement are unchanged.
+- Schema authority work is no longer repeated per call. The Rust SDK
+  verifies a package's runtime projection once instead of on every codec
+  call and `with_schema` (about 0.8 s each for a 491 KB authority); the C
+  SDK builds a package's remote query authority once instead of on every
+  remote context or proxy connection open (about 0.3 s); the server shares
+  its schema views with each `/v2/query` instead of copying them (about
+  3 ms); and staged proxy transactions share the connection's declared
+  schema instead of copying it (about 1 ms).
+
+### Security
+
+- Update url to 2.5.9 (RUSTSEC-2026-0592), cap-primitives to 4.0.3
+  (RUSTSEC-2026-0482), quinn-udp to 0.5.16 (RUSTSEC-2026-0538) and rustix
+  to 1.1.6 (RUSTSEC-2026-0486) in every maintained lockfile.
+
 ## [2.3.3] - 2026-10-27
 
 ### Fixed
