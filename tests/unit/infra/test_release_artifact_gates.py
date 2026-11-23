@@ -563,7 +563,7 @@ def test_each_core_wheel_executes_v2_authoring_on_its_native_target() -> None:
         ),
         (
             "aarch64-apple-darwin",
-            "macos-14",
+            "macos-15",
             "core-wheels-macos-aarch64",
         ),
         (
@@ -1302,7 +1302,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
         ),
         (
             "darwin-arm64",
-            "macos-14",
+            "macos-15",
             "node-native-darwin-arm64",
             "type_bridge_node.darwin-arm64.node",
         ),
@@ -1371,7 +1371,7 @@ def test_npm_publication_uses_the_accepted_tarball() -> None:
         ("linux-x64-gnu", "ubuntu-24.04", '"20"'),
         ("linux-arm64-gnu", "ubuntu-24.04-arm", '"20"'),
         ("darwin-x64", "macos-15-intel", '"20"'),
-        ("darwin-arm64", "macos-14", '"20"'),
+        ("darwin-arm64", "macos-15", '"20"'),
         ("win32-x64-msvc", "windows-2022", '"20"'),
         ("win32-arm64-msvc", "windows-11-arm", '"20"'),
     ]

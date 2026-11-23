@@ -399,7 +399,7 @@ jobs:
             runner: macos-15-intel
             artifact: core-wheels-macos-x86_64
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             artifact: core-wheels-macos-aarch64
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
@@ -817,7 +817,7 @@ jobs:
             artifact: node-native-darwin-x64
             filename: type_bridge_node.darwin-x64.node
           - target: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             artifact: node-native-darwin-arm64
             filename: type_bridge_node.darwin-arm64.node
           - target: win32-x64-msvc
@@ -998,7 +998,7 @@ jobs:
             runner: macos-15-intel
             node-version: "20"
           - target: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             node-version: "20"
           - target: win32-x64-msvc
             runner: windows-2022
