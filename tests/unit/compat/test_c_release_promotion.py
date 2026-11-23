@@ -77,16 +77,16 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         assert selected["ci_jobs"]["Staged plans live (typedb/typedb:3.14.0)"][step] == "skipped"
     assert selected["ci_jobs"]["Rust MSRV 1.88"]["Check C foundation on MSRV 1.88"] == "success"
     # The accepted run is a master push, so master-only cache saves run.
-    assert selected["ci_jobs"]["Rust windows-2025"]["Save cargo build cache"] == "success"
+    assert selected["ci_jobs"]["Rust windows-2022"]["Save cargo build cache"] == "success"
     # The Windows C evidence runs in its own job, beside the Windows Rust tests.
-    windows_c = selected["ci_jobs"]["C evidence windows-2025"]
+    windows_c = selected["ci_jobs"]["C evidence windows-2022"]
     assert windows_c["Build C ABI and check strict headers and consumer on Windows"] == "success"
     assert (
         "Build C ABI and check strict headers and consumer on Windows"
-        not in selected["ci_jobs"]["Rust windows-2025"]
+        not in selected["ci_jobs"]["Rust windows-2022"]
     )
     assert (
-        selected["ci_jobs"]["Rust schema-codegen acceptance windows-2025"][
+        selected["ci_jobs"]["Rust schema-codegen acceptance windows-2022"][
             "Initialize MSVC and require clang-cl for Windows C tests"
         ]
         == "success"
