@@ -4475,11 +4475,38 @@ fn build_remote_context_state(
     })
 }
 
+/// A package's remote query authority and match registry.
+pub(crate) type RemoteAuthority = (Arc<QueryAuthority>, Arc<DescriptorRegistry>);
+
+#[cfg(test)]
+thread_local! {
+    /// Remote authorities built on this thread.
+    static REMOTE_AUTHORITY_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The schema authority proxy requests are prepared under, checked against
 /// the package's projection, and the package's match registry.
+///
+/// The package is immutable, so each package builds them once; a failed build
+/// is not kept and fails again on the next open. Every remote context and
+/// proxy connection on a package therefore shares one authority identity;
+/// contexts stay fenced by package identity and builder handles by their own
+/// builder identity.
 fn remote_authority(
     package: &Arc<SchemaPackageState>,
-) -> Result<(Arc<QueryAuthority>, Arc<DescriptorRegistry>), SdkExecutionDiagnostic> {
+) -> Result<RemoteAuthority, SdkExecutionDiagnostic> {
+    if let Some(built) = package.remote_authority.get() {
+        return Ok(built.clone());
+    }
+    let built = build_remote_authority(package)?;
+    Ok(package.remote_authority.get_or_init(|| built).clone())
+}
+
+fn build_remote_authority(
+    package: &Arc<SchemaPackageState>,
+) -> Result<RemoteAuthority, SdkExecutionDiagnostic> {
+    #[cfg(test)]
+    REMOTE_AUTHORITY_BUILDS.with(|count| count.set(count.get() + 1));
     let declared = encode_declared_schema(package._authority.declared_schema())
         .map_err(type_bridge_orm::lower_remote_query_diagnostic)?;
     let authority = QueryAuthority::from_declared_bytes(
@@ -12264,6 +12291,25 @@ mod tests {
             Some(timeout_code)
         );
         assert_eq!(bounded.events.opens.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn each_package_builds_its_remote_authority_once() {
+        let builds = || REMOTE_AUTHORITY_BUILDS.with(std::cell::Cell::get);
+        let first = package("remoteauthoritya");
+        let second = package("remoteauthorityb");
+        let start = builds();
+        let (authority, registry) = remote_authority(first.state()).unwrap();
+        let (again, again_registry) = remote_authority(first.state()).unwrap();
+        assert_eq!(builds() - start, 1);
+        assert!(Arc::ptr_eq(&authority, &again));
+        assert!(Arc::ptr_eq(&registry, &again_registry));
+
+        // Another package, even of the same schema, builds its own.
+        let (other, other_registry) = remote_authority(second.state()).unwrap();
+        assert_eq!(builds() - start, 2);
+        assert!(!Arc::ptr_eq(&authority, &other));
+        assert!(!Arc::ptr_eq(&registry, &other_registry));
     }
 
     #[test]
