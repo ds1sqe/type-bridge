@@ -77,17 +77,6 @@ AUDIT_ADJUDICATIONS = (
             "moves off chrono"
         ),
     },
-    {
-        "advisory": "RUSTSEC-2026-0559",
-        "classification": "unmaintained",
-        "package": "chrono-tz-build",
-        "version": "0.3.0",
-        "rationale": (
-            "non-vulnerability unmaintained notice for a time crate required by the "
-            "upstream TypeDB driver and TypeQL graph; replace when the TypeDB driver "
-            "moves off chrono"
-        ),
-    },
 )
 SECRET_PATTERNS = (
     ("aws-access-key", re.compile(rb"AKIA[0-9A-Z]{16}")),

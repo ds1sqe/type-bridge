@@ -174,7 +174,6 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         ("RUSTSEC-2025-0134", "rustls-pemfile", "2.2.0"),
         ("RUSTSEC-2026-0543", "chrono", "0.4.45"),
         ("RUSTSEC-2026-0555", "chrono-tz", "0.9.0"),
-        ("RUSTSEC-2026-0559", "chrono-tz-build", "0.3.0"),
     ]
     _require(
         isinstance(adjudications, list)
