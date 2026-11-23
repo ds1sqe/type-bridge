@@ -170,12 +170,21 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         "RustSec warning policy widened",
     )
     adjudications = security.get("adjudications")
+    expected_adjudications = [
+        ("RUSTSEC-2025-0134", "rustls-pemfile", "2.2.0"),
+        ("RUSTSEC-2026-0543", "chrono", "0.4.45"),
+        ("RUSTSEC-2026-0555", "chrono-tz", "0.9.0"),
+        ("RUSTSEC-2026-0559", "chrono-tz-build", "0.3.0"),
+    ]
     _require(
         isinstance(adjudications, list)
-        and len(adjudications) == 1
-        and adjudications[0].get("advisory") == "RUSTSEC-2025-0134"
-        and adjudications[0].get("package") == "rustls-pemfile"
-        and adjudications[0].get("version") == "2.2.0",
+        and all(isinstance(item, dict) for item in adjudications)
+        and [
+            (item.get("advisory"), item.get("package"), item.get("version"))
+            for item in adjudications
+        ]
+        == expected_adjudications
+        and all(item.get("classification") == "unmaintained" for item in adjudications),
         "RustSec adjudication set drifted",
     )
     signature = security.get("protected_signature")
