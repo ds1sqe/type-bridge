@@ -121,10 +121,32 @@ static VERIFIED_AUTHORITIES: LazyLock<
     RwLock<HashMap<AuthorityEvidenceKey, Arc<VerifiedSchemaAuthority>>>,
 > = LazyLock::new(RwLock::default);
 
+/// Address and length of every embedded evidence string a verified install
+/// reads: the three projection strings, then the authority evidence.
+type InstallEvidenceKey = [Option<(usize, usize)>; 7];
+
+/// A verified runtime projection and its optional compiled authority.
+type VerifiedInstall = (
+    Arc<type_bridge_orm::InstalledRuntimeProjection>,
+    Option<Arc<VerifiedSchemaAuthority>>,
+);
+
+/// Verified install of every package used so far. Decoding and re-projecting
+/// the runtime projection is the dominant cost of a codec call, and the
+/// embedded evidence is immutable, so each package pays it once. Entries are
+/// never evicted: the map holds one decoded projection per distinct static
+/// evidence, which is bounded by the packages compiled into the process.
+/// Leaking fresh evidence on every reload keeps one decoded copy per reload.
+static VERIFIED_INSTALLS: LazyLock<RwLock<HashMap<InstallEvidenceKey, VerifiedInstall>>> =
+    LazyLock::new(RwLock::default);
+
 #[cfg(test)]
 thread_local! {
     /// Full authority verifications run on this thread.
     pub(crate) static AUTHORITY_VERIFICATIONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    /// Full runtime projection decodes and re-projections run on this thread.
+    pub(crate) static PROJECTION_VERIFICATIONS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
@@ -837,12 +859,51 @@ impl<S: Schema> SchemaPackage<S> {
             .map(|(projection, _authority)| projection)
     }
 
-    pub(crate) fn verify_and_install_with_authority(
-        &self,
-    ) -> Result<(
-        Arc<type_bridge_orm::InstalledRuntimeProjection>,
-        Option<Arc<VerifiedSchemaAuthority>>,
-    )> {
+    /// Verify all package evidence once per package.
+    ///
+    /// Only a successful verification is cached, keyed by the identity of
+    /// every evidence string it reads. A package whose evidence fails
+    /// re-verifies, and fails, on every call.
+    pub(crate) fn verify_and_install_with_authority(&self) -> Result<VerifiedInstall> {
+        let key = self.install_evidence_key();
+        let cached = VERIFIED_INSTALLS
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        if let Some(install) = cached {
+            return Ok(install);
+        }
+        let install = self.verify_and_install_uncached()?;
+        Ok(VERIFIED_INSTALLS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(key)
+            .or_insert(install)
+            .clone())
+    }
+
+    /// Identity of every evidence string `verify_and_install_uncached` reads.
+    ///
+    /// As for [`Self::authority_evidence_key`], equal addresses and lengths of
+    /// immutable `'static` text mean equal bytes.
+    fn install_evidence_key(&self) -> InstallEvidenceKey {
+        let identity = |text: &'static str| Some((text.as_ptr() as usize, text.len()));
+        let [authority, declared, scope, profile] = self.authority_evidence_key();
+        [
+            identity(self.semantic_fingerprint_json),
+            identity(self.projection_fingerprint_json),
+            identity(self.runtime_projection_json),
+            authority,
+            declared,
+            scope,
+            profile,
+        ]
+    }
+
+    fn verify_and_install_uncached(&self) -> Result<VerifiedInstall> {
+        #[cfg(test)]
+        PROJECTION_VERIFICATIONS.with(|count| count.set(count.get() + 1));
         let authority_backed = self.schema_authority_json.is_some();
         // The detached semantic-fingerprint string is canonical evidence slot
         // zero. Empty bytes are the generated Rust install boundary's only
@@ -1814,5 +1875,56 @@ mod tests {
         assert_eq!(err.code(), None);
         assert_eq!(err.path(), None);
         assert!(err.to_string().contains("target mismatch") || err.to_string().contains("Rust"));
+    }
+
+    #[test]
+    fn each_package_verifies_its_projection_once_and_packages_stay_distinct() {
+        let verifications = || PROJECTION_VERIFICATIONS.with(std::cell::Cell::get);
+        let person = generated_package(
+            "format: typebridge.schema/v2\nentities:\n  person: {}\n",
+            "rust-install-cache-person",
+        );
+        let animal = generated_package(
+            "format: typebridge.schema/v2\nentities:\n  animal: {}\n",
+            "rust-install-cache-animal",
+        );
+
+        let start = verifications();
+        let (person_first, _) = person.verify_and_install_with_authority().unwrap();
+        let (person_second, _) = person.verify_and_install_with_authority().unwrap();
+        // A copy shares the evidence, so it shares the verification.
+        let copy = person;
+        let (person_copy, _) = copy.verify_and_install_with_authority().unwrap();
+        assert_eq!(verifications() - start, 1);
+        assert!(Arc::ptr_eq(&person_first, &person_second));
+        assert!(Arc::ptr_eq(&person_first, &person_copy));
+
+        let (animal_install, animal_authority) =
+            animal.verify_and_install_with_authority().unwrap();
+        animal.verify_and_install_with_authority().unwrap();
+        assert_eq!(verifications() - start, 2);
+        assert!(!Arc::ptr_eq(&person_first, &animal_install));
+        let labels = |installed: &type_bridge_orm::InstalledRuntimeProjection| {
+            installed
+                .projection()
+                .models()
+                .keys()
+                .map(|id| id.label().as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(labels(&person_first), ["person"]);
+        assert_eq!(labels(&animal_install), ["animal"]);
+        assert_eq!(
+            animal_authority.unwrap().managed_scope().id().as_str(),
+            "rust-install-cache-animal"
+        );
+
+        // The same projection without authority is a different package.
+        let (bare, bare_authority) = without_authority(person)
+            .verify_and_install_with_authority()
+            .unwrap();
+        assert_eq!(verifications() - start, 3);
+        assert!(bare_authority.is_none());
+        assert!(!Arc::ptr_eq(&person_first, &bare));
     }
 }
