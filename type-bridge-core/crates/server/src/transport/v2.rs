@@ -27,23 +27,20 @@ use type_bridge_contract::query_remote::{
 use type_bridge_contract::query_remote_v2::{
     CAP_QUERY_REMOTE_STATEMENT_LIMIT, query_remote_v2_required_capabilities,
 };
-use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
+use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_orm::OwnedTransaction as Transaction;
-use type_bridge_orm::query_v2_prepared::{
-    acquire_live_authority_rebuild_permit, verify_managed_query_control_scope,
-};
+use type_bridge_orm::query_v2_prepared::verify_managed_query_control_scope;
 #[cfg(test)]
 use type_bridge_orm::query_v2_remote::Ed25519RemoteReplyVerifier;
 use type_bridge_orm::query_v2_remote::{
     RemoteReplySigningKey, encode_unbound_remote_failure_v2, execute_admitted_remote_request_v2,
     preflight_remote_request_v2,
 };
-use type_bridge_orm::session::backend::{MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryV2AnswerLimits};
+use type_bridge_orm::session::backend::QueryV2AnswerLimits;
 use type_bridge_orm::session::database::Database;
 use type_bridge_query::MigrationAssertionValidationContext;
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
-use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
 use crate::interceptor::{RequestContext, V2PolicyOutcome, V2PolicyRequest};
 use crate::pipeline::QueryPipeline;
@@ -408,26 +405,6 @@ impl V2QueryState {
         )
     }
 
-    pub(super) async fn verify_live_authority(&self) -> Result<(), Diagnostic> {
-        self.verify_database_profile()?;
-        let rebuild_permit = acquire_live_authority_rebuild_permit().await.map_err(|_| {
-            diagnostic(
-                DiagnosticCategory::Integrity,
-                "query_remote_live_schema_unavailable",
-                "the executor could not reserve live-schema verification capacity",
-            )
-        })?;
-        let export = self.database.schema_text().await.map_err(|_| {
-            diagnostic(
-                DiagnosticCategory::Integrity,
-                "query_remote_live_schema_unavailable",
-                "the executor could not verify its live schema authority",
-            )
-        })?;
-        self.verify_live_authority_export_with_permit(export, rebuild_permit)
-            .await
-    }
-
     fn verify_database_profile(&self) -> Result<(), Diagnostic> {
         let server_version = self.database.server_version().ok_or_else(|| {
             diagnostic(
@@ -457,172 +434,43 @@ impl V2QueryState {
         Ok(())
     }
 
-    async fn verify_live_authority_export_with_permit(
-        &self,
-        export: String,
-        rebuild_permit: tokio::sync::OwnedSemaphorePermit,
-    ) -> Result<(), Diagnostic> {
-        let document = DocumentId::new("typebridge-v2-request-live-export.typeql")?;
-        let declared = self.declared.clone();
-        let context = self.delta_context.clone();
-        let live = tokio::task::spawn_blocking(move || {
-            let _rebuild_permit = rebuild_permit;
-            rebuild_live_query_authority(document, &export, &declared, &context)
-        })
-        .await
-        .map_err(|_| {
-            diagnostic(
-                DiagnosticCategory::Integrity,
-                "query_remote_live_schema_invalid",
-                "the executor live schema cannot form trusted query authority",
-            )
-        })?
-        .map_err(|_| {
-            diagnostic(
-                DiagnosticCategory::Integrity,
-                "query_remote_live_schema_invalid",
-                "the executor live schema cannot form trusted query authority",
-            )
-        })?;
-        if live.managed() != &self.managed {
-            return Err(diagnostic(
-                DiagnosticCategory::Integrity,
-                "query_remote_stale_schema",
-                "the executor live schema no longer matches its declared authority",
-            ));
-        }
-        match (self.control_policy, live.control_presence()) {
-            (V2QueryControlPolicy::Managed, LiveQueryControlPresence::ManagedFence)
-            | (V2QueryControlPolicy::QueryOnly, LiveQueryControlPresence::Absent) => {}
-            (V2QueryControlPolicy::Managed, LiveQueryControlPresence::Absent) => {
-                return Err(diagnostic(
-                    DiagnosticCategory::Integrity,
-                    "query_remote_managed_control_missing",
-                    "the managed executor database has no migration control authority",
-                ));
-            }
-            (V2QueryControlPolicy::QueryOnly, LiveQueryControlPresence::ManagedFence) => {
-                return Err(diagnostic(
-                    DiagnosticCategory::Integrity,
-                    "query_remote_query_only_control_present",
-                    "the query-only executor database unexpectedly has managed control authority",
-                ));
-            }
-            (_, LiveQueryControlPresence::ManagedFenceWithExtensions) => {
-                return Err(diagnostic(
-                    DiagnosticCategory::Integrity,
-                    "query_remote_live_schema_invalid",
-                    "the executor managed control schema carries unsupported released-only extensions",
-                ));
-            }
-        }
-        if matches!(self.control_policy, V2QueryControlPolicy::QueryOnly)
-            && live.legacy_control_present()
-        {
-            return Err(diagnostic(
-                DiagnosticCategory::Integrity,
-                "query_remote_query_only_legacy_control_present",
-                "the query-only executor database unexpectedly has legacy migration control authority",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Prove the configured authority under one bounded schema fence before
-    /// exposing this state through a standalone server.
+    /// Check the configured authority once before exposing this state through
+    /// a standalone server.
+    ///
+    /// The executor trusts its configured authority: it never exports or
+    /// compares the live TypeDB schema. This checks only the connected
+    /// server's semantic profile and, for a managed database, the migration
+    /// control singleton. Restart the server after a schema migration.
     pub async fn verify_startup_authority(&self) -> Result<(), Diagnostic> {
         let deadline = Instant::now()
             .checked_add(DEFAULT_EXECUTION_TIMEOUT)
-            .ok_or_else(|| {
-                diagnostic(
-                    DiagnosticCategory::ResourceLimit,
-                    "transaction_deadline_exceeded",
-                    "provider transaction deadline expired",
-                )
-            })?;
-        self.verify_authority_before(deadline).await
-    }
-
-    async fn verify_authority_before(&self, deadline: Instant) -> Result<(), Diagnostic> {
-        match await_before_deadline(deadline, self.verify_live_authority()).await {
-            Some(result) => result?,
-            None => {
-                return Err(diagnostic(
-                    DiagnosticCategory::ResourceLimit,
-                    "transaction_deadline_exceeded",
-                    "provider transaction deadline expired",
-                ));
-            }
+            .ok_or_else(deadline_exceeded)?;
+        self.verify_database_profile()?;
+        if matches!(self.control_policy, V2QueryControlPolicy::QueryOnly) {
+            return Ok(());
         }
-        let rebuild_permit =
-            await_before_deadline(deadline, acquire_live_authority_rebuild_permit())
-                .await
-                .ok_or_else(|| {
-                    diagnostic(
-                        DiagnosticCategory::ResourceLimit,
-                        "transaction_deadline_exceeded",
-                        "provider transaction deadline expired",
-                    )
-                })?
-                .map_err(|_| {
-                    diagnostic(
-                        DiagnosticCategory::Integrity,
-                        "query_remote_live_schema_unavailable",
-                        "the executor could not reserve live-schema verification capacity",
-                    )
-                })?;
-        let fence_timeout = deadline
-            .saturating_duration_since(Instant::now())
-            .min(MAX_QUERY_V2_SCHEMA_FENCE_DURATION);
-        if fence_timeout.is_zero() {
-            return Err(diagnostic(
-                DiagnosticCategory::ResourceLimit,
-                "transaction_deadline_exceeded",
-                "provider transaction deadline expired",
-            ));
-        }
-        let open = self.database.schema_fenced_read_transaction(fence_timeout);
-        let (mut transaction, fenced_schema) = await_before_deadline(deadline, open)
+        let mut transaction = await_before_deadline(deadline, self.database.read_transaction())
             .await
-            .ok_or_else(|| {
-                diagnostic(
-                    DiagnosticCategory::ResourceLimit,
-                    "transaction_deadline_exceeded",
-                    "provider transaction deadline expired",
-                )
-            })?
+            .ok_or_else(deadline_exceeded)?
             .map_err(|_| {
                 diagnostic(
                     DiagnosticCategory::Integrity,
                     "query_remote_provider_unavailable",
-                    "the executor could not open a schema-fenced startup transaction",
+                    "the executor could not open a startup read transaction",
                 )
             })?;
-        let verified = async {
-            await_before_deadline(
-                deadline,
-                self.verify_live_authority_export_with_permit(fenced_schema, rebuild_permit),
-            )
-            .await
-            .ok_or_else(|| {
-                diagnostic(
-                    DiagnosticCategory::ResourceLimit,
-                    "transaction_deadline_exceeded",
-                    "provider transaction deadline expired",
-                )
-            })??;
-            if matches!(self.control_policy, V2QueryControlPolicy::Managed) {
-                verify_managed_query_control_scope(
-                    &mut transaction,
-                    self.delta_context.scope_id(),
-                    Some(deadline),
-                    &self.ceilings.answer.cancellation,
-                )
-                .await?;
-            }
-            Ok::<(), Diagnostic>(())
-        }
-        .await;
+        let verified = await_before_deadline(
+            deadline,
+            verify_managed_query_control_scope(
+                &mut transaction,
+                self.delta_context.scope_id(),
+                Some(deadline),
+                &self.ceilings.answer.cancellation,
+            ),
+        )
+        .await
+        .ok_or_else(deadline_exceeded)
+        .and_then(|verified| verified);
         let closed = close_v2_transaction(&mut transaction).await;
         verified?;
         if closed.is_err() {
@@ -892,7 +740,7 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
     // The request nonce is reserved before plan-level policy callbacks.
     // Transport authentication already ran before the body was collected, but
     // a replay must not invoke request-specific application hooks or construct
-    // any live schema/provider/model host state.
+    // any provider/model host state.
     let retain_until = admitted.replay_until();
     match await_before_deadline(
         deadline,
@@ -973,59 +821,12 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
         }
     }
 
-    // A unique, authenticated request may force one bounded schema export, but
-    // never a provider transaction unless current live authority has been
-    // proved.
-    match await_before_deadline(deadline, state.query.verify_live_authority()).await {
-        Some(Ok(())) => {}
-        Some(Err(diagnostic)) => {
-            let code = diagnostic.code().as_str().to_owned();
-            return finish_v2_failure(
-                &state,
-                deadline,
-                &policy_context,
-                &code,
-                admitted.bound_failure(&diagnostic, &state.query.signer),
-                response_policy_failure,
-                deadline_failure,
-            )
-            .await;
-        }
-        None => {
-            return finish_v2_failure(
-                &state,
-                deadline,
-                &policy_context,
-                "transaction_deadline_exceeded",
-                deadline_failure.clone(),
-                response_policy_failure,
-                deadline_failure,
-            )
-            .await;
-        }
-    }
-
-    let rebuild_permit =
-        match await_before_deadline(deadline, acquire_live_authority_rebuild_permit()).await {
-            Some(Ok(permit)) => permit,
-            Some(Err(_)) => {
-                let diagnostic = diagnostic(
-                    DiagnosticCategory::Integrity,
-                    "query_remote_live_schema_unavailable",
-                    "the executor could not reserve live-schema verification capacity",
-                );
-                let code = diagnostic.code().as_str().to_owned();
-                return finish_v2_failure(
-                    &state,
-                    deadline,
-                    &policy_context,
-                    &code,
-                    admitted.bound_failure(&diagnostic, &state.query.signer),
-                    response_policy_failure,
-                    deadline_failure,
-                )
-                .await;
-            }
+    // The executor trusts its configured authority and never verifies the
+    // live schema here: a schema changed out of band fails at the provider,
+    // exactly as it would over a direct connection.
+    let opened =
+        match await_before_deadline(deadline, state.query.database.read_transaction()).await {
+            Some(result) => result,
             None => {
                 return finish_v2_failure(
                     &state,
@@ -1039,43 +840,8 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
                 .await;
             }
         };
-
-    let fence_timeout = deadline
-        .saturating_duration_since(Instant::now())
-        .min(MAX_QUERY_V2_SCHEMA_FENCE_DURATION);
-    if fence_timeout.is_zero() {
-        return finish_v2_failure(
-            &state,
-            deadline,
-            &policy_context,
-            "transaction_deadline_exceeded",
-            deadline_failure.clone(),
-            response_policy_failure,
-            deadline_failure,
-        )
-        .await;
-    }
-    let open = state
-        .query
-        .database
-        .schema_fenced_read_transaction(fence_timeout);
-    let opened = match await_before_deadline(deadline, open).await {
-        Some(result) => result,
-        None => {
-            return finish_v2_failure(
-                &state,
-                deadline,
-                &policy_context,
-                "transaction_deadline_exceeded",
-                deadline_failure.clone(),
-                response_policy_failure,
-                deadline_failure,
-            )
-            .await;
-        }
-    };
-    let (mut transaction, fenced_schema) = match opened {
-        Ok(fenced) => fenced,
+    let mut transaction = match opened {
+        Ok(transaction) => transaction,
         Err(_) => {
             return finish_v2_failure(
                 &state,
@@ -1090,45 +856,6 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
         }
     };
 
-    // The backend captured this export while the bounded schema-exclusion
-    // guard was held, so it is the transaction's exact schema authority.
-    match await_before_deadline(
-        deadline,
-        state
-            .query
-            .verify_live_authority_export_with_permit(fenced_schema, rebuild_permit),
-    )
-    .await
-    {
-        Some(Ok(())) => {}
-        Some(Err(diagnostic)) => {
-            let code = diagnostic.code().as_str().to_owned();
-            return finish_v2_failure_after_transaction_close(
-                &state,
-                &mut transaction,
-                deadline,
-                &policy_context,
-                &code,
-                admitted.bound_failure(&diagnostic, &state.query.signer),
-                response_policy_failure,
-                deadline_failure,
-            )
-            .await;
-        }
-        None => {
-            return finish_v2_failure_after_transaction_close(
-                &state,
-                &mut transaction,
-                deadline,
-                &policy_context,
-                "transaction_deadline_exceeded",
-                deadline_failure.clone(),
-                response_policy_failure,
-                deadline_failure,
-            )
-            .await;
-        }
-    }
     if matches!(state.query.control_policy, V2QueryControlPolicy::Managed) {
         let control = verify_managed_query_control_scope(
             &mut transaction,
@@ -1322,9 +1049,8 @@ async fn handle_v2_capabilities(
         return envelope_response(state.query.unbound_failure(&deadline_exceeded()));
     };
 
-    // Discovery is cheap only after the configured V2 transport policy has
-    // authenticated/rate-limited it. In particular, rejected discovery never
-    // reaches the live schema exporter below.
+    // Discovery runs the configured V2 transport policy, which may
+    // authenticate or rate-limit it, but never contacts the provider.
     let metadata = v2_request_metadata(request.headers(), "capabilities");
     let mut policy_context = match state.pipeline.v2_request_context(metadata) {
         Ok(context) => context,
@@ -1367,39 +1093,6 @@ async fn handle_v2_capabilities(
         }
     }
 
-    // Discovery proves that the advertised executor still has the configured
-    // live schema/profile authority, but does not open an execution
-    // transaction. Exact schema fencing and managed-control admission belong
-    // to startup and to the query transaction that consumes them.
-    match await_before_deadline(deadline, state.query.verify_live_authority()).await {
-        Some(Ok(())) => {}
-        Some(Err(diagnostic)) => {
-            let code = diagnostic.code().as_str().to_owned();
-            let failure = state.query.unbound_failure(&diagnostic);
-            return finish_v2_failure(
-                &state,
-                deadline,
-                &policy_context,
-                &code,
-                failure,
-                policy_failure,
-                deadline_failure,
-            )
-            .await;
-        }
-        None => {
-            return finish_v2_failure(
-                &state,
-                deadline,
-                &policy_context,
-                "transaction_deadline_exceeded",
-                deadline_failure.clone(),
-                policy_failure,
-                deadline_failure,
-            )
-            .await;
-        }
-    }
     let bytes = match state.query.advertisement.encode() {
         Ok(bytes) => bytes,
         Err(diagnostic) => {
@@ -1512,7 +1205,6 @@ fn internal_response_invalid() -> Diagnostic {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use axum::body::Body;
@@ -1544,14 +1236,14 @@ mod tests {
         decode_remote_reply_v2, decode_signed_remote_failure_v2,
     };
     use type_bridge_contract::schema::{
-        OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact, ValueFact,
-        ValueFactId,
+        DocumentId, OwnsFact, OwnsFactId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
+        ValueFact, ValueFactId,
     };
     use type_bridge_contract::value::{Cardinality, ValueTypeTag};
     use type_bridge_orm::error::OrmError;
     use type_bridge_orm::query_v2_remote::encode_remote_request_v2;
     use type_bridge_orm::session::backend::{
-        BoxFuture, DriverBackend, QueryResult, SchemaFencedReadTransaction, TransactionOps, TxType,
+        BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType,
     };
     use type_bridge_query::validate_query_plan;
     use type_bridge_schema::{managed_schema_state, resolve};
@@ -1563,8 +1255,6 @@ mod tests {
     use super::*;
     use type_bridge_contract::diagnostic::DiagnosticDetailValue;
 
-    const CURRENT_SCHEMA: &str = "define\nattribute transport-name, value string;\nentity transport-person, owns transport-name;";
-    const STALE_SCHEMA: &str = "define\nattribute transport-name, value string;\nentity transport-person, owns transport-name;\nentity transport-unexpected;";
     const TEST_NONCE: &str = "server-route-nonce-000001";
 
     #[derive(Default)]
@@ -1573,6 +1263,7 @@ mod tests {
         fail_commit: AtomicBool,
         fail_query: AtomicBool,
         commits: AtomicUsize,
+        /// Live schema exports; the executor must never request one.
         schema_exports: AtomicUsize,
         transaction_opens: AtomicUsize,
         transaction_closes: AtomicUsize,
@@ -1585,26 +1276,14 @@ mod tests {
     }
 
     struct CountingBackend {
-        fallback_schema: String,
         metrics: Arc<BackendMetrics>,
-        observations: Mutex<VecDeque<String>>,
         server_version: type_bridge_core_lib::version::Version,
     }
 
     impl CountingBackend {
-        fn new(
-            observations: impl IntoIterator<Item = &'static str>,
-            metrics: Arc<BackendMetrics>,
-        ) -> Self {
+        fn new(metrics: Arc<BackendMetrics>) -> Self {
             Self {
-                fallback_schema: CURRENT_SCHEMA.to_owned(),
                 metrics,
-                observations: Mutex::new(
-                    observations
-                        .into_iter()
-                        .map(str::to_owned)
-                        .collect::<VecDeque<_>>(),
-                ),
                 server_version: type_bridge_core_lib::version::Version::new(3, 12, 1),
             }
         }
@@ -1633,19 +1312,6 @@ mod tests {
             Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
         }
 
-        fn open_schema_fenced_read_transaction(
-            &self,
-            database: &str,
-            _timeout: Duration,
-        ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-            let database = database.to_owned();
-            Box::pin(async move {
-                let transaction = self.open_transaction(&database, TxType::Write).await?;
-                let schema_text = self.schema_text(&database).await?;
-                Ok(SchemaFencedReadTransaction::new(transaction, schema_text))
-            })
-        }
-
         fn is_open(&self) -> bool {
             true
         }
@@ -1656,13 +1322,7 @@ mod tests {
 
         fn schema_text(&self, _database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
             self.metrics.schema_exports.fetch_add(1, Ordering::SeqCst);
-            let schema = self
-                .observations
-                .lock()
-                .expect("schema observation lock")
-                .pop_front()
-                .unwrap_or_else(|| self.fallback_schema.clone());
-            Box::pin(async move { Ok(schema) })
+            Box::pin(async { Ok(String::new()) })
         }
     }
 
@@ -2245,13 +1905,8 @@ mod tests {
             .expect("query pipeline")
     }
 
-    fn route_fixture(
-        observations: impl IntoIterator<Item = &'static str>,
-        advertised: CapabilitySet,
-        pipeline: QueryPipeline,
-    ) -> RouteFixture {
+    fn route_fixture(advertised: CapabilitySet, pipeline: QueryPipeline) -> RouteFixture {
         route_fixture_with_replay_store(
-            observations,
             advertised,
             pipeline,
             Arc::new(InMemoryReplayStore::new(DEFAULT_REPLAY_CAPACITY)),
@@ -2259,7 +1914,6 @@ mod tests {
     }
 
     fn route_fixture_with_replay_store(
-        observations: impl IntoIterator<Item = &'static str>,
         advertised: CapabilitySet,
         pipeline: QueryPipeline,
         replay_store: Arc<dyn RemoteReplayStore>,
@@ -2267,7 +1921,7 @@ mod tests {
         let authority = authority_fixture(false);
         let metrics = Arc::new(BackendMetrics::default());
         let database = Database::with_backend(
-            Box::new(CountingBackend::new(observations, Arc::clone(&metrics))),
+            Box::new(CountingBackend::new(Arc::clone(&metrics))),
             "server-v2-route",
         );
         let query = Arc::new(
@@ -2301,7 +1955,7 @@ mod tests {
     fn supported_non_baseline_patch_uses_the_frozen_authority_profile() {
         let authority = authority_fixture(false);
         let metrics = Arc::new(BackendMetrics::default());
-        let backend = CountingBackend::new([], metrics)
+        let backend = CountingBackend::new(metrics)
             .with_server_version(type_bridge_core_lib::version::Version::new(3, 12, 99));
         let database = Database::with_backend(Box::new(backend), "server-v2-profile-patch");
         let state = V2QueryState::new_query_only(
@@ -2427,11 +2081,7 @@ mod tests {
         .with_default_database("server-v2-route")
         .build()
         .expect("V1 snapshot pipeline");
-        let fixture = route_fixture(
-            [CURRENT_SCHEMA],
-            query_plan_v2_capability_vocabulary(),
-            pipeline,
-        );
+        let fixture = route_fixture(query_plan_v2_capability_vocabulary(), pipeline);
         let snapshots = [
             V1RouteSnapshot {
                 method: "GET",
@@ -2560,7 +2210,6 @@ mod tests {
     async fn one_route_dispatches_v1_and_v2_plans_without_downgrade_and_replays_before_host_work() {
         let policy_metrics = Arc::new(PolicyMetrics::default());
         let fixture = route_fixture(
-            [CURRENT_SCHEMA; 4],
             query_plan_capability_vocabulary(),
             pipeline_with_policy(Arc::clone(&policy_metrics), false),
         );
@@ -2598,7 +2247,6 @@ mod tests {
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 2);
         assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 2);
         assert_eq!(policy_metrics.requests.load(Ordering::SeqCst), 2);
-        let exports_before_replay = fixture.metrics.schema_exports.load(Ordering::SeqCst);
 
         let replay = post_query(&fixture.router, request).await;
         let failure = match decode_remote_reply_v2(
@@ -2631,11 +2279,7 @@ mod tests {
                 .as_str(),
             "query_remote_replay"
         );
-        assert_eq!(
-            fixture.metrics.schema_exports.load(Ordering::SeqCst),
-            exports_before_replay,
-            "replay rejects before live authority reconstruction"
-        );
+        assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 2);
         assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 2);
         assert_eq!(
@@ -2647,11 +2291,7 @@ mod tests {
 
     #[tokio::test]
     async fn model_reduction_route_returns_authenticated_count_and_enforces_cell_budget() {
-        let fixture = route_fixture(
-            [CURRENT_SCHEMA; 4],
-            query_plan_v2_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let fixture = route_fixture(query_plan_v2_capability_vocabulary(), default_pipeline());
         let authority = authority_fixture(false);
 
         let (request, plan, envelope, fingerprint, limits) = validated_reduction_request_v2(
@@ -2743,11 +2383,7 @@ mod tests {
 
     #[tokio::test]
     async fn declared_oversized_body_rejects_before_collection_and_preflight() {
-        let fixture = route_fixture(
-            [CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let fixture = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         let response = fixture
             .router
             .clone()
@@ -2782,11 +2418,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn hostile_maximal_body_dispatches_from_its_prefix_without_host_construction() {
-        let fixture = route_fixture(
-            [CURRENT_SCHEMA],
-            query_plan_v2_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let fixture = route_fixture(query_plan_v2_capability_vocabulary(), default_pipeline());
         let authority = authority_fixture(false);
         let (request, _, _, _, _) = validated_request_v2(
             &authority,
@@ -2826,11 +2458,7 @@ mod tests {
 
     #[tokio::test]
     async fn response_wire_floors_reject_before_host_work_and_admit_exact_boundaries() {
-        let fixture = route_fixture(
-            [CURRENT_SCHEMA; 8],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let fixture = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         let authority = authority_fixture(false);
         let shapes = vec![
             (
@@ -2986,7 +2614,7 @@ mod tests {
             assert_eq!(u64::try_from(expected.len()).expect("wire length"), floor);
             assert_eq!(post_query(&fixture.router, request.bytes).await, expected);
         }
-        assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 8);
+        assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 4);
         assert_eq!(fixture.metrics.transaction_closes.load(Ordering::SeqCst), 4);
         assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 4);
@@ -2994,11 +2622,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_query_shapes_never_open_a_data_transaction() {
-        let malformed = route_fixture(
-            [CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let malformed = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         let body = post_query(&malformed.router, b"{".to_vec()).await;
         assert_eq!(
             failure_code(&malformed.query, &body),
@@ -3010,11 +2634,7 @@ mod tests {
         );
         assert_eq!(malformed.metrics.schema_exports.load(Ordering::SeqCst), 0,);
 
-        let forged_owner = route_fixture(
-            [CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let forged_owner = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         let foreign_signer = RemoteReplySigningKey::from_secret_bytes([0x91; 32]);
         let foreign_advertisement = RemoteCapabilities::new(
             forged_owner.advertisement.capabilities().clone(),
@@ -3050,7 +2670,6 @@ mod tests {
         );
 
         let forged_v2 = route_fixture_with_replay_store(
-            [CURRENT_SCHEMA],
             query_plan_capability_vocabulary(),
             default_pipeline(),
             Arc::new(InMemoryReplayStore::new(0)),
@@ -3085,11 +2704,7 @@ mod tests {
 
         // The advertisement fingerprint binds the capability set, so a plan
         // the executor cannot run is refused when the request is encoded.
-        let unsupported = route_fixture(
-            [CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let unsupported = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         let bare = RemoteCapabilities::new(
             query_remote_v2_required_capabilities(false),
             unsupported.advertisement.executor().clone(),
@@ -3114,11 +2729,7 @@ mod tests {
         );
         assert_eq!(unsupported.metrics.schema_exports.load(Ordering::SeqCst), 0,);
 
-        let invalid = route_fixture(
-            [CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let invalid = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         let request = String::from_utf8(invalid.request_bytes()).expect("request JSON");
         let request = request.replace("\"rows\":[]", "\"rows\":[[]]");
         assert_ne!(request.as_bytes(), invalid.request.bytes.as_slice());
@@ -3130,11 +2741,7 @@ mod tests {
         assert_eq!(invalid.metrics.transaction_opens.load(Ordering::SeqCst), 0,);
         assert_eq!(invalid.metrics.schema_exports.load(Ordering::SeqCst), 0);
 
-        let stale_plan = route_fixture(
-            [CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let stale_plan = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         let stale_authority = authority_fixture(true);
         let request = validated_request(
             &stale_authority,
@@ -3151,33 +2758,12 @@ mod tests {
             0,
         );
         assert_eq!(stale_plan.metrics.schema_exports.load(Ordering::SeqCst), 0,);
-
-        let stale_live = route_fixture(
-            [STALE_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
-        let body = post_query(&stale_live.router, stale_live.request_bytes()).await;
-        assert_eq!(
-            rejection_code(&stale_live.query, &stale_live.request, &body),
-            "query_remote_stale_schema"
-        );
-        assert_eq!(
-            stale_live.metrics.transaction_opens.load(Ordering::SeqCst),
-            0,
-        );
-        assert_eq!(stale_live.metrics.schema_exports.load(Ordering::SeqCst), 1,);
-        assert_eq!(
-            stale_live.metrics.query_executions.load(Ordering::SeqCst),
-            0,
-        );
     }
 
     #[tokio::test]
-    async fn replay_is_rejected_before_live_schema_or_data_transaction_work() {
+    async fn replay_is_rejected_before_data_transaction_work() {
         let policy_metrics = Arc::new(PolicyMetrics::default());
         let fixture = route_fixture(
-            [CURRENT_SCHEMA],
             query_plan_capability_vocabulary(),
             pipeline_with_policy(Arc::clone(&policy_metrics), false),
         );
@@ -3217,7 +2803,6 @@ mod tests {
 
         let rejecting_metrics = Arc::new(PolicyMetrics::default());
         let rejecting = route_fixture(
-            [CURRENT_SCHEMA],
             query_plan_capability_vocabulary(),
             pipeline_with_rejecting_request_policy(Arc::clone(&rejecting_metrics)),
         );
@@ -3246,11 +2831,7 @@ mod tests {
 
     #[tokio::test]
     async fn v1_format_request_is_refused_before_host_work() {
-        let fixture = route_fixture(
-            [CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let fixture = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         let mut request: serde_json::Value =
             serde_json::from_slice(&fixture.request.bytes).expect("V2 request JSON");
         assert_eq!(
@@ -3279,48 +2860,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authority_is_rechecked_across_one_data_snapshot_before_execution() {
-        let stable = route_fixture(
-            [CURRENT_SCHEMA, CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
-        let body = post_query(&stable.router, stable.request_bytes()).await;
-        stable.expect_response(&body);
-        assert_eq!(stable.metrics.schema_exports.load(Ordering::SeqCst), 2);
-        assert_eq!(stable.metrics.transaction_opens.load(Ordering::SeqCst), 1);
-        assert_eq!(stable.metrics.transaction_closes.load(Ordering::SeqCst), 1);
-        assert_eq!(stable.metrics.query_executions.load(Ordering::SeqCst), 1);
+    async fn execute_and_startup_never_export_the_live_schema() {
+        let fixture = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
+        fixture
+            .query
+            .verify_startup_authority()
+            .await
+            .expect("query-only startup checks only the semantic profile");
+        assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
 
-        let changed = route_fixture(
-            [CURRENT_SCHEMA, STALE_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
+        let body = post_query(&fixture.router, fixture.request_bytes()).await;
+        fixture.expect_response(&body);
+        let authority = authority_fixture(false);
+        let second = validated_request(
+            &authority,
+            &fixture.advertisement,
+            "server-no-export-nonce-0002",
         );
-        changed.metrics.fail_close.store(true, Ordering::SeqCst);
-        let body = post_query(&changed.router, changed.request_bytes()).await;
-        let failure = changed.expect_failure(&body);
-        assert_eq!(
-            failure
-                .diagnostic()
-                .expect("stale diagnostic")
-                .code()
-                .as_str(),
-            "query_remote_stale_schema",
-        );
-        assert_eq!(changed.metrics.schema_exports.load(Ordering::SeqCst), 2);
-        assert_eq!(changed.metrics.transaction_opens.load(Ordering::SeqCst), 1);
-        assert_eq!(changed.metrics.transaction_closes.load(Ordering::SeqCst), 1);
-        assert_eq!(changed.metrics.query_executions.load(Ordering::SeqCst), 0);
+        let body = post_query(&fixture.router, second.bytes.clone()).await;
+        second.expect_response(&fixture.query, &body);
+
+        // Each request opens, queries and closes exactly one read transaction,
+        // and nothing ever exports the live schema.
+        assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.metrics.transaction_closes.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
     async fn close_failure_is_warning_only_and_preserves_the_primary_success_reply() {
-        let fixture = route_fixture(
-            [CURRENT_SCHEMA, CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let fixture = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         fixture.metrics.fail_close.store(true, Ordering::SeqCst);
         let body = post_query(&fixture.router, fixture.request_bytes()).await;
         // A close failure must not replace the bound primary reply.
@@ -3332,11 +2902,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_failure_closes_once_and_close_failure_preserves_exact_bound_bytes() {
-        let fixture = route_fixture(
-            [CURRENT_SCHEMA, CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let fixture = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         fixture.metrics.fail_query.store(true, Ordering::SeqCst);
         fixture.metrics.fail_close.store(true, Ordering::SeqCst);
         let body = post_query(&fixture.router, fixture.request_bytes()).await;
@@ -3361,11 +2927,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capability_discovery_runs_v2_transport_policy_and_audit_before_export() {
+    async fn capability_discovery_runs_v2_transport_policy_and_audit_without_provider_io() {
         let policy_metrics = Arc::new(PolicyMetrics::default());
         let model_vocabulary = query_plan_v2_capability_vocabulary();
         let fixture = route_fixture(
-            [CURRENT_SCHEMA],
             model_vocabulary.clone(),
             pipeline_with_policy(Arc::clone(&policy_metrics), false),
         );
@@ -3411,12 +2976,11 @@ mod tests {
                 .as_slice(),
             [("ok".to_owned(), expected.len())],
         );
-        assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
 
         let rejected_policy = Arc::new(PolicyMetrics::default());
         let rejected = route_fixture(
-            [CURRENT_SCHEMA],
             query_plan_capability_vocabulary(),
             pipeline_with_policy(Arc::clone(&rejected_policy), true),
         );
@@ -3525,7 +3089,7 @@ mod tests {
         let authority = authority_fixture(false);
         let metrics = Arc::new(BackendMetrics::default());
         let database = Database::with_backend(
-            Box::new(CountingBackend::new([], metrics)),
+            Box::new(CountingBackend::new(metrics)),
             "server-v2-capability-limit",
         );
         let mut advertised = CapabilitySet::new();
@@ -3553,11 +3117,7 @@ mod tests {
 
     #[test]
     fn malformed_internal_reply_is_bound_failure_never_success() {
-        let fixture = route_fixture(
-            [CURRENT_SCHEMA],
-            query_plan_capability_vocabulary(),
-            default_pipeline(),
-        );
+        let fixture = route_fixture(query_plan_capability_vocabulary(), default_pipeline());
         let diagnostic = internal_response_invalid();
         let bytes = RemoteQueryFailureV2::bound(
             fixture.nonce.to_owned(),

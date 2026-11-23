@@ -73,12 +73,6 @@ fn validate_compiled_capabilities(v2_enabled: bool) -> Result<(), &'static str> 
     }
 }
 
-#[cfg(all(feature = "v2-query", test))]
-fn redact_v2_schema_export_error<E>(_error: E) -> String {
-    "v2 live schema export failed [typedb_v2_schema_export_failed]; inspect provider logs"
-        .to_owned()
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -326,8 +320,6 @@ async fn build_v2_state(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "v2-query")]
-    use super::redact_v2_schema_export_error;
     use super::{
         AuditLogConfig, AuditLogInterceptor, validate_compiled_capabilities,
         validate_configured_interceptors,
@@ -369,36 +361,6 @@ mod tests {
         )
         .expect_err("mixed implemented and unimplemented policies must abort");
         assert!(error.contains("auth, custom"), "{error}");
-    }
-
-    #[cfg(feature = "v2-query")]
-    #[test]
-    fn v2_schema_export_startup_error_drops_provider_text_and_source_chain() {
-        #[derive(Debug)]
-        struct ProviderError;
-
-        impl std::fmt::Display for ProviderError {
-            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str(
-                    "TB_ADDRESS_SECRET TB_USERNAME_SECRET TB_PASSWORD_SECRET TB_PROVIDER_SECRET",
-                )
-            }
-        }
-
-        impl std::error::Error for ProviderError {}
-
-        let error: Box<dyn std::error::Error> = redact_v2_schema_export_error(ProviderError).into();
-        let rendered = format!("{error}\n{error:?}");
-        for secret in [
-            "TB_ADDRESS_SECRET",
-            "TB_USERNAME_SECRET",
-            "TB_PASSWORD_SECRET",
-            "TB_PROVIDER_SECRET",
-        ] {
-            assert!(!rendered.contains(secret), "{secret}: {rendered}");
-        }
-        assert!(error.source().is_none());
-        assert!(rendered.contains("typedb_v2_schema_export_failed"));
     }
 
     #[test]

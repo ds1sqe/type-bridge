@@ -60,7 +60,7 @@ fn configured_v3_fixture(
     let declared = authority.declared.clone();
     let metrics = Arc::new(BackendMetrics::default());
     let database = Database::with_backend(
-        Box::new(CountingBackend::new([], Arc::clone(&metrics))),
+        Box::new(CountingBackend::new(Arc::clone(&metrics))),
         "server-v3-route",
     );
     let query = V2QueryState::new_query_only(
@@ -975,7 +975,7 @@ async fn plan_policy_refuses_a_staged_delete_before_reservation_or_io() {
     let seen = policy.plans.lock().expect("plans").clone();
     assert_eq!(seen.iter().map(|plan| plan.0).collect::<Vec<_>>(), [0, 1]);
     assert!(seen[1].1.contains(&"query.write.delete".to_owned()));
-    // Refused before live-authority I/O, staging or commit: nothing ran,
+    // Refused before provider I/O, staging or commit: nothing ran,
     // so the commit observer has nothing to observe.
     assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
@@ -991,8 +991,9 @@ async fn plan_policy_refuses_a_staged_delete_before_reservation_or_io() {
     let admitted = staged(&fixture, &plans[..1], TEST_NONCE);
     assert!(verify(&fixture, &admitted, &post(&fixture, &admitted).await).committed());
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
-    // Live authority export is the I/O the refusals above skipped.
-    assert!(fixture.metrics.schema_exports.load(Ordering::SeqCst) > 0);
+    // The admitted commit ran provider I/O without exporting the schema.
+    assert!(fixture.metrics.transaction_opens.load(Ordering::SeqCst) > 0);
+    assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

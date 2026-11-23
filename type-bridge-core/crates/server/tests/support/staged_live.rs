@@ -231,7 +231,7 @@ pub async fn given_rows_supported(test: &str) -> bool {
 /// A fresh database holding the race schema and one stocked item.
 ///
 /// The declared authority carries no key or cardinality facts, so the live
-/// schema omits those annotations to keep the live-authority check exact.
+/// schema omits those annotations to match it exactly.
 pub async fn seeded(test: &str) -> (String, Database) {
     let name = format!(
         "tb_server_v3_{test}_{}_{}",

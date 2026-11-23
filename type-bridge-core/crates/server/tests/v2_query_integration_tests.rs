@@ -700,7 +700,7 @@ async fn production_binary_serves_v1_health_and_v2_query() {
     std::fs::write(&authority_path, encode_schema_authority(&authority))
         .expect("write canonical schema-authority fixture");
 
-    // The production process must construct its own driver and live authority;
+    // The production process must construct its own driver and authority;
     // it cannot inherit the fixture's already-connected Database handle.
     database.close().expect("close fixture database connection");
     drop(database);

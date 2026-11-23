@@ -389,7 +389,7 @@ async fn execute(
     }
 
     // Plan policy authorizes every bound plan before any nonce or key
-    // reservation and before live-authority provider I/O, as V2's request
+    // reservation and before provider I/O, as V2's request
     // policy runs before replay or I/O. It sees only the decoded request.
     let plans = match staged
         .plans()
@@ -617,10 +617,6 @@ async fn execute_staged(
     deadline: Instant,
 ) -> Result<Vec<StagedAnswerV3>, SdkExecutionDiagnostic> {
     let lower = lower_remote_query_diagnostic;
-    await_before_deadline(deadline, state.query.verify_live_authority())
-        .await
-        .ok_or_else(|| lower(deadline_exceeded()))?
-        .map_err(lower)?;
     // Enforce the advertised answer ceilings, tightened by the request's
     // own budgets and deadline, while answers are read, not only once the
     // reply is built. The deadline binds as the answer timeout: a provider
