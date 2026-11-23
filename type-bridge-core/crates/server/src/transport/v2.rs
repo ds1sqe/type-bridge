@@ -405,7 +405,7 @@ impl V2QueryState {
         )
     }
 
-    fn verify_database_profile(&self) -> Result<(), Diagnostic> {
+    pub(super) fn verify_database_profile(&self) -> Result<(), Diagnostic> {
         let server_version = self.database.server_version().ok_or_else(|| {
             diagnostic(
                 DiagnosticCategory::Integrity,
@@ -821,9 +821,23 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
         }
     }
 
-    // The executor trusts its configured authority and never verifies the
-    // live schema here: a schema changed out of band fails at the provider,
-    // exactly as it would over a direct connection.
+    // The in-memory profile check also covers embedders that never call
+    // `verify_startup_authority`. The executor otherwise trusts its
+    // configured authority and never verifies the live schema: a schema
+    // changed out of band fails at the provider, as over a direct connection.
+    if let Err(diagnostic) = state.query.verify_database_profile() {
+        let code = diagnostic.code().as_str().to_owned();
+        return finish_v2_failure(
+            &state,
+            deadline,
+            &policy_context,
+            &code,
+            admitted.bound_failure(&diagnostic, &state.query.signer),
+            response_policy_failure,
+            deadline_failure,
+        )
+        .await;
+    }
     let opened =
         match await_before_deadline(deadline, state.query.database.read_transaction()).await {
             Some(result) => result,
@@ -1093,6 +1107,20 @@ async fn handle_v2_capabilities(
         }
     }
 
+    if let Err(diagnostic) = state.query.verify_database_profile() {
+        let code = diagnostic.code().as_str().to_owned();
+        let failure = state.query.unbound_failure(&diagnostic);
+        return finish_v2_failure(
+            &state,
+            deadline,
+            &policy_context,
+            &code,
+            failure,
+            policy_failure,
+            deadline_failure,
+        )
+        .await;
+    }
     let bytes = match state.query.advertisement.encode() {
         Ok(bytes) => bytes,
         Err(diagnostic) => {
@@ -1273,6 +1301,8 @@ mod tests {
         release_commit: tokio::sync::Notify,
         /// Rows every query answers with; empty by default.
         rows: Mutex<Vec<serde_json::Value>>,
+        /// Document answers served, in order, before any row answer.
+        documents: Mutex<std::collections::VecDeque<Vec<serde_json::Value>>>,
     }
 
     struct CountingBackend {
@@ -1322,7 +1352,11 @@ mod tests {
 
         fn schema_text(&self, _database: &str) -> BoxFuture<'_, Result<String, OrmError>> {
             self.metrics.schema_exports.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Ok(String::new()) })
+            Box::pin(async {
+                Err(OrmError::Connection(
+                    "the executor must not export the live schema".into(),
+                ))
+            })
         }
     }
 
@@ -1334,10 +1368,18 @@ mod tests {
         fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             self.metrics.query_executions.fetch_add(1, Ordering::SeqCst);
             let fail = self.metrics.fail_query.load(Ordering::SeqCst);
+            let documents = self
+                .metrics
+                .documents
+                .lock()
+                .expect("documents lock")
+                .pop_front();
             let rows = self.metrics.rows.lock().expect("rows lock").clone();
             Box::pin(async move {
                 if fail {
                     Err(OrmError::QueryExecution("masked query fixture".into()))
+                } else if let Some(documents) = documents {
+                    Ok(QueryResult::Documents(documents))
                 } else {
                     Ok(QueryResult::Rows(rows))
                 }
@@ -1918,10 +1960,26 @@ mod tests {
         pipeline: QueryPipeline,
         replay_store: Arc<dyn RemoteReplayStore>,
     ) -> RouteFixture {
+        route_fixture_on_server(
+            advertised,
+            pipeline,
+            replay_store,
+            type_bridge_core_lib::version::Version::new(3, 12, 1),
+        )
+    }
+
+    fn route_fixture_on_server(
+        advertised: CapabilitySet,
+        pipeline: QueryPipeline,
+        replay_store: Arc<dyn RemoteReplayStore>,
+        server_version: type_bridge_core_lib::version::Version,
+    ) -> RouteFixture {
         let authority = authority_fixture(false);
         let metrics = Arc::new(BackendMetrics::default());
         let database = Database::with_backend(
-            Box::new(CountingBackend::new(Arc::clone(&metrics))),
+            Box::new(
+                CountingBackend::new(Arc::clone(&metrics)).with_server_version(server_version),
+            ),
             "server-v2-route",
         );
         let query = Arc::new(
@@ -2886,6 +2944,86 @@ mod tests {
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 2);
         assert_eq!(fixture.metrics.transaction_closes.load(Ordering::SeqCst), 2);
         assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn managed_startup_reads_control_without_exporting_the_schema() {
+        let authority = authority_fixture(false);
+        let metrics = Arc::new(BackendMetrics::default());
+        metrics.documents.lock().expect("documents lock").extend([
+            vec![serde_json::json!({
+                "scope": "server-v2-route",
+                "fence": "1",
+                "state": "free",
+            })],
+            Vec::new(),
+        ]);
+        let database = Database::with_backend(
+            Box::new(CountingBackend::new(Arc::clone(&metrics))),
+            "server-v2-managed-startup",
+        );
+        let state = V2QueryState::new(
+            CapabilitySet::new(),
+            QueryV2AnswerLimits::default(),
+            database,
+            authority.declared,
+            authority.delta_context,
+            authority.managed,
+            authority.resolved,
+        )
+        .expect("managed V2 state");
+        state
+            .verify_startup_authority()
+            .await
+            .expect("a free control singleton admits managed startup");
+        assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 0);
+        assert_eq!(metrics.transaction_opens.load(Ordering::SeqCst), 1);
+        assert_eq!(metrics.transaction_closes.load(Ordering::SeqCst), 1);
+        assert_eq!(metrics.query_executions.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn query_and_discovery_refuse_a_semantic_profile_mismatch() {
+        let fixture = route_fixture_on_server(
+            query_plan_capability_vocabulary(),
+            default_pipeline(),
+            Arc::new(InMemoryReplayStore::new(DEFAULT_REPLAY_CAPACITY)),
+            type_bridge_core_lib::version::Version::new(3, 11, 5),
+        );
+        let body = post_query(&fixture.router, fixture.request_bytes()).await;
+        assert_eq!(
+            fixture
+                .expect_failure(&body)
+                .diagnostic()
+                .expect("profile diagnostic")
+                .code()
+                .as_str(),
+            "query_remote_semantic_profile_mismatch",
+        );
+
+        let response = fixture
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v2/capabilities")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("capability response");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("capability body")
+            .to_bytes();
+        assert_eq!(
+            failure_code(&fixture.query, &body),
+            "query_remote_semantic_profile_mismatch",
+        );
+        assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

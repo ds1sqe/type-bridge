@@ -617,6 +617,7 @@ async fn execute_staged(
     deadline: Instant,
 ) -> Result<Vec<StagedAnswerV3>, SdkExecutionDiagnostic> {
     let lower = lower_remote_query_diagnostic;
+    state.query.verify_database_profile().map_err(lower)?;
     // Enforce the advertised answer ceilings, tightened by the request's
     // own budgets and deadline, while answers are read, not only once the
     // reply is built. The deadline binds as the answer timeout: a provider
