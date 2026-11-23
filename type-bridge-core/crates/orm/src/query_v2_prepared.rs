@@ -96,7 +96,7 @@ pub async fn acquire_live_authority_rebuild_permit() -> Result<tokio::sync::Owne
 
 /// One owned schema authority prepared plans validate against.
 pub struct QueryAuthority {
-    declared: DeclaredSchema,
+    declared: Arc<DeclaredSchema>,
     delta_context: ManagedDeltaContext,
     identity: QueryAuthorityIdentity,
     limits: QueryLimits,
@@ -116,6 +116,11 @@ impl QueryAuthority {
     #[must_use]
     pub fn declared(&self) -> &DeclaredSchema {
         &self.declared
+    }
+
+    /// The declared schema, shared rather than copied per staged transaction.
+    pub(crate) fn shared_declared(&self) -> Arc<DeclaredSchema> {
+        Arc::clone(&self.declared)
     }
 }
 
@@ -196,7 +201,7 @@ impl QueryAuthority {
             },
         )?;
         Ok(Self {
-            declared,
+            declared: Arc::new(declared),
             delta_context,
             identity: QueryAuthorityIdentity::fresh(),
             limits: QueryLimits::CANONICAL,
@@ -225,7 +230,7 @@ impl QueryAuthority {
     #[must_use]
     pub fn rebound_with_limits(&self, limits: QueryLimits) -> Self {
         Self {
-            declared: self.declared.clone(),
+            declared: Arc::clone(&self.declared),
             delta_context: self.delta_context.clone(),
             identity: QueryAuthorityIdentity::fresh(),
             limits,
@@ -2367,6 +2372,21 @@ mod tests {
         assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 0);
         assert_eq!(metrics.opens.load(Ordering::SeqCst), 0);
         assert_eq!(metrics.queries.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn staged_transactions_share_the_authority_declared_schema() {
+        let (authority, _) = authority_and_plan();
+        // Each staged transaction or stack takes this share, not a copy.
+        let first = authority.shared_declared();
+        let second = authority.shared_declared();
+        assert!(Arc::ptr_eq(&first, &second));
+        let rebound = authority.rebound_with_limits(QueryLimits::CANONICAL);
+        assert!(Arc::ptr_eq(&first, &rebound.shared_declared()));
+
+        // A separately built authority keeps its own schema.
+        let (other, _) = authority_and_plan();
+        assert!(!Arc::ptr_eq(&first, &other.shared_declared()));
     }
 
     #[test]

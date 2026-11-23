@@ -38,7 +38,7 @@ enum Route {
 pub(crate) struct ProxyStaging {
     route: Route,
     advertisement: RemoteCapabilities,
-    declared: DeclaredSchema,
+    declared: Arc<DeclaredSchema>,
     limits: QueryExecutionResourceLimits,
 }
 
@@ -47,7 +47,7 @@ impl ProxyStaging {
         http: Option<ProxyHttpTransport>,
         exchange: Option<StagedExchangeFn>,
         advertisement: &[u8],
-        declared: DeclaredSchema,
+        declared: Arc<DeclaredSchema>,
         limits: QueryExecutionResourceLimits,
     ) -> Result<Self, Diagnostic> {
         let route = match (exchange, http) {
