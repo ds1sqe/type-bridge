@@ -52,7 +52,7 @@ def test_server_image_build_and_runtime_are_immutable_and_least_privilege() -> N
     ) in source
     assert (
         "debian:bookworm-slim@"
-        "sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818"
+        "sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc"
     ) in source
     for package_path, architecture, checksum in (
         (

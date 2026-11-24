@@ -3,12 +3,13 @@
 # Release builds override only the identity arguments below. Both base images
 # and the Rust toolchain are immutable inputs to each server release image.
 ARG RUST_BUILDER_IMAGE=rust:1.94.1-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55
-ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 FROM ${RUST_BUILDER_IMAGE} AS runtime-security
 
-# The base image predates Debian's PCRE2 and Perl security updates. Keep each
-# package immutable until the next reviewed base-image refresh incorporates it.
+# Older base images predated Debian's PCRE2 and Perl security updates. The
+# current base ships these versions; the pinned packages stay as a floor until
+# a reviewed refresh drops this stage.
 ADD --checksum=sha256:d2f7edfcc7689b9e0761c2742cc824ac86a20768bc5e8057818dc6875291fe76 \
     https://security.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-8-0_10.42-1+deb12u2_amd64.deb /security/libpcre2-amd64.deb
 ADD --checksum=sha256:8498d2c0bd6747dfc2fc6eec62774a86967079555f7043d5a7b78ee4efbbc0fb \
